@@ -54,7 +54,7 @@ internal static class SessionAttachmentTextExtractor
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
 
-    private static readonly HashSet<string> SupportedMimeTypes = new(StringComparer.OrdinalIgnoreCase)
+    internal static IReadOnlySet<string> SupportedMimeTypes { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
 
         "application/json",

@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Api.Tower;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -38,6 +40,19 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 {
+
+    public static TheoryData<string, string, string> SourceExtensionMappings => new()
+    {
+        { ".py", "text/x-python", "print('python source')" },
+        { ".go", "text/x-go", "package main\nfunc main() {}" },
+        { ".rs", "text/x-rust", "fn main() {}" },
+        { ".rb", "text/x-ruby", "puts 'ruby source'" },
+        { ".java", "text/x-java-source", "class Source {}" },
+        { ".kt", "text/x-kotlin", "fun main() {}" },
+        { ".c", "text/x-c", "int main(void) { return 0; }" },
+        { ".cpp", "text/x-c++", "int main() { return 0; }" },
+        { ".php", "application/x-httpd-php", "<?php echo 'php source';" },
+    };
 
     private const int Dimensions = 64;
 
@@ -352,6 +367,68 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             Assert.Equal(Dimensions, chunk.EmbeddingDimension);
 
         });
+
+    }
+
+    [SkippableTheory]
+
+    [MemberData(nameof(SourceExtensionMappings))]
+
+    public async Task ProcessAsync_detected_source_extension_indexes_and_retrieves_content(
+        string extension,
+        string expectedMimeType,
+        string source)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        string fileName = "unique-source" + extension;
+
+        byte[] bytes = Encoding.UTF8.GetBytes(source);
+
+        string detectedMimeType = AttachmentMimeDetector.Detect(bytes, fileName);
+
+        string mimeType = SessionEndpoints.ResolveSnapshotMimeType(
+            "application/octet-stream",
+            detectedMimeType);
+
+        SessionAttachmentKind kind = SessionAttachmentContentPolicy.Classify(mimeType);
+
+        Assert.Equal(expectedMimeType, detectedMimeType);
+
+        Assert.Equal(expectedMimeType, mimeType);
+
+        Assert.Equal(SessionAttachmentKind.Text, kind);
+
+        SessionAttachmentRecord attachment = await _attachments!.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "unique-source",
+            fileName,
+            bytes,
+            mimeType,
+            kind);
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(new FakeWeaveService()).ProcessAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        SessionAttachmentRetrievedChunk[] retrieved = await CreateRetrievalService().SearchAsync(
+            sessionId,
+            new Embedding<float>(CreateVector(Dimensions)),
+            includeHistorical: false,
+            CancellationToken.None);
+
+        SessionAttachmentRetrievedChunk hit = Assert.Single(retrieved);
+
+        Assert.Equal(attachment.Id, hit.AttachmentId);
+
+        Assert.Contains(source, hit.Content, StringComparison.Ordinal);
 
     }
 

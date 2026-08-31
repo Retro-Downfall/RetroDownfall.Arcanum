@@ -8,10 +8,104 @@ namespace RetroDownfall.Arcanum.Tests.Storage;
 public sealed class AttachmentMimeDetectorTests
 {
 
+    public static TheoryData<string, string> ExtractableExtensionMappings => new()
+    {
+        { ".json", "application/json" },
+        { ".jsonld", "application/ld+json" },
+        { ".toml", "application/toml" },
+        { ".xml", "application/xml" },
+        { ".php", "application/x-httpd-php" },
+        { ".cjs", "application/x-javascript" },
+        { ".jsonl", "application/x-ndjson" },
+        { ".sh", "application/x-sh" },
+        { ".yml", "application/x-yaml" },
+        { ".yaml", "application/yaml" },
+        { ".csv", "text/csv" },
+        { ".js", "text/javascript" },
+        { ".md", "text/markdown" },
+        { ".markdown", "text/markdown" },
+        { ".txt", "text/plain" },
+        { ".fs", "text/plain" },
+        { ".vb", "text/plain" },
+        { ".ps1", "text/plain" },
+        { ".ts", "text/plain" },
+        { ".css", "text/plain" },
+        { ".rst", "text/plain" },
+        { ".adoc", "text/plain" },
+        { ".asciidoc", "text/plain" },
+        { ".tex", "text/plain" },
+        { ".patch", "text/plain" },
+        { ".diff", "text/plain" },
+        { ".ini", "text/plain" },
+        { ".srt", "text/plain" },
+        { ".vtt", "text/plain" },
+        { ".ics", "text/plain" },
+        { ".tsv", "text/tab-separated-values" },
+        { ".c", "text/x-c" },
+        { ".h", "text/x-c" },
+        { ".cpp", "text/x-c++" },
+        { ".cc", "text/x-c++" },
+        { ".cxx", "text/x-c++" },
+        { ".cs", "text/x-csharp" },
+        { ".go", "text/x-go" },
+        { ".java", "text/x-java-source" },
+        { ".kt", "text/x-kotlin" },
+        { ".log", "text/x-log" },
+        { ".py", "text/x-python" },
+        { ".rb", "text/x-ruby" },
+        { ".rs", "text/x-rust" },
+        { ".bash", "text/x-shellscript" },
+        { ".sql", "text/x-sql" },
+        { ".xsl", "text/xml" },
+        { ".cff", "text/yaml" },
+    };
+
     [Theory]
-    [InlineData("BM25 scoring notes for the ranking experiment.\n", "notes.md", "text/plain")]
+
+    [MemberData(nameof(ExtractableExtensionMappings))]
+
+    public void Detect_returns_the_canonical_extractor_mime_type_for_each_supported_extension(
+        string extension,
+        string expectedMimeType)
+    {
+
+        Assert.Equal(
+            expectedMimeType,
+            AttachmentMimeDetector.Detect("source content"u8, "source" + extension));
+
+    }
+
+    [Theory]
+
+    [InlineData(".env")]
+    [InlineData(".properties")]
+    [InlineData(".cfg")]
+    [InlineData(".conf")]
+
+    public void Detect_deliberately_excludes_sensitive_configuration_extensions(string extension)
+    {
+
+        Assert.Equal(
+            "application/octet-stream",
+            AttachmentMimeDetector.Detect("secret=value"u8, "configuration" + extension));
+
+    }
+
+    [Fact]
+
+    public void Detect_preserves_binary_signature_precedence_over_a_textual_extension()
+    {
+
+        Assert.Equal(
+            "application/pdf",
+            AttachmentMimeDetector.Detect("%PDF-1.7"u8, "renamed.py"));
+
+    }
+
+    [Theory]
+    [InlineData("BM25 scoring notes for the ranking experiment.\n", "notes.md", "text/markdown")]
     [InlineData("BMW pricing, trim, msrp\n3 Series,base,43000\n", "pricing.csv", "text/csv")]
-    [InlineData("BMP header parsing log line one\n", "parser.log", "text/plain")]
+    [InlineData("BMP header parsing log line one\n", "parser.log", "text/x-log")]
     public void Detect_does_not_treat_text_beginning_with_BM_as_bitmap(
         string content,
         string fileName,

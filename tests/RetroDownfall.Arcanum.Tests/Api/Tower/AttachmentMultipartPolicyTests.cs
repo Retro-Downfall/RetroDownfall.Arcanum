@@ -7,6 +7,56 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 public sealed class AttachmentMultipartPolicyTests
 {
 
+    [Theory]
+
+    [InlineData("text/plain")]
+    [InlineData("text/x-python")]
+    [InlineData("application/json")]
+    [InlineData("application/xml")]
+    [InlineData("application/yaml")]
+    [InlineData("application/toml")]
+
+    public void ResolveSnapshotMimeType_preserves_only_the_current_declared_textual_allowlist(
+        string declaredMimeType)
+    {
+
+        Assert.Equal(
+            declaredMimeType,
+            SessionEndpoints.ResolveSnapshotMimeType(declaredMimeType, "application/octet-stream"));
+
+    }
+
+    [Theory]
+
+    [InlineData("application/ld+json")]
+    [InlineData("application/x-httpd-php")]
+    [InlineData("application/x-javascript")]
+    [InlineData("application/x-ndjson")]
+    [InlineData("application/x-sh")]
+    [InlineData("application/x-yaml")]
+    [InlineData("application/pdf")]
+
+    public void ResolveSnapshotMimeType_rejects_unallowlisted_declared_application_types(
+        string declaredMimeType)
+    {
+
+        Assert.Equal(
+            "application/octet-stream",
+            SessionEndpoints.ResolveSnapshotMimeType(declaredMimeType, "application/octet-stream"));
+
+    }
+
+    [Fact]
+
+    public void ResolveSnapshotMimeType_prefers_detected_mime_type_over_the_declared_header()
+    {
+
+        Assert.Equal(
+            "application/pdf",
+            SessionEndpoints.ResolveSnapshotMimeType("text/plain", "application/pdf"));
+
+    }
+
     [Fact]
 
     public void Multipart_parser_enforces_the_attachment_read_limit()

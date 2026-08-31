@@ -199,6 +199,8 @@ public static class SessionAttachmentContentPolicy
 
             or "application/javascript"
 
+            or "application/x-httpd-php"
+
             or "application/x-javascript"
 
             or "application/x-sh";

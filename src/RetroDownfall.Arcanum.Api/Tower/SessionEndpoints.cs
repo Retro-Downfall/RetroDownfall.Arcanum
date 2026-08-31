@@ -2517,7 +2517,7 @@ internal static class SessionEndpoints
 
     }
 
-    private static string ResolveSnapshotMimeType(
+    internal static string ResolveSnapshotMimeType(
 
         string declaredMimeType,
 

@@ -1,11 +1,67 @@
 using System.Text;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed class SessionAttachmentTextExtractorTests
 {
+
+    [Fact]
+
+    public void SupportedMimeTypes_are_all_extension_reachable()
+    {
+
+        IReadOnlySet<string> supportedMimeTypes = SessionAttachmentTextExtractor.SupportedMimeTypes;
+
+        HashSet<string> extensionMimeTypes = AttachmentMimeDetector.ExtensionMimeTypes.Values
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(29, supportedMimeTypes.Count);
+
+        Assert.All(supportedMimeTypes, mimeType => Assert.Contains(mimeType, extensionMimeTypes));
+
+    }
+
+    [Fact]
+
+    public void Detector_produced_textual_mime_types_are_all_extractable()
+    {
+
+        IEnumerable<string> textualMimeTypes = AttachmentMimeDetector.ExtensionMimeTypes.Values
+            .Where(SessionAttachmentTextExtractor.SupportedMimeTypes.Contains)
+            .Append("text/html")
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        Assert.All(textualMimeTypes, mimeType =>
+        {
+
+            SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
+                "alpha\nbeta"u8,
+                mimeType,
+                "source.txt");
+
+            Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
+
+        });
+
+    }
+
+    [Fact]
+
+    public void Extract_recognized_source_mime_type_with_nul_bytes_is_not_eligible()
+    {
+
+        SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
+            "print('safe')\0"u8,
+            "text/x-python",
+            "source.py");
+
+        Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
+
+    }
 
     public static TheoryData<string, string> SupportedTextTypes => new()
     {
