@@ -1,5 +1,9 @@
 # Issue #239 Host-wide Grimoire Admission Implementation Plan
 
+> **SUPERSEDED — DO NOT EXECUTE.** The approved direction now uses an authenticated external
+> `GrimoireOfflineTransition` journal and keeps ordinary admission closed through database
+> reconciliation and retirement. Replace this plan only after the revised written design is reviewed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every ordinary live-Grimoire access path wait or fail before SQLite can reopen the database during Covenant erasure, while preserving narrowly authorized erasure, recovery, renewal, streaming, and background-worker behavior.
