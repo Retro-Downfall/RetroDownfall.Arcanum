@@ -37,6 +37,14 @@ internal readonly record struct GrimoireOfflineTransitionWindowsReplaceFileArgum
     string ReplacementFileName,
     string BackupFileName);
 
+internal delegate bool GrimoireOfflineTransitionReplaceFile(
+    string replacedFileName,
+    string replacementFileName,
+    string backupFileName,
+    uint replaceFlags,
+    IntPtr exclude,
+    IntPtr reserved);
+
 internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
 {
 
@@ -213,11 +221,17 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     private const int OwnerOnlyUnixMode = 0x180;
 
-    private const uint GenericRead = 0x80000000;
+    private const uint FileReadData = 0x00000001;
 
-    private const uint GenericWrite = 0x40000000;
+    private const uint FileWriteData = 0x00000002;
 
     private const uint DeleteAccess = 0x00010000;
+
+    private const uint ReadControlAccess = 0x00020000;
+
+    private const uint WriteDacAccess = 0x00040000;
+
+    private const uint WriteOwnerAccess = 0x00080000;
 
     private const uint SynchronizeAccess = 0x00100000;
 
@@ -230,6 +244,27 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     private const uint FileShareWrite = 0x00000002;
 
     private const uint FileShareDelete = 0x00000004;
+
+    internal const uint WindowsParentDesiredAccess =
+        FileListDirectory | FileReadAttributes | SynchronizeAccess | ReadControlAccess;
+
+    internal const uint WindowsParentShareMode = FileShareRead | FileShareWrite;
+
+    internal const uint WindowsChildReadDesiredAccess =
+        FileReadData
+        | FileReadAttributes
+        | DeleteAccess
+        | ReadControlAccess
+        | SynchronizeAccess;
+
+    internal const uint WindowsChildWritableDesiredAccess =
+        WindowsChildReadDesiredAccess
+        | FileWriteData
+        | WriteDacAccess
+        | WriteOwnerAccess;
+
+    internal const uint WindowsChildShareMode =
+        FileShareRead | FileShareWrite | FileShareDelete;
 
     private const uint OpenExisting = 3;
 
@@ -559,13 +594,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 MapWindowsReplaceFileArguments(_parentPath, journalLeaf, workingLeaf, previousLeaf);
 
             if (OperatingSystem.IsWindows()
-                && ReplaceFileWindows(
-                    windowsArguments.ReplacedFileName,
-                    windowsArguments.ReplacementFileName,
-                    windowsArguments.BackupFileName,
-                    replaceFlags: 0,
-                    exclude: IntPtr.Zero,
-                    reserved: IntPtr.Zero))
+                && InvokeWindowsReplaceFile(windowsArguments, ReplaceFileWindows))
             {
 
                 return new GrimoireOfflineTransitionExchangeResult(
@@ -610,6 +639,23 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             Path.Combine(parentPath, journalLeaf),
             Path.Combine(parentPath, workingLeaf),
             Path.Combine(parentPath, previousLeaf));
+
+    }
+
+    internal static bool InvokeWindowsReplaceFile(
+        GrimoireOfflineTransitionWindowsReplaceFileArguments arguments,
+        GrimoireOfflineTransitionReplaceFile replaceFile)
+    {
+
+        ArgumentNullException.ThrowIfNull(replaceFile);
+
+        return replaceFile(
+            arguments.ReplacedFileName,
+            arguments.ReplacementFileName,
+            arguments.BackupFileName,
+            replaceFlags: 0,
+            exclude: IntPtr.Zero,
+            reserved: IntPtr.Zero);
 
     }
 
@@ -995,6 +1041,41 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             current.Identity)
         && HasStrictOwnerOnlyParentHandlePosture(parent);
 
+    internal static bool VerifyOwnerControlledOpenedFileHandle(
+        GrimoireOfflineTransitionJournalOpenedFile child)
+    {
+
+        ArgumentNullException.ThrowIfNull(child);
+
+        if (!FileHandleIdentityInterop.TryGetHandleMetadata(
+                child.Handle,
+                out FileHandleMetadata current)
+            || current.Kind is not FileSystemObjectKind.RegularFile
+            || current.HardLinkCount != 1
+            || !FileHandleIdentity.IdentitiesMatch(
+                child.Metadata.Identity,
+                current.Identity))
+        {
+
+            return false;
+
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return VerifyWindowsOwnerOnlyHandle(child.Handle);
+
+        }
+
+        return (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            && SecureFilePermissions.HasOwnerControlledFileHandlePosture(
+                child.Handle,
+                child.DisplayPath,
+                current.Identity);
+
+    }
+
     private static bool HasStrictOwnerOnlyParentHandlePosture(SafeFileHandle handle)
     {
 
@@ -1034,8 +1115,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             SafeFileHandle handle = CreateFileWindows(
                 path,
-                FileListDirectory | FileReadAttributes | SynchronizeAccess,
-                FileShareRead | FileShareWrite,
+                WindowsParentDesiredAccess,
+                WindowsParentShareMode,
                 IntPtr.Zero,
                 OpenExisting,
                 FileFlagBackupSemantics | FileFlagOpenReparsePoint,
@@ -1196,14 +1277,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     SecurityQualityOfService = IntPtr.Zero,
                 };
 
-                uint desired = GenericRead | FileReadAttributes | SynchronizeAccess | DeleteAccess;
-
-                if (writable)
-                {
-
-                    desired |= GenericWrite;
-
-                }
+                uint desired = writable
+                    ? WindowsChildWritableDesiredAccess
+                    : WindowsChildReadDesiredAccess;
 
                 int status = NtCreateFile(
                     out IntPtr raw,
@@ -1212,7 +1288,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     out _,
                     IntPtr.Zero,
                     fileAttributes: 0x00000080,
-                    FileShareRead | FileShareWrite | FileShareDelete,
+                    WindowsChildShareMode,
                     createExclusive ? FileCreate : FileOpen,
                     FileNonDirectoryFile | FileOpenReparsePoint | FileSynchronousIoNonAlert,
                     IntPtr.Zero,

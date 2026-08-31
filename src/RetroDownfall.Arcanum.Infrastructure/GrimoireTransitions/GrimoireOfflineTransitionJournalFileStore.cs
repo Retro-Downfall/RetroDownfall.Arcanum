@@ -377,7 +377,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         }
 
         Result<GrimoireOfflineTransitionJournalFileRead> read = await ReadAsync(
+                primitives,
                 child,
+                location.JournalLeaf,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -1031,7 +1033,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             {
 
                 Result<GrimoireOfflineTransitionJournalFileRead> read = await ReadAsync(
+                        primitives,
                         child,
+                        leaf,
                         cancellationToken)
                     .ConfigureAwait(false);
 
@@ -1146,7 +1150,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         }
 
         Result<GrimoireOfflineTransitionJournalFileRead> readResult = await ReadAsync(
+                primitives,
                 retiring,
+                location.RetiringLeaf,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -1236,17 +1242,26 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         }
 
-        return await ReadAsync(child, cancellationToken).ConfigureAwait(false);
+        return await ReadAsync(
+                primitives,
+                child,
+                location.JournalLeaf,
+                cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
     private static async Task<Result<GrimoireOfflineTransitionJournalFileRead>> ReadAsync(
+        IGrimoireOfflineTransitionJournalFilePrimitives primitives,
         GrimoireOfflineTransitionJournalOpenedFile child,
+        string relativeLeaf,
         CancellationToken cancellationToken)
     {
 
         if (child.Metadata.Kind is not FileSystemObjectKind.RegularFile
-            || child.Metadata.HardLinkCount != 1)
+            || child.Metadata.HardLinkCount != 1
+            || !GrimoireOfflineTransitionJournalFilePrimitives
+                .VerifyOwnerControlledOpenedFileHandle(child))
         {
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead>();
@@ -1257,13 +1272,48 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 child.GetStream(FileAccess.Read),
                 GrimoireOfflineTransitionJournalAuthenticator.MaxJournalFileBytes,
                 cancellationToken,
-                requireOwnerControlled: true)
+                requireOwnerControlled: false)
             .ConfigureAwait(false);
 
         if (read.Status is not SecureFileReadStatus.Success
             || !FileHandleIdentity.IdentitiesMatch(
                 child.Metadata.Identity,
-                read.Metadata.Identity))
+                read.Metadata.Identity)
+            || !GrimoireOfflineTransitionJournalFilePrimitives
+                .VerifyOwnerControlledOpenedFileHandle(child))
+        {
+
+            read.Dispose();
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead>();
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalChildEnumeration> namedResult =
+            primitives.EnumerateExactChildren([relativeLeaf]);
+
+        if (namedResult.IsFailure)
+        {
+
+            read.Dispose();
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead>();
+
+        }
+
+        using GrimoireOfflineTransitionJournalChildEnumeration named = namedResult.Value;
+
+        if (!named.ExactChildren.TryGetValue(
+                relativeLeaf,
+                out GrimoireOfflineTransitionJournalOpenedFile? reopened)
+            || !FileHandleIdentity.IdentitiesMatch(
+                child.Metadata.Identity,
+                reopened.Metadata.Identity)
+            || !FileHandleIdentity.IdentitiesMatch(
+                read.Metadata.Identity,
+                reopened.Metadata.Identity)
+            || !GrimoireOfflineTransitionJournalFilePrimitives
+                .VerifyOwnerControlledOpenedFileHandle(reopened))
         {
 
             read.Dispose();

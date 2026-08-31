@@ -422,6 +422,78 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
+    public async Task Evidence_read_refuses_relative_name_substitution_during_bounded_read()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore store = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            location,
+            Bytes("original-evidence"),
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        string preserved = Path.Combine(_container, "preserved-during-bounded-read");
+
+        int substituted = 0;
+
+        SecureFileReader.AfterOpenForTests = _ =>
+        {
+
+            if (Interlocked.Exchange(ref substituted, 1) != 0)
+            {
+
+                return;
+
+            }
+
+            File.Move(location.JournalPath, preserved);
+
+            File.WriteAllBytes(location.JournalPath, Bytes("substitute-evidence").Span);
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                File.SetUnixFileMode(
+                    location.JournalPath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            }
+
+        };
+
+        try
+        {
+
+            Result<GrimoireOfflineTransitionJournalFileRead?> read =
+                await store.ReadIfPresentAsync(location, CancellationToken.None);
+
+            Assert.True(read.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, read.Error.Code);
+
+            Assert.Equal(Bytes("original-evidence").ToArray(), File.ReadAllBytes(preserved));
+
+            Assert.Equal(
+                Bytes("substitute-evidence").ToArray(),
+                File.ReadAllBytes(location.JournalPath));
+
+        }
+        finally
+        {
+
+            SecureFileReader.AfterOpenForTests = null;
+
+        }
+
+    }
+
+    [Fact]
     public async Task Publication_preserves_and_refuses_a_target_substituted_after_final_validation()
     {
 
@@ -1088,6 +1160,165 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
+    public void Windows_access_masks_and_replace_invocation_are_exact()
+    {
+
+        const uint fileShareDelete = 0x00000004;
+
+        const uint readControl = 0x00020000;
+
+        const uint writeDac = 0x00040000;
+
+        const uint writeOwner = 0x00080000;
+
+        Assert.Equal(0x00120081U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentDesiredAccess);
+
+        Assert.Equal(0x00000003U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentShareMode);
+
+        Assert.NotEqual(
+            0U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentDesiredAccess
+                & readControl);
+
+        Assert.Equal(
+            0U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentShareMode
+                & fileShareDelete);
+
+        Assert.Equal(0x00130081U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildReadDesiredAccess);
+
+        Assert.Equal(0x001F0083U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildWritableDesiredAccess);
+
+        Assert.Equal(0x00000007U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildShareMode);
+
+        Assert.Equal(
+            0U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildReadDesiredAccess
+                & (writeDac | writeOwner));
+
+        Assert.Equal(
+            writeDac | writeOwner,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildWritableDesiredAccess
+                & (writeDac | writeOwner));
+
+        GrimoireOfflineTransitionWindowsReplaceFileArguments mapping = new(
+            "literal-J",
+            "literal-W",
+            "literal-P");
+
+        (string Replaced, string Replacement, string Backup)? observed = null;
+
+        bool invoked = GrimoireOfflineTransitionJournalFilePrimitives.InvokeWindowsReplaceFile(
+            mapping,
+            (replaced, replacement, backup, flags, exclude, reserved) =>
+            {
+
+                observed = (replaced, replacement, backup);
+
+                Assert.Equal(0U, flags);
+
+                Assert.Equal(IntPtr.Zero, exclude);
+
+                Assert.Equal(IntPtr.Zero, reserved);
+
+                return true;
+
+            });
+
+        Assert.True(invoked);
+
+        Assert.Equal(
+            ("literal-J", "literal-W", "literal-P"),
+            observed);
+
+        string source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
+
+        string parentOpen = SourceMethod(
+            source,
+            "private static SafeFileHandle? OpenParentNoFollow(",
+            "private SecureFileOpenStatus OpenChild(");
+
+        Assert.Contains("WindowsParentDesiredAccess", parentOpen, StringComparison.Ordinal);
+
+        Assert.Contains("WindowsParentShareMode", parentOpen, StringComparison.Ordinal);
+
+        string childOpen = SourceMethod(
+            source,
+            "private unsafe SecureFileOpenStatus OpenWindowsChild(",
+            "private List<string>? EnumerateNames(");
+
+        Assert.Contains("WindowsChildReadDesiredAccess", childOpen, StringComparison.Ordinal);
+
+        Assert.Contains("WindowsChildWritableDesiredAccess", childOpen, StringComparison.Ordinal);
+
+        Assert.Contains("WindowsChildShareMode", childOpen, StringComparison.Ordinal);
+
+        string exchange = SourceMethod(
+            source,
+            "public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(",
+            "internal static GrimoireOfflineTransitionWindowsReplaceFileArguments");
+
+        Assert.Contains("InvokeWindowsReplaceFile(", exchange, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ReplaceFileWindows(", exchange, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Production_evidence_read_uses_handle_posture_without_path_owner_verification()
+    {
+
+        string root = FindRepositoryRoot();
+
+        string store = File.ReadAllText(Path.Combine(
+            root,
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs"));
+
+        string primitives = File.ReadAllText(Path.Combine(
+            root,
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
+
+        string readMethod = SourceMethod(
+            store,
+            "private static async Task<Result<GrimoireOfflineTransitionJournalFileRead>> ReadAsync(",
+            "private async Task<bool> ProveResidueAbsentAsync(");
+
+        Assert.Contains("requireOwnerControlled: false", readMethod, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("requireOwnerControlled: true", readMethod, StringComparison.Ordinal);
+
+        Assert.Equal(
+            2,
+            CountOccurrences(
+                readMethod,
+                "VerifyOwnerControlledOpenedFileHandle(child)"));
+
+        Assert.Contains(
+            "primitives.EnumerateExactChildren([relativeLeaf])",
+            readMethod,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ChildPath(", readMethod, StringComparison.Ordinal);
+
+        string handleVerifier = SourceMethod(
+            primitives,
+            "internal static bool VerifyOwnerControlledOpenedFileHandle(",
+            "private static bool HasStrictOwnerOnlyParentHandlePosture(");
+
+        Assert.Contains("VerifyWindowsOwnerOnlyHandle", handleVerifier, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ChildPath(", handleVerifier, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public void Production_never_creates_a_generic_arcanum_cleanup_quarantine()
     {
 
@@ -1208,6 +1439,41 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         }
 
         throw new Xunit.Sdk.XunitException("The repository root could not be located.");
+
+    }
+
+    private static string SourceMethod(string source, string startMarker, string endMarker)
+    {
+
+        int start = source.IndexOf(startMarker, StringComparison.Ordinal);
+
+        Assert.True(start >= 0, "The production start marker was not found: " + startMarker);
+
+        int end = source.IndexOf(endMarker, start, StringComparison.Ordinal);
+
+        Assert.True(end > start, "The production end marker was not found: " + endMarker);
+
+        return source[start..end];
+
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+
+        int count = 0;
+
+        int offset = 0;
+
+        while ((offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+        {
+
+            count++;
+
+            offset += value.Length;
+
+        }
+
+        return count;
 
     }
 
