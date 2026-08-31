@@ -119,11 +119,18 @@ public sealed class SagaCurationStoreTests
 
         byte[] digest = AnnalContentDigest.ForSagaMemory("the operator prefers tabs");
 
+        DateTimeOffset firstRetiredAt = DateTimeOffset.UtcNow;
+
         SagaCurationOutcome first = await harness.Store
-            .RetireAsync("m-1", digest, DateTimeOffset.UtcNow, CancellationToken.None)
+            .RetireAsync("m-1", digest, firstRetiredAt, CancellationToken.None)
             .ConfigureAwait(false);
 
         Assert.Equal(SagaCurationOutcomeKind.Applied, first.Kind);
+
+        DateTimeOffset? retiredAtBeforeSecond = (await harness.Store
+            .ReadCurationRowAsync("m-1", CancellationToken.None).ConfigureAwait(false))!.Lifecycle.RetiredAtUtc;
+
+        Assert.NotNull(retiredAtBeforeSecond);
 
         AnnalClaimHead headBeforeSecond = (await harness.Annals
             .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
@@ -134,10 +141,15 @@ public sealed class SagaCurationStoreTests
             .GetVersionsAsync(headBeforeSecond.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
 
         SagaCurationOutcome second = await harness.Store
-            .RetireAsync("m-1", digest, DateTimeOffset.UtcNow, CancellationToken.None)
+            .RetireAsync("m-1", digest, firstRetiredAt.AddMinutes(1), CancellationToken.None)
             .ConfigureAwait(false);
 
         Assert.Equal(SagaCurationOutcomeKind.AlreadyRetired, second.Kind);
+
+        Assert.Equal(
+            retiredAtBeforeSecond,
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Lifecycle.RetiredAtUtc);
 
         AnnalClaimHead headAfterSecond = (await harness.Annals
             .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
@@ -240,6 +252,8 @@ public sealed class SagaCurationStoreTests
         int versionCountBeforeSecond = (await harness.Annals
             .GetVersionsAsync(headBeforeSecond.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
 
+        byte[] embeddingBeforeSecond = await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false);
+
         SagaCurationOutcome second = await harness.Store.ReinstateAsync(
             "m-1", digest, harness.Embedding(seed: 9), DateTimeOffset.UtcNow, CancellationToken.None)
             .ConfigureAwait(false);
@@ -259,6 +273,8 @@ public sealed class SagaCurationStoreTests
             versionCountBeforeSecond,
             (await harness.Annals.GetVersionsAsync(headAfterSecond.ClaimId, CancellationToken.None)
                 .ConfigureAwait(false)).Count);
+
+        Assert.Equal(embeddingBeforeSecond, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
 
     }
 
