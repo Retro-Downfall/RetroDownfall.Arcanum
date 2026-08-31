@@ -4753,7 +4753,7 @@
             {
               "name": "--allow",
               "aliases": [],
-              "description": "Allow the warded tool call to proceed.",
+              "description": "Record an allowed resolution.",
               "recursive": false,
               "takesValue": false,
               "repeatable": false,
@@ -4762,7 +4762,7 @@
             {
               "name": "--deny",
               "aliases": [],
-              "description": "Deny the warded tool call.",
+              "description": "Record a denied resolution.",
               "recursive": false,
               "takesValue": false,
               "repeatable": false,
@@ -6094,7 +6094,7 @@
         {
           "path": "mcp invoke",
           "name": "invoke",
-          "description": "Invoke one external MCP tool diagnostically; internal and Forbidden Art tools remain blocked server-side.",
+          "description": "Invoke one external MCP tool diagnostically; internal tool names are reserved for the Master execution pipeline.",
           "runnable": true,
           "aliases": [],
           "arguments": [

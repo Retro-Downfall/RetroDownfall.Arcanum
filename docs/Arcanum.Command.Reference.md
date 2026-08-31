@@ -799,7 +799,7 @@ Administers MCP server lifecycle, trust, tool discovery, and external diagnostic
 | `arcanum mcp reload` | Clear MCP partitions and reload global or explicitly scoped workspace configuration. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp trust [<workspace>]` | Trust the current workspace mcp.json bytes; defaults to the current directory. | None beyond global or inherited family options. |
 | `arcanum mcp tools [<server>]` | List tools exposed by one selected MCP server. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
-| `arcanum mcp invoke <tool> [<arguments>]` | Invoke one external MCP tool diagnostically; internal and Forbidden Art tools remain blocked server-side. | `--server <server>` — External MCP server name or unique prefix; omit for tool-based selection.<br>`--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
+| `arcanum mcp invoke <tool> [<arguments>]` | Invoke one external MCP tool diagnostically; internal tool names are reserved for the Master execution pipeline. | `--server <server>` — External MCP server name or unique prefix; omit for tool-based selection.<br>`--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 
 ### `arcanum tool`
 
@@ -1035,7 +1035,7 @@ Explains the effective values and previews model context without running main in
 
 Inspect, preview, apply, and reset transparent onboarding presets.
 
-The five workflow presets are current at version 2: `general-assistant` (**General Assistant**), `coding-workspace` (**Coding Workspace**), `research` (**Research**), `private-offline` (**Private/Offline**), and `automation` (**Automation**). `advanced-custom` (**Advanced/Custom**) remains version 1 because it owns no paths. `<name>` accepts an exact ID or exact display name; quote display names that contain spaces or shell punctuation. Definitions are partial overlays: only their declared owned paths can change, and Advanced/Custom owns none. The pre-issue-219 v1 workflow definitions remain frozen for exact historical sidecar validation. Matching raw v1 state/rollback pairs are validated before in-memory v2 survivor projection; reads do not rewrite the pair, and reset/recovery never writes or restores either retired Ward approval path.
+The five workflow presets are current at version 2: `general-assistant` (**General Assistant**), `coding-workspace` (**Coding Workspace**), `research` (**Research**), `private-offline` (**Private/Offline**), and `automation` (**Automation**). `advanced-custom` (**Advanced/Custom**) remains version 1 because it owns no paths. `<name>` accepts an exact ID or exact display name; quote display names that contain spaces or shell punctuation. Definitions are partial overlays: only their declared owned paths can change, and Advanced/Custom owns none. The retired-key-era v1 workflow definitions remain frozen for exact historical sidecar validation. Matching raw v1 state/rollback pairs are validated before in-memory v2 survivor projection; reads do not rewrite the pair, and reset/recovery never writes or restores either retired Ward approval path.
 
 | Command | Explanation | Additional command options |
 |---|---|---|

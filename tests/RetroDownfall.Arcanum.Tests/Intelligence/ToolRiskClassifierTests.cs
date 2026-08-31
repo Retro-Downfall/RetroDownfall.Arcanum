@@ -1,10 +1,81 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ToolRiskClassifierTests
 {
+
+    private const string WardToolInventoryStart = "<!-- ward-tool-inventory:start -->";
+
+    private const string WardToolInventoryEnd = "<!-- ward-tool-inventory:end -->";
+
+    private sealed record WardToolInventoryRow(
+        string Group,
+        string Name,
+        string CatalogStatus,
+        string WardDecision,
+        string IndependentBoundary);
+
+    private static IReadOnlyList<WardToolInventoryRow> ReadWardToolInventory(string design)
+    {
+
+        int sectionStart = design.IndexOf(
+            "### 11.14 Wards (record-only server tool calls and retained compatibility engine)",
+            StringComparison.Ordinal);
+
+        Assert.True(sectionStart >= 0, "DESIGN §11.14 is missing.");
+
+        int nextSection = design.IndexOf("\n### 11.15 ", sectionStart, StringComparison.Ordinal);
+
+        Assert.True(nextSection > sectionStart, "DESIGN §11.15 must bound the Ward section.");
+
+        int inventoryStart = design.IndexOf(WardToolInventoryStart, StringComparison.Ordinal);
+
+        int inventoryEnd = design.IndexOf(WardToolInventoryEnd, StringComparison.Ordinal);
+
+        Assert.True(inventoryStart > sectionStart && inventoryEnd > inventoryStart && inventoryEnd < nextSection);
+
+        Assert.Equal(inventoryStart, design.LastIndexOf(WardToolInventoryStart, StringComparison.Ordinal));
+
+        Assert.Equal(inventoryEnd, design.LastIndexOf(WardToolInventoryEnd, StringComparison.Ordinal));
+
+        string table = design[(inventoryStart + WardToolInventoryStart.Length)..inventoryEnd];
+
+        string[] lines = table.Split(
+            '\n',
+            StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.True(lines.Length >= 2, "The Ward inventory table is empty.");
+
+        Assert.Equal(
+            "| Group | Tool | Catalog status | Ward decision | Independent boundary |",
+            lines[0]);
+
+        Assert.Equal("|---|---|---|---|---|", lines[1]);
+
+        List<WardToolInventoryRow> rows = [];
+
+        foreach (string line in lines.Skip(2))
+        {
+
+            string[] cells = line.Trim('|').Split('|', StringSplitOptions.TrimEntries);
+
+            Assert.Equal(5, cells.Length);
+
+            rows.Add(new WardToolInventoryRow(
+                cells[0],
+                cells[1].Trim('`'),
+                cells[2],
+                cells[3],
+                cells[4]));
+
+        }
+
+        return rows;
+
+    }
 
     private static readonly string[] KnownToolNames =
     [
@@ -74,6 +145,49 @@ public sealed class ToolRiskClassifierTests
         Assert.Equal(31, KnownToolNames.Length);
 
         Assert.Equal(31, KnownToolNames.Distinct(StringComparer.Ordinal).Count());
+
+    }
+
+    [Fact]
+    public void Design_ward_inventory_matches_every_known_tool_and_names_no_ward_decision()
+    {
+
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string design = File.ReadAllText(Path.Combine(root, "docs", "Arcanum.DESIGN.md"));
+
+        IReadOnlyList<WardToolInventoryRow> rows = ReadWardToolInventory(design);
+
+        Assert.Equal(31, rows.Count);
+
+        Assert.Equal(31, rows.Select(static row => row.Name).Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Equal(
+            KnownToolNames.OrderBy(static name => name, StringComparer.Ordinal).ToArray(),
+            rows.Select(static row => row.Name).OrderBy(static name => name, StringComparer.Ordinal).ToArray());
+
+        Assert.All(rows, static row => Assert.Equal("None", row.WardDecision));
+
+        Assert.All(rows, static row => Assert.False(string.IsNullOrWhiteSpace(row.Group)));
+
+        Assert.All(rows, static row => Assert.False(string.IsNullOrWhiteSpace(row.IndependentBoundary)));
+
+        Assert.All(
+            rows,
+            static row => Assert.Contains(
+                row.CatalogStatus,
+                new[]
+                {
+                    "normally advertised",
+                    "conditionally advertised",
+                    "recognized compatibility alias",
+                }));
+
+        WardToolInventoryRow browseWeb = Assert.Single(
+            rows,
+            static row => row.Name == ArcanumBuiltInToolNames.BrowseWeb);
+
+        Assert.Equal("recognized compatibility alias", browseWeb.CatalogStatus);
 
     }
 
