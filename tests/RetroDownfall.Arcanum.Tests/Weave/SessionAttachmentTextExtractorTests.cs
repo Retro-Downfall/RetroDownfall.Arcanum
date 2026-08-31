@@ -31,8 +31,7 @@ public sealed class SessionAttachmentTextExtractorTests
     {
 
         IEnumerable<string> textualMimeTypes = AttachmentMimeDetector.ExtensionMimeTypes.Values
-            .Where(SessionAttachmentTextExtractor.SupportedMimeTypes.Contains)
-            .Append("text/html")
+            .Where(mimeType => SessionAttachmentContentPolicy.Classify(mimeType) == SessionAttachmentKind.Text)
             .Distinct(StringComparer.OrdinalIgnoreCase);
 
         Assert.All(textualMimeTypes, mimeType =>
