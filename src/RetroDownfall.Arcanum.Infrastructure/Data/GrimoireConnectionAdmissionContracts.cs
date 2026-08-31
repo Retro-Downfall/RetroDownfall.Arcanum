@@ -158,12 +158,14 @@ internal interface IGrimoireExclusiveClosedLease : IAsyncDisposable
     Result<IGrimoireScopedConnectionPermit> AcquireScopedConnectionPermit(
         DbConnection connection);
 
-    Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket();
+    Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket(
+        IGrimoireMaintenanceIoLane lane);
 
     Result<IGrimoireMaintenanceConnectionCapability> IssueMaintenanceConnectionCapability(
         string canonicalPath,
         CovenantMaintenanceConnectionMode mode,
-        CovenantMaintenanceConnectionPurpose purpose);
+        CovenantMaintenanceConnectionPurpose purpose,
+        IGrimoireMaintenanceIoLane lane);
 
     ValueTask<Result<IGrimoireMaintenanceIoLane>> AcquireMaintenanceIoLaneAsync(
         Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
@@ -224,6 +226,8 @@ internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireTrackedMaintenanceHandle
 {
+
+    Result ReportOpenStarted();
 
     Result ReportNotOpened();
 

@@ -1069,25 +1069,32 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     }
 
     private Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket(
-        ClosedLease lease)
+        ClosedLease lease,
+        IGrimoireMaintenanceIoLane lane)
     {
+
+        ArgumentNullException.ThrowIfNull(lane);
 
         lock (_sync)
         {
 
-            if (!OwnsClosedLeaseWhileLocked(lease))
+            if (!OwnsClosedLeaseWhileLocked(lease)
+                || lane is not MaintenanceIoLane exactLane
+                || !OwnsMaintenanceIoLaneWhileLocked(exactLane)
+                || !ReferenceEquals(exactLane.Closure, lease.Closure))
             {
 
                 return Result<IGrimoireMaintenanceRenewalTicket>.Failure(
                     LifecycleConflict(
-                        "Only the exact live closed Grimoire owner may issue a renewal ticket."));
+                        "Only the exact live closed Grimoire owner and maintenance lane may issue a renewal ticket."));
 
             }
 
             MaintenanceRenewalTicket ticket = new(
                 this,
                 lease.Closure,
-                lease.Generation);
+                lease.Generation,
+                exactLane);
 
             lease.Closure.LiveOneShotAuthorities.Add(ticket);
 
@@ -1102,10 +1109,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             ClosedLease lease,
             string canonicalPath,
             CovenantMaintenanceConnectionMode mode,
-            CovenantMaintenanceConnectionPurpose purpose)
+            CovenantMaintenanceConnectionPurpose purpose,
+            IGrimoireMaintenanceIoLane lane)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(canonicalPath);
+
+        ArgumentNullException.ThrowIfNull(lane);
 
         if (mode is not CovenantMaintenanceConnectionMode.ReadOnly
             and not CovenantMaintenanceConnectionMode.ReadWrite)
@@ -1129,12 +1139,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         lock (_sync)
         {
 
-            if (!OwnsClosedLeaseWhileLocked(lease))
+            if (!OwnsClosedLeaseWhileLocked(lease)
+                || lane is not MaintenanceIoLane exactLane
+                || !OwnsMaintenanceIoLaneWhileLocked(exactLane)
+                || !ReferenceEquals(exactLane.Closure, lease.Closure))
             {
 
                 return Result<IGrimoireMaintenanceConnectionCapability>.Failure(
                     LifecycleConflict(
-                        "Only the exact live closed Grimoire owner may issue a maintenance-open capability."));
+                        "Only the exact live closed Grimoire owner and maintenance lane may issue a maintenance-open capability."));
 
             }
 
@@ -1144,7 +1157,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 lease.Generation,
                 canonicalPath,
                 mode,
-                purpose);
+                purpose,
+                exactLane);
 
             lease.Closure.LiveOneShotAuthorities.Add(capability);
 
@@ -1371,6 +1385,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             if (lane is not MaintenanceIoLane exactLane
                 || !OwnsMaintenanceIoLaneWhileLocked(exactLane)
+                || !ReferenceEquals(exactLane, ticket.IssuingLane)
                 || !ReferenceEquals(exactLane.Closure, ticket.Closure)
                 || ticket.Owner != owner
                 || ticket.Generation != generation)
@@ -1422,6 +1437,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             if (lane is not MaintenanceIoLane exactLane
                 || !OwnsMaintenanceIoLaneWhileLocked(exactLane)
+                || !ReferenceEquals(exactLane, capability.IssuingLane)
                 || !ReferenceEquals(exactLane.Closure, capability.Closure)
                 || capability.Owner != owner
                 || capability.Generation != generation
@@ -1477,43 +1493,106 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     }
 
-    private Result CompleteMaintenanceHandle(TrackedMaintenanceHandle handle)
+    private Result ReportMaintenanceOpenStarted(TrackedMaintenanceHandle handle)
     {
 
         lock (_sync)
         {
 
-            if (handle.IsTerminal
-                || !handle.Closure.LiveMaintenanceHandles.Remove(handle))
+            if (handle.State != MaintenanceHandleState.NotStarted
+                || !handle.Closure.LiveMaintenanceHandles.Contains(handle))
             {
 
                 return LifecycleConflict(
-                    "This maintenance handle already reported its terminal physical-open state.");
+                    "This maintenance handle cannot start another native open from its current state.");
 
             }
 
-            handle.IsTerminal = true;
-
-            if (handle.ScopedPermit is not null
-                && ReferenceEquals(handle.ScopedPermit.ActiveHandle, handle))
-            {
-
-                handle.ScopedPermit.ActiveHandle = null;
-
-                if (handle.ScopedPermit.DisposeRequested)
-                {
-
-                    ReleaseScopedConnectionPermitWhileLocked(handle.ScopedPermit);
-
-                }
-
-            }
-
-            handle.Lane.ReleaseHandleWhileLocked(handle);
+            handle.State = MaintenanceHandleState.OpenStarted;
 
             return Result.Success();
 
         }
+
+    }
+
+    private Result ReportMaintenanceNotOpened(TrackedMaintenanceHandle handle)
+    {
+
+        lock (_sync)
+        {
+
+            if (handle.State != MaintenanceHandleState.NotStarted)
+            {
+
+                return LifecycleConflict(
+                    "Only a maintenance handle whose native open never started may report not opened.");
+
+            }
+
+            return CompleteMaintenanceHandleWhileLocked(
+                handle,
+                MaintenanceHandleState.NotOpened);
+
+        }
+
+    }
+
+    private Result ReportMaintenancePhysicallyClosed(TrackedMaintenanceHandle handle)
+    {
+
+        lock (_sync)
+        {
+
+            if (handle.State != MaintenanceHandleState.OpenStarted)
+            {
+
+                return LifecycleConflict(
+                    "Physical closure may be reported only after this maintenance handle started native open.");
+
+            }
+
+            return CompleteMaintenanceHandleWhileLocked(
+                handle,
+                MaintenanceHandleState.PhysicallyClosed);
+
+        }
+
+    }
+
+    private Result CompleteMaintenanceHandleWhileLocked(
+        TrackedMaintenanceHandle handle,
+        MaintenanceHandleState terminalState)
+    {
+
+        if (!handle.Closure.LiveMaintenanceHandles.Remove(handle))
+        {
+
+            return LifecycleConflict(
+                "This maintenance handle already reported its terminal physical-open state.");
+
+        }
+
+        handle.State = terminalState;
+
+        if (handle.ScopedPermit is not null
+            && ReferenceEquals(handle.ScopedPermit.ActiveHandle, handle))
+        {
+
+            handle.ScopedPermit.ActiveHandle = null;
+
+            if (handle.ScopedPermit.DisposeRequested)
+            {
+
+                ReleaseScopedConnectionPermitWhileLocked(handle.ScopedPermit);
+
+            }
+
+        }
+
+        handle.Lane.ReleaseHandleWhileLocked(handle);
+
+        return Result.Success();
 
     }
 
@@ -1567,6 +1646,22 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private async ValueTask ReleaseMaintenanceIoLaneAsync(MaintenanceIoLane lane)
     {
+
+        lock (_sync)
+        {
+
+            foreach (OneShotAuthority authority in lane.Closure.LiveOneShotAuthorities
+                .Where(candidate => ReferenceEquals(candidate.IssuingLane, lane))
+                .ToArray())
+            {
+
+                authority.IsReleased = true;
+
+                _ = lane.Closure.LiveOneShotAuthorities.Remove(authority);
+
+            }
+
+        }
 
         await lane.HandlesDrained.ConfigureAwait(false);
 
@@ -1720,6 +1815,19 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         RefusedAfterOpenRequired = 2,
 
         Terminal = 3,
+
+    }
+
+    private enum MaintenanceHandleState : byte
+    {
+
+        NotStarted = 1,
+
+        OpenStarted = 2,
+
+        NotOpened = 3,
+
+        PhysicallyClosed = 4,
 
     }
 
@@ -2132,7 +2240,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private abstract class OneShotAuthority(
         GrimoireConnectionAdmissionGate gate,
         Closure closure,
-        long generation) : IAsyncDisposable
+        long generation,
+        MaintenanceIoLane issuingLane) : IAsyncDisposable
     {
 
         private int _disposeRequested;
@@ -2144,6 +2253,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         internal CovenantExclusiveRecoveryOwner Owner => Closure.Owner;
 
         internal long Generation { get; } = generation;
+
+        internal MaintenanceIoLane IssuingLane { get; } = issuingLane;
 
         internal bool IsConsumed { get; set; }
 
@@ -2170,8 +2281,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private sealed class MaintenanceRenewalTicket(
         GrimoireConnectionAdmissionGate gate,
         Closure closure,
-        long generation) :
-        OneShotAuthority(gate, closure, generation),
+        long generation,
+        MaintenanceIoLane issuingLane) :
+        OneShotAuthority(gate, closure, generation, issuingLane),
         IGrimoireMaintenanceRenewalTicket
     {
 
@@ -2193,8 +2305,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         long generation,
         string canonicalPath,
         CovenantMaintenanceConnectionMode mode,
-        CovenantMaintenanceConnectionPurpose purpose) :
-        OneShotAuthority(gate, closure, generation),
+        CovenantMaintenanceConnectionPurpose purpose,
+        MaintenanceIoLane issuingLane) :
+        OneShotAuthority(gate, closure, generation, issuingLane),
         IGrimoireMaintenanceConnectionCapability
     {
 
@@ -2235,11 +2348,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal ScopedConnectionPermit? ScopedPermit { get; } = scopedPermit;
 
-        internal bool IsTerminal { get; set; }
+        internal MaintenanceHandleState State { get; set; } =
+            MaintenanceHandleState.NotStarted;
 
-        public Result ReportNotOpened() => gate.CompleteMaintenanceHandle(this);
+        public Result ReportOpenStarted() => gate.ReportMaintenanceOpenStarted(this);
 
-        public Result ReportPhysicallyClosed() => gate.CompleteMaintenanceHandle(this);
+        public Result ReportNotOpened() => gate.ReportMaintenanceNotOpened(this);
+
+        public Result ReportPhysicallyClosed() =>
+            gate.ReportMaintenancePhysicallyClosed(this);
 
     }
 
@@ -2393,19 +2510,22 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             DbConnection connection) =>
             gate.AcquireScopedConnectionPermit(this, connection);
 
-        public Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket() =>
-            gate.IssueMaintenanceRenewalTicket(this);
+        public Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket(
+            IGrimoireMaintenanceIoLane lane) =>
+            gate.IssueMaintenanceRenewalTicket(this, lane);
 
         public Result<IGrimoireMaintenanceConnectionCapability>
             IssueMaintenanceConnectionCapability(
                 string canonicalPath,
                 CovenantMaintenanceConnectionMode mode,
-                CovenantMaintenanceConnectionPurpose purpose) =>
+                CovenantMaintenanceConnectionPurpose purpose,
+                IGrimoireMaintenanceIoLane lane) =>
             gate.IssueMaintenanceConnectionCapability(
                 this,
                 canonicalPath,
                 mode,
-                purpose);
+                purpose,
+                lane);
 
         public ValueTask<Result<IGrimoireMaintenanceIoLane>> AcquireMaintenanceIoLaneAsync(
             Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>

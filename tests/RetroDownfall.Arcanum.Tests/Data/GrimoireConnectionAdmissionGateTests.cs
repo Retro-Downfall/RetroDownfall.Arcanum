@@ -1041,6 +1041,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
 
+        Assert.True(reopened.Value.ReportOpenStarted().IsSuccess);
+
         Result refusedWhileOpen = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,
             CancellationToken.None);
@@ -1080,7 +1082,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
             closed.IssueMaintenanceConnectionCapability(
                 CanonicalPath,
                 CovenantMaintenanceConnectionMode.ReadOnly,
-                CovenantMaintenanceConnectionPurpose.IntegrityVerification).Value;
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> wrongPath = widenedPath.Consume(
             owner,
@@ -1138,7 +1141,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
             closed.IssueMaintenanceConnectionCapability(
                 CanonicalPath,
                 CovenantMaintenanceConnectionMode.ReadOnly,
-                CovenantMaintenanceConnectionPurpose.IntegrityVerification).Value;
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> consumed = capability.Consume(
             owner,
@@ -1159,6 +1163,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(consumed.IsSuccess, consumed.IsFailure ? consumed.Error.Message : null);
 
         Assert.True(reused.IsFailure);
+
+        Assert.True(consumed.Value.ReportOpenStarted().IsSuccess);
 
         Task laneDisposal = lane.DisposeAsync().AsTask();
 
@@ -1192,7 +1198,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
                 CancellationToken.None)).Value;
 
         await using IGrimoireMaintenanceRenewalTicket wrongOwnerTicket =
-            closed.IssueMaintenanceRenewalTicket().Value;
+            closed.IssueMaintenanceRenewalTicket(lane).Value;
 
         Result refusedWhileTicketIsLive = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,
@@ -1211,7 +1217,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(spentWrongOwner.IsFailure);
 
         await using IGrimoireMaintenanceRenewalTicket wrongGenerationTicket =
-            closed.IssueMaintenanceRenewalTicket().Value;
+            closed.IssueMaintenanceRenewalTicket(lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> wrongGeneration =
             wrongGenerationTicket.Consume(
@@ -1227,7 +1233,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(spentWrongGeneration.IsFailure);
 
         await using IGrimoireMaintenanceRenewalTicket ticket =
-            closed.IssueMaintenanceRenewalTicket().Value;
+            closed.IssueMaintenanceRenewalTicket(lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> renewal =
             ticket.Consume(owner, closed.Generation, lane);
@@ -1238,6 +1244,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(renewal.IsSuccess, renewal.IsFailure ? renewal.Error.Message : null);
 
         Assert.True(reused.IsFailure);
+
+        Assert.True(renewal.Value.ReportOpenStarted().IsSuccess);
 
         Result refusedWhileRenewalIsLive = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,
@@ -1252,6 +1260,173 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    [Fact]
+    public async Task Scoped_permit_reuses_the_exact_physically_closed_connection_across_lanes()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(34);
+
+        using SqliteConnection connection = new();
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        await using IGrimoireScopedConnectionPermit permit =
+            closed.AcquireScopedConnectionPermit(connection).Value;
+
+        IGrimoireMaintenanceIoLane firstLane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        Result<IGrimoireTrackedMaintenanceHandle> firstOpen = permit.AcquireOpen(
+            connection,
+            owner,
+            closed.Generation,
+            firstLane);
+
+        Assert.True(firstOpen.IsSuccess, firstOpen.IsFailure ? firstOpen.Error.Message : null);
+
+        Assert.True(firstOpen.Value.ReportOpenStarted().IsSuccess);
+
+        Task firstLaneDisposal = firstLane.DisposeAsync().AsTask();
+
+        Assert.False(firstLaneDisposal.IsCompleted);
+
+        Assert.True(firstOpen.Value.ReportPhysicallyClosed().IsSuccess);
+
+        await firstLaneDisposal;
+
+        await using IGrimoireMaintenanceIoLane secondLane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        Result<IGrimoireTrackedMaintenanceHandle> secondOpen = permit.AcquireOpen(
+            connection,
+            owner,
+            closed.Generation,
+            secondLane);
+
+        Assert.True(secondOpen.IsSuccess, secondOpen.IsFailure ? secondOpen.Error.Message : null);
+
+        Assert.True(secondOpen.Value.ReportOpenStarted().IsSuccess);
+
+        Assert.True(secondOpen.Value.ReportPhysicallyClosed().IsSuccess);
+
+        await permit.DisposeAsync();
+
+        Result keptClosed = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None);
+
+        Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    [Fact]
+    public async Task Lane_release_retires_unconsumed_one_shot_authorities_before_another_lane()
+    {
+
+        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(35);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane firstLane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceRenewalTicket renewal =
+            closed.IssueMaintenanceRenewalTicket(firstLane).Value;
+
+        await using IGrimoireMaintenanceConnectionCapability capability =
+            closed.IssueMaintenanceConnectionCapability(
+                CanonicalPath,
+                CovenantMaintenanceConnectionMode.ReadOnly,
+                CovenantMaintenanceConnectionPurpose.SidecarProof,
+                firstLane).Value;
+
+        await firstLane.DisposeAsync();
+
+        await using IGrimoireMaintenanceIoLane secondLane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        Result<IGrimoireTrackedMaintenanceHandle> lateRenewal = renewal.Consume(
+            owner,
+            closed.Generation,
+            secondLane);
+
+        Result<IGrimoireTrackedMaintenanceHandle> lateFactoryOpen = capability.Consume(
+            owner,
+            closed.Generation,
+            CanonicalPath,
+            CovenantMaintenanceConnectionMode.ReadOnly,
+            CovenantMaintenanceConnectionPurpose.SidecarProof,
+            secondLane);
+
+        Assert.True(lateRenewal.IsFailure);
+
+        Assert.True(lateFactoryOpen.IsFailure);
+
+        Result keptClosed = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None);
+
+        Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    [Fact]
+    public async Task Open_started_handle_rejects_not_opened_shortcut_until_physical_close()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(36);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceRenewalTicket ticket =
+            closed.IssueMaintenanceRenewalTicket(lane).Value;
+
+        Result<IGrimoireTrackedMaintenanceHandle> handle = ticket.Consume(
+            owner,
+            closed.Generation,
+            lane);
+
+        Assert.True(handle.IsSuccess, handle.IsFailure ? handle.Error.Message : null);
+
+        Assert.True(handle.Value.ReportPhysicallyClosed().IsFailure);
+
+        Assert.True(handle.Value.ReportOpenStarted().IsSuccess);
+
+        Task laneDisposal = lane.DisposeAsync().AsTask();
+
+        Assert.False(laneDisposal.IsCompleted);
+
+        Assert.True(handle.Value.ReportNotOpened().IsFailure);
+
+        Assert.False(laneDisposal.IsCompleted);
+
+        Assert.True(handle.Value.ReportPhysicallyClosed().IsSuccess);
+
+        await laneDisposal;
 
     }
 
@@ -1547,7 +1722,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
             closed.IssueMaintenanceConnectionCapability(
                 canonicalPath,
                 CovenantMaintenanceConnectionMode.ReadOnly,
-                CovenantMaintenanceConnectionPurpose.IntegrityVerification).Value;
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> mismatch = capability.Consume(
             owner,
@@ -1583,7 +1759,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
             closed.IssueMaintenanceConnectionCapability(
                 canonicalPath,
                 CovenantMaintenanceConnectionMode.ReadOnly,
-                CovenantMaintenanceConnectionPurpose.IntegrityVerification).Value;
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> mismatch = capability.Consume(
             actualOwner,
