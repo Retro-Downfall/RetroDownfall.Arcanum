@@ -127,8 +127,8 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// Resolve a compatibility ward (POST /api/wards/{id}).
     /// </summary>
     /// <param name="id">Ward ID.</param>
-    /// <param name="allow">Allow the warded tool call to proceed.</param>
-    /// <param name="deny">Deny the warded tool call.</param>
+    /// <param name="allow">Record an allowed resolution.</param>
+    /// <param name="deny">Record a denied resolution.</param>
     /// <param name="reason">Optional reason recorded with the resolution.</param>
     public async Task<int> Resolve(
         string id,

@@ -25,8 +25,8 @@ internal static partial class CliCommandTree
 
         Command resolve = new("resolve", "Resolve a compatibility ward.");
         Argument<string> resolveId = new("id") { Description = "Ward ID." };
-        Option<bool> resolveAllow = new("--allow") { Description = "Allow the warded tool call to proceed." };
-        Option<bool> resolveDeny = new("--deny") { Description = "Deny the warded tool call." };
+        Option<bool> resolveAllow = new("--allow") { Description = "Record an allowed resolution." };
+        Option<bool> resolveDeny = new("--deny") { Description = "Record a denied resolution." };
         Option<string?> resolveReason = new("--reason") { Description = "Optional reason recorded with the resolution." };
         resolve.Add(resolveId); resolve.Add(resolveAllow); resolve.Add(resolveDeny); resolve.Add(resolveReason);
         resolve.SetAction(async (ParseResult pr, CancellationToken ct) =>

@@ -138,6 +138,46 @@ public sealed class CliSurfaceTests
 
     }
 
+    [Fact]
+    public void Diagnostic_mcp_invoke_help_names_master_pipeline_reservation_not_a_ward_gate()
+    {
+
+        CliSurfaceCommand invoke = Walk(BuildMap()).Single(
+            static command => command.Path == "mcp invoke");
+
+        Assert.Equal(
+            "Invoke one external MCP tool diagnostically; internal tool names are reserved for the Master execution pipeline.",
+            invoke.Description);
+
+        Assert.DoesNotContain("Forbidden Art", invoke.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("blocked server-side", invoke.Description, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public void Ward_resolve_help_describes_retained_record_resolution_not_tool_admission()
+    {
+
+        CliSurfaceCommand resolve = Walk(BuildMap()).Single(
+            static command => command.Path == "ward resolve");
+
+        CliSurfaceOption allow = resolve.Options.Single(
+            static option => option.Name == "--allow");
+
+        CliSurfaceOption deny = resolve.Options.Single(
+            static option => option.Name == "--deny");
+
+        Assert.Equal("Record an allowed resolution.", allow.Description);
+
+        Assert.Equal("Record a denied resolution.", deny.Description);
+
+        Assert.DoesNotContain("proceed", allow.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("tool call", deny.Description, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     /// <summary>
     /// <c>docs/Arcanum.CommandMap.json</c> is the committed, machine-readable command contract.
     /// Regenerate it with <c>ARCANUM_UPDATE_COMMAND_MAP=1 dotnet test --filter
