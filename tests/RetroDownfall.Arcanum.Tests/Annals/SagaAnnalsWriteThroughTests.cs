@@ -80,7 +80,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ISagaMemoryStore store = CreateStore(annals: true);
+        ISagaMemoryStore store = CreateStore();
 
         const string Content = "The operator prefers dark mode.";
 
@@ -481,14 +481,19 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
     }
 
+    private ISagaMemoryStore CreateStore() => CreateStore(new FeatureSettings());
+
     private ISagaMemoryStore CreateStore(bool annals) =>
+        CreateStore(new FeatureSettings { Annals = annals });
+
+    private ISagaMemoryStore CreateStore(FeatureSettings features) =>
         new SagaMemoryStore(
             _db!,
             new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {
-                    Features = new FeatureSettings { Annals = annals },
+                    Features = features,
                     Integrations = new IntegrationSettings
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },

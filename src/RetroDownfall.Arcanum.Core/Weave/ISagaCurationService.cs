@@ -26,7 +26,7 @@ public interface ISagaCurationService
 
     /// <summary>
     /// Reads one memory's full detail view: its row, its curation lifecycle, its retrieval eligibility,
-    /// and — when the Annals is enabled — the claim that governs it and that claim's version history.
+    /// and — when a claim exists — the claim that governs it and that claim's version history.
     /// </summary>
     Task<Result<SagaMemoryDetail>> ShowAsync(string id, CancellationToken cancellationToken);
 

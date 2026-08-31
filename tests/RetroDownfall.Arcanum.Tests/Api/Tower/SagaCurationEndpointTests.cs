@@ -194,7 +194,7 @@ public sealed class SagaCurationEndpointTests
     /// The detail view's other half — the claim and the versions behind it — reaching the wire.
     /// </summary>
     /// <remarks>
-    /// A memory written while the Annals feature is off carries no claim, and a correction opens one on
+    /// A memory written during explicit Annals opt-out carries no claim, and a correction opens one on
     /// the way through, so this case reads the claim a correction it drove actually produced rather than
     /// one it arranged. It is also the only case that serializes <c>AnnalClaimHead</c> and
     /// <c>AnnalClaimVersion</c> through the source-generated context; without it those two shapes would

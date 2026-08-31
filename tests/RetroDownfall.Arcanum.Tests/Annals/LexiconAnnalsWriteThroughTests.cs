@@ -106,7 +106,7 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ILexiconService service = CreateService(annals: true);
+        ILexiconService service = CreateService();
 
         Result<LexiconEntryDto> written = await service.UpsertAsync(
             "config",
@@ -373,12 +373,17 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
     }
 
+    private ILexiconService CreateService() => CreateService(new FeatureSettings());
+
     private ILexiconService CreateService(bool annals) =>
+        CreateService(new FeatureSettings { Annals = annals });
+
+    private ILexiconService CreateService(FeatureSettings features) =>
         new LexiconService(
             _db!,
             NullLogger<LexiconService>.Instance,
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings { Features = new FeatureSettings { Annals = annals } }));
+                new ArcanumSettings { Features = features }));
 
     private async Task<IReadOnlyList<VersionRow>> ReadVersionsAsync(string entryId)
     {

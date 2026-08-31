@@ -57,7 +57,7 @@ public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifec
 
 /// <summary>
 /// The full detail view of one memory: its row, the digest of the text in that row, its lifecycle, its
-/// retrieval eligibility, and — when the Annals is enabled — the claim that governs it and that claim's
+/// retrieval eligibility, and — when a claim exists — the claim that governs it and that claim's
 /// version history.
 /// </summary>
 /// <param name="ContentHash">
