@@ -365,6 +365,38 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
         Assert.True(written.IsSuccess);
 
+        await OpenAsync();
+
+        await using (SqliteCommand command = (SqliteCommand)_db!.Database.GetDbConnection().CreateCommand())
+        {
+
+            command.CommandText =
+                """
+                SELECT Id, Name, ScopeCampaignId, Type, FactsText
+                FROM lexicon_entries
+                WHERE Id = $id;
+                """;
+
+            _ = command.Parameters.AddWithValue("$id", written.Value.Id.ToString("N"));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+            Assert.True(await reader.ReadAsync(CancellationToken.None));
+
+            Assert.Equal(written.Value.Id.ToString("N"), reader.GetString(0));
+
+            Assert.Equal("config", reader.GetString(1));
+
+            Assert.Equal(string.Empty, reader.GetString(2));
+
+            Assert.Equal("Project", reader.GetString(3));
+
+            Assert.Equal("ships on Friday", reader.GetString(4));
+
+            Assert.False(await reader.ReadAsync(CancellationToken.None));
+
+        }
+
         Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM annal_claims;"));
 
     }
