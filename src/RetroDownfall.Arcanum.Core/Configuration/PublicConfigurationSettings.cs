@@ -115,12 +115,14 @@ public sealed record FeatureSettings
     /// </summary>
     /// <remarks>
     /// Explicit <c>false</c> stops only future automatic claims from those two ordinary writers.
-    /// State-changing correction, retirement, and reinstatement still append their required evidence;
-    /// their idempotent outcomes append nothing.
+    /// Corrections, retirements, and reinstatements that change Saga state still append their required
+    /// evidence; their idempotent outcomes append nothing. Pin and unpin never append Annals evidence.
     ///
-    /// <para>A memory written during explicit opt-out carries no automatic claim and receives none when
-    /// the feature is enabled later. Prior unclaimed rows remain valid. The schema-v3 sweep was a
-    /// one-time historical upgrade; this default change adds no migration and never re-runs it.</para>
+    /// <para>A memory written during explicit opt-out carries no automatic claim. Re-enabling this
+    /// setting does not backfill the opted-out period or synthesize a prior claim, but a later ordinary
+    /// write follows the then-current enabled policy. Prior unclaimed rows remain valid. The schema-v3
+    /// sweep was a one-time historical upgrade; this default change adds no migration and never re-runs
+    /// it.</para>
     ///
     /// <para>An automatic claim and its subject share one transaction, so a required claim failure rolls
     /// back the subject write. Reads depend on whether a claim exists, not on this setting, and erasure is
