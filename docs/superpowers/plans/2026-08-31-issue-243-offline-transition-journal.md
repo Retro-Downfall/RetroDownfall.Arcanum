@@ -888,7 +888,7 @@ Opaque payload bytes require a typed Native-AOT codec from #244 before any produ
 The existing V3 same-database reset checkpoint remains the active runtime path until later #239 children replace it.
 ```
 
-Add the two transition accounts to DESIGN §11.2.1 with no mirror/environment reference and owners `GrimoireOfflineTransitionJournalKeyProvider` / `GrimoireOfflineTransitionJournalAnchorStore`. Update the retention paragraph so ordinary cleanup excludes the restore trio, reset-active pair, transition-journal pair, and host-tools taint.
+Add the two transition accounts to DESIGN §11.2.1 with no mirror/environment reference and owners `GrimoireOfflineTransitionJournalKeyProvider` / `GrimoireOfflineTransitionJournalAnchorStore`. Update both ordinary-cleanup retention statements (the closed-catalog rule in §3.4.2 and the credential-table rule in §11.2.1) so they exclude the restore trio, reset-active pair, transition-journal pair, and host-tools taint.
 
 Add a README issue summary that describes #243 as a security/storage foundation and explicitly says it does not yet change reset behavior or implement migrations. Add the new authentication/file/store test classes to the DESIGN §13 test matrix.
 
@@ -917,9 +917,12 @@ RIPGREP_CONFIG_PATH=/dev/null rg -n \
   src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions \
   tests/RetroDownfall.Arcanum.Tests/GrimoireTransitions \
   README.md docs/Arcanum.DESIGN.md
+RIPGREP_CONFIG_PATH=/dev/null rg -n -U \
+  'internal enum GrimoireOfflineTransitionKind : byte\n\{\n\n    CovenantReset = 1,\n\n    HealthyCatalogFactoryErasure = 2,\n\n\}' \
+  src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalContracts.cs
 ```
 
-Expected: solution build succeeds with zero errors and zero warnings; `git diff --check` is silent; the discriminator scan has no #243 production migration kind. Documentation prose that says migration is not implemented is permitted and must be inspected rather than deleted.
+Expected: solution build succeeds with zero errors and zero warnings; `git diff --check` is silent; the broad discriminator scan has no #243 production migration kind; and the multiline inventory matches the complete two-member transition-kind enum exactly. Documentation prose that says migration is not implemented is permitted and must be inspected rather than deleted.
 
 - [ ] **Step 4: Verify scope and commit**
 
