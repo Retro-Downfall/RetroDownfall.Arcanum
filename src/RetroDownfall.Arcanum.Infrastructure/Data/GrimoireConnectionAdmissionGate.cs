@@ -35,11 +35,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private readonly HashSet<WorkLease> _workLeases = [];
 
+    private readonly SemaphoreSlim _maintenanceAdoptionInterlock = new(1, 1);
+
     private GateState _state = GateState.Ordinary;
 
     private long _generation = 1;
 
     private Closure? _closure;
+
+    private object? _maintenanceAdoptionInterlockOwner;
 
     private TaskCompletionSource<long> _nextOpenGeneration = NewOpenGenerationSignal();
 
@@ -687,6 +691,91 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     }
 
+    public async ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>>
+        AcquireExpiredLeaseAdoptionInterlockAsync(
+            CovenantExclusiveRecoveryOwner candidateOwner,
+            Func<CovenantExclusiveRecoveryOwner, CancellationToken, ValueTask<bool>>
+                revalidateDurableOwnerAsync,
+            CancellationToken cancellationToken)
+    {
+
+        if (!candidateOwner.IsValid)
+        {
+
+            return Result<IGrimoireExpiredLeaseAdoptionInterlock>.Failure(
+                LifecycleConflict(
+                    "An uninitialized Covenant owner cannot acquire the expired-owner adoption interlock."));
+
+        }
+
+        ArgumentNullException.ThrowIfNull(revalidateDurableOwnerAsync);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await _maintenanceAdoptionInterlock
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        bool releaseInterlock = true;
+
+        try
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            bool stillAdoptable = await revalidateDurableOwnerAsync(
+                    candidateOwner,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!stillAdoptable)
+            {
+
+                return Result<IGrimoireExpiredLeaseAdoptionInterlock>.Failure(
+                    LifecycleConflict(
+                        "The durable Covenant owner was no longer adoptable after the adoption interlock was acquired."));
+
+            }
+
+            ExpiredLeaseAdoptionInterlock interlock = new(this, candidateOwner);
+
+            lock (_sync)
+            {
+
+                if (_maintenanceAdoptionInterlockOwner is not null)
+                {
+
+                    return Result<IGrimoireExpiredLeaseAdoptionInterlock>.Failure(
+                        LifecycleConflict(
+                            "The shared maintenance and adoption interlock already has a process-local owner."));
+
+                }
+
+                _maintenanceAdoptionInterlockOwner = interlock;
+
+            }
+
+            releaseInterlock = false;
+
+            return Result<IGrimoireExpiredLeaseAdoptionInterlock>.Success(interlock);
+
+        }
+        finally
+        {
+
+            if (releaseInterlock)
+            {
+
+                _maintenanceAdoptionInterlock.Release();
+
+            }
+
+        }
+
+    }
+
     private static TaskCompletionSource<long> NewOpenGenerationSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -937,6 +1026,606 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     }
 
+    private Result<IGrimoireScopedConnectionPermit> AcquireScopedConnectionPermit(
+        ClosedLease lease,
+        DbConnection connection)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        lock (_sync)
+        {
+
+            if (!OwnsClosedLeaseWhileLocked(lease))
+            {
+
+                return Result<IGrimoireScopedConnectionPermit>.Failure(
+                    LifecycleConflict(
+                        "Only the exact live closed Grimoire owner may bind a scoped connection permit."));
+
+            }
+
+            if (lease.Closure.ActiveScopedConnectionPermit is { IsReleased: false })
+            {
+
+                return Result<IGrimoireScopedConnectionPermit>.Failure(
+                    LifecycleConflict(
+                        "The closed Grimoire owner already has a live scoped connection permit."));
+
+            }
+
+            ScopedConnectionPermit permit = new(
+                this,
+                lease.Closure,
+                connection,
+                lease.Generation);
+
+            lease.Closure.ActiveScopedConnectionPermit = permit;
+
+            return Result<IGrimoireScopedConnectionPermit>.Success(permit);
+
+        }
+
+    }
+
+    private Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket(
+        ClosedLease lease)
+    {
+
+        lock (_sync)
+        {
+
+            if (!OwnsClosedLeaseWhileLocked(lease))
+            {
+
+                return Result<IGrimoireMaintenanceRenewalTicket>.Failure(
+                    LifecycleConflict(
+                        "Only the exact live closed Grimoire owner may issue a renewal ticket."));
+
+            }
+
+            MaintenanceRenewalTicket ticket = new(
+                this,
+                lease.Closure,
+                lease.Generation);
+
+            lease.Closure.LiveOneShotAuthorities.Add(ticket);
+
+            return Result<IGrimoireMaintenanceRenewalTicket>.Success(ticket);
+
+        }
+
+    }
+
+    private Result<IGrimoireMaintenanceConnectionCapability>
+        IssueMaintenanceConnectionCapability(
+            ClosedLease lease,
+            string canonicalPath,
+            CovenantMaintenanceConnectionMode mode,
+            CovenantMaintenanceConnectionPurpose purpose)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(canonicalPath);
+
+        if (mode is not CovenantMaintenanceConnectionMode.ReadOnly
+            and not CovenantMaintenanceConnectionMode.ReadWrite)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(mode));
+
+        }
+
+        if (purpose is not CovenantMaintenanceConnectionPurpose.CanonicalErasure
+            and not CovenantMaintenanceConnectionPurpose.Compaction
+            and not CovenantMaintenanceConnectionPurpose.IntegrityVerification
+            and not CovenantMaintenanceConnectionPurpose.SidecarProof
+            and not CovenantMaintenanceConnectionPurpose.ReopenVerification)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(purpose));
+
+        }
+
+        lock (_sync)
+        {
+
+            if (!OwnsClosedLeaseWhileLocked(lease))
+            {
+
+                return Result<IGrimoireMaintenanceConnectionCapability>.Failure(
+                    LifecycleConflict(
+                        "Only the exact live closed Grimoire owner may issue a maintenance-open capability."));
+
+            }
+
+            MaintenanceConnectionCapability capability = new(
+                this,
+                lease.Closure,
+                lease.Generation,
+                canonicalPath,
+                mode,
+                purpose);
+
+            lease.Closure.LiveOneShotAuthorities.Add(capability);
+
+            return Result<IGrimoireMaintenanceConnectionCapability>.Success(capability);
+
+        }
+
+    }
+
+    private async ValueTask<Result<IGrimoireMaintenanceIoLane>>
+        AcquireMaintenanceIoLaneAsync(
+            ClosedLease lease,
+            Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
+                revalidateDurableOwnerAsync,
+            CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(revalidateDurableOwnerAsync);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await _maintenanceAdoptionInterlock
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        bool releaseInterlock = true;
+
+        try
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            lock (_sync)
+            {
+
+                if (!OwnsClosedLeaseWhileLocked(lease))
+                {
+
+                    return Result<IGrimoireMaintenanceIoLane>.Failure(
+                        LifecycleConflict(
+                            "The closed Grimoire owner became stale before it acquired the maintenance I/O lane."));
+
+                }
+
+            }
+
+            bool stillOwned = await revalidateDurableOwnerAsync(
+                    lease.Owner,
+                    lease.Generation,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!stillOwned)
+            {
+
+                return Result<IGrimoireMaintenanceIoLane>.Failure(
+                    LifecycleConflict(
+                        "The durable Covenant owner changed before the maintenance I/O phase could start."));
+
+            }
+
+            MaintenanceIoLane lane = new(
+                this,
+                lease.Closure,
+                lease.Generation);
+
+            lock (_sync)
+            {
+
+                if (!OwnsClosedLeaseWhileLocked(lease)
+                    || _maintenanceAdoptionInterlockOwner is not null)
+                {
+
+                    return Result<IGrimoireMaintenanceIoLane>.Failure(
+                        LifecycleConflict(
+                            "The closed Grimoire owner changed during durable-owner revalidation."));
+
+                }
+
+                _maintenanceAdoptionInterlockOwner = lane;
+
+            }
+
+            releaseInterlock = false;
+
+            return Result<IGrimoireMaintenanceIoLane>.Success(lane);
+
+        }
+        finally
+        {
+
+            if (releaseInterlock)
+            {
+
+                _maintenanceAdoptionInterlock.Release();
+
+            }
+
+        }
+
+    }
+
+    private async ValueTask<Result> RevalidateMaintenanceIoLaneAsync(
+        MaintenanceIoLane lane,
+        Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
+            revalidateDurableOwnerAsync,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(revalidateDurableOwnerAsync);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_sync)
+        {
+
+            if (!OwnsMaintenanceIoLaneWhileLocked(lane))
+            {
+
+                return LifecycleConflict(
+                    "The maintenance I/O lane no longer owns the shared adoption interlock.");
+
+            }
+
+        }
+
+        bool stillOwned = await revalidateDurableOwnerAsync(
+                lane.Owner,
+                lane.Generation,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_sync)
+        {
+
+            if (!OwnsMaintenanceIoLaneWhileLocked(lane))
+            {
+
+                return LifecycleConflict(
+                    "The maintenance I/O lane changed during durable-owner revalidation.");
+
+            }
+
+        }
+
+        return stillOwned
+            ? Result.Success()
+            : LifecycleConflict(
+                "The durable Covenant owner expired or changed during the maintenance I/O phase.");
+
+    }
+
+    private Result<IGrimoireTrackedMaintenanceHandle> AcquireScopedConnectionOpen(
+        ScopedConnectionPermit permit,
+        DbConnection connection,
+        CovenantExclusiveRecoveryOwner owner,
+        long generation,
+        IGrimoireMaintenanceIoLane lane)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentNullException.ThrowIfNull(lane);
+
+        lock (_sync)
+        {
+
+            if (lane is not MaintenanceIoLane exactLane
+                || !OwnsMaintenanceIoLaneWhileLocked(exactLane)
+                || !ReferenceEquals(exactLane.Closure, permit.Closure)
+                || permit.IsReleased
+                || !ReferenceEquals(permit.Closure.ActiveScopedConnectionPermit, permit)
+                || permit.ActiveHandle is not null
+                || !ReferenceEquals(permit.Connection, connection)
+                || permit.Owner != owner
+                || permit.Generation != generation)
+            {
+
+                return Result<IGrimoireTrackedMaintenanceHandle>.Failure(
+                    LifecycleConflict(
+                        "The scoped permit did not match the exact connection, owner, generation, and maintenance lane."));
+
+            }
+
+            TrackedMaintenanceHandle handle = new(
+                this,
+                permit.Closure,
+                exactLane,
+                permit);
+
+            permit.ActiveHandle = handle;
+
+            RegisterMaintenanceHandleWhileLocked(handle);
+
+            return Result<IGrimoireTrackedMaintenanceHandle>.Success(handle);
+
+        }
+
+    }
+
+    private Result<IGrimoireTrackedMaintenanceHandle> ConsumeMaintenanceRenewalTicket(
+        MaintenanceRenewalTicket ticket,
+        CovenantExclusiveRecoveryOwner owner,
+        long generation,
+        IGrimoireMaintenanceIoLane lane)
+    {
+
+        ArgumentNullException.ThrowIfNull(lane);
+
+        lock (_sync)
+        {
+
+            if (!SpendOneShotAuthorityWhileLocked(ticket))
+            {
+
+                return Result<IGrimoireTrackedMaintenanceHandle>.Failure(
+                    LifecycleConflict("This Grimoire renewal ticket has already been consumed or released."));
+
+            }
+
+            if (lane is not MaintenanceIoLane exactLane
+                || !OwnsMaintenanceIoLaneWhileLocked(exactLane)
+                || !ReferenceEquals(exactLane.Closure, ticket.Closure)
+                || ticket.Owner != owner
+                || ticket.Generation != generation)
+            {
+
+                return Result<IGrimoireTrackedMaintenanceHandle>.Failure(
+                    LifecycleConflict(
+                        "The renewal ticket did not match the exact owner, generation, and maintenance lane."));
+
+            }
+
+            TrackedMaintenanceHandle handle = new(
+                this,
+                ticket.Closure,
+                exactLane,
+                scopedPermit: null);
+
+            RegisterMaintenanceHandleWhileLocked(handle);
+
+            return Result<IGrimoireTrackedMaintenanceHandle>.Success(handle);
+
+        }
+
+    }
+
+    private Result<IGrimoireTrackedMaintenanceHandle> ConsumeMaintenanceConnectionCapability(
+        MaintenanceConnectionCapability capability,
+        CovenantExclusiveRecoveryOwner owner,
+        long generation,
+        string canonicalPath,
+        CovenantMaintenanceConnectionMode mode,
+        CovenantMaintenanceConnectionPurpose purpose,
+        IGrimoireMaintenanceIoLane lane)
+    {
+
+        ArgumentNullException.ThrowIfNull(lane);
+
+        lock (_sync)
+        {
+
+            if (!SpendOneShotAuthorityWhileLocked(capability))
+            {
+
+                return Result<IGrimoireTrackedMaintenanceHandle>.Failure(
+                    LifecycleConflict(
+                        "This Grimoire maintenance-open capability has already been consumed or released."));
+
+            }
+
+            if (lane is not MaintenanceIoLane exactLane
+                || !OwnsMaintenanceIoLaneWhileLocked(exactLane)
+                || !ReferenceEquals(exactLane.Closure, capability.Closure)
+                || capability.Owner != owner
+                || capability.Generation != generation
+                || !StringComparer.Ordinal.Equals(capability.CanonicalPath, canonicalPath)
+                || capability.Mode != mode
+                || capability.Purpose != purpose)
+            {
+
+                return Result<IGrimoireTrackedMaintenanceHandle>.Failure(
+                    LifecycleConflict(
+                        "The maintenance-open capability did not match its exact owner, generation, canonical path, mode, purpose, and lane."));
+
+            }
+
+            TrackedMaintenanceHandle handle = new(
+                this,
+                capability.Closure,
+                exactLane,
+                scopedPermit: null);
+
+            RegisterMaintenanceHandleWhileLocked(handle);
+
+            return Result<IGrimoireTrackedMaintenanceHandle>.Success(handle);
+
+        }
+
+    }
+
+    private bool SpendOneShotAuthorityWhileLocked(OneShotAuthority authority)
+    {
+
+        if (authority.IsReleased
+            || authority.IsConsumed
+            || !authority.Closure.LiveOneShotAuthorities.Remove(authority))
+        {
+
+            return false;
+
+        }
+
+        authority.IsConsumed = true;
+
+        return true;
+
+    }
+
+    private void RegisterMaintenanceHandleWhileLocked(TrackedMaintenanceHandle handle)
+    {
+
+        handle.Closure.LiveMaintenanceHandles.Add(handle);
+
+        handle.Lane.RegisterHandleWhileLocked(handle);
+
+    }
+
+    private Result CompleteMaintenanceHandle(TrackedMaintenanceHandle handle)
+    {
+
+        lock (_sync)
+        {
+
+            if (handle.IsTerminal
+                || !handle.Closure.LiveMaintenanceHandles.Remove(handle))
+            {
+
+                return LifecycleConflict(
+                    "This maintenance handle already reported its terminal physical-open state.");
+
+            }
+
+            handle.IsTerminal = true;
+
+            if (handle.ScopedPermit is not null
+                && ReferenceEquals(handle.ScopedPermit.ActiveHandle, handle))
+            {
+
+                handle.ScopedPermit.ActiveHandle = null;
+
+                if (handle.ScopedPermit.DisposeRequested)
+                {
+
+                    ReleaseScopedConnectionPermitWhileLocked(handle.ScopedPermit);
+
+                }
+
+            }
+
+            handle.Lane.ReleaseHandleWhileLocked(handle);
+
+            return Result.Success();
+
+        }
+
+    }
+
+    private void ReleaseScopedConnectionPermit(ScopedConnectionPermit permit)
+    {
+
+        lock (_sync)
+        {
+
+            if (permit.ActiveHandle is not null)
+            {
+
+                return;
+
+            }
+
+            ReleaseScopedConnectionPermitWhileLocked(permit);
+
+        }
+
+    }
+
+    private static void ReleaseScopedConnectionPermitWhileLocked(
+        ScopedConnectionPermit permit)
+    {
+
+        permit.IsReleased = true;
+
+        if (ReferenceEquals(permit.Closure.ActiveScopedConnectionPermit, permit))
+        {
+
+            permit.Closure.ActiveScopedConnectionPermit = null;
+
+        }
+
+    }
+
+    private void ReleaseOneShotAuthority(OneShotAuthority authority)
+    {
+
+        lock (_sync)
+        {
+
+            authority.IsReleased = true;
+
+            _ = authority.Closure.LiveOneShotAuthorities.Remove(authority);
+
+        }
+
+    }
+
+    private async ValueTask ReleaseMaintenanceIoLaneAsync(MaintenanceIoLane lane)
+    {
+
+        await lane.HandlesDrained.ConfigureAwait(false);
+
+        lock (_sync)
+        {
+
+            if (ReferenceEquals(_maintenanceAdoptionInterlockOwner, lane))
+            {
+
+                _maintenanceAdoptionInterlockOwner = null;
+
+                _maintenanceAdoptionInterlock.Release();
+
+            }
+
+        }
+
+        lane.SignalReleased();
+
+    }
+
+    private ValueTask ReleaseExpiredLeaseAdoptionInterlockAsync(
+        ExpiredLeaseAdoptionInterlock interlock)
+    {
+
+        lock (_sync)
+        {
+
+            if (ReferenceEquals(_maintenanceAdoptionInterlockOwner, interlock))
+            {
+
+                _maintenanceAdoptionInterlockOwner = null;
+
+                _maintenanceAdoptionInterlock.Release();
+
+            }
+
+        }
+
+        return ValueTask.CompletedTask;
+
+    }
+
+    private bool OwnsClosedLeaseWhileLocked(ClosedLease lease) =>
+        _state == GateState.Closed
+        && !lease.IsReleased
+        && !lease.DispositionClaimed
+        && ReferenceEquals(_closure, lease.Closure)
+        && ReferenceEquals(lease.Closure.ActiveClosedLease, lease)
+        && lease.Closure.Owner == lease.Owner
+        && lease.Generation == _generation;
+
+    private bool OwnsMaintenanceIoLaneWhileLocked(MaintenanceIoLane lane) =>
+        !lane.DisposalStarted
+        && ReferenceEquals(_maintenanceAdoptionInterlockOwner, lane)
+        && ReferenceEquals(_closure, lane.Closure)
+        && lane.Closure.Owner == lane.Owner
+        && lane.Generation == _generation;
+
     private Result CompleteClosedLease(
         ClosedLease lease,
         CovenantExclusiveLeaseDisposition disposition)
@@ -949,17 +1638,26 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         lock (_sync)
         {
 
-            if (_state != GateState.Closed
-                || !ReferenceEquals(_closure, lease.Closure)
-                || !ReferenceEquals(lease.Closure.ActiveClosedLease, lease)
-                || lease.Closure.Owner != lease.Owner
-                || lease.Generation != _generation)
+            if (!OwnsClosedLeaseWhileLocked(lease))
             {
 
                 return LifecycleConflict(
                     "The exclusive Grimoire lease no longer owns its exact closed generation.");
 
             }
+
+            if (_unresolvedOpens.Count != 0
+                || lease.Closure.ActiveScopedConnectionPermit is { IsReleased: false }
+                || lease.Closure.LiveOneShotAuthorities.Count != 0
+                || lease.Closure.LiveMaintenanceHandles.Count != 0)
+            {
+
+                return LifecycleConflict(
+                    "The closed Grimoire owner cannot disposition while an open ticket or maintenance authority remains live.");
+
+            }
+
+            lease.DispositionClaimed = true;
 
             lease.Closure.ActiveClosedLease = null;
 
@@ -1040,6 +1738,12 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         internal ClosingOwner? ActiveClosingOwner { get; set; }
 
         internal ClosedLease? ActiveClosedLease { get; set; }
+
+        internal ScopedConnectionPermit? ActiveScopedConnectionPermit { get; set; }
+
+        internal HashSet<OneShotAuthority> LiveOneShotAuthorities { get; } = [];
+
+        internal HashSet<TrackedMaintenanceHandle> LiveMaintenanceHandles { get; } = [];
 
         internal bool StageOneDrained { get; set; }
 
@@ -1372,21 +2076,345 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     }
 
+    private sealed class ScopedConnectionPermit(
+        GrimoireConnectionAdmissionGate gate,
+        Closure closure,
+        DbConnection connection,
+        long generation) : IGrimoireScopedConnectionPermit
+    {
+
+        private int _disposeRequested;
+
+        internal Closure Closure { get; } = closure;
+
+        internal DbConnection Connection { get; } = connection;
+
+        internal CovenantExclusiveRecoveryOwner Owner => Closure.Owner;
+
+        internal long Generation { get; } = generation;
+
+        internal TrackedMaintenanceHandle? ActiveHandle { get; set; }
+
+        internal bool DisposeRequested => Volatile.Read(ref _disposeRequested) != 0;
+
+        internal bool IsReleased { get; set; }
+
+        public Result<IGrimoireTrackedMaintenanceHandle> AcquireOpen(
+            DbConnection connection,
+            CovenantExclusiveRecoveryOwner owner,
+            long generation,
+            IGrimoireMaintenanceIoLane lane) =>
+            gate.AcquireScopedConnectionOpen(
+                this,
+                connection,
+                owner,
+                generation,
+                lane);
+
+        public ValueTask DisposeAsync()
+        {
+
+            if (Interlocked.Exchange(ref _disposeRequested, 1) == 0)
+            {
+
+                gate.ReleaseScopedConnectionPermit(this);
+
+            }
+
+            GC.SuppressFinalize(this);
+
+            return ValueTask.CompletedTask;
+
+        }
+
+    }
+
+    private abstract class OneShotAuthority(
+        GrimoireConnectionAdmissionGate gate,
+        Closure closure,
+        long generation) : IAsyncDisposable
+    {
+
+        private int _disposeRequested;
+
+        protected GrimoireConnectionAdmissionGate Gate { get; } = gate;
+
+        internal Closure Closure { get; } = closure;
+
+        internal CovenantExclusiveRecoveryOwner Owner => Closure.Owner;
+
+        internal long Generation { get; } = generation;
+
+        internal bool IsConsumed { get; set; }
+
+        internal bool IsReleased { get; set; }
+
+        public ValueTask DisposeAsync()
+        {
+
+            if (Interlocked.Exchange(ref _disposeRequested, 1) == 0)
+            {
+
+                Gate.ReleaseOneShotAuthority(this);
+
+            }
+
+            GC.SuppressFinalize(this);
+
+            return ValueTask.CompletedTask;
+
+        }
+
+    }
+
+    private sealed class MaintenanceRenewalTicket(
+        GrimoireConnectionAdmissionGate gate,
+        Closure closure,
+        long generation) :
+        OneShotAuthority(gate, closure, generation),
+        IGrimoireMaintenanceRenewalTicket
+    {
+
+        public Result<IGrimoireTrackedMaintenanceHandle> Consume(
+            CovenantExclusiveRecoveryOwner owner,
+            long generation,
+            IGrimoireMaintenanceIoLane lane) =>
+            Gate.ConsumeMaintenanceRenewalTicket(
+                this,
+                owner,
+                generation,
+                lane);
+
+    }
+
+    private sealed class MaintenanceConnectionCapability(
+        GrimoireConnectionAdmissionGate gate,
+        Closure closure,
+        long generation,
+        string canonicalPath,
+        CovenantMaintenanceConnectionMode mode,
+        CovenantMaintenanceConnectionPurpose purpose) :
+        OneShotAuthority(gate, closure, generation),
+        IGrimoireMaintenanceConnectionCapability
+    {
+
+        internal string CanonicalPath { get; } = canonicalPath;
+
+        internal CovenantMaintenanceConnectionMode Mode { get; } = mode;
+
+        internal CovenantMaintenanceConnectionPurpose Purpose { get; } = purpose;
+
+        public Result<IGrimoireTrackedMaintenanceHandle> Consume(
+            CovenantExclusiveRecoveryOwner owner,
+            long generation,
+            string canonicalPath,
+            CovenantMaintenanceConnectionMode mode,
+            CovenantMaintenanceConnectionPurpose purpose,
+            IGrimoireMaintenanceIoLane lane) =>
+            Gate.ConsumeMaintenanceConnectionCapability(
+                this,
+                owner,
+                generation,
+                canonicalPath,
+                mode,
+                purpose,
+                lane);
+
+    }
+
+    private sealed class TrackedMaintenanceHandle(
+        GrimoireConnectionAdmissionGate gate,
+        Closure closure,
+        MaintenanceIoLane lane,
+        ScopedConnectionPermit? scopedPermit) : IGrimoireTrackedMaintenanceHandle
+    {
+
+        internal Closure Closure { get; } = closure;
+
+        internal MaintenanceIoLane Lane { get; } = lane;
+
+        internal ScopedConnectionPermit? ScopedPermit { get; } = scopedPermit;
+
+        internal bool IsTerminal { get; set; }
+
+        public Result ReportNotOpened() => gate.CompleteMaintenanceHandle(this);
+
+        public Result ReportPhysicallyClosed() => gate.CompleteMaintenanceHandle(this);
+
+    }
+
+    private sealed class MaintenanceIoLane(
+        GrimoireConnectionAdmissionGate gate,
+        Closure closure,
+        long generation) : IGrimoireMaintenanceIoLane
+    {
+
+        private readonly HashSet<TrackedMaintenanceHandle> _liveHandles = [];
+
+        private readonly TaskCompletionSource _released =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private TaskCompletionSource _handlesDrained = CompletedSignal();
+
+        private int _disposalStarted;
+
+        internal Closure Closure { get; } = closure;
+
+        internal bool DisposalStarted => Volatile.Read(ref _disposalStarted) != 0;
+
+        internal Task HandlesDrained => _handlesDrained.Task;
+
+        public CovenantExclusiveRecoveryOwner Owner => Closure.Owner;
+
+        public long Generation { get; } = generation;
+
+        public ValueTask<Result> RevalidateDurableOwnerAsync(
+            Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
+                revalidateDurableOwnerAsync,
+            CancellationToken cancellationToken) =>
+            gate.RevalidateMaintenanceIoLaneAsync(
+                this,
+                revalidateDurableOwnerAsync,
+                cancellationToken);
+
+        public ValueTask DisposeAsync()
+        {
+
+            if (Interlocked.Exchange(ref _disposalStarted, 1) == 0)
+            {
+
+                return gate.ReleaseMaintenanceIoLaneAsync(this);
+
+            }
+
+            return new ValueTask(_released.Task);
+
+        }
+
+        internal void RegisterHandleWhileLocked(TrackedMaintenanceHandle handle)
+        {
+
+            if (_liveHandles.Count == 0)
+            {
+
+                _handlesDrained = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+            }
+
+            _liveHandles.Add(handle);
+
+        }
+
+        internal void ReleaseHandleWhileLocked(TrackedMaintenanceHandle handle)
+        {
+
+            _ = _liveHandles.Remove(handle);
+
+            if (_liveHandles.Count == 0)
+            {
+
+                _handlesDrained.TrySetResult();
+
+            }
+
+        }
+
+        internal void SignalReleased()
+        {
+
+            _released.TrySetResult();
+
+            GC.SuppressFinalize(this);
+
+        }
+
+        private static TaskCompletionSource CompletedSignal()
+        {
+
+            TaskCompletionSource completion = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            completion.TrySetResult();
+
+            return completion;
+
+        }
+
+    }
+
+    private sealed class ExpiredLeaseAdoptionInterlock(
+        GrimoireConnectionAdmissionGate gate,
+        CovenantExclusiveRecoveryOwner candidateOwner) :
+        IGrimoireExpiredLeaseAdoptionInterlock
+    {
+
+        private int _released;
+
+        public CovenantExclusiveRecoveryOwner CandidateOwner { get; } = candidateOwner;
+
+        public ValueTask DisposeAsync()
+        {
+
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+            {
+
+                return ValueTask.CompletedTask;
+
+            }
+
+            GC.SuppressFinalize(this);
+
+            return gate.ReleaseExpiredLeaseAdoptionInterlockAsync(this);
+
+        }
+
+    }
+
     private sealed class ClosedLease(
         GrimoireConnectionAdmissionGate gate,
         Closure closure,
         long generation) : IGrimoireExclusiveClosedLease
     {
 
-        private int _dispositionClaimed;
-
         private int _released;
 
         internal Closure Closure { get; } = closure;
 
+        internal bool DispositionClaimed { get; set; }
+
+        internal bool IsReleased => Volatile.Read(ref _released) != 0;
+
         public CovenantExclusiveRecoveryOwner Owner => Closure.Owner;
 
         public long Generation { get; } = generation;
+
+        public Result<IGrimoireScopedConnectionPermit> AcquireScopedConnectionPermit(
+            DbConnection connection) =>
+            gate.AcquireScopedConnectionPermit(this, connection);
+
+        public Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket() =>
+            gate.IssueMaintenanceRenewalTicket(this);
+
+        public Result<IGrimoireMaintenanceConnectionCapability>
+            IssueMaintenanceConnectionCapability(
+                string canonicalPath,
+                CovenantMaintenanceConnectionMode mode,
+                CovenantMaintenanceConnectionPurpose purpose) =>
+            gate.IssueMaintenanceConnectionCapability(
+                this,
+                canonicalPath,
+                mode,
+                purpose);
+
+        public ValueTask<Result<IGrimoireMaintenanceIoLane>> AcquireMaintenanceIoLaneAsync(
+            Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
+                revalidateDurableOwnerAsync,
+            CancellationToken cancellationToken) =>
+            gate.AcquireMaintenanceIoLaneAsync(
+                this,
+                revalidateDurableOwnerAsync,
+                cancellationToken);
 
         public ValueTask<Result> CompleteAsync(
             CovenantExclusiveLeaseDisposition disposition,
@@ -1401,24 +2429,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             {
 
                 throw new ArgumentOutOfRangeException(nameof(disposition));
-
-            }
-
-            if (Volatile.Read(ref _released) != 0)
-            {
-
-                return ValueTask.FromResult(
-                    Result.Failure(
-                        LifecycleConflict("This exclusive Grimoire lease has already been released.")));
-
-            }
-
-            if (Interlocked.Exchange(ref _dispositionClaimed, 1) != 0)
-            {
-
-                return ValueTask.FromResult(
-                    Result.Failure(
-                        LifecycleConflict("This exclusive Grimoire lease already used its disposition.")));
 
             }
 

@@ -45,6 +45,12 @@ internal interface IGrimoireConnectionAdmissionGate
         long observedGeneration,
         CancellationToken cancellationToken);
 
+    ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>> AcquireExpiredLeaseAdoptionInterlockAsync(
+        CovenantExclusiveRecoveryOwner candidateOwner,
+        Func<CovenantExclusiveRecoveryOwner, CancellationToken, ValueTask<bool>>
+            revalidateDurableOwnerAsync,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>
@@ -149,9 +155,136 @@ internal interface IGrimoireExclusiveClosedLease : IAsyncDisposable
 
     long Generation { get; }
 
+    Result<IGrimoireScopedConnectionPermit> AcquireScopedConnectionPermit(
+        DbConnection connection);
+
+    Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket();
+
+    Result<IGrimoireMaintenanceConnectionCapability> IssueMaintenanceConnectionCapability(
+        string canonicalPath,
+        CovenantMaintenanceConnectionMode mode,
+        CovenantMaintenanceConnectionPurpose purpose);
+
+    ValueTask<Result<IGrimoireMaintenanceIoLane>> AcquireMaintenanceIoLaneAsync(
+        Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
+            revalidateDurableOwnerAsync,
+        CancellationToken cancellationToken);
+
     ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken);
+
+}
+
+/// <summary>
+/// Reusable authority for physical opens of one exact maintenance-owned connection object.
+/// </summary>
+internal interface IGrimoireScopedConnectionPermit : IAsyncDisposable
+{
+
+    Result<IGrimoireTrackedMaintenanceHandle> AcquireOpen(
+        DbConnection connection,
+        CovenantExclusiveRecoveryOwner owner,
+        long generation,
+        IGrimoireMaintenanceIoLane lane);
+
+}
+
+/// <summary>
+/// One-shot authority for one independent unpooled durable-owner renewal.
+/// </summary>
+internal interface IGrimoireMaintenanceRenewalTicket : IAsyncDisposable
+{
+
+    Result<IGrimoireTrackedMaintenanceHandle> Consume(
+        CovenantExclusiveRecoveryOwner owner,
+        long generation,
+        IGrimoireMaintenanceIoLane lane);
+
+}
+
+/// <summary>
+/// One-shot authority for one purpose-, mode-, and canonical-path-bound maintenance open.
+/// </summary>
+internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
+{
+
+    Result<IGrimoireTrackedMaintenanceHandle> Consume(
+        CovenantExclusiveRecoveryOwner owner,
+        long generation,
+        string canonicalPath,
+        CovenantMaintenanceConnectionMode mode,
+        CovenantMaintenanceConnectionPurpose purpose,
+        IGrimoireMaintenanceIoLane lane);
+
+}
+
+/// <summary>
+/// One maintenance physical-open lifetime that ends only after open failure or physical closure.
+/// </summary>
+internal interface IGrimoireTrackedMaintenanceHandle
+{
+
+    Result ReportNotOpened();
+
+    Result ReportPhysicallyClosed();
+
+}
+
+/// <summary>
+/// Exclusive connection-sensitive phase ownership over the shared adoption interlock.
+/// </summary>
+internal interface IGrimoireMaintenanceIoLane : IAsyncDisposable
+{
+
+    CovenantExclusiveRecoveryOwner Owner { get; }
+
+    long Generation { get; }
+
+    ValueTask<Result> RevalidateDurableOwnerAsync(
+        Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
+            revalidateDurableOwnerAsync,
+        CancellationToken cancellationToken);
+
+}
+
+/// <summary>
+/// Exclusive expired-owner adoption ownership over the shared maintenance interlock.
+/// </summary>
+internal interface IGrimoireExpiredLeaseAdoptionInterlock : IAsyncDisposable
+{
+
+    CovenantExclusiveRecoveryOwner CandidateOwner { get; }
+
+}
+
+/// <summary>
+/// SQLite access requested by a maintenance phase.
+/// </summary>
+internal enum CovenantMaintenanceConnectionMode : byte
+{
+
+    ReadOnly = 1,
+
+    ReadWrite = 2,
+
+}
+
+/// <summary>
+/// The closed phase that is authorized to construct one fresh maintenance connection.
+/// </summary>
+internal enum CovenantMaintenanceConnectionPurpose : byte
+{
+
+    CanonicalErasure = 1,
+
+    Compaction = 2,
+
+    IntegrityVerification = 3,
+
+    SidecarProof = 4,
+
+    ReopenVerification = 5,
 
 }
 
