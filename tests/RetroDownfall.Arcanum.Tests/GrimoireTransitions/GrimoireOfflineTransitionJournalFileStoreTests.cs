@@ -1,5 +1,7 @@
 using System.Text;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -32,6 +34,12 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             File.SetUnixFileMode(
                 _container,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+        else
+        {
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_container);
 
         }
 
@@ -115,6 +123,21 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         Directory.CreateDirectory(sameLeafOtherParent);
 
+        if (!OperatingSystem.IsWindows())
+        {
+
+            File.SetUnixFileMode(
+                otherContainer,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+        else
+        {
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(otherContainer);
+
+        }
+
         GrimoireOfflineTransitionJournalLocation differentParent = Value(
             new GrimoireOfflineTransitionJournalFileStore().ResolveLocation(sameLeafOtherParent));
 
@@ -125,6 +148,124 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.NotEqual(
             baseline.GuardedParentPhysicalIdentityDigest,
             differentParent.GuardedParentPhysicalIdentityDigest);
+
+    }
+
+    [Fact]
+    public void Location_refuses_insecure_or_foreign_existing_parent_posture()
+    {
+
+        if (!OperatingSystem.IsMacOS())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalFileStore store = new();
+
+        File.SetUnixFileMode(
+            _container,
+            UnixFileMode.UserRead
+                | UnixFileMode.UserWrite
+                | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead);
+
+        try
+        {
+
+            Assert.True(store.ResolveLocation(_guarded).IsFailure);
+
+        }
+        finally
+        {
+
+            File.SetUnixFileMode(
+                _container,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+
+        string foreignGuarded = Path.Combine(
+            "/private/tmp",
+            "arcanum-offline-transition-foreign-parent-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(foreignGuarded);
+
+        try
+        {
+
+            Assert.True(store.ResolveLocation(foreignGuarded).IsFailure);
+
+        }
+        finally
+        {
+
+            Directory.Delete(foreignGuarded);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Every_store_entry_point_rejects_tampered_location_commitments()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore store = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        string redirectedGuarded = _guarded + "-redirected";
+
+        Directory.CreateDirectory(redirectedGuarded);
+
+        CovenantDigest tamperedDigest = Digest(0xD3);
+
+        BackupRestoreProfileNamespace profile = location.ProfileNamespace;
+
+        (string Name, GrimoireOfflineTransitionJournalLocation Location)[] tampered =
+        [
+            ("profile-digest", location with
+            {
+                ProfileNamespace = profile with { Digest = tamperedDigest },
+            }),
+            ("profile-parent-digest", location with
+            {
+                ProfileNamespace = profile with
+                {
+                    ParentPhysicalIdentityDigest = tamperedDigest,
+                },
+            }),
+            ("profile-child-leaf", location with
+            {
+                ProfileNamespace = profile with { ChildLeaf = profile.ChildLeaf + "-redirected" },
+            }),
+            ("guarded-directory", location with { GuardedDirectory = redirectedGuarded }),
+            ("maintenance-lock-path", location with
+            {
+                MaintenanceLockPath = location.MaintenanceLockPath + ".redirected",
+            }),
+            ("journal-path", location with { JournalPath = location.JournalPath + ".redirected" }),
+            ("journal-leaf", location with { JournalLeaf = "redirected-" + location.JournalLeaf }),
+            ("working-path", location with { WorkingPath = location.WorkingPath + ".redirected" }),
+            ("working-leaf", location with { WorkingLeaf = "redirected-" + location.WorkingLeaf }),
+            ("previous-path", location with { PreviousPath = location.PreviousPath + ".redirected" }),
+            ("previous-leaf", location with { PreviousLeaf = "redirected-" + location.PreviousLeaf }),
+            ("retiring-path", location with { RetiringPath = location.RetiringPath + ".redirected" }),
+            ("retiring-leaf", location with { RetiringLeaf = "redirected-" + location.RetiringLeaf }),
+            ("parent-identity-digest", location with
+            {
+                GuardedParentPhysicalIdentityDigest = tamperedDigest,
+            }),
+            ("location-digest", location with { JournalLocationDigest = tamperedDigest }),
+        ];
+
+        foreach ((string name, GrimoireOfflineTransitionJournalLocation candidate) in tampered)
+        {
+
+            await AssertEveryEntryPointRejectsAsync(store, location, candidate, name);
+
+        }
 
     }
 
@@ -446,7 +587,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         File.WriteAllText(location.JournalPath, "hard-linked");
 
-        string alias = location.JournalPath + ".hardlink";
+        string alias = Path.Combine(_container, "non-journal-prefixed-hardlink");
 
         Assert.True(HardLinkTestSupport.TryCreate(alias, location.JournalPath));
 
@@ -787,6 +928,166 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
+    public async Task Publication_failures_at_parent_fsync_and_predecessor_retirement_boundaries_require_recovery()
+    {
+
+        (string Step, string? RetainedLeaf)[] boundaries =
+        [
+            ("file:parent-flushed", "previous"),
+            ("file:previous-retiring", "previous"),
+            ("file:previous-retiring-verified", "retiring"),
+            ("file:previous-unlinked", "retiring"),
+            ("file:previous-delete-parent-flushed", null),
+        ];
+
+        foreach ((string step, string? retainedLeaf) in boundaries)
+        {
+
+            string guarded = Path.Combine(_container, "boundary-" + step.Replace(':', '-'));
+
+            Directory.CreateDirectory(guarded);
+
+            GrimoireOfflineTransitionJournalFileStore initial = new();
+
+            GrimoireOfflineTransitionJournalLocation location = Value(
+                initial.ResolveLocation(guarded));
+
+            using ArcanumMaintenanceLock held = ArcanumMaintenanceLock.TryAcquire(guarded)
+                ?? throw new Xunit.Sdk.XunitException("The boundary lock could not be acquired.");
+
+            byte[] oldBytes = Bytes("old-" + step).ToArray();
+
+            byte[] newBytes = Bytes("new-" + step).ToArray();
+
+            Assert.True((await initial.ReplaceDurablyAsync(
+                held,
+                location,
+                oldBytes,
+                expectedCurrentIdentity: null,
+                CancellationToken.None)).IsSuccess);
+
+            FileHandleIdentity oldIdentity;
+
+            using (GrimoireOfflineTransitionJournalFileRead old = Assert.IsType<
+                       GrimoireOfflineTransitionJournalFileRead>(
+                       Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+            {
+
+                oldIdentity = old.Metadata.Identity;
+
+            }
+
+            GrimoireOfflineTransitionJournalFileStore failing = new(
+                failBeforeStep: candidate => candidate == step);
+
+            Result result = await failing.ReplaceDurablyAsync(
+                held,
+                location,
+                newBytes,
+                oldIdentity,
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure, step);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+            using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+                await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+            Assert.Equal(newBytes, evidence.Canonical?.Bytes.ToArray());
+
+            GrimoireOfflineTransitionJournalFileRead? retained = retainedLeaf switch
+            {
+                "previous" => evidence.Previous,
+                "retiring" => evidence.Retiring,
+                _ => null,
+            };
+
+            if (retainedLeaf is null)
+            {
+
+                Assert.Null(evidence.Working);
+
+                Assert.Null(evidence.Previous);
+
+                Assert.Null(evidence.Retiring);
+
+            }
+            else
+            {
+
+                Assert.NotNull(retained);
+
+                Assert.Equal(oldBytes, retained.Bytes.ToArray());
+
+                Assert.Equal(oldIdentity, retained.Metadata.Identity);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public void Production_windows_layout_uses_retained_handle_acl_and_synchronous_streams()
+    {
+
+        string parent = Path.Combine(_container, "windows-layout-parent");
+
+        GrimoireOfflineTransitionWindowsReplaceFileArguments layout =
+            GrimoireOfflineTransitionJournalFilePrimitives.MapWindowsReplaceFileArguments(
+                parent,
+                "journal",
+                "working",
+                "previous");
+
+        Assert.Equal(Path.Combine(parent, "journal"), layout.ReplacedFileName);
+
+        Assert.Equal(Path.Combine(parent, "working"), layout.ReplacementFileName);
+
+        Assert.Equal(Path.Combine(parent, "previous"), layout.BackupFileName);
+
+        Assert.False(GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildStreamsAreAsync);
+
+        string source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
+
+        Assert.Contains(
+            "MapWindowsReplaceFileArguments(_parentPath, journalLeaf, workingLeaf, previousLeaf)",
+            source,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "VerifyWindowsOwnerOnlyHandle(expected.Handle)",
+            source,
+            StringComparison.Ordinal);
+
+        Assert.Contains("GetSecurityInfoWindows(", source, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "isAsync: WindowsChildStreamsAreAsync",
+            source,
+            StringComparison.Ordinal);
+
+        int permissionsStart = source.IndexOf(
+            "public Result ApplyOwnerOnlyAndVerify(",
+            StringComparison.Ordinal);
+
+        int permissionsEnd = source.IndexOf(
+            "public Result CompareUnlink(",
+            permissionsStart,
+            StringComparison.Ordinal);
+
+        string permissionsMethod = source[permissionsStart..permissionsEnd];
+
+        Assert.DoesNotContain("ChildPath(", permissionsMethod, StringComparison.Ordinal);
+
+        Assert.Contains("OpenChild(", permissionsMethod, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public void Production_never_creates_a_generic_arcanum_cleanup_quarantine()
     {
 
@@ -827,6 +1128,50 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     }
 
+    private async Task AssertEveryEntryPointRejectsAsync(
+        GrimoireOfflineTransitionJournalFileStore store,
+        GrimoireOfflineTransitionJournalLocation authentic,
+        GrimoireOfflineTransitionJournalLocation tampered,
+        string field)
+    {
+
+        Assert.True(store.RequireNoEvidence(tampered).IsFailure, field + ": require-none");
+
+        Assert.True((await store.InspectEvidenceAsync(
+            tampered,
+            CancellationToken.None)).IsFailure, field + ": inspect");
+
+        Assert.True((await store.ReadIfPresentAsync(
+            tampered,
+            CancellationToken.None)).IsFailure, field + ": read");
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            tampered,
+            Bytes("must-not-publish"),
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsFailure, field + ": replace");
+
+        Assert.True(store.DeleteDurably(
+            held,
+            tampered,
+            default,
+            Bytes("must-not-delete")).IsFailure, field + ": delete");
+
+        Assert.True(store.ProveAbsentDurably(held, tampered).IsFailure, field + ": absent");
+
+        Assert.False(File.Exists(authentic.JournalPath), field + ": canonical mutation");
+
+        Assert.False(File.Exists(authentic.WorkingPath), field + ": working mutation");
+
+        Assert.False(File.Exists(authentic.PreviousPath), field + ": previous mutation");
+
+        Assert.False(File.Exists(authentic.RetiringPath), field + ": retiring mutation");
+
+    }
+
     private GrimoireOfflineTransitionJournalLocation Location(
         GrimoireOfflineTransitionJournalFileStore? store = null) =>
         Value((store ?? new GrimoireOfflineTransitionJournalFileStore()).ResolveLocation(_guarded));
@@ -836,6 +1181,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         ?? throw new Xunit.Sdk.XunitException("The test maintenance lock could not be acquired.");
 
     private static ReadOnlyMemory<byte> Bytes(string value) => Encoding.UTF8.GetBytes(value);
+
+    private static CovenantDigest Digest(byte value) => new(
+        Enumerable.Repeat(value, 32).ToArray());
 
     private static T Value<T>(Result<T> result) =>
         result.IsSuccess ? result.Value : throw new Xunit.Sdk.XunitException(result.Error.Message);

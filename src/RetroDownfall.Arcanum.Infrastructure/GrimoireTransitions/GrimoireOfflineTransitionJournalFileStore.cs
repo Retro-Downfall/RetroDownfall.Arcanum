@@ -251,8 +251,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         GrimoireOfflineTransitionJournalLocation location)
     {
 
+        Result<GrimoireOfflineTransitionJournalLocation> committed =
+            ValidateLocationCommitment(location);
+
+        if (committed.IsFailure)
+        {
+
+            return Result.Failure(committed.Error);
+
+        }
+
         Result<GrimoireOfflineTransitionJournalEvidence> inspected = InspectEvidenceAsync(
-                location,
+                committed.Value,
                 CancellationToken.None)
             .GetAwaiter()
             .GetResult();
@@ -277,6 +287,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         CancellationToken cancellationToken)
     {
 
+        Result<GrimoireOfflineTransitionJournalLocation> committed =
+            ValidateLocationCommitment(location);
+
+        if (committed.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalEvidence>.Failure(committed.Error);
+
+        }
+
+        location = committed.Value;
+
         Result<IGrimoireOfflineTransitionJournalFilePrimitives> opened = Open(location);
 
         if (opened.IsFailure)
@@ -300,6 +322,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         GrimoireOfflineTransitionJournalLocation location,
         CancellationToken cancellationToken)
     {
+
+        Result<GrimoireOfflineTransitionJournalLocation> committed =
+            ValidateLocationCommitment(location);
+
+        if (committed.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalFileRead?>.Failure(committed.Error);
+
+        }
+
+        location = committed.Value;
 
         Result<IGrimoireOfflineTransitionJournalFilePrimitives> opened = Open(location);
 
@@ -371,6 +405,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
+
+        Result<GrimoireOfflineTransitionJournalLocation> committed =
+            ValidateLocationCommitment(location);
+
+        if (committed.IsFailure)
+        {
+
+            return Result.Failure(committed.Error);
+
+        }
+
+        location = committed.Value;
 
         heldInstallationLock.AssertHeldFor(location.GuardedDirectory);
 
@@ -755,6 +801,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         ArgumentNullException.ThrowIfNull(location);
 
+        Result<GrimoireOfflineTransitionJournalLocation> committed =
+            ValidateLocationCommitment(location);
+
+        if (committed.IsFailure)
+        {
+
+            return Result.Failure(committed.Error);
+
+        }
+
+        location = committed.Value;
+
         heldInstallationLock.AssertHeldFor(location.GuardedDirectory);
 
         Result<IGrimoireOfflineTransitionJournalFilePrimitives> opened = Open(location);
@@ -861,6 +919,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
+
+        Result<GrimoireOfflineTransitionJournalLocation> committed =
+            ValidateLocationCommitment(location);
+
+        if (committed.IsFailure)
+        {
+
+            return Result.Failure(committed.Error);
+
+        }
+
+        location = committed.Value;
 
         heldInstallationLock.AssertHeldFor(location.GuardedDirectory);
 
@@ -1263,6 +1333,89 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         }
 
         return Result.Failure(original);
+
+    }
+
+    private Result<GrimoireOfflineTransitionJournalLocation> ValidateLocationCommitment(
+        GrimoireOfflineTransitionJournalLocation location)
+    {
+
+        if (location is null || string.IsNullOrWhiteSpace(location.GuardedDirectory))
+        {
+
+            return Unavailable<GrimoireOfflineTransitionJournalLocation>();
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalLocation> reconstructed =
+            ResolveLocation(location.GuardedDirectory);
+
+        if (reconstructed.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalLocation>.Failure(
+                reconstructed.Error);
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation expected = reconstructed.Value;
+
+        bool matches =
+            location.ProfileNamespace is not null
+            && location.ProfileNamespace.Digest == expected.ProfileNamespace.Digest
+            && location.ProfileNamespace.ParentPhysicalIdentityDigest
+                == expected.ProfileNamespace.ParentPhysicalIdentityDigest
+            && string.Equals(
+                location.ProfileNamespace.ChildLeaf,
+                expected.ProfileNamespace.ChildLeaf,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.GuardedDirectory,
+                expected.GuardedDirectory,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.MaintenanceLockPath,
+                expected.MaintenanceLockPath,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.JournalPath,
+                expected.JournalPath,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.JournalLeaf,
+                expected.JournalLeaf,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.WorkingPath,
+                expected.WorkingPath,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.WorkingLeaf,
+                expected.WorkingLeaf,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.PreviousPath,
+                expected.PreviousPath,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.PreviousLeaf,
+                expected.PreviousLeaf,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.RetiringPath,
+                expected.RetiringPath,
+                StringComparison.Ordinal)
+            && string.Equals(
+                location.RetiringLeaf,
+                expected.RetiringLeaf,
+                StringComparison.Ordinal)
+            && location.GuardedParentPhysicalIdentityDigest
+                == expected.GuardedParentPhysicalIdentityDigest
+            && location.JournalLocationDigest == expected.JournalLocationDigest;
+
+        return matches
+            ? expected
+            : RecoveryRequired<GrimoireOfflineTransitionJournalLocation>();
 
     }
 

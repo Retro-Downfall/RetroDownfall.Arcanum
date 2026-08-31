@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 
 using System.Runtime.Versioning;
 
+using System.Security.AccessControl;
+
 using System.Security.Principal;
 
 using Microsoft.Win32.SafeHandles;
@@ -30,8 +32,16 @@ internal enum GrimoireOfflineTransitionPreviousRetention : byte
 internal readonly record struct GrimoireOfflineTransitionExchangeResult(
     GrimoireOfflineTransitionPreviousRetention Retention);
 
+internal readonly record struct GrimoireOfflineTransitionWindowsReplaceFileArguments(
+    string ReplacedFileName,
+    string ReplacementFileName,
+    string BackupFileName);
+
 internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
 {
+
+    private const bool WindowsChildStreamsAreAsync =
+        GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildStreamsAreAsync;
 
     private SafeFileHandle? _handle;
 
@@ -77,7 +87,7 @@ internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
             handle,
             DisplayPath,
             access,
-            isAsync: OperatingSystem.IsWindows());
+            isAsync: WindowsChildStreamsAreAsync);
 
         _handle = null;
 
@@ -199,6 +209,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     : IGrimoireOfflineTransitionJournalFilePrimitives
 {
 
+    internal const bool WindowsChildStreamsAreAsync = false;
+
     private const int OwnerOnlyUnixMode = 0x180;
 
     private const uint GenericRead = 0x80000000;
@@ -248,6 +260,14 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     private const int FileIdBothDirectoryInformation = 37;
 
     private const int StatusNoMoreFiles = unchecked((int)0x80000006);
+
+    private const uint OwnerSecurityInformation = 0x00000001;
+
+    private const uint DaclSecurityInformation = 0x00000004;
+
+    private const ushort SecurityDescriptorDaclProtected = 0x1000;
+
+    private const int AclSizeInformationClass = 2;
 
     private const int RenameNoReplace = 1;
 
@@ -300,7 +320,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 || !FileHandleIdentityInterop.TryGetHandleMetadata(
                     parent,
                     out FileHandleMetadata metadata)
-                || metadata.Kind is not FileSystemObjectKind.Directory)
+                || metadata.Kind is not FileSystemObjectKind.Directory
+                || !HasStrictOwnerOnlyParentHandlePosture(parent))
             {
 
                 return Unavailable<GrimoireOfflineTransitionJournalFilePrimitives>();
@@ -394,11 +415,14 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 ? ApplyWindowsOwnerOnly(handle)
                 : Fchmod(handle.DangerousGetHandle().ToInt32(), OwnerOnlyUnixMode) == 0;
 
-            if (!ownerOnly
-                || !SecureFilePermissions.HasOwnerControlledFileHandlePosture(
-                handle,
-                displayPath,
-                metadata.Identity))
+            bool ownerOnlyVerified = OperatingSystem.IsWindows()
+                ? VerifyWindowsOwnerOnlyHandle(handle)
+                : SecureFilePermissions.HasOwnerControlledFileHandlePosture(
+                    handle,
+                    displayPath,
+                    metadata.Identity);
+
+            if (!ownerOnly || !ownerOnlyVerified)
             {
 
                 using GrimoireOfflineTransitionJournalOpenedFile failed = new(
@@ -531,11 +555,14 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             }
 
+            GrimoireOfflineTransitionWindowsReplaceFileArguments windowsArguments =
+                MapWindowsReplaceFileArguments(_parentPath, journalLeaf, workingLeaf, previousLeaf);
+
             if (OperatingSystem.IsWindows()
                 && ReplaceFileWindows(
-                    ChildPath(journalLeaf),
-                    ChildPath(workingLeaf),
-                    ChildPath(previousLeaf),
+                    windowsArguments.ReplacedFileName,
+                    windowsArguments.ReplacementFileName,
+                    windowsArguments.BackupFileName,
                     replaceFlags: 0,
                     exclude: IntPtr.Zero,
                     reserved: IntPtr.Zero))
@@ -559,6 +586,30 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             return Unavailable<GrimoireOfflineTransitionExchangeResult>();
 
         }
+
+    }
+
+    internal static GrimoireOfflineTransitionWindowsReplaceFileArguments
+        MapWindowsReplaceFileArguments(
+            string parentPath,
+            string journalLeaf,
+            string workingLeaf,
+            string previousLeaf)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(parentPath);
+
+        if (!ValidLeaf(journalLeaf) || !ValidLeaf(workingLeaf) || !ValidLeaf(previousLeaf))
+        {
+
+            throw new ArgumentException("Windows replacement arguments require valid relative leaves.");
+
+        }
+
+        return new GrimoireOfflineTransitionWindowsReplaceFileArguments(
+            Path.Combine(parentPath, journalLeaf),
+            Path.Combine(parentPath, workingLeaf),
+            Path.Combine(parentPath, previousLeaf));
 
     }
 
@@ -629,7 +680,15 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 ? ApplyWindowsOwnerOnly(expected.Handle)
                 : Fchmod(expected.Handle.DangerousGetHandle().ToInt32(), OwnerOnlyUnixMode) == 0;
 
+            bool capturedOwnerOnly = OperatingSystem.IsWindows()
+                ? VerifyWindowsOwnerOnlyHandle(expected.Handle)
+                : SecureFilePermissions.HasOwnerControlledFileHandlePosture(
+                    expected.Handle,
+                    expected.DisplayPath,
+                    expected.Metadata.Identity);
+
             if (!applied
+                || !capturedOwnerOnly
                 || !FileHandleIdentityInterop.TryGetHandleMetadata(
                     expected.Handle,
                     out FileHandleMetadata captured)
@@ -637,10 +696,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 || captured.HardLinkCount != 1
                 || !FileHandleIdentity.IdentitiesMatch(
                     expected.Metadata.Identity,
-                    captured.Identity)
-                || !SecureFilePermissions.HasOwnerControlledFileHandlePosture(
-                    expected.Handle,
-                    ChildPath(relativeLeaf),
                     captured.Identity))
             {
 
@@ -657,7 +712,16 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             using (reopened)
             {
 
+                bool reopenedOwnerOnly = reopened is not null
+                    && (OperatingSystem.IsWindows()
+                        ? VerifyWindowsOwnerOnlyHandle(reopened)
+                        : SecureFilePermissions.HasOwnerControlledFileHandlePosture(
+                            reopened,
+                            expected.DisplayPath,
+                            expected.Metadata.Identity));
+
                 if (status is not SecureFileOpenStatus.Success || reopened is null
+                    || !reopenedOwnerOnly
                     || !FileHandleIdentityInterop.TryGetHandleMetadata(
                         reopened,
                         out FileHandleMetadata current)
@@ -665,10 +729,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     || current.HardLinkCount != 1
                     || !FileHandleIdentity.IdentitiesMatch(
                         captured.Identity,
-                        current.Identity)
-                    || !SecureFilePermissions.HasOwnerControlledFileHandlePosture(
-                        reopened,
-                        ChildPath(relativeLeaf),
                         current.Identity))
                 {
 
@@ -932,7 +992,37 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         && current.Kind is FileSystemObjectKind.Directory
         && FileHandleIdentity.IdentitiesMatch(
             ParentMetadata.Identity,
-            current.Identity);
+            current.Identity)
+        && HasStrictOwnerOnlyParentHandlePosture(parent);
+
+    private static bool HasStrictOwnerOnlyParentHandlePosture(SafeFileHandle handle)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return VerifyWindowsOwnerOnlyHandle(handle);
+
+        }
+
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+
+            return false;
+
+        }
+
+        const UnixFileMode ownerOnlyDirectory =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+        return FileHandleIdentityInterop.TryGetUnixHandleAccessMetadata(
+                handle,
+                out UnixFileMode mode,
+                out uint ownerUserId)
+            && mode == ownerOnlyDirectory
+            && ownerUserId == GetEffectiveUserIdUnix();
+
+    }
 
     private string ChildPath(string leaf) => Path.Combine(_parentPath, leaf);
 
@@ -1499,6 +1589,99 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     }
 
     [SupportedOSPlatform("windows")]
+    private static bool VerifyWindowsOwnerOnlyHandle(SafeFileHandle handle)
+    {
+
+        IntPtr securityDescriptor = IntPtr.Zero;
+
+        try
+        {
+
+            uint status = GetSecurityInfoWindows(
+                handle,
+                objectType: 1,
+                OwnerSecurityInformation | DaclSecurityInformation,
+                out IntPtr owner,
+                out _,
+                out IntPtr dacl,
+                out _,
+                out securityDescriptor);
+
+            SecurityIdentifier? currentUser = WindowsIdentity.GetCurrent().User;
+
+            if (status != 0 || securityDescriptor == IntPtr.Zero
+                || owner == IntPtr.Zero || dacl == IntPtr.Zero || currentUser is null
+                || !GetSecurityDescriptorControlWindows(
+                    securityDescriptor,
+                    out ushort control,
+                    out _)
+                || (control & SecurityDescriptorDaclProtected) == 0
+                || !new SecurityIdentifier(owner).Equals(currentUser)
+                || !GetAclInformationWindows(
+                    dacl,
+                    out AclSizeInformation size,
+                    (uint)Marshal.SizeOf<AclSizeInformation>(),
+                    AclSizeInformationClass)
+                || size.AclBytesInUse == 0
+                || size.AclBytesInUse > int.MaxValue)
+            {
+
+                return false;
+
+            }
+
+            byte[] aclBytes = new byte[checked((int)size.AclBytesInUse)];
+
+            Marshal.Copy(dacl, aclBytes, 0, aclBytes.Length);
+
+            RawAcl acl = new(aclBytes, 0);
+
+            bool currentUserAllowed = false;
+
+            foreach (GenericAce ace in acl)
+            {
+
+                if (ace is not QualifiedAce qualified
+                    || !qualified.SecurityIdentifier.Equals(currentUser))
+                {
+
+                    return false;
+
+                }
+
+                currentUserAllowed |= qualified.AceQualifier is AceQualifier.AccessAllowed;
+
+            }
+
+            return currentUserAllowed;
+
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException
+                or InvalidOperationException
+                or PlatformNotSupportedException
+                or System.Security.SecurityException
+                or IdentityNotMappedException)
+        {
+
+            return false;
+
+        }
+        finally
+        {
+
+            if (securityDescriptor != IntPtr.Zero)
+            {
+
+                _ = LocalFreeWindows(securityDescriptor);
+
+            }
+
+        }
+
+    }
+
+    [SupportedOSPlatform("windows")]
     private static bool TryCreateOwnerOnlySecurityDescriptor(out IntPtr descriptor)
     {
 
@@ -1577,6 +1760,18 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private readonly struct AclSizeInformation
+    {
+
+        internal readonly uint AceCount;
+
+        internal readonly uint AclBytesInUse;
+
+        internal readonly uint AclBytesFree;
+
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private readonly struct IoStatusBlock
     {
 
@@ -1613,6 +1808,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     [LibraryImport("libc", EntryPoint = "fchmod", SetLastError = true)]
     private static partial int Fchmod(int descriptor, int mode);
+
+    [LibraryImport("libc", EntryPoint = "geteuid")]
+    private static partial uint GetEffectiveUserIdUnix();
 
     [LibraryImport("libc", EntryPoint = "dup", SetLastError = true)]
     private static partial int DuplicateUnix(int descriptor);
@@ -1703,6 +1901,32 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         IntPtr group,
         IntPtr dacl,
         IntPtr sacl);
+
+    [LibraryImport("advapi32.dll", EntryPoint = "GetSecurityInfo", SetLastError = true)]
+    private static partial uint GetSecurityInfoWindows(
+        SafeFileHandle handle,
+        uint objectType,
+        uint securityInformation,
+        out IntPtr owner,
+        out IntPtr group,
+        out IntPtr dacl,
+        out IntPtr sacl,
+        out IntPtr securityDescriptor);
+
+    [LibraryImport("advapi32.dll", EntryPoint = "GetSecurityDescriptorControl", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetSecurityDescriptorControlWindows(
+        IntPtr securityDescriptor,
+        out ushort control,
+        out uint revision);
+
+    [LibraryImport("advapi32.dll", EntryPoint = "GetAclInformation", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetAclInformationWindows(
+        IntPtr acl,
+        out AclSizeInformation aclInformation,
+        uint aclInformationLength,
+        int aclInformationClass);
 
     [LibraryImport("ntdll.dll", EntryPoint = "NtCreateFile")]
     private static partial int NtCreateFile(
