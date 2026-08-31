@@ -70,6 +70,12 @@ public static class ArcanumCredentialIdentity
     public const string InstallationResetActiveAnchorAccountPrefix =
         "installation-reset-active-anchor-";
 
+    internal const string GrimoireTransitionJournalKeyAccountPrefix =
+        "grimoire-transition-journal-key-";
+
+    internal const string GrimoireTransitionJournalAnchorAccountPrefix =
+        "grimoire-transition-journal-anchor-";
+
     /// <summary>
     /// The exact length of the lowercase-hex profile-namespace digest every restore-journal account is
     /// suffixed with.
@@ -108,6 +114,12 @@ public static class ArcanumCredentialIdentity
     internal static string InstallationResetActiveAnchorAccount(string profileSuffix) =>
         InstallationResetActiveAnchorAccountPrefix + RequireProfileNamespaceSuffix(profileSuffix);
 
+    internal static string GrimoireTransitionJournalKeyAccount(string profileSuffix) =>
+        GrimoireTransitionJournalKeyAccountPrefix + RequireProfileNamespaceSuffix(profileSuffix);
+
+    internal static string GrimoireTransitionJournalAnchorAccount(string profileSuffix) =>
+        GrimoireTransitionJournalAnchorAccountPrefix + RequireProfileNamespaceSuffix(profileSuffix);
+
     /// <summary>
     /// True when <paramref name="account"/> is one of the two namespaced installation-reset active
     /// record accounts.
@@ -126,6 +138,38 @@ public static class ArcanumCredentialIdentity
                  [
                      InstallationResetActiveKeyAccountPrefix,
                      InstallationResetActiveAnchorAccountPrefix,
+                 ])
+        {
+
+            if (account.Length == prefix.Length + ProfileNamespaceSuffixLength
+                && account.StartsWith(prefix, StringComparison.Ordinal)
+                && IsCanonicalProfileNamespaceSuffix(account[prefix.Length..]))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
+
+    }
+
+    internal static bool IsGrimoireTransitionJournalAccount(string? account)
+    {
+
+        if (account is null)
+        {
+
+            return false;
+
+        }
+
+        foreach (string prefix in (string[])
+                 [
+                     GrimoireTransitionJournalKeyAccountPrefix,
+                     GrimoireTransitionJournalAnchorAccountPrefix,
                  ])
         {
 

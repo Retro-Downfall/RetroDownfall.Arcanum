@@ -100,6 +100,7 @@ internal sealed partial class InstallationResetCredentialCatalog(
             .Where(static account =>
                 !ArcanumCredentialIdentity.IsBackupRestoreJournalAccount(account)
                 && !ArcanumCredentialIdentity.IsInstallationResetActiveAccount(account)
+                && !ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(account)
                 && !string.Equals(
                     account,
                     ArcanumCredentialIdentity.HostProcessToolsTaintAccount,
