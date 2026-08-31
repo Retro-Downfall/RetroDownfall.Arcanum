@@ -165,6 +165,25 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("""{"Arcanum":{"features":{}}}""", true)]
+    [InlineData("""{"Arcanum":{"features":{"annals":false}}}""", false)]
+    public void LoadArcanumSettingsFile_preserves_the_Annals_default_and_explicit_override(
+        string json,
+        bool expected)
+    {
+
+        string path = Path.Combine(_workspace.Root, "annals-policy-arcanum.json");
+
+        File.WriteAllText(path, json);
+
+        ArcanumSettings settings =
+            ConfigurationBootstrapper.LoadArcanumSettingsFile(path);
+
+        Assert.Equal(expected, settings.Features.Annals);
+
+    }
+
+    [Theory]
 
     [InlineData(
         """{"Arcanum":{"security":{"ward":{"enabled":true}}}}""",

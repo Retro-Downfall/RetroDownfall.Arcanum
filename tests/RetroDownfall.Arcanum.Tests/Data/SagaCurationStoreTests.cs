@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -117,14 +119,51 @@ public sealed class SagaCurationStoreTests
 
         byte[] digest = AnnalContentDigest.ForSagaMemory("the operator prefers tabs");
 
-        _ = await harness.Store.RetireAsync("m-1", digest, DateTimeOffset.UtcNow, CancellationToken.None)
+        DateTimeOffset firstRetiredAt = DateTimeOffset.UtcNow;
+
+        SagaCurationOutcome first = await harness.Store
+            .RetireAsync("m-1", digest, firstRetiredAt, CancellationToken.None)
             .ConfigureAwait(false);
 
+        Assert.Equal(SagaCurationOutcomeKind.Applied, first.Kind);
+
+        DateTimeOffset? retiredAtBeforeSecond = (await harness.Store
+            .ReadCurationRowAsync("m-1", CancellationToken.None).ConfigureAwait(false))!.Lifecycle.RetiredAtUtc;
+
+        Assert.NotNull(retiredAtBeforeSecond);
+
+        AnnalClaimHead headBeforeSecond = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.NotNull(headBeforeSecond);
+
+        int versionCountBeforeSecond = (await harness.Annals
+            .GetVersionsAsync(headBeforeSecond.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
+
         SagaCurationOutcome second = await harness.Store
-            .RetireAsync("m-1", digest, DateTimeOffset.UtcNow, CancellationToken.None)
+            .RetireAsync("m-1", digest, firstRetiredAt.AddMinutes(1), CancellationToken.None)
             .ConfigureAwait(false);
 
         Assert.Equal(SagaCurationOutcomeKind.AlreadyRetired, second.Kind);
+
+        Assert.Equal(
+            retiredAtBeforeSecond,
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Lifecycle.RetiredAtUtc);
+
+        AnnalClaimHead headAfterSecond = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.NotNull(headAfterSecond);
+
+        Assert.Equal(headBeforeSecond.CurrentVersionId, headAfterSecond.CurrentVersionId);
+
+        Assert.Equal(headBeforeSecond.CurrentRevision, headAfterSecond.CurrentRevision);
+
+        Assert.Equal(
+            versionCountBeforeSecond,
+            (await harness.Annals.GetVersionsAsync(headAfterSecond.ClaimId, CancellationToken.None)
+                .ConfigureAwait(false)).Count);
 
     }
 
@@ -180,6 +219,62 @@ public sealed class SagaCurationStoreTests
             CancellationToken.None).ConfigureAwait(false);
 
         Assert.Equal(SagaCurationOutcomeKind.NotRetired, outcome.Kind);
+
+    }
+
+    [SkippableFact]
+    public async Task Reinstating_twice_is_refused_without_advancing_annals_history()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false)
+            .ConfigureAwait(false);
+
+        _ = await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(seed: 1), CancellationToken.None).ConfigureAwait(false);
+
+        byte[] digest = AnnalContentDigest.ForSagaMemory("the operator prefers tabs");
+
+        _ = await harness.Store.RetireAsync("m-1", digest, DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        SagaCurationOutcome first = await harness.Store.ReinstateAsync(
+            "m-1", digest, harness.Embedding(seed: 2), DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, first.Kind);
+
+        AnnalClaimHead headBeforeSecond = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.NotNull(headBeforeSecond);
+
+        int versionCountBeforeSecond = (await harness.Annals
+            .GetVersionsAsync(headBeforeSecond.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
+
+        byte[] embeddingBeforeSecond = await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false);
+
+        SagaCurationOutcome second = await harness.Store.ReinstateAsync(
+            "m-1", digest, harness.Embedding(seed: 9), DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.NotRetired, second.Kind);
+
+        AnnalClaimHead headAfterSecond = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.NotNull(headAfterSecond);
+
+        Assert.Equal(headBeforeSecond.CurrentVersionId, headAfterSecond.CurrentVersionId);
+
+        Assert.Equal(headBeforeSecond.CurrentRevision, headAfterSecond.CurrentRevision);
+
+        Assert.Equal(
+            versionCountBeforeSecond,
+            (await harness.Annals.GetVersionsAsync(headAfterSecond.ClaimId, CancellationToken.None)
+                .ConfigureAwait(false)).Count);
+
+        Assert.Equal(embeddingBeforeSecond, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
 
     }
 
@@ -527,6 +622,98 @@ public sealed class SagaCurationStoreTests
             revisionsBefore,
             (await harness.Annals.GetVersionsAsync(claimAfter.ClaimId, CancellationToken.None)
                 .ConfigureAwait(false)).Count);
+
+    }
+
+    [SkippableFact]
+    public async Task Correcting_claimless_identical_text_with_annals_off_writes_nothing()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false)
+            .ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(seed: 1), CancellationToken.None).ConfigureAwait(false);
+
+        byte[] embeddingBefore = await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false);
+
+        Assert.Null(await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false));
+
+        SagaCurationOutcome outcome = await harness.Store.CorrectAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            "the operator prefers tabs",
+            harness.Embedding(seed: 7),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.Unchanged, outcome.Kind);
+
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
+
+        Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
+
+        Assert.Null(await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false));
+
+    }
+
+    [SkippableFact]
+    public async Task A_required_annals_failure_rolls_back_a_correction_when_the_feature_is_off()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false)
+            .ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(seed: 1), CancellationToken.None).ConfigureAwait(false);
+
+        byte[] embeddingBefore = await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false);
+
+        await using (SqliteCommand trigger = (SqliteCommand)harness.Connection.CreateCommand())
+        {
+
+            trigger.CommandText =
+                """
+                CREATE TEMP TRIGGER fail_curation_annals
+                BEFORE INSERT ON main.annal_claims
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced curation Annals failure');
+                END;
+                """;
+
+            _ = await trigger.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+
+        }
+
+        SqliteException exception = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.Store.CorrectAsync(
+                "m-1",
+                AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+                "the operator prefers spaces",
+                harness.Embedding(seed: 2),
+                DateTimeOffset.UtcNow,
+                CancellationToken.None));
+
+        Assert.Contains("forced curation Annals failure", exception.Message, StringComparison.Ordinal);
+
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
+
+        Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
+
+        Assert.Null(await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false));
+
+        Assert.Equal(0, await harness.CountAsync("annal_versions", "1 = 1").ConfigureAwait(false));
 
     }
 
