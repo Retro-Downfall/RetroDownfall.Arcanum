@@ -136,6 +136,55 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task A_claim_failure_rolls_back_the_Lexicon_entry_and_reports_write_failed()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await OpenAsync();
+
+        await using (SqliteCommand trigger = (SqliteCommand)_db!.Database.GetDbConnection().CreateCommand())
+        {
+
+            trigger.CommandText =
+                """
+                CREATE TEMP TRIGGER fail_lexicon_annals
+                BEFORE INSERT ON main.annal_claims
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced Lexicon Annals failure');
+                END;
+                """;
+
+            _ = await trigger.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        Result<LexiconEntryDto> written = await CreateService().UpsertAsync(
+            "Annals failure subject",
+            "Project",
+            ["a fact whose claim cannot be recorded"],
+            LexiconScope.Global,
+            CancellationToken.None);
+
+        Assert.True(written.IsFailure);
+
+        Assert.Equal(ErrorCodes.Lexicon.WriteFailed, written.Error.Code);
+
+        Assert.Equal(
+            0,
+            await CountAsync(
+                """
+                SELECT COUNT(*) FROM lexicon_entries
+                WHERE NameNormalized = 'ANNALS FAILURE SUBJECT';
+                """));
+
+        Assert.Equal(
+            0,
+            await CountAsync("SELECT COUNT(*) FROM annal_claims WHERE SubjectStoreCode = 2;"));
+
+    }
+
+    [SkippableFact]
     public async Task A_second_upsert_with_new_facts_appends_a_correction_that_supersedes_revision_one()
     {
 

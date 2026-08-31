@@ -109,6 +109,66 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task A_claim_failure_rolls_back_the_Saga_memory()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await OpenAsync();
+
+        await using (SqliteCommand trigger = (SqliteCommand)_db!.Database.GetDbConnection().CreateCommand())
+        {
+
+            trigger.CommandText =
+                """
+                CREATE TEMP TRIGGER fail_saga_annals
+                BEFORE INSERT ON main.annal_claims
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced Saga Annals failure');
+                END;
+                """;
+
+            _ = await trigger.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        ISagaMemoryStore store = CreateStore();
+
+        SqliteException exception = await Assert.ThrowsAsync<SqliteException>(
+            () => store.InsertAsync(
+                "mem-annals-failure",
+                "a conclusion whose claim cannot be recorded",
+                DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture),
+                sessionId: null,
+                null,
+                "extraction",
+                Vec(1f),
+                CancellationToken.None));
+
+        Assert.Equal(19, exception.SqliteErrorCode);
+
+        Assert.Contains("forced Saga Annals failure", exception.Message, StringComparison.Ordinal);
+
+        Assert.Equal(
+            0,
+            await CountAsync("SELECT COUNT(*) FROM saga_memories WHERE Id = 'mem-annals-failure';"));
+
+        Assert.Equal(
+            0,
+            await CountAsync(
+                "SELECT COUNT(*) FROM saga_memory_embeddings WHERE MemoryId = 'mem-annals-failure';"));
+
+        Assert.Equal(
+            0,
+            await CountAsync(
+                """
+                SELECT COUNT(*) FROM annal_claims
+                WHERE SubjectStoreCode = 1 AND SubjectId = 'mem-annals-failure';
+                """));
+
+    }
+
     /// <summary>
     /// The claim reuses the scope the store just derived from the owning Session's canonical binding
     /// rather than deriving a second one. Two derivations of one authority eventually disagree, and the
