@@ -3103,6 +3103,44 @@ The same inventory is exposed read-only by `SecureFilePermissions.InspectOwnerOn
 
 **Purpose:** Preserve a uniform audit record for every server-executed tool invocation, including Covenant retirement, without blocking, prompting, timing out, or auto-denying it. This is separate from the `ask_human` MCP tool (information gathering). Retirement's retained classification, preflight, disclosure, egress-accounting, capability, Campaign, and Sanctum path is described in §10.14.
 
+The standing server-tool vocabulary is below. Catalog availability may still depend on the named independent boundary; that changes whether a tool is offered or can complete, never its Ward decision.
+
+<!-- ward-tool-inventory:start -->
+| Group | Tool | Catalog status | Ward decision | Independent boundary |
+|---|---|---|---|---|
+| Workspace/editing | `apply_patch` | conditionally advertised | None | Workspace binding, `WorkspacePathPolicy`, Sanctum, and transactional patch validation. |
+| Workspace/editing | `workspace_check` | conditionally advertised | None | Trusted workspace bytes plus eligible macOS containment and runtime chain. |
+| Workspace/editing | `write_file` | conditionally advertised | None | Workspace binding, write enablement, `WorkspacePathPolicy`, and Sanctum. |
+| Workspace/editing | `replace_text_block` | conditionally advertised | None | Workspace binding, write enablement, `WorkspacePathPolicy`, and Sanctum. |
+| Workspace/editing | `search_workspace` | conditionally advertised | None | Workspace binding, `WorkspacePathPolicy`, and bounded traversal. |
+| Workspace/editing | `read_file_chunk` | conditionally advertised | None | Workspace binding, `WorkspacePathPolicy`, Sanctum, and bounded reads. |
+| Workspace/editing | `list_directory` | conditionally advertised | None | Workspace binding, `WorkspacePathPolicy`, Sanctum, and bounded listing. |
+| Host process | `execute_command` | conditionally advertised | None | Development edition, explicit host-process opt-in, workspace binding, and Sanctum. |
+| Host process | `run_spell_script` | conditionally advertised | None | Development edition, explicit host-process opt-in, process policy, and Sanctum. |
+| Host process | `read_command_output` | conditionally advertised | None | An `execute_command` connection-lifetime output handle and bounded paging. |
+| Durable memory | `delete_lexicon` | conditionally advertised | None | Lexicon availability; `ToolPolicy.NoForbiddenArts` may omit the name from advertisement. |
+| Durable memory | `scribe_lexicon` | conditionally advertised | None | Lexicon availability, turn authority, and attachment provenance. |
+| Durable memory | `read_saga` | conditionally advertised | None | Saga availability and resolved memory scope. |
+| Durable memory | `search_archives` | conditionally advertised | None | Archive-search availability and bounded Grimoire search. |
+| Covenant | `retire_covenant` | conditionally advertised | None | Exact target preflight, Campaign binding, disclosure, one-call capability, Sanctum, and publication. |
+| Covenant | `propose_covenant` | conditionally advertised | None | Attended proposal eligibility, provenance, one-call capability, Sanctum, and publication. |
+| Session state | `attach_session_file` | conditionally advertised | None | Attachment-tool availability, current Session binding, and materialization policy. |
+| Session state | `refresh_session_file` | conditionally advertised | None | Attachment-tool availability, host-owned source identity, containment, and Session binding. |
+| Orchestration | `delegate_task` | conditionally advertised | None | Registered subagent runner, orchestration coordinator limits, and delegated-task validation. |
+| Orchestration | `petition_dungeon_master` | normally advertised | None | Active Apprentice context and escalation lifecycle. |
+| Orchestration | `ask_human` | conditionally advertised | None | Attended human-interaction availability; unattended turns omit it. |
+| Orchestration | `adjust_initiative` | normally advertised | None | Existing scheduled-job identity and bounded interval validation. |
+| Messaging | `cast_sending` | conditionally advertised | None | Conclave availability and child-Apprentice orchestration limits. |
+| Messaging | `continue_sending` | conditionally advertised | None | A2A client availability and an existing continuable remote task. |
+| Messaging | `dispatch_sending` | conditionally advertised | None | A2A client availability, outbound URL policy, and remote protocol validation. |
+| Messaging | `send_commlink_alert` | normally advertised | None | Configured Comm Link capability, outbound URL policy, and bounded payload. |
+| Web | `web_search` | conditionally advertised | None | Web-browsing availability, credential readiness, and outbound URL/provider policy. |
+| Web | `read_url` | conditionally advertised | None | Web-browsing availability, SSRF policy, redirect validation, and response bounds. |
+| Web | `browse_web` | recognized compatibility alias | None | Canonicalized to `read_url`; never advertised by a new native catalog. |
+| Host information | `get_local_system_time` | normally advertised | None | Read-only host-information implementation. |
+| Host information | `get_arcanum_system_info` | normally advertised | None | Sanitized host-information projection. |
+<!-- ward-tool-inventory:end -->
+
 **Engine:** Singleton **`IWard`** / **`WardGate`** remains in memory for record tombstones and its public compatibility API. **`RecordAutomaticResolution`** performs an atomic create → resolved transition without ever adding the id to `_pending`; therefore a record-only call never appears in `GET /api/wards`, and a competing `POST` sees **`AlreadyResolved`** (HTTP **409**). **`WardAsync`** and **`Resolve`** remain compatibility behavior for callers outside ordinary/Covenant-retirement live execution, but no such live path invokes them. Tombstones are retained for the clamped Ward timeout plus 60 seconds and pruned against an injected `TimeProvider` (system time in production).
 
 **Ordinary-tool policy:** `ToolRiskClassifier.IntrinsicWardToolNames` is empty, and `RequiresWard` returns `false` for every tool name regardless of the former campaign-policy argument. `WardSettings.ForbiddenArts` defaults to an empty list. Configured names are used only to narrow advertisement when a request explicitly selects `ToolPolicy.NoForbiddenArts`; they never block execution. `CampaignSettings` has no Ward control field, so missing, legacy, or fallback settings cannot restore a gate. The only public Ward choices are `ForbiddenArts` and `UnattendedMode`; the latter supplies the operator-facing default that omits genuine human-input tools and never changes an ordinary tool decision. `TimeoutSeconds` and `MaxActiveWards` survive only as internal bounds for the retained compatibility engine. `Enabled`, `AutoDenyInUnattendedMode`, and the entire `AutoApprove` subtree are removed from settings, public configuration, descriptors, presets, and source-generated JSON; configuration that still names them is rejected with migration guidance.
