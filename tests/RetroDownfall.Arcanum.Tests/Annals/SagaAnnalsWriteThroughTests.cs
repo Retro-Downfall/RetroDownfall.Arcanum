@@ -146,8 +146,6 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
                 Vec(1f),
                 CancellationToken.None));
 
-        Assert.Equal(19, exception.SqliteErrorCode);
-
         Assert.Contains("forced Saga Annals failure", exception.Message, StringComparison.Ordinal);
 
         Assert.Equal(

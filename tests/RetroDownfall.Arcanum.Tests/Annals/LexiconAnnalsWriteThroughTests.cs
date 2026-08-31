@@ -2,6 +2,7 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Annals;
@@ -159,7 +160,9 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
         }
 
-        Result<LexiconEntryDto> written = await CreateService().UpsertAsync(
+        TestCapturingLogger<LexiconService> logger = new();
+
+        Result<LexiconEntryDto> written = await CreateService(logger).UpsertAsync(
             "Annals failure subject",
             "Project",
             ["a fact whose claim cannot be recorded"],
@@ -169,6 +172,14 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
         Assert.True(written.IsFailure);
 
         Assert.Equal(ErrorCodes.Lexicon.WriteFailed, written.Error.Code);
+
+        TestLogEntry failure = Assert.Single(
+            logger.Entries,
+            static entry => entry.Level == LogLevel.Error && entry.Exception is SqliteException);
+
+        SqliteException exception = Assert.IsType<SqliteException>(failure.Exception);
+
+        Assert.Contains("forced Lexicon Annals failure", exception.Message, StringComparison.Ordinal);
 
         Assert.Equal(
             0,
@@ -424,13 +435,21 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
     private ILexiconService CreateService() => CreateService(new FeatureSettings());
 
+    private ILexiconService CreateService(ILogger<LexiconService> logger) =>
+        CreateService(new FeatureSettings(), logger);
+
     private ILexiconService CreateService(bool annals) =>
         CreateService(new FeatureSettings { Annals = annals });
 
     private ILexiconService CreateService(FeatureSettings features) =>
+        CreateService(features, NullLogger<LexiconService>.Instance);
+
+    private ILexiconService CreateService(
+        FeatureSettings features,
+        ILogger<LexiconService> logger) =>
         new LexiconService(
             _db!,
-            NullLogger<LexiconService>.Instance,
+            logger,
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings { Features = features }));
 
