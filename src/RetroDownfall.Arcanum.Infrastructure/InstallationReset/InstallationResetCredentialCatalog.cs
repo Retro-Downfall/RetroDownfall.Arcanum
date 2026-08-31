@@ -96,6 +96,15 @@ internal sealed partial class InstallationResetCredentialCatalog(
 
         }
 
+        return CollectOrdinaryAccounts(accounts);
+
+    }
+
+    internal static string[] CollectOrdinaryAccounts(IEnumerable<string> accounts)
+    {
+
+        ArgumentNullException.ThrowIfNull(accounts);
+
         return [.. accounts
             .Where(static account =>
                 !ArcanumCredentialIdentity.IsBackupRestoreJournalAccount(account)

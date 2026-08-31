@@ -652,7 +652,7 @@ internal static class GrimoireOfflineTransitionJournalAuthenticator
     {
 
         byte[] bytes = new byte[
-            EnvelopeAssociatedDataDomain.Length + 1 + 1 + CovenantLimits.DigestBytes + 16 + sizeof(ulong)
+            EnvelopeAssociatedDataDomain.Length + 1 + CovenantLimits.DigestBytes + 16 + sizeof(ulong)
             + 16 + 1 + 1 + sizeof(ulong) + CovenantLimits.DigestBytes + CovenantLimits.DigestBytes];
 
         int written = Encoding.ASCII.GetBytes(EnvelopeAssociatedDataDomain, bytes);

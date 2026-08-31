@@ -1,3 +1,7 @@
+using System.Buffers.Binary;
+
+using System.Buffers.Text;
+
 using System.Security.Cryptography;
 
 using System.Text;
@@ -136,6 +140,129 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
     }
 
+    [Fact]
+    public void Seal_uses_the_exact_specified_associated_data_bytes()
+    {
+
+        byte[] key = Enumerable.Range(0, GrimoireOfflineTransitionJournalAuthenticator.KeyBytes)
+            .Select(static value => (byte)value)
+            .ToArray();
+
+        GrimoireOfflineTransitionEnvelopeV1 envelope;
+
+        using (GrimoireOfflineTransitionJournalKeyLease lease =
+               GrimoireOfflineTransitionJournalKeyLease.Mint(key.ToArray()))
+        {
+
+            envelope = Value(GrimoireOfflineTransitionJournalAuthenticator.Seal(
+                lease,
+                Digest(1),
+                Installation,
+                1,
+                Operation,
+                GrimoireOfflineTransitionKind.CovenantReset,
+                7,
+                1,
+                Digest(2),
+                Digest(3),
+                [4, 5, 6]));
+
+        }
+
+        byte[] nonce = Decode(envelope.NonceBase64Url);
+
+        byte[] ciphertext = Decode(envelope.CiphertextBase64Url);
+
+        byte[] tag = Decode(envelope.AuthenticationTagBase64Url);
+
+        byte[] plaintext = new byte[ciphertext.Length];
+
+        byte[] aad = ExpectedAssociatedData(envelope);
+
+        Assert.Equal(
+            Encoding.ASCII.GetByteCount(GrimoireOfflineTransitionJournalAuthenticator.EnvelopeAssociatedDataDomain)
+            + 1 + 32 + 16 + 8 + 16 + 1 + 1 + 8 + 32 + 32,
+            aad.Length);
+
+        using AesGcm aes = new(key, GrimoireOfflineTransitionJournalAuthenticator.TagBytes);
+
+        aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
+
+        CryptographicOperations.ZeroMemory(plaintext);
+
+        CryptographicOperations.ZeroMemory(key);
+
+    }
+
+    [Fact]
+    public void Transition_journal_limits_are_exact_and_accept_their_legal_edges()
+    {
+
+        Assert.Equal(1, GrimoireOfflineTransitionJournalAuthenticator.EnvelopeVersion);
+
+        Assert.Equal(1, GrimoireOfflineTransitionJournalAuthenticator.AnchorVersion);
+
+        Assert.Equal(32, GrimoireOfflineTransitionJournalAuthenticator.KeyBytes);
+
+        Assert.Equal(12, GrimoireOfflineTransitionJournalAuthenticator.NonceBytes);
+
+        Assert.Equal(16, GrimoireOfflineTransitionJournalAuthenticator.TagBytes);
+
+        Assert.Equal(256 * 1024, GrimoireOfflineTransitionJournalAuthenticator.MaxHandlerPayloadBytes);
+
+        Assert.Equal(512 * 1024, GrimoireOfflineTransitionJournalAuthenticator.MaxPlaintextBytes);
+
+        Assert.Equal(1024 * 1024, GrimoireOfflineTransitionJournalAuthenticator.MaxJournalFileBytes);
+
+        Assert.Equal(2048, GrimoireOfflineTransitionJournalAuthenticator.MaxAnchorCharacters);
+
+        Assert.Equal(1_000_000UL, GrimoireOfflineTransitionJournalAuthenticator.MaxRevision);
+
+        Assert.Equal(1_000_000UL, GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch);
+
+        using GrimoireOfflineTransitionJournalKeyLease lease = CreateLease();
+
+        Assert.True(GrimoireOfflineTransitionJournalAuthenticator.Seal(
+            lease,
+            Digest(1),
+            Installation,
+            GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            1,
+            GrimoireOfflineTransitionJournalAuthenticator.MaxRevision,
+            Digest(2),
+            Digest(3),
+            new byte[GrimoireOfflineTransitionJournalAuthenticator.MaxHandlerPayloadBytes]).IsSuccess);
+
+        Assert.True(GrimoireOfflineTransitionJournalAuthenticator.ValidateAnchor(
+            ActiveAnchor(
+                GrimoireOfflineTransitionJournalAuthenticator.MaxRevision,
+                Digest(4),
+                GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch)).IsSuccess);
+
+        GrimoireOfflineTransitionEnvelopeV1 maximumPlaintextEnvelope = new(
+            GrimoireOfflineTransitionJournalAuthenticator.EnvelopeVersion,
+            Digest(1),
+            Installation,
+            1,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            1,
+            1,
+            Digest(2),
+            Digest(3),
+            Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(12)),
+            Base64Url.EncodeToString(
+                RandomNumberGenerator.GetBytes(
+                    GrimoireOfflineTransitionJournalAuthenticator.MaxPlaintextBytes)),
+            Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(16)));
+
+        Assert.True(GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(
+            maximumPlaintextEnvelope).IsSuccess);
+
+    }
+
     [Theory]
     [InlineData("profile")]
     [InlineData("installation")]
@@ -212,6 +339,25 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
                 Installation,
                 Digest(3),
                 envelope).IsFailure);
+
+        }
+
+        foreach (GrimoireOfflineTransitionEnvelopeV1 tampered in
+                 (GrimoireOfflineTransitionEnvelopeV1[])
+                 [
+                     envelope with { CiphertextBase64Url = ToggleBase64Url(envelope.CiphertextBase64Url) },
+                     envelope with { AuthenticationTagBase64Url = ToggleBase64Url(envelope.AuthenticationTagBase64Url) },
+                 ])
+        {
+
+            using GrimoireOfflineTransitionJournalKeyLease opening = OpenLease();
+
+            Assert.True(GrimoireOfflineTransitionJournalAuthenticator.Open(
+                opening,
+                Digest(1),
+                Installation,
+                Digest(3),
+                tampered).IsFailure);
 
         }
 
@@ -295,6 +441,9 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
         Assert.True(GrimoireOfflineTransitionJournalAuthenticator.ValidateAnchor(
             ActiveAnchor(GrimoireOfflineTransitionJournalAuthenticator.MaxRevision + 1, Digest(4))).IsFailure);
 
+        Assert.True(GrimoireOfflineTransitionJournalAuthenticator.ValidateAnchor(
+            ActiveAnchor(1, Digest(4), GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch + 1)).IsFailure);
+
     }
 
     [Theory]
@@ -304,6 +453,15 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
     [InlineData("closed-never-published", true)]
     [InlineData("closed-published", true)]
     [InlineData("missing-operation", false)]
+    [InlineData("empty-operation", false)]
+    [InlineData("undefined-kind", false)]
+    [InlineData("zero-payload-version", false)]
+    [InlineData("invalid-profile", false)]
+    [InlineData("invalid-location", false)]
+    [InlineData("missing-digest-after-publication", false)]
+    [InlineData("digest-before-publication", false)]
+    [InlineData("active-genesis", false)]
+    [InlineData("closed-genesis-with-operation", false)]
     public void Anchor_shape_accepts_only_closed_genesis_active_revision_zero_and_exact_tombstones(
         string shape,
         bool expected)
@@ -325,10 +483,89 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
             "missing-operation" => new(
                 1, Digest(1), Installation, 1, GrimoireOfflineTransitionAnchorState.Active,
                 null, null, null, 1, Digest(4), Digest(3)),
+            "empty-operation" => new(
+                1, Digest(1), Installation, 1, GrimoireOfflineTransitionAnchorState.Active,
+                Guid.Empty, GrimoireOfflineTransitionKind.CovenantReset, 7, 0, null, Digest(3)),
+            "undefined-kind" => new(
+                1, Digest(1), Installation, 1, GrimoireOfflineTransitionAnchorState.Active,
+                Operation, (GrimoireOfflineTransitionKind)99, 7, 0, null, Digest(3)),
+            "zero-payload-version" => new(
+                1, Digest(1), Installation, 1, GrimoireOfflineTransitionAnchorState.Active,
+                Operation, GrimoireOfflineTransitionKind.CovenantReset, 0, 0, null, Digest(3)),
+            "invalid-profile" => new(
+                1, default, Installation, 1, GrimoireOfflineTransitionAnchorState.Active,
+                Operation, GrimoireOfflineTransitionKind.CovenantReset, 7, 0, null, Digest(3)),
+            "invalid-location" => new(
+                1, Digest(1), Installation, 1, GrimoireOfflineTransitionAnchorState.Active,
+                Operation, GrimoireOfflineTransitionKind.CovenantReset, 7, 0, null, default),
+            "missing-digest-after-publication" => ActiveAnchor(1, null),
+            "digest-before-publication" => ActiveAnchor(0, Digest(4)),
+            "active-genesis" => new(
+                1, Digest(1), Installation, 0, GrimoireOfflineTransitionAnchorState.Active,
+                null, null, null, 0, null, Digest(3)),
+            "closed-genesis-with-operation" => new(
+                1, Digest(1), Installation, 0, GrimoireOfflineTransitionAnchorState.Closed,
+                Operation, GrimoireOfflineTransitionKind.CovenantReset, 7, 0, null, Digest(3)),
             _ => throw new ArgumentOutOfRangeException(nameof(shape)),
         };
 
         Assert.Equal(expected, GrimoireOfflineTransitionJournalAuthenticator.ValidateAnchor(anchor).IsSuccess);
+
+    }
+
+    [Fact]
+    public void Every_anchor_nullable_combination_outside_the_five_documented_shapes_is_refused()
+    {
+
+        foreach (GrimoireOfflineTransitionAnchorState state in
+                 (GrimoireOfflineTransitionAnchorState[])
+                 [
+                     GrimoireOfflineTransitionAnchorState.Active,
+                     GrimoireOfflineTransitionAnchorState.Closed,
+                 ])
+        {
+
+            foreach (ulong revision in (ulong[])[0, 1])
+            {
+
+                for (int flags = 0; flags < 16; flags++)
+                {
+
+                    bool operationPresent = (flags & 1) != 0;
+
+                    bool kindPresent = (flags & 2) != 0;
+
+                    bool payloadVersionPresent = (flags & 4) != 0;
+
+                    bool digestPresent = (flags & 8) != 0;
+
+                    GrimoireOfflineTransitionAnchorV1 anchor = new(
+                        1,
+                        Digest(1),
+                        Installation,
+                        1,
+                        state,
+                        operationPresent ? Operation : null,
+                        kindPresent ? GrimoireOfflineTransitionKind.CovenantReset : null,
+                        payloadVersionPresent ? (byte)7 : null,
+                        revision,
+                        digestPresent ? Digest(4) : null,
+                        Digest(3));
+
+                    bool expected = operationPresent
+                        && kindPresent
+                        && payloadVersionPresent
+                        && (revision == 0 ? !digestPresent : digestPresent);
+
+                    Assert.Equal(
+                        expected,
+                        GrimoireOfflineTransitionJournalAuthenticator.ValidateAnchor(anchor).IsSuccess);
+
+                }
+
+            }
+
+        }
 
     }
 
@@ -422,12 +659,13 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
     private static GrimoireOfflineTransitionAnchorV1 ActiveAnchor(
         ulong revision,
-        CovenantDigest? envelopeDigest) =>
+        CovenantDigest? envelopeDigest,
+        ulong slotEpoch = 1) =>
         new(
             1,
             Digest(1),
             Installation,
-            1,
+            slotEpoch,
             GrimoireOfflineTransitionAnchorState.Active,
             Operation,
             GrimoireOfflineTransitionKind.CovenantReset,
@@ -449,6 +687,67 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
         "unknown-version" => value.Replace("\"version\":1", "\"version\":2", StringComparison.Ordinal),
         _ => throw new ArgumentOutOfRangeException(nameof(mutation)),
     };
+
+    private static byte[] ExpectedAssociatedData(GrimoireOfflineTransitionEnvelopeV1 envelope)
+    {
+
+        byte[] bytes = new byte[
+            Encoding.ASCII.GetByteCount(GrimoireOfflineTransitionJournalAuthenticator.EnvelopeAssociatedDataDomain)
+            + 1 + 32 + 16 + 8 + 16 + 1 + 1 + 8 + 32 + 32];
+
+        int written = Encoding.ASCII.GetBytes(
+            GrimoireOfflineTransitionJournalAuthenticator.EnvelopeAssociatedDataDomain,
+            bytes);
+
+        bytes[written++] = envelope.Version;
+
+        envelope.ProfileNamespaceDigest.Bytes.CopyTo(bytes.AsSpan(written));
+
+        written += 32;
+
+        envelope.InstallationId.TryWriteBytes(bytes.AsSpan(written), bigEndian: true, out _);
+
+        written += 16;
+
+        BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(written), envelope.SlotEpoch);
+
+        written += 8;
+
+        envelope.OperationId.TryWriteBytes(bytes.AsSpan(written), bigEndian: true, out _);
+
+        written += 16;
+
+        bytes[written++] = (byte)envelope.Kind;
+
+        bytes[written++] = envelope.PayloadVersion;
+
+        BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(written), envelope.Revision);
+
+        written += 8;
+
+        envelope.PreviousEnvelopeDigest.Bytes.CopyTo(bytes.AsSpan(written));
+
+        written += 32;
+
+        envelope.JournalLocationDigest.Bytes.CopyTo(bytes.AsSpan(written));
+
+        return bytes;
+
+    }
+
+    private static byte[] Decode(string value)
+    {
+
+        byte[] decoded = new byte[Base64Url.GetMaxDecodedLength(value.Length)];
+
+        Assert.True(Base64Url.TryDecodeFromChars(value, decoded, out int written));
+
+        return decoded[..written];
+
+    }
+
+    private static string ToggleBase64Url(string value) =>
+        (value[0] is 'A' ? "B" : "A") + value[1..];
 
     private static readonly Guid Installation = Guid.Parse("11111111-1111-1111-1111-111111111111");
 

@@ -22,6 +22,50 @@ public sealed class GrimoireOfflineTransitionJournalKeyLeaseCallSiteTests
 
         Assert.Empty(offenders);
 
+        string keyProvider =
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/"
+            + "GrimoireOfflineTransitionJournalKeyProvider.cs";
+
+        string anchorStore =
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/"
+            + "GrimoireOfflineTransitionJournalAnchorStore.cs";
+
+        List<string> keyFactoryCallers =
+        [
+            .. ProductionSourceInventory.Sources()
+                .Where(source =>
+                    !source.IsExactOwner(credentials)
+                    && !source.IsExactOwner(keyProvider)
+                    && source.Names("ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount("))
+                .Select(static source => source.RelativePath),
+        ];
+
+        List<string> anchorFactoryCallers =
+        [
+            .. ProductionSourceInventory.Sources()
+                .Where(source =>
+                    !source.IsExactOwner(credentials)
+                    && !source.IsExactOwner(anchorStore)
+                    && source.Names("ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount("))
+                .Select(static source => source.RelativePath),
+        ];
+
+        List<string> deletionFactoryCallers =
+        [
+            .. ProductionSourceInventory.Sources()
+                .Where(source =>
+                    source.Names(".Delete(")
+                    && (source.Names("GrimoireTransitionJournalKeyAccount(")
+                        || source.Names("GrimoireTransitionJournalAnchorAccount(")))
+                .Select(static source => source.RelativePath),
+        ];
+
+        Assert.Empty(keyFactoryCallers);
+
+        Assert.Empty(anchorFactoryCallers);
+
+        Assert.Empty(deletionFactoryCallers);
+
     }
 
     [Fact]
@@ -41,9 +85,8 @@ public sealed class GrimoireOfflineTransitionJournalKeyLeaseCallSiteTests
             .. ProductionSourceInventory.Sources()
                 .Where(source =>
                     !source.IsExactOwner(authenticator)
-                    && !source.IsExactOwner(provider)
                     && source.Names("GrimoireOfflineTransitionJournalKeyLease")
-                    && source.Names("TryTakeKey"))
+                    && source.Names(".TryTakeKey("))
                 .Select(static source => source.RelativePath),
         ];
 

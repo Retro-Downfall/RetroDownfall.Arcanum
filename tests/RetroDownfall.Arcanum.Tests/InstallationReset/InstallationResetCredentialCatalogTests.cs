@@ -182,6 +182,23 @@ public sealed class InstallationResetCredentialCatalogTests
     }
 
     [Fact]
+    public void Ordinary_account_filter_rejects_actual_transition_key_and_anchor_accounts()
+    {
+
+        string suffix = new('a', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength);
+
+        string[] retained = InstallationResetCredentialCatalog.CollectOrdinaryAccounts(
+            [
+                ArcanumCredentialIdentity.MasterApiKeyAccount,
+                ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(suffix),
+                ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(suffix),
+            ]);
+
+        Assert.Equal([ArcanumCredentialIdentity.MasterApiKeyAccount], retained);
+
+    }
+
+    [Fact]
     public void Planning_exposes_status_only_and_never_the_secret_value()
     {
 
