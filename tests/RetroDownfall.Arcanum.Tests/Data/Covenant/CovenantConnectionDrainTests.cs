@@ -110,7 +110,11 @@ public sealed class CovenantConnectionDrainTests
         DbContextOptions<DrainProbeDbContext> options =
             new DbContextOptionsBuilder<DrainProbeDbContext>()
                 .UseSqlite(database.Connection, contextOwnsConnection: false)
-                .AddInterceptors(new CovenantConnectionEnrolmentInterceptor(admission, drain))
+                .AddInterceptors(
+                    new CovenantConnectionEnrolmentInterceptor(
+                        admission,
+                        drain,
+                        CovenantSqliteConnectionInitializer.Instance))
                 .Options;
 
         await using DrainProbeDbContext context = new(options);

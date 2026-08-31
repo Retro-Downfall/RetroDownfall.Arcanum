@@ -180,11 +180,11 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                     options
                         .UseSqlite(connectionString)
                         .UseModel(ArcanumDbContextModel.Instance)
-                        .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance)
                         .AddInterceptors(
                             new CovenantConnectionEnrolmentInterceptor(
                                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
-                                sp.GetRequiredService<ICovenantConnectionDrain>())));
+                                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>())));
             }
             else
             {

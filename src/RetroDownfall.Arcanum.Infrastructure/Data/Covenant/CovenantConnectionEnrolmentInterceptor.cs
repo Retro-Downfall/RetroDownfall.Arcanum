@@ -30,22 +30,29 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     private readonly ICovenantConnectionDrain _drain;
 
+    private readonly ICovenantSqliteConnectionInitializer _initializer;
+
     private readonly Lock _gate = new();
 
     private readonly ConditionalWeakTable<DbConnection, ConnectionLifecycleState> _lifecycles = [];
 
     internal CovenantConnectionEnrolmentInterceptor(
         IGrimoireConnectionAdmissionGate admissionGate,
-        ICovenantConnectionDrain drain)
+        ICovenantConnectionDrain drain,
+        ICovenantSqliteConnectionInitializer initializer)
     {
 
         ArgumentNullException.ThrowIfNull(admissionGate);
 
         ArgumentNullException.ThrowIfNull(drain);
 
+        ArgumentNullException.ThrowIfNull(initializer);
+
         _admissionGate = admissionGate;
 
         _drain = drain;
+
+        _initializer = initializer;
 
     }
 
@@ -81,7 +88,37 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        if (!CompleteOpen(connection))
+        bool admitted;
+
+        try
+        {
+
+            if (connection is SqliteConnection sqlite)
+            {
+
+                _initializer.InitializeAsync(
+                        sqlite,
+                        CovenantSqliteConnectionMode.ReadWrite,
+                        CancellationToken.None)
+                    .AsTask()
+                    .GetAwaiter()
+                    .GetResult();
+
+            }
+
+            admitted = CompleteOpen(connection);
+
+        }
+        catch
+        {
+
+            Release(connection);
+
+            throw;
+
+        }
+
+        if (!admitted)
         {
 
             connection.Close();
@@ -102,7 +139,35 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         CancellationToken cancellationToken = default)
     {
 
-        if (!CompleteOpen(connection))
+        bool admitted;
+
+        try
+        {
+
+            if (connection is SqliteConnection sqlite)
+            {
+
+                await _initializer.InitializeAsync(
+                        sqlite,
+                        CovenantSqliteConnectionMode.ReadWrite,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+
+            admitted = CompleteOpen(connection);
+
+        }
+        catch
+        {
+
+            await ReleaseAsync(connection).ConfigureAwait(false);
+
+            throw;
+
+        }
+
+        if (!admitted)
         {
 
             await connection.CloseAsync().ConfigureAwait(false);
@@ -135,9 +200,54 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         CancellationToken cancellationToken = default)
     {
 
+        return ReleaseAfterFailureAsync(connection, eventData, cancellationToken);
+
+    }
+
+    public override void ConnectionCanceled(
+        DbConnection connection,
+        ConnectionEndEventData eventData)
+    {
+
         Release(connection);
 
-        return base.ConnectionFailedAsync(connection, eventData, cancellationToken);
+        base.ConnectionCanceled(connection, eventData);
+
+    }
+
+    public override Task ConnectionCanceledAsync(
+        DbConnection connection,
+        ConnectionEndEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+
+        return ReleaseAfterCancellationAsync(connection, eventData, cancellationToken);
+
+    }
+
+    private async Task ReleaseAfterFailureAsync(
+        DbConnection connection,
+        ConnectionErrorEventData eventData,
+        CancellationToken cancellationToken)
+    {
+
+        await ReleaseAsync(connection).ConfigureAwait(false);
+
+        await base.ConnectionFailedAsync(connection, eventData, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    private async Task ReleaseAfterCancellationAsync(
+        DbConnection connection,
+        ConnectionEndEventData eventData,
+        CancellationToken cancellationToken)
+    {
+
+        await ReleaseAsync(connection).ConfigureAwait(false);
+
+        await base.ConnectionCanceledAsync(connection, eventData, cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
@@ -197,6 +307,8 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             lifecycle.RefusalAfterOpenRequired = false;
 
+            lifecycle.NativeOpenObserved = false;
+
         }
 
     }
@@ -216,6 +328,15 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             }
 
+            lifecycle.NativeOpenObserved = true;
+
+            if (connection is SqliteConnection sqlite && lifecycle.Enrolment is null)
+            {
+
+                lifecycle.Enrolment = _drain.Register(sqlite);
+
+            }
+
             Result admitted = lifecycle.OpenTicket.MarkOpened();
 
             if (admitted.IsFailure)
@@ -230,13 +351,6 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
             lifecycle.OpenTicket.Dispose();
 
             lifecycle.OpenTicket = null;
-
-            if (connection is SqliteConnection sqlite && lifecycle.Enrolment is null)
-            {
-
-                lifecycle.Enrolment = _drain.Register(sqlite);
-
-            }
 
             return true;
 
@@ -275,6 +389,12 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             lifecycle.RefusalAfterOpenRequired = false;
 
+            lifecycle.Enrolment?.Dispose();
+
+            lifecycle.Enrolment = null;
+
+            lifecycle.NativeOpenObserved = false;
+
         }
 
     }
@@ -282,10 +402,117 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     private void Release(DbConnection connection)
     {
 
+        ConnectionLifecycleState? lifecycle = TryBeginRelease(connection);
+
+        if (lifecycle is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            if (!IsPhysicallyClosed(connection))
+            {
+
+                connection.Close();
+
+            }
+
+            CompleteRelease(connection, lifecycle);
+
+        }
+        catch
+        {
+
+            CancelRelease(connection, lifecycle);
+
+            throw;
+
+        }
+
+    }
+
+    private async Task ReleaseAsync(DbConnection connection)
+    {
+
+        ConnectionLifecycleState? lifecycle = TryBeginRelease(connection);
+
+        if (lifecycle is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            if (!IsPhysicallyClosed(connection))
+            {
+
+                await connection.CloseAsync().ConfigureAwait(false);
+
+            }
+
+            CompleteRelease(connection, lifecycle);
+
+        }
+        catch
+        {
+
+            CancelRelease(connection, lifecycle);
+
+            throw;
+
+        }
+
+    }
+
+    private ConnectionLifecycleState? TryBeginRelease(DbConnection connection)
+    {
+
         lock (_gate)
         {
 
             if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle))
+            {
+
+                return null;
+
+            }
+
+            if (lifecycle.ReleaseInProgress
+                || (lifecycle.OpenTicket is null
+                    && lifecycle.Enrolment is null
+                    && !lifecycle.NativeOpenObserved))
+            {
+
+                return null;
+
+            }
+
+            lifecycle.ReleaseInProgress = true;
+
+            return lifecycle;
+
+        }
+
+    }
+
+    private void CompleteRelease(
+        DbConnection connection,
+        ConnectionLifecycleState lifecycle)
+    {
+
+        lock (_gate)
+        {
+
+            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? current)
+                || !ReferenceEquals(current, lifecycle)
+                || !lifecycle.ReleaseInProgress)
             {
 
                 return;
@@ -327,6 +554,48 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             lifecycle.Enrolment = null;
 
+            lifecycle.NativeOpenObserved = false;
+
+            lifecycle.ReleaseInProgress = false;
+
+        }
+
+    }
+
+    private void CancelRelease(
+        DbConnection connection,
+        ConnectionLifecycleState lifecycle)
+    {
+
+        lock (_gate)
+        {
+
+            if (_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? current)
+                && ReferenceEquals(current, lifecycle))
+            {
+
+                lifecycle.ReleaseInProgress = false;
+
+            }
+
+        }
+
+    }
+
+    private static bool IsPhysicallyClosed(DbConnection connection)
+    {
+
+        try
+        {
+
+            return connection.State == ConnectionState.Closed;
+
+        }
+        catch (ObjectDisposedException)
+        {
+
+            return true;
+
         }
 
     }
@@ -339,6 +608,10 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         internal IDisposable? Enrolment { get; set; }
 
         internal bool RefusalAfterOpenRequired { get; set; }
+
+        internal bool NativeOpenObserved { get; set; }
+
+        internal bool ReleaseInProgress { get; set; }
 
     }
 

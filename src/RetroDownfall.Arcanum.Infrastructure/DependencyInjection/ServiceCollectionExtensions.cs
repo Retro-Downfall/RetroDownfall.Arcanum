@@ -312,7 +312,8 @@ public static class ServiceCollectionExtensions
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()));
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
 
         // GrimoireRepository requires the attachment store (session fork/purge hooks). Register it
         // here for the deliberately offline CLI maintenance operations.
@@ -1122,7 +1123,8 @@ public static class ServiceCollectionExtensions
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()),
             poolSize: 32);
 
         services.AddScoped<IUnseenServantWatermarkStore, UnseenServantWatermarkStore>();

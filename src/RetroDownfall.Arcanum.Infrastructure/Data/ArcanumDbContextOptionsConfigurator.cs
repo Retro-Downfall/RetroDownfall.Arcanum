@@ -23,17 +23,23 @@ internal static class ArcanumDbContextOptionsConfigurator
         DbContextOptionsBuilder optionsBuilder,
         IGrimoireDbPassphraseSource passphraseSource,
         IGrimoireConnectionAdmissionGate admissionGate,
-        ICovenantConnectionDrain drain)
+        ICovenantConnectionDrain drain,
+        ICovenantSqliteConnectionInitializer initializer)
     {
 
         ArgumentNullException.ThrowIfNull(admissionGate);
 
         ArgumentNullException.ThrowIfNull(drain);
 
+        ArgumentNullException.ThrowIfNull(initializer);
+
         ConfigureProvider(optionsBuilder, passphraseSource);
 
         _ = optionsBuilder.AddInterceptors(
-            new CovenantConnectionEnrolmentInterceptor(admissionGate, drain));
+            new CovenantConnectionEnrolmentInterceptor(
+                admissionGate,
+                drain,
+                initializer));
 
     }
 
@@ -42,8 +48,14 @@ internal static class ArcanumDbContextOptionsConfigurator
     /// </summary>
     internal static void ConfigureNonServingFallback(
         DbContextOptionsBuilder optionsBuilder,
-        IGrimoireDbPassphraseSource passphraseSource) =>
+        IGrimoireDbPassphraseSource passphraseSource)
+    {
+
         ConfigureProvider(optionsBuilder, passphraseSource);
+
+        _ = optionsBuilder.AddInterceptors(SqlitePragmaConnectionInterceptor.Instance);
+
+    }
 
     private static void ConfigureProvider(
         DbContextOptionsBuilder optionsBuilder,
@@ -58,8 +70,7 @@ internal static class ArcanumDbContextOptionsConfigurator
 
         _ = optionsBuilder
             .UseSqlite(connectionString)
-            .UseModel(ArcanumDbContextModel.Instance)
-            .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance);
+            .UseModel(ArcanumDbContextModel.Instance);
 
     }
 

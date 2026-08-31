@@ -1,6 +1,7 @@
 using System.Reflection;
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -72,13 +73,16 @@ public sealed class GrimoireDbContextCompositionTests
             drain,
             secondScope.ServiceProvider.GetRequiredService<ICovenantConnectionDrain>());
 
-        CovenantConnectionEnrolmentInterceptor interceptor = Assert.Single(
-            Interceptors(
-                firstScope.ServiceProvider.GetRequiredService<DbContextOptions<ArcanumDbContext>>()));
+        DbContextOptions<ArcanumDbContext> options = firstScope.ServiceProvider
+            .GetRequiredService<DbContextOptions<ArcanumDbContext>>();
+
+        CovenantConnectionEnrolmentInterceptor interceptor = Assert.Single(Interceptors(options));
 
         Assert.Same(admission, Dependency<IGrimoireConnectionAdmissionGate>(interceptor, "_admissionGate"));
 
         Assert.Same(drain, Dependency<ICovenantConnectionDrain>(interceptor, "_drain"));
+
+        AssertSingleServingConnectionInterceptor(options);
 
     }
 
@@ -94,9 +98,10 @@ public sealed class GrimoireDbContextCompositionTests
 
         await using AsyncServiceScope scope = provider.CreateAsyncScope();
 
-        CovenantConnectionEnrolmentInterceptor interceptor = Assert.Single(
-            Interceptors(
-                scope.ServiceProvider.GetRequiredService<DbContextOptions<ArcanumDbContext>>()));
+        DbContextOptions<ArcanumDbContext> options = scope.ServiceProvider
+            .GetRequiredService<DbContextOptions<ArcanumDbContext>>();
+
+        CovenantConnectionEnrolmentInterceptor interceptor = Assert.Single(Interceptors(options));
 
         Assert.Same(
             provider.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
@@ -105,6 +110,8 @@ public sealed class GrimoireDbContextCompositionTests
         Assert.Same(
             provider.GetRequiredService<ICovenantConnectionDrain>(),
             Dependency<ICovenantConnectionDrain>(interceptor, "_drain"));
+
+        AssertSingleServingConnectionInterceptor(options);
 
     }
 
@@ -156,6 +163,20 @@ public sealed class GrimoireDbContextCompositionTests
             ?? throw new InvalidOperationException("The EF Core options extension is missing.");
 
         return [.. core.Interceptors!.OfType<CovenantConnectionEnrolmentInterceptor>()];
+
+    }
+
+    private static void AssertSingleServingConnectionInterceptor(
+        DbContextOptions<ArcanumDbContext> options)
+    {
+
+        CoreOptionsExtension core = options.FindExtension<CoreOptionsExtension>()
+            ?? throw new InvalidOperationException("The EF Core options extension is missing.");
+
+        DbConnectionInterceptor interceptor = Assert.Single(
+            core.Interceptors!.OfType<DbConnectionInterceptor>());
+
+        _ = Assert.IsType<CovenantConnectionEnrolmentInterceptor>(interceptor);
 
     }
 
