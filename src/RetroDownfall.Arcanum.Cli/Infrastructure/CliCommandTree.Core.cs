@@ -586,7 +586,7 @@ internal static partial class CliCommandTree
 
         Command invoke = new(
             "invoke",
-            "Invoke one external MCP tool diagnostically; internal and Forbidden Art tools remain blocked server-side.");
+            "Invoke one external MCP tool diagnostically; internal tool names are reserved for the Master execution pipeline.");
 
         Argument<string> invokeTool = new("tool")
         {

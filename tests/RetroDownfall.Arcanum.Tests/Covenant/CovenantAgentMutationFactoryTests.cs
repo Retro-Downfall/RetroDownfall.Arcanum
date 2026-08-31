@@ -34,7 +34,7 @@ public sealed class CovenantAgentMutationFactoryTests
     }
 
     [Fact]
-    public void An_operator_approved_retirement_claims_the_agent_approved_origin()
+    public void An_ungated_retirement_keeps_the_frozen_agent_approved_origin_without_ward_evidence()
     {
         using FactoryFixture fixture = new(CovenantToolNames.RetireCovenant);
 
@@ -45,11 +45,12 @@ public sealed class CovenantAgentMutationFactoryTests
         Assert.True(intent.IsSuccess, intent.Error.Message);
         Assert.Equal(CovenantMutationKind.AgentRetire, intent.Value.Kind);
 
-        // OATH §5 reserves AgentApproved for an approved agent retirement, and covenant_versions
-        // refuses a Ward digest under any other origin.
+        CovenantRetirementPreflight preflight = fixture.Context.RetirementPreflight!;
+
         Assert.Equal(CovenantOrigin.AgentApproved, intent.Value.Origin);
-        Assert.NotNull(intent.Value.Authorization.WardReceiptDigest);
-        Assert.Equal(CovenantAuthorizationMode.WardInteractive, intent.Value.Authorization.Mode);
+        Assert.Equal(CovenantAuthorizationMode.None, intent.Value.Authorization.Mode);
+        Assert.Null(intent.Value.Authorization.WardReceiptDigest);
+        Assert.Equal(preflight.PreflightBodyDigest, intent.Value.Authorization.PreflightBodyDigest);
     }
 
     [Fact]
@@ -111,7 +112,6 @@ public sealed class CovenantAgentMutationFactoryTests
                 toolName,
                 "call-1",
                 isRetirement ? CovenantCapabilityFixtures.RetirementPreflight() : null,
-                isRetirement ? CovenantCapabilityFixtures.WardReceipt(CovenantWardDecision.Approved) : null,
                 _turn.Token);
         }
 

@@ -88,7 +88,7 @@ internal static partial class CliCommandTree
         Option<bool> unattended = new("--unattended")
         {
 
-            Description = "Apply unattended human-prompt and Ward behavior to the selected live route.",
+            Description = "Omit human-prompt tools on the selected live route; Ward records remain informational.",
 
         };
 

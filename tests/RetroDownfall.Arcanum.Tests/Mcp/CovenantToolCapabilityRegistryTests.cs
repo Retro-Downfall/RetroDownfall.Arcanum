@@ -226,7 +226,6 @@ public sealed class CovenantToolCapabilityRegistryTests
             CovenantToolNames.ProposeCovenant,
             "call-1",
             retirementPreflight: null,
-            wardReceipt: null,
             CancellationToken.None);
     }
 

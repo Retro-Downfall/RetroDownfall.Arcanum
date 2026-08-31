@@ -2,6 +2,7 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Annals;
@@ -106,7 +107,7 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ILexiconService service = CreateService(annals: true);
+        ILexiconService service = CreateService();
 
         Result<LexiconEntryDto> written = await service.UpsertAsync(
             "config",
@@ -132,6 +133,65 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
         Assert.Null(only.PredecessorVersionId);
 
         Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM annal_dependencies;"));
+
+    }
+
+    [SkippableFact]
+    public async Task A_claim_failure_rolls_back_the_Lexicon_entry_and_reports_write_failed()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await OpenAsync();
+
+        await using (SqliteCommand trigger = (SqliteCommand)_db!.Database.GetDbConnection().CreateCommand())
+        {
+
+            trigger.CommandText =
+                """
+                CREATE TEMP TRIGGER fail_lexicon_annals
+                BEFORE INSERT ON main.annal_claims
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced Lexicon Annals failure');
+                END;
+                """;
+
+            _ = await trigger.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        TestCapturingLogger<LexiconService> logger = new();
+
+        Result<LexiconEntryDto> written = await CreateService(logger).UpsertAsync(
+            "Annals failure subject",
+            "Project",
+            ["a fact whose claim cannot be recorded"],
+            LexiconScope.Global,
+            CancellationToken.None);
+
+        Assert.True(written.IsFailure);
+
+        Assert.Equal(ErrorCodes.Lexicon.WriteFailed, written.Error.Code);
+
+        TestLogEntry failure = Assert.Single(
+            logger.Entries,
+            static entry => entry.Level == LogLevel.Error && entry.Exception is SqliteException);
+
+        SqliteException exception = Assert.IsType<SqliteException>(failure.Exception);
+
+        Assert.Contains("forced Lexicon Annals failure", exception.Message, StringComparison.Ordinal);
+
+        Assert.Equal(
+            0,
+            await CountAsync(
+                """
+                SELECT COUNT(*) FROM lexicon_entries
+                WHERE NameNormalized = 'ANNALS FAILURE SUBJECT';
+                """));
+
+        Assert.Equal(
+            0,
+            await CountAsync("SELECT COUNT(*) FROM annal_claims WHERE SubjectStoreCode = 2;"));
 
     }
 
@@ -305,6 +365,38 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
         Assert.True(written.IsSuccess);
 
+        await OpenAsync();
+
+        await using (SqliteCommand command = (SqliteCommand)_db!.Database.GetDbConnection().CreateCommand())
+        {
+
+            command.CommandText =
+                """
+                SELECT Id, Name, ScopeCampaignId, Type, FactsText
+                FROM lexicon_entries
+                WHERE Id = $id;
+                """;
+
+            _ = command.Parameters.AddWithValue("$id", written.Value.Id.ToString("N"));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+            Assert.True(await reader.ReadAsync(CancellationToken.None));
+
+            Assert.Equal(written.Value.Id.ToString("N"), reader.GetString(0));
+
+            Assert.Equal("config", reader.GetString(1));
+
+            Assert.Equal(string.Empty, reader.GetString(2));
+
+            Assert.Equal("Project", reader.GetString(3));
+
+            Assert.Equal("ships on Friday", reader.GetString(4));
+
+            Assert.False(await reader.ReadAsync(CancellationToken.None));
+
+        }
+
         Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM annal_claims;"));
 
     }
@@ -373,12 +465,25 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
     }
 
+    private ILexiconService CreateService() => CreateService(new FeatureSettings());
+
+    private ILexiconService CreateService(ILogger<LexiconService> logger) =>
+        CreateService(new FeatureSettings(), logger);
+
     private ILexiconService CreateService(bool annals) =>
+        CreateService(new FeatureSettings { Annals = annals });
+
+    private ILexiconService CreateService(FeatureSettings features) =>
+        CreateService(features, NullLogger<LexiconService>.Instance);
+
+    private ILexiconService CreateService(
+        FeatureSettings features,
+        ILogger<LexiconService> logger) =>
         new LexiconService(
             _db!,
-            NullLogger<LexiconService>.Instance,
+            logger,
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings { Features = new FeatureSettings { Annals = annals } }));
+                new ArcanumSettings { Features = features }));
 
     private async Task<IReadOnlyList<VersionRow>> ReadVersionsAsync(string entryId)
     {

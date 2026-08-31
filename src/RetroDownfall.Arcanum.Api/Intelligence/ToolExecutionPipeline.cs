@@ -86,17 +86,6 @@ public sealed class ToolExecutionPipeline(
     public static string PublicToolFailureMessage(string toolName) =>
         $"[Tool error: {toolName} failed with an internal error. The operator has been notified.]";
 
-    private const string WardTimeoutReason =
-        "The ward held until timeout — action was not allowed";
-
-    /// <summary>
-    /// Code-owned reason attached to a Ward the operator pre-authorized through
-    /// <c>Arcanum:Security:Ward:AutoApprove</c>. It is a contract string clients and audit consumers
-    /// may match on, and it deliberately carries no tool arguments, paths, or model text.
-    /// </summary>
-    private const string AutoApprovedReason =
-        "Auto-approved by operator policy — containment checks still applied";
-
     private const string ApplyPatchSessionRequiredResult =
         "{\"status\":\"invalid_request\",\"code\":\"session_required\",\"message\":\"apply_patch requires a bound persisted session and assistant-turn invocation.\"}";
 
@@ -117,14 +106,11 @@ public sealed class ToolExecutionPipeline(
 
         public string? ModelUsed { get; init; }
 
-        public bool CampaignRequiresWard { get; init; }
-
         /// <summary>The invocation this turn runs under, or absent on a surface that has none.</summary>
         /// <remarks>
-        /// Carried rather than re-derived, because <c>CanReadCovenant</c> and
-        /// <c>CanStageCovenantMutation</c> are the only eligibility answers in the system and restating
-        /// the truth table at this seam is how two callers come to disagree about what an unattended
-        /// stateless preview may do.
+        /// Carried rather than re-derived, because the invocation context owns the read, proposal,
+        /// and retirement eligibility answers. Restating that truth table at this seam is how two
+        /// callers come to disagree about what an unattended stateless preview may do.
         /// </remarks>
         public ArcanumInvocationContext? Invocation { get; init; }
 
@@ -258,7 +244,7 @@ public sealed class ToolExecutionPipeline(
 
     /// <summary>
     /// Records <c>arcanum_tool_invocations_total</c>. <paramref name="outcome"/> is one of
-    /// <c>success</c>, <c>denied</c> (ward or Sanctum blocked the call), or <c>error</c> (the tool
+    /// <c>success</c>, <c>denied</c> (Sanctum or another live policy blocked the call), or <c>error</c> (the tool
     /// invocation itself threw, or the model named a tool that was never registered). The configured
     /// MCP/local tool set is finite and an unregistered name collapses to
     /// <see cref="UnregisteredToolMetricLabel"/>, so <paramref name="toolName"/> is a bounded label
@@ -360,6 +346,12 @@ public sealed class ToolExecutionPipeline(
 
         string metricToolName = isRegisteredTool ? toolName : UnregisteredToolMetricLabel;
 
+        // Caller-owned so every exit after a provider-issued call can report its record-only
+        // resolution, including apply_patch's persisted-turn prerequisite below.
+        List<IntelligenceEvent>? wardEvents = liveWardEmit is null
+            ? new List<IntelligenceEvent>(2)
+            : null;
+
         bool isApplyPatch = string.Equals(
                 toolName,
                 ToolRiskClassifier.ApplyPatchToolName,
@@ -374,12 +366,21 @@ public sealed class ToolExecutionPipeline(
                 || string.IsNullOrWhiteSpace(turnContext.ModelUsed)
                 || grimoireTurnWriter is null))
         {
+            await RecordUngatedWardResolutionAsync(
+                    toolName,
+                    argsSnapshot,
+                    metricToolName,
+                    wardEvents,
+                    cancellationToken,
+                    liveWardEmit)
+                .ConfigureAwait(false);
+
             return new ProcessedToolCall(
                 callId,
                 toolName,
                 argsSnapshot,
                 ApplyPatchSessionRequiredResult,
-                []);
+                BufferedWardEventsOrEmpty(wardEvents));
         }
 
         ApplyPatchInvocationContext? applyPatchContext = null;
@@ -423,24 +424,19 @@ public sealed class ToolExecutionPipeline(
 
         WardedToolExecutionResult wardedExecution;
 
-        // Owned here rather than inside ExecuteToolCallWithWardAsync so the tolerant catches below
-        // can still report the frames a Ward already produced when the invocation itself throws.
-        List<IntelligenceEvent> wardEvents = new(2);
-
         if (suppressInvocationFailures)
         {
 
             try
             {
 
-                wardedExecution = await ExecuteToolCallWithWardAsync(
+                wardedExecution = await ExecuteToolCallWithAuditAsync(
                     fcc,
-                    request,
                     chatOptions,
                     activeSpell,
-                    sessionId,
                     turnContext,
                     argsSnapshot,
+                    metricToolName,
                     wardEvents,
                     cancellationToken,
                     liveWardEmit,
@@ -468,7 +464,10 @@ public sealed class ToolExecutionPipeline(
             catch (HumanPromptTimeoutException ex)
             {
 
-                wardedExecution = new WardedToolExecutionResult(ex.Message, wardEvents, Failed: true);
+                wardedExecution = new WardedToolExecutionResult(
+                    ex.Message,
+                    BufferedWardEventsOrEmpty(wardEvents),
+                    Failed: true);
 
                 RecordToolInvocationMetric(metricToolName, "error");
 
@@ -482,7 +481,10 @@ public sealed class ToolExecutionPipeline(
                     ex.GetType().FullName,
                     callId);
 
-                wardedExecution = new WardedToolExecutionResult(PublicToolFailureMessage(toolName), wardEvents, Failed: true);
+                wardedExecution = new WardedToolExecutionResult(
+                    PublicToolFailureMessage(toolName),
+                    BufferedWardEventsOrEmpty(wardEvents),
+                    Failed: true);
 
                 RecordToolInvocationMetric(metricToolName, "error");
 
@@ -498,14 +500,13 @@ public sealed class ToolExecutionPipeline(
             try
             {
 
-                wardedExecution = await ExecuteToolCallWithWardAsync(
+                wardedExecution = await ExecuteToolCallWithAuditAsync(
                     fcc,
-                    request,
                     chatOptions,
                     activeSpell,
-                    sessionId,
                     turnContext,
                     argsSnapshot,
+                    metricToolName,
                     wardEvents,
                     cancellationToken,
                     liveWardEmit,
@@ -1333,18 +1334,16 @@ public sealed class ToolExecutionPipeline(
     /// <summary>
     /// <paramref name="wardEvents"/> is caller-owned so that buffered <c>warded</c>/<c>wardResolved</c>
     /// frames survive an exception out of the invocation: the tolerant catches in
-    /// <see cref="ProcessSingleToolCallAsync"/> still have to report that a Ward was raised and how
-    /// the operator resolved it.
+    /// <see cref="ProcessSingleToolCallAsync"/> still have to report the call's record-only resolution.
     /// </summary>
-    private async Task<WardedToolExecutionResult> ExecuteToolCallWithWardAsync(
+    private async Task<WardedToolExecutionResult> ExecuteToolCallWithAuditAsync(
         FunctionCallContent fcc,
-        PingRequest request,
         ChatOptions chatOptions,
         ParsedSpell? activeSpell,
-        string? sessionId,
         TurnContext turnContext,
         string argsSnapshot,
-        List<IntelligenceEvent> wardEvents,
+        string metricToolName,
+        List<IntelligenceEvent>? wardEvents,
         CancellationToken cancellationToken,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
         Func<ToolExecutionEvent, ValueTask>? observer = null)
@@ -1352,176 +1351,27 @@ public sealed class ToolExecutionPipeline(
 
         string toolName = fcc.Name ?? string.Empty;
 
-        WardSettings wardSettings = settings.Value.ResolveWard();
+        await RecordUngatedWardResolutionAsync(
+                toolName,
+                argsSnapshot,
+                metricToolName,
+                wardEvents,
+                cancellationToken,
+                liveWardEmit)
+            .ConfigureAwait(false);
 
-        // Decision order (DESIGN §11.14): classify → hard deny → auto-approve → interactive. Deny
-        // wins, so the unattended auto-deny check runs before the auto-approval allowlist is even
-        // consulted; a tool matching both is denied in attended and unattended modes alike.
-        if (IsWardCandidate(toolName, turnContext.CampaignRequiresWard, wardSettings)
-            && request.UnattendedMode
-            && wardSettings.AutoDenyInUnattendedMode)
-        {
-
-            RecordWardDecisionMetric(toolName, WardResolutionOrigin.AutoDenied);
-
-            return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), wardEvents, Denied: true);
-
-        }
-
-        // Before the not-a-Forbidden-Art exit, because with Wards switched off that exit sends a
-        // retirement straight to invocation, where the handler refuses it with the wrong answer. The
-        // Covenant policy denies it instead: switching Wards off removes the operator's only chance to
-        // refuse, and silence is not consent to erase their own standing instructions.
         if (string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal))
         {
 
             return await ExecuteCovenantRetirementAsync(
                     fcc,
-                    request,
                     chatOptions,
                     activeSpell,
                     turnContext,
                     argsSnapshot,
-                    wardEvents,
-                    wardSettings,
-                    sessionId,
-                    cancellationToken,
-                    liveWardEmit,
-                    observer)
+                    BufferedWardEventsOrEmpty(wardEvents),
+                    cancellationToken)
                 .ConfigureAwait(false);
-
-        }
-
-        if (!IsForbiddenArt(request, toolName, turnContext.CampaignRequiresWard, wardSettings))
-        {
-
-            if (string.Equals(toolName, "ask_human", StringComparison.Ordinal) && observer is not null)
-            {
-                string promptText = TryExtractAskHumanPrompt(argsSnapshot);
-
-                await observer(
-                        new ToolHumanInputRequestedEvent(ResolveCallId(fcc), promptText))
-                    .ConfigureAwait(false);
-            }
-
-            (string directResult, bool directDenied) = await InvokeToolCallWithSanctumAsync(
-                fcc,
-                activeSpell,
-                chatOptions,
-                turnContext,
-                argsSnapshot,
-                cancellationToken).ConfigureAwait(false);
-
-            return new WardedToolExecutionResult(directResult, wardEvents, directDenied);
-
-        }
-
-        string wardId = Guid.NewGuid().ToString();
-
-        JsonDocument? argsDocument = BuildWardArgumentsDocument(
-            toolName,
-            argsSnapshot);
-
-        JsonElement? wardArguments = argsDocument?.RootElement.Clone();
-
-        DateTimeOffset wardTimestamp = DateTimeOffset.UtcNow;
-
-        bool autoApproved = ToolRiskClassifier.IsAutoApproved(toolName, wardSettings);
-
-        IntelligenceEvent wardedEvent = new(
-            IntelligenceEventType.Warded,
-            toolName,
-            null,
-            null,
-            null,
-            wardId,
-            toolName,
-            wardArguments,
-            null,
-            null,
-            wardTimestamp,
-            WardOrigin: autoApproved ? WardResolutionOrigin.AutoApproved : null);
-
-        await EmitWardEventAsync(wardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
-
-        // An auto-approved call has nothing to wait for, so it must not raise the blocking approval
-        // request that opens the Command Center Ward modal.
-        if (observer is not null && !autoApproved)
-        {
-            await observer(
-                    new ToolApprovalRequestedEvent(
-                        wardId,
-                        toolName,
-                        wardArguments?.GetRawText() ?? argsSnapshot))
-                .ConfigureAwait(false);
-        }
-
-        int timeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(wardSettings.TimeoutSeconds);
-
-        TimeSpan timeout = TimeSpan.FromSeconds(timeoutSeconds);
-
-        WardResolution resolution;
-
-        try
-        {
-
-            resolution = autoApproved
-                ? ward.RecordAutomaticResolution(
-                    wardId,
-                    allowed: true,
-                    AutoApprovedReason,
-                    WardResolutionOrigin.AutoApproved)
-                : await ward
-                    .WardAsync(wardId, toolName, argsDocument, sessionId, timeout, cancellationToken)
-                    .ConfigureAwait(false);
-
-        }
-        finally
-        {
-
-            argsDocument?.Dispose();
-
-        }
-
-        RecordWardDecisionMetric(toolName, resolution.Origin);
-
-        if (autoApproved)
-        {
-            // Tool name, decision, and the code-owned reason only — never arguments, paths, or any
-            // model-supplied text.
-            logger.LogInformation(
-                "Ward for tool {ToolName} was {WardDecision} by operator auto-approval policy: {WardReason}",
-                toolName,
-                resolution.Allowed ? "allowed" : "denied",
-                resolution.Reason);
-        }
-
-        DateTimeOffset resolvedTimestamp = DateTimeOffset.UtcNow;
-
-        IntelligenceEvent resolvedEvent = new(
-            IntelligenceEventType.WardResolved,
-            toolName,
-            null,
-            null,
-            null,
-            wardId,
-            toolName,
-            null,
-            resolution.Allowed,
-            resolution.Reason,
-            resolvedTimestamp,
-            WardOrigin: resolution.Origin);
-
-        await EmitWardEventAsync(resolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
-
-        if (!resolution.Allowed)
-        {
-
-            string denialMessage = string.Equals(resolution.Reason, WardTimeoutReason, StringComparison.Ordinal)
-                ? TimeoutDenyMessage(resolution.Reason)
-                : OperatorDenyMessage(resolution.Reason);
-
-            return new WardedToolExecutionResult(denialMessage, wardEvents, Denied: true);
 
         }
 
@@ -1534,7 +1384,7 @@ public sealed class ToolExecutionPipeline(
                 .ConfigureAwait(false);
         }
 
-        (string allowedResult, bool allowedDenied) = await InvokeToolCallWithSanctumAsync(
+        (string directResult, bool directDenied) = await InvokeToolCallWithSanctumAsync(
             fcc,
             activeSpell,
             chatOptions,
@@ -1542,8 +1392,78 @@ public sealed class ToolExecutionPipeline(
             argsSnapshot,
             cancellationToken).ConfigureAwait(false);
 
-        return new WardedToolExecutionResult(allowedResult, wardEvents, allowedDenied);
+        return new WardedToolExecutionResult(
+            directResult,
+            BufferedWardEventsOrEmpty(wardEvents),
+            directDenied);
 
+    }
+
+    private async Task RecordUngatedWardResolutionAsync(
+        string toolName,
+        string argsSnapshot,
+        string metricToolName,
+        List<IntelligenceEvent>? wardEvents,
+        CancellationToken cancellationToken,
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit)
+    {
+        string recordWardId = Guid.NewGuid().ToString();
+
+        string disclosure = ToolRiskClassifier.GetWardDisclosure(toolName);
+
+        JsonElement? recordWardArguments = null;
+
+        if (!string.IsNullOrWhiteSpace(argsSnapshot)
+            || !string.IsNullOrEmpty(disclosure))
+        {
+
+            using JsonDocument recordArgsDocument = BuildWardArgumentsDocument(
+                argsSnapshot,
+                disclosure);
+
+            recordWardArguments = recordArgsDocument.RootElement.Clone();
+
+        }
+
+        IntelligenceEvent recordWardedEvent = new(
+            IntelligenceEventType.Warded,
+            toolName,
+            null,
+            null,
+            null,
+            recordWardId,
+            toolName,
+            recordWardArguments,
+            null,
+            null,
+            DateTimeOffset.UtcNow,
+            WardOrigin: WardResolutionOrigin.Ungated);
+
+        await EmitWardEventAsync(recordWardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
+
+        WardResolution recordResolution = ward.RecordAutomaticResolution(
+            recordWardId,
+            allowed: true,
+            reason: null,
+            WardResolutionOrigin.Ungated);
+
+        RecordWardDecisionMetric(metricToolName, recordResolution.Origin);
+
+        IntelligenceEvent recordResolvedEvent = new(
+            IntelligenceEventType.WardResolved,
+            toolName,
+            null,
+            null,
+            null,
+            recordWardId,
+            toolName,
+            null,
+            recordResolution.Allowed,
+            recordResolution.Reason,
+            DateTimeOffset.UtcNow,
+            WardOrigin: recordResolution.Origin);
+
+        await EmitWardEventAsync(recordResolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
     }
 
     private static string TryExtractAskHumanPrompt(string argsSnapshot)
@@ -1573,41 +1493,27 @@ public sealed class ToolExecutionPipeline(
     }
 
     /// <summary>
-    /// Returns the tool result text plus whether Sanctum blocked the call (<c>Denied: true</c>) — the
-    /// caller's <see cref="WardedToolExecutionResult.Denied"/> flag (and, ultimately,
-    /// <c>arcanum_tool_invocations_total{outcome="denied"}</c>) depends on this, since a Sanctum-strict
-    /// block returns a synthetic result string with no corresponding <see cref="IntelligenceEvent"/>.
-    /// </summary>
-    /// <summary>
-    /// Wards, discloses, and dispatches one agent-initiated Covenant retirement.
+    /// Preflights, discloses, and dispatches one agent-initiated Covenant retirement.
     /// </summary>
     /// <remarks>
-    /// The one tool whose Ward shows the operator something other than the model's arguments. A
-    /// retirement erases a standing instruction they wrote, so what they are asked to approve is the
-    /// content that will disappear, the lane it lives in, the revision it is, and whether Global content
-    /// starts applying in its place — all resolved from canonical state before the question is put.
+    /// Canonical preflight resolves the exact content, lane, revision, key epoch, and Global fallback
+    /// fact before any effect. The one-call capability binds that exact result rather than trusting
+    /// the model's pointer after resolution.
     ///
-    /// <para>Every refusal here happens before the Ward. A turn that may not stage, a target that does
-    /// not exist, a tombstone, and a pinned head are each things the write authority would refuse
-    /// afterwards, and asking somebody to authorize one of them is asking them to authorize nothing.</para>
+    /// <para>Every refusal here happens before the effect. A turn that may not stage, a target that
+    /// does not exist, a tombstone, and a pinned head are each things the write authority would refuse.</para>
     ///
-    /// <para>The disclosure is committed before the dispatch and not before the Ward. A Ward is a
-    /// question, not an effect; the staging is the effect, and a journal written after it cannot record
-    /// the one case it exists for.</para>
+    /// <para>The disclosure is committed before dispatch. Staging is the effect, and a journal written
+    /// after it cannot record the one case it exists for.</para>
     /// </remarks>
     private async Task<WardedToolExecutionResult> ExecuteCovenantRetirementAsync(
         FunctionCallContent fcc,
-        PingRequest request,
         ChatOptions chatOptions,
         ParsedSpell? activeSpell,
         TurnContext turnContext,
         string argsSnapshot,
-        List<IntelligenceEvent> wardEvents,
-        WardSettings wardSettings,
-        string? sessionId,
-        CancellationToken cancellationToken,
-        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit,
-        Func<ToolExecutionEvent, ValueTask>? observer)
+        IReadOnlyList<IntelligenceEvent> wardEvents,
+        CancellationToken cancellationToken)
     {
 
         string toolName = fcc.Name ?? string.Empty;
@@ -1636,16 +1542,13 @@ public sealed class ToolExecutionPipeline(
 
         CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(
             classified.Value,
-            invocation,
-            wardSettings);
+            invocation);
 
         if (decision.IsDenied)
         {
 
             return CovenantRetirementDenied(
-                decision.Authorization == CovenantEgressAuthorization.DeniedWardsDisabled
-                    ? "Wards are switched off on this installation, so a Covenant retirement cannot be approved and is refused."
-                    : "This turn may not stage a Covenant mutation.",
+                "This turn may not stage a Covenant mutation.",
                 wardEvents);
 
         }
@@ -1672,142 +1575,13 @@ public sealed class ToolExecutionPipeline(
 
         CovenantRetirementPreflight preflight = resolved.Value;
 
-        // The carve-out on configured auto-approval. A target this turn never carried is one the
-        // operator has not seen in this conversation, so it reaches the interactive Ward rather than
-        // approving itself; they may still legitimately want it retired, which is why it is a
-        // downgrade rather than a refusal.
-        bool admittedHere = WasAdmittedOnThisTurn(staging.ProducingAdmission, preflight);
-
-        if (decision.Authorization == CovenantEgressAuthorization.ConfiguredAutoApproval && !admittedHere)
+        if (!string.Equals(preflight.NormalizedKey, normalizedKey, StringComparison.Ordinal)
+            || preflight.Lane != lane)
         {
 
-            decision = new CovenantEgressWardDecision(
-                CovenantEgressAuthorization.AttendedWardRequired,
-                decision.RiskIdentity,
-                CovenantAuthorizationMode.WardInteractive);
-
-        }
-
-        bool autoApproved = decision.Authorization == CovenantEgressAuthorization.ConfiguredAutoApproval;
-
-        string wardId = Guid.NewGuid().ToString();
-
-        // The disclosure, never the model's arguments. It is the whole point of resolving a preflight.
-        JsonDocument disclosure = JsonDocument.Parse(
-            JsonSerializer.Serialize(
-                new CovenantRetirementDisclosureWire(
-                    preflight.NormalizedKey,
-                    preflight.Lane.ToString(),
-                    preflight.TargetLaneRevision,
-                    preflight.SanitizedAuthoredDisclosure,
-                    preflight.GlobalFallbackApplies),
-                ArcanumJsonContext.Default.CovenantRetirementDisclosureWire));
-
-        using (disclosure)
-        {
-
-            JsonElement wardArguments = disclosure.RootElement.Clone();
-
-            await EmitWardEventAsync(
-                    new IntelligenceEvent(
-                        IntelligenceEventType.Warded,
-                        toolName,
-                        null,
-                        null,
-                        null,
-                        wardId,
-                        toolName,
-                        wardArguments,
-                        null,
-                        null,
-                        DateTimeOffset.UtcNow,
-                        WardOrigin: autoApproved ? WardResolutionOrigin.AutoApproved : null),
-                    wardEvents,
-                    liveWardEmit,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            WardResolution resolution;
-
-            if (autoApproved)
-            {
-
-                resolution = ward.RecordAutomaticResolution(
-                    wardId,
-                    allowed: true,
-                    AutoApprovedReason,
-                    WardResolutionOrigin.AutoApproved);
-
-            }
-            else
-            {
-
-                if (observer is not null)
-                {
-
-                    await observer(
-                            new ToolApprovalRequestedEvent(wardId, toolName, wardArguments.GetRawText()))
-                        .ConfigureAwait(false);
-
-                }
-
-                resolution = await ward
-                    .WardAsync(
-                        wardId,
-                        toolName,
-                        disclosure,
-                        sessionId,
-                        TimeSpan.FromSeconds(ArcanumSettingClamps.WardTimeoutSeconds(wardSettings.TimeoutSeconds)),
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-            }
-
-            RecordWardDecisionMetric(toolName, resolution.Origin);
-
-            await EmitWardEventAsync(
-                    new IntelligenceEvent(
-                        IntelligenceEventType.WardResolved,
-                        toolName,
-                        null,
-                        null,
-                        null,
-                        wardId,
-                        toolName,
-                        wardArguments,
-                        null,
-                        null,
-                        DateTimeOffset.UtcNow,
-                        WardOrigin: resolution.Origin),
-                    wardEvents,
-                    liveWardEmit,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!resolution.Allowed)
-            {
-
-                return CovenantRetirementDenied(
-                    "The operator did not approve retiring that standing preference.",
-                    wardEvents);
-
-            }
-
-        }
-
-        Result<CovenantToolWardReceipt> receipt = CovenantEgressWardPolicy.Accept(
-            decision,
-            classified.Value,
-            CovenantWardDecision.Approved,
-            staging.ProducingAdmission.Sensitivity,
-            CovenantEgressDestination.Process,
-            preflight.PreflightBodyDigest,
-            checked((ulong)Math.Max(0, covenantAuthority?.Current?.AuthorityEpoch ?? 0)));
-
-        if (receipt.IsFailure)
-        {
-
-            return CovenantRetirementDenied(receipt.Error.Message, wardEvents);
+            return CovenantRetirementDenied(
+                "The resolved Covenant retirement target did not match the requested key and lane.",
+                wardEvents);
 
         }
 
@@ -1829,8 +1603,8 @@ public sealed class ToolExecutionPipeline(
             CovenantDisclosureRevocability.LocallyRevocable,
             preflight.PreflightBodyDigest,
             staging.ProducingAdmission.Sensitivity,
-            receipt.Value.Digest,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            WardEvidenceDigest: null,
+            Timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
         Result<WardedToolExecutionResult> disclosed = await covenantEgressGuard
             .DiscloseThenAsync(
@@ -1841,7 +1615,6 @@ public sealed class ToolExecutionPipeline(
                     using IDisposable scope = CovenantToolStagingAmbient.Push(staging with
                     {
                         RetirementPreflight = preflight,
-                        WardReceipt = receipt.Value,
                         Nonce = nonce,
                     });
 
@@ -1866,21 +1639,6 @@ public sealed class ToolExecutionPipeline(
             : disclosed.Value;
 
     }
-
-    /// <summary>
-    /// Whether this turn's own admission carried the entry a retirement names.
-    /// </summary>
-    /// <remarks>
-    /// Read off the producing admission's plan rather than off anything the model said. It decides only
-    /// whether configured auto-approval applies; an unseen target still reaches an operator, because
-    /// they may legitimately want a preference retired that this conversation never mentioned.
-    /// </remarks>
-    private static bool WasAdmittedOnThisTurn(
-        CovenantAdmissionReceipt admission,
-        CovenantRetirementPreflight preflight) =>
-        admission.Plan.Decisions.Any(decision =>
-            decision.Candidate.VersionId == preflight.VersionId
-            && decision.Decision is CovenantPlanDecision.EligibleConfirmed or CovenantPlanDecision.EligibleProposed);
 
     private Guid ResolveInstallationIdentity() =>
         Guid.TryParse(covenantAuthority?.Current?.InstallationIdentity, out Guid installationId)
@@ -1935,7 +1693,7 @@ public sealed class ToolExecutionPipeline(
 
     private static WardedToolExecutionResult CovenantRetirementDenied(
         string message,
-        List<IntelligenceEvent> wardEvents) =>
+        IReadOnlyList<IntelligenceEvent> wardEvents) =>
         new(message, wardEvents, Denied: true);
 
     private async Task<(string ResultText, bool Denied)> InvokeToolCallWithSanctumAsync(
@@ -2713,47 +2471,29 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    private static bool IsWardCandidate(string toolName, bool campaignRequiresWard, WardSettings wardSettings) =>
-        RequiresWardForTool(toolName, campaignRequiresWard, wardSettings);
-
     private static async Task EmitWardEventAsync(
         IntelligenceEvent wardEvent,
-        List<IntelligenceEvent> buffered,
+        List<IntelligenceEvent>? buffered,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit,
         CancellationToken cancellationToken)
     {
         if (liveWardEmit is not null)
         {
+
             await liveWardEmit(wardEvent, cancellationToken).ConfigureAwait(false);
+
             return;
+
         }
 
-        buffered.Add(wardEvent);
+        (buffered ?? throw new InvalidOperationException(
+            "Buffered Ward emission requires a buffer."))
+            .Add(wardEvent);
     }
 
-    private static bool IsForbiddenArt(
-        PingRequest request,
-        string toolName,
-        bool campaignRequiresWard,
-        WardSettings wardSettings) =>
-        RequiresWardForTool(toolName, campaignRequiresWard, wardSettings)
-        && !(request.UnattendedMode && wardSettings.AutoDenyInUnattendedMode);
-
-    private static bool RequiresWardForTool(string toolName, bool campaignRequiresWard, WardSettings wardSettings)
-        => ToolRiskClassifier.RequiresWard(toolName, campaignRequiresWard, wardSettings);
-
-    private static string UnattendedDenyMessage(string toolName) =>
-        $"Forbidden art denied: unattended mode — this action requires an operator to resolve the ward";
-
-    private static string OperatorDenyMessage(string? reason) =>
-        string.IsNullOrWhiteSpace(reason)
-            ? "Operator denied this action."
-            : $"Operator denied this action: {reason}";
-
-    private static string TimeoutDenyMessage(string? reason) =>
-        string.IsNullOrWhiteSpace(reason)
-            ? "Operator denied this action: The ward held until timeout — action was not allowed"
-            : $"Operator denied this action: {reason}";
+    private static IReadOnlyList<IntelligenceEvent> BufferedWardEventsOrEmpty(
+        List<IntelligenceEvent>? buffered) =>
+        (IReadOnlyList<IntelligenceEvent>?)buffered ?? Array.Empty<IntelligenceEvent>();
 
     private static JsonDocument? TryParseToolArgumentsDocument(string argsSnapshot)
     {
@@ -2782,18 +2522,27 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    private static JsonDocument? BuildWardArgumentsDocument(
-        string toolName,
-        string argsSnapshot)
+    internal static JsonDocument BuildWardArgumentsDocument(
+        string argsSnapshot,
+        string disclosure)
     {
 
+        if (string.IsNullOrWhiteSpace(argsSnapshot)
+            && string.IsNullOrWhiteSpace(disclosure))
+        {
+
+            throw new ArgumentException(
+                "Ward arguments require tool arguments or a risk disclosure.");
+
+        }
+
         JsonDocument? original = TryParseToolArgumentsDocument(argsSnapshot);
-        string disclosure = ToolRiskClassifier.GetWardDisclosure(toolName);
 
         if (string.IsNullOrEmpty(disclosure))
         {
 
-            return original;
+            return original ?? throw new InvalidOperationException(
+                "Non-empty Ward arguments must produce a JSON document.");
         }
 
         using MemoryStream stream = new();

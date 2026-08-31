@@ -7,13 +7,13 @@ using Spectre.Console;
 namespace RetroDownfall.Arcanum.Cli.Commands.Wards;
 
 /// <summary>
-/// Ward approval gates for Forbidden Arts (requires arcanum serve).
+/// Retained Ward record compatibility API (requires arcanum serve).
 /// </summary>
 public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
     /// <summary>
-    /// List active wards (GET /api/wards).
+    /// List active compatibility wards (GET /api/wards).
     /// </summary>
     public async Task<int> List(CancellationToken cancellationToken)
     {
@@ -62,7 +62,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
     }
 
     /// <summary>
-    /// Show ward detail (GET /api/wards/{id}).
+    /// Show compatibility ward detail (GET /api/wards/{id}).
     /// </summary>
     /// <param name="id">Ward ID.</param>
     public async Task<int> Get(string id, CancellationToken cancellationToken)
@@ -124,11 +124,11 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
     }
 
     /// <summary>
-    /// Allow or deny a ward (POST /api/wards/{id}).
+    /// Resolve a compatibility ward (POST /api/wards/{id}).
     /// </summary>
     /// <param name="id">Ward ID.</param>
-    /// <param name="allow">Allow the warded tool call to proceed.</param>
-    /// <param name="deny">Deny the warded tool call.</param>
+    /// <param name="allow">Record an allowed resolution.</param>
+    /// <param name="deny">Record a denied resolution.</param>
     /// <param name="reason">Optional reason recorded with the resolution.</param>
     public async Task<int> Resolve(
         string id,

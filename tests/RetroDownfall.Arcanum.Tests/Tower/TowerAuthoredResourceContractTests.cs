@@ -185,7 +185,7 @@ public sealed class TowerAuthoredResourceContractTests
     /// can already have on disk.
     /// </summary>
     private const string ExpectedCampaignBundleJson =
-        """{"campaign":{"id":"11111111-1111-1111-1111-111111111111","name":"Fixture Campaign","path":"/campaigns/fixture","type":"campaign","description":"A campaign used to pin the export wire shape.","settings":{"defaultModel":"gpt-4o","modelMap":{"fast":"gpt-4o-mini"},"mcpServerProfiles":["local"],"spellRoots":["/spells"],"loreNamespace":"keep","allowedTools":["read_file"],"requireWardForForbiddenArts":true},"createdAt":"2026-01-02T03:04:05+00:00","updatedAt":"2026-06-07T08:09:10+00:00"},"spells":[{"name":"fixture-spell","spellJson":"{\u0022name\u0022:\u0022fixture-spell\u0022}","fullContent":"# Fixture Spell","scripts":[{"fileName":"run.sh","base64Content":"ZWNobyBoaQ=="}]}],"prompts":[{"name":"fixture-prompt","version":"1.0.0","description":"A prompt used to pin the export wire shape.","tags":["fixture","wire"],"template":"Say {{word}}.","parameterSchema":{"type":"object"},"defaultParameters":{"word":"hello"},"model":"gpt-4o","provider":"openai-compatible","temperature":0.25,"topP":0.9,"maxOutputTokens":256,"campaignId":"11111111-1111-1111-1111-111111111111"}],"exclusions":{"covenantEntryCount":3,"taintedArtifactCount":4}}""";
+        """{"campaign":{"id":"11111111-1111-1111-1111-111111111111","name":"Fixture Campaign","path":"/campaigns/fixture","type":"campaign","description":"A campaign used to pin the export wire shape.","settings":{"defaultModel":"gpt-4o","modelMap":{"fast":"gpt-4o-mini"},"mcpServerProfiles":["local"],"spellRoots":["/spells"],"loreNamespace":"keep","allowedTools":["read_file"]},"createdAt":"2026-01-02T03:04:05+00:00","updatedAt":"2026-06-07T08:09:10+00:00"},"spells":[{"name":"fixture-spell","spellJson":"{\u0022name\u0022:\u0022fixture-spell\u0022}","fullContent":"# Fixture Spell","scripts":[{"fileName":"run.sh","base64Content":"ZWNobyBoaQ=="}]}],"prompts":[{"name":"fixture-prompt","version":"1.0.0","description":"A prompt used to pin the export wire shape.","tags":["fixture","wire"],"template":"Say {{word}}.","parameterSchema":{"type":"object"},"defaultParameters":{"word":"hello"},"model":"gpt-4o","provider":"openai-compatible","temperature":0.25,"topP":0.9,"maxOutputTokens":256,"campaignId":"11111111-1111-1111-1111-111111111111"}],"exclusions":{"covenantEntryCount":3,"taintedArtifactCount":4}}""";
 
     public static TheoryData<Type> AuthoredResourceTypeData()
     {
@@ -296,8 +296,6 @@ public sealed class TowerAuthoredResourceContractTests
 
         Assert.Equal(WorkspaceType.Campaign, payload.Campaign.Type);
 
-        Assert.True(payload.Campaign.Settings.RequireWardForForbiddenArts);
-
         Assert.Equal("{\"name\":\"fixture-spell\"}", Assert.Single(payload.Spells).ResolvedSpellJson);
 
         Assert.Equal("fixture-prompt", Assert.Single(payload.Prompts).Name);
@@ -317,8 +315,7 @@ public sealed class TowerAuthoredResourceContractTests
             McpServerProfiles: ["local"],
             SpellRoots: ["/spells"],
             LoreNamespace: "keep",
-            AllowedTools: ["read_file"],
-            RequireWardForForbiddenArts: true);
+            AllowedTools: ["read_file"]);
 
         CampaignDto campaign = new(
             Guid.Parse("11111111-1111-1111-1111-111111111111"),

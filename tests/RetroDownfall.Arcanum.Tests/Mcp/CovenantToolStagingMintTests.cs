@@ -34,7 +34,7 @@ public sealed class CovenantToolStagingMintTests
 
         CovenantToolCapabilityRegistry registry = new();
 
-        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry, canStageProposal: true));
 
         _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(
             ConnectionKey,
@@ -72,7 +72,7 @@ public sealed class CovenantToolStagingMintTests
 
         CovenantToolCapabilityRegistry registry = new();
 
-        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry, canStageProposal: true));
 
         _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(
             ConnectionKey,
@@ -82,24 +82,41 @@ public sealed class CovenantToolStagingMintTests
 
     }
 
-    /// <summary>
-    /// A retirement receives no capability, and a proposal into the same registry still does.
-    /// </summary>
-    /// <remarks>
-    /// Two independent guards produce this outcome: the binder mints only for the proposal name, and
-    /// <c>CovenantToolInvocationContext</c>'s own constructor refuses a retirement carrying neither
-    /// preflight nor Ward receipt. This test cannot tell them apart — removing the name check leaves it
-    /// green — so it claims only the outcome. The constructor's refusal is pinned separately by
-    /// <c>CovenantToolInvocationContextTests</c>; the second half here rules out the boring
-    /// explanation that the registry was simply not working.
-    /// </remarks>
     [Fact]
-    public void A_retirement_mints_nothing_while_a_proposal_still_does()
+    public void A_retirement_with_an_exact_preflight_receives_its_capability()
     {
 
         CovenantToolCapabilityRegistry registry = new();
 
-        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+        CovenantRetirementPreflight preflight = CovenantCapabilityFixtures.RetirementPreflight();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(
+            Staging(registry, canStageProposal: false) with
+            {
+                RetirementPreflight = preflight,
+            });
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(
+            ConnectionKey,
+            ToolsCall("7", CovenantToolNames.RetireCovenant));
+
+        Result<CovenantToolCapabilityGrant> taken = registry.TryTake(ConnectionKey, "7");
+
+        Assert.True(taken.IsSuccess, taken.IsFailure ? taken.Error.Message : string.Empty);
+
+        Assert.Equal(CovenantToolNames.RetireCovenant, taken.Value.Capability.ToolName);
+
+        Assert.Same(preflight, taken.Value.Capability.RetirementPreflight);
+
+    }
+
+    [Fact]
+    public void A_retirement_without_preflight_mints_nothing_while_a_proposal_still_does()
+    {
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry, canStageProposal: true));
 
         _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(
             ConnectionKey,
@@ -116,12 +133,31 @@ public sealed class CovenantToolStagingMintTests
     }
 
     [Fact]
+    public void Retirement_only_staging_cannot_mint_a_proposal_capability()
+    {
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(
+            Staging(registry, canStageProposal: false));
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(
+            ConnectionKey,
+            ToolsCall("7", CovenantToolNames.ProposeCovenant));
+
+        Assert.Equal(0, registry.CountForTests);
+
+        Assert.True(registry.TryTake(ConnectionKey, "7").IsFailure);
+
+    }
+
+    [Fact]
     public void One_request_identity_receives_exactly_one_capability()
     {
 
         CovenantToolCapabilityRegistry registry = new();
 
-        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry, canStageProposal: true));
 
         _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(
             ConnectionKey,
@@ -149,7 +185,7 @@ public sealed class CovenantToolStagingMintTests
 
         Assert.Null(CovenantToolStagingAmbient.Current);
 
-        using (CovenantToolStagingAmbient.Push(Staging(registry)))
+        using (CovenantToolStagingAmbient.Push(Staging(registry, canStageProposal: true)))
         {
 
             Assert.NotNull(CovenantToolStagingAmbient.Current);
@@ -161,7 +197,9 @@ public sealed class CovenantToolStagingMintTests
 
     }
 
-    private static CovenantToolStagingContext Staging(CovenantToolCapabilityRegistry registry)
+    private static CovenantToolStagingContext Staging(
+        CovenantToolCapabilityRegistry registry,
+        bool canStageProposal)
     {
 
         CovenantTurnPlan plan = Plan();
@@ -175,6 +213,7 @@ public sealed class CovenantToolStagingMintTests
             CovenantCapabilityFixtures.Admission(plan),
             CovenantCapabilityFixtures.Materialization(),
             new StubProbe(),
+            canStageProposal,
             registry,
             CancellationToken.None);
 

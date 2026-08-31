@@ -73,6 +73,22 @@ public sealed class ArcanumBannerRendererTests
     }
 
     [Fact]
+    public void Render_unattended_mode_reports_ask_human_as_unavailable()
+    {
+
+        TestConsole console = new();
+
+        console.Write(ArcanumBannerRenderer.Render(CreateContext(
+            ServeLaunchStatus.AlreadyRunning,
+            unattended: true)));
+
+        Assert.Contains("ask_human unavailable", console.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("auto-repl", console.Output, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
     public void Render_gradient_title_preserves_figlet_glyphs()
     {
 
@@ -90,7 +106,8 @@ public sealed class ArcanumBannerRendererTests
         HealthProbeState health = HealthProbeState.Healthy,
         int mcpRunning = 0,
         int mcpTotal = 0,
-        bool mcpUnavailable = false)
+        bool mcpUnavailable = false,
+        bool unattended = false)
     {
 
         ThemeSemanticColors colors = new();
@@ -103,7 +120,7 @@ public sealed class ArcanumBannerRendererTests
             "http://localhost:5001/",
             "test-model",
             CampaignId: null,
-            Unattended: false,
+            Unattended: unattended,
             ToolsDisabled: false,
             InferenceOverrides: [],
             mcpRunning,

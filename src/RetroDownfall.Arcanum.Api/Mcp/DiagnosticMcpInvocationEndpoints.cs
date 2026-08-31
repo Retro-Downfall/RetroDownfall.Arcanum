@@ -16,8 +16,9 @@ namespace RetroDownfall.Arcanum.Api.Mcp;
 /// Diagnostic MCP Invocation endpoint — <c>POST /api/mcp/tools/invoke</c>. Available only in
 /// <see cref="ArcanumEdition.Development"/>. Policy-constrained direct invocation of
 /// <strong>external</strong> MCP tools by an operator. Not model execution; not unauthenticated
-/// (inherits <c>X-Arcanum-Key</c>). Internal <c>arcanum-internal</c> server and all Forbidden Arts
-/// are blocked. See <see cref="DiagnosticMcpInvocationService"/> for the full policy.
+/// (inherits <c>X-Arcanum-Key</c>). The internal <c>arcanum-internal</c> server and reserved names
+/// that require the Master tool execution pipeline are blocked. See
+/// <see cref="DiagnosticMcpInvocationService"/> for the full policy.
 /// </summary>
 internal static class DiagnosticMcpInvocationEndpoints
 {

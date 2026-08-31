@@ -20,9 +20,10 @@ namespace RetroDownfall.Arcanum.Tests.Annals;
 /// Reading claim history back.
 /// </summary>
 /// <remarks>
-/// Every case reaches its starting state by writing through <see cref="ILexiconService"/> or
-/// <see cref="ISagaMemoryStore"/> with the gate on. Nothing seeds a claim row directly, because a test
-/// that seeds the state it asserts can never discover that production cannot produce it.
+/// Claimed cases reach their starting state by writing through <see cref="ILexiconService"/> or
+/// <see cref="ISagaMemoryStore"/> with automatic history explicitly on; the unclaimed case uses the
+/// explicit-off path. Nothing seeds a claim row directly, because a test that seeds the state it asserts
+/// can never discover that production cannot produce it.
 /// </remarks>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
@@ -95,8 +96,8 @@ public sealed class AnnalsStoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A row with no claim is what a memory written while the Annals was disabled looks like, and what
-    /// every row looks like before the upgrade sweep drains. It is a state, not a failure.
+    /// A row with no claim is what a memory written during explicit Annals opt-out looks like, and what
+    /// every row looked like before the historical upgrade sweep drained. It is a state, not a failure.
     /// </summary>
     [SkippableFact]
     public async Task A_row_with_no_claim_reads_as_null_rather_than_failing()

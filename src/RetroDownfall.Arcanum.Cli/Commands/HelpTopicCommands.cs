@@ -103,17 +103,17 @@ internal static class HelpTopics
 
         new(
             "security",
-            "Approval gates, credentials, and filesystem boundaries.",
+            "Tool records, credentials, and filesystem boundaries.",
             [
-                "Ward             an approval gate on a dangerous tool call.",
-                "Forbidden Art    a tool class that always requires a Ward.",
+                "Ward             an informational audit record for a tool call.",
+                "Forbidden Art    a tool hidden when a request selects noForbiddenArts.",
                 "Sanctum          a Campaign's trust boundary for tools and MCP servers.",
                 "Workspace        the registered filesystem boundary a tool may read or write within.",
             ],
             [
-                "Nothing dangerous runs unattended by default. A warded tool call pauses for approval;",
-                "`--unattended` turns that pause into an automatic deny rather than an automatic allow,",
-                "so an unattended run fails closed. Credentials live in the OS credential store and are",
+                "Ward records never pause or pre-answer an ordinary tool call. Real execution boundaries",
+                "remain authoritative: tool availability, Workspace and Sanctum containment, edition and",
+                "host-process gates, and tool-specific validation. Credentials live in the OS credential store and are",
                 "never printed to stdout — `key show` writes to stderr precisely so a pipe cannot",
                 "capture it.",
             ],

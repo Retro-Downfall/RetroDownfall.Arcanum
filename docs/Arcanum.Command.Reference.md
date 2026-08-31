@@ -179,12 +179,12 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/pin <kind> <target>` | Pin a file, directory snapshot, symbol range, session entry, attachment, URL, or diagnostic. |
 | `/unpin <id>` | Remove one context pin. |
 | `/spell list [cursor]` | List a 50-line terminal page of spells with exact next-cursor continuation. |
-| `/ward list [offset]` | List a 50-line terminal page of open Wards with exact next-offset continuation. |
-| `/ward allow [<id>]` | Allow the supplied Ward. |
-| `/ward deny [<id>]` | Deny the supplied Ward. |
+| `/ward list [offset]` | List a 50-line terminal page from the retained active-Ward compatibility API, with exact next-offset continuation. |
+| `/ward allow <id>` | Explicitly allow one retained active compatibility Ward. |
+| `/ward deny <id>` | Explicitly deny one retained active compatibility Ward. |
 | `/exit`, `/quit` | Leave Command Center. |
 
-The Ward confirmation modal is answered with its own keys — `Enter`/`A` always allow this tool for the session, `O` allow once, `Esc`/`D` deny — never with a slash command: while the modal is displayed it owns the keyboard and swallows every printable key, so its choice list names only keys it actually handles.
+Ward stream frames are informational Incantation notes. Command Center opens no Ward modal, consumes no allow/deny keys, keeps no session allowlist, and posts no automatic resolution. The explicit `/ward` commands above remain available only for the retained active-record compatibility API.
 
 Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/context`, because `/context` is the Claude-aligned context-window view. An unrecognized slash command names the canonical replacement when the spelling was removed, and otherwise suggests the nearest registered name; it is never executed automatically. `/context` takes no sub-command: the removed `/context list|pin|unpin` forms are denied with a message naming `/pins`, `/pin <kind> <target>`, and `/unpin <pin-id>`.
 
@@ -334,7 +334,7 @@ Explicit context options follow the shared precedence over active local context,
 | `--show-content` | With `--dry-run`, include model-visible content in the authenticated preview. |
 | `-m, --model <model>` | Use this configured model instead of the effective context or server default. |
 | `-n, --new` | Start without continuing the effective Session. If a session selector is also supplied, `--new` wins instead of creating another option conflict. |
-| `--unattended` | Apply unattended human-prompt and Ward behavior to the selected live route; dry-run reflects the resulting tool policy. |
+| `--unattended` | Omit human-prompt tools on the selected live route; Ward records remain informational. Dry-run reflects the resulting tool policy. |
 | `-c, --continue` | Continue the most recent Session. Cannot be combined with `--resume` or `--session`. |
 | `-r, --resume [<session>]` | Resume a Session by GUID, exact title, or unique title prefix; omit the value for an interactive picker. |
 | `-C, --campaign <campaign>` | Use the selected Campaign GUID, exact name, or unique prefix. |
@@ -678,15 +678,15 @@ Manages versioned prompt templates. Template and input values support inline tex
 
 ### `arcanum ward`
 
-Ward approval gates for Forbidden Arts (requires arcanum serve).
+Retained Ward record compatibility API (requires `arcanum serve`).
 
-Lists Forbidden Arts approval gates and resolves one gate. `--allow` and `--deny` are mutually exclusive.
+Lists, inspects, and explicitly resolves retained active compatibility Wards. Ordinary server tool calls produce already-resolved informational records and never wait for this command. `--allow` and `--deny` are mutually exclusive.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum ward list` | List active wards. | None beyond global or inherited family options. |
-| `arcanum ward show <id>` | Show ward detail. | None beyond global or inherited family options. |
-| `arcanum ward resolve <id>` | Allow or deny a ward. | `--allow` — Allow the warded tool call to proceed.<br>`--deny` — Deny the warded tool call.<br>`--reason <reason>` — Optional reason recorded with the resolution. |
+| `arcanum ward list` | List active compatibility Wards. | None beyond global or inherited family options. |
+| `arcanum ward show <id>` | Show compatibility Ward detail. | None beyond global or inherited family options. |
+| `arcanum ward resolve <id>` | Resolve a compatibility Ward. | `--allow` — Record an allowed resolution.<br>`--deny` — Record a denied resolution.<br>`--reason <reason>` — Optional reason recorded with the resolution. |
 
 ### `arcanum trial`
 
@@ -799,7 +799,7 @@ Administers MCP server lifecycle, trust, tool discovery, and external diagnostic
 | `arcanum mcp reload` | Clear MCP partitions and reload global or explicitly scoped workspace configuration. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp trust [<workspace>]` | Trust the current workspace mcp.json bytes; defaults to the current directory. | None beyond global or inherited family options. |
 | `arcanum mcp tools [<server>]` | List tools exposed by one selected MCP server. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
-| `arcanum mcp invoke <tool> [<arguments>]` | Invoke one external MCP tool diagnostically; internal and Forbidden Art tools remain blocked server-side. | `--server <server>` — External MCP server name or unique prefix; omit for tool-based selection.<br>`--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
+| `arcanum mcp invoke <tool> [<arguments>]` | Invoke one external MCP tool diagnostically; internal tool names are reserved for the Master execution pipeline. | `--server <server>` — External MCP server name or unique prefix; omit for tool-based selection.<br>`--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 
 ### `arcanum tool`
 
@@ -1035,7 +1035,7 @@ Explains the effective values and previews model context without running main in
 
 Inspect, preview, apply, and reset transparent onboarding presets.
 
-The six built-in version-1 presets are `general-assistant` (**General Assistant**), `coding-workspace` (**Coding Workspace**), `research` (**Research**), `private-offline` (**Private/Offline**), `automation` (**Automation**), and `advanced-custom` (**Advanced/Custom**). `<name>` accepts an exact ID or exact display name; quote display names that contain spaces or shell punctuation. Definitions are partial overlays: only their declared owned paths can change, and Advanced/Custom owns none.
+The five workflow presets are current at version 2: `general-assistant` (**General Assistant**), `coding-workspace` (**Coding Workspace**), `research` (**Research**), `private-offline` (**Private/Offline**), and `automation` (**Automation**). `advanced-custom` (**Advanced/Custom**) remains version 1 because it owns no paths. `<name>` accepts an exact ID or exact display name; quote display names that contain spaces or shell punctuation. Definitions are partial overlays: only their declared owned paths can change, and Advanced/Custom owns none. The retired-key-era v1 workflow definitions remain frozen for exact historical sidecar validation. Matching raw v1 state/rollback pairs are validated before in-memory v2 survivor projection; reads do not rewrite the pair, and reset/recovery never writes or restores either retired Ward approval path.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -1049,7 +1049,7 @@ Plain and `--json` modes are projections of the same shared service. Secret-shap
 
 Preset state is separate owner-only provenance, not a setting: no provenance is `Custom`, an exact owned-value match is `Active`, and a later persisted or effective difference is `Drifted`. Apply uses an expected-settings hash, the current-user cross-process coordinator shared by all canonical configuration writers, an owner-only rollback baseline, a prepared transaction journal, atomic replacement, and post-write verification. The journal stores only owned before/after values and hashes plus previous/next provenance. Bounded no-follow sidecar reads and exact catalog ownership, value, hash, and state/rollback validation reject forged or stale provenance. Reset and recovery restore a baseline path only while its persisted value still matches the transaction's applied value; manual drift and unrelated edits win. Apply/reset are already explicit mutation commands and do not prompt or require `--yes`.
 
-Required provider/model, workspace, research-credential, loopback-provider, or positive-budget prerequisites are reported with exact setup commands. A plan applies only when required prerequisites and complete canonical validation succeed. Presets never supply provider secrets, invent budgets, bypass Ward or Sanctum, silently enable network exposure/unsandboxed children/ untrusted MCP/destructive memory, or add retry, timeout, loop-count, or other arbitrary tuning knobs. Every plan concludes with active preset, provider/model, workspace/campaign, memory sources, tool policy, privacy state, and next recommended command. Recommendations are directly executable; Coding Workspace uses `arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required prompt.
+Required provider/model, workspace, research-credential, loopback-provider, or positive-budget prerequisites are reported with exact setup commands. A plan applies only when required prerequisites and complete canonical validation succeed. Presets never suppress Ward auditing, bypass Sanctum, supply provider secrets, invent budgets, silently enable network exposure/unsandboxed children/untrusted MCP/destructive memory, change the explicit `ForbiddenArts` advertisement filter, or add retry, timeout, loop-count, or other arbitrary tuning knobs. Every plan concludes with active preset, provider/model, workspace/campaign, memory sources, tool policy, privacy state, and next recommended command. Recommendations are directly executable; Coding Workspace uses `arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required prompt.
 
 These commands expose the reusable preset service directly. [`arcanum setup`](#arcanum-setup) composes the same service as its preset step and applies exactly the same overlay, so the two surfaces can never disagree about what a preset owns.
 

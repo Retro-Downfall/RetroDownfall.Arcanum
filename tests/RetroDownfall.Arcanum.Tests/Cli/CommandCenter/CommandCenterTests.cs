@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Core.Wards;
+
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
@@ -426,6 +428,99 @@ public sealed class CommandCenterAppSizeGateTests
 
 public sealed class ShellCommandDispatcherTests
 {
+    [Theory]
+    [InlineData("allow", true, "allowed")]
+    [InlineData("deny", false, "denied")]
+    public async Task Ward_resolution_with_explicit_id_posts_to_the_retained_api(
+        string verb,
+        bool expectedAllow,
+        string expectedStatus)
+    {
+
+        const string wardId = "11111111-2222-3333-4444-555555555555";
+
+        RecordingWardResolutionHandler handler = new(wardId);
+
+        ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        _ = await dispatcher.DispatchAsync(
+            $"/ward {verb} {wardId}",
+            state,
+            CancellationToken.None);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Post, request.Method);
+
+        Assert.Equal($"/api/wards/{wardId}", request.RequestUri!.AbsolutePath);
+
+        string body = Assert.Single(handler.Bodies);
+
+        using JsonDocument document = JsonDocument.Parse(body);
+
+        Assert.Equal(expectedAllow, document.RootElement.GetProperty("allow").GetBoolean());
+
+        Assert.Contains(
+            $"Ward {wardId} {expectedStatus}.",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Ward_list_reads_and_renders_the_retained_api()
+    {
+
+        const string wardId = "11111111-2222-3333-4444-555555555555";
+
+        RecordingWardResolutionHandler handler = new(wardId);
+
+        ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        _ = await dispatcher.DispatchAsync("/ward list", state, CancellationToken.None);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+
+        Assert.Equal("/api/wards", request.RequestUri!.AbsolutePath);
+
+        string rendered = state.Log.RenderPlainText();
+
+        Assert.Contains("11111111", rendered, StringComparison.Ordinal);
+
+        Assert.Contains("execute_command", rendered, StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [InlineData("allow")]
+    [InlineData("deny")]
+    public async Task Ward_resolution_without_an_id_names_the_required_explicit_form(string verb)
+    {
+
+        RecordingWardResolutionHandler handler = new(
+            "11111111-2222-3333-4444-555555555555");
+
+        ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        _ = await dispatcher.DispatchAsync($"/ward {verb}", state, CancellationToken.None);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains(
+            $"/ward {verb} <id>",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task Spell_list_requests_one_server_page_and_prints_exact_opaque_continuation()
     {
@@ -667,7 +762,6 @@ public sealed class ShellCommandDispatcherTests
             new ShellCommandParser(),
             new TestOptionsMonitor(new ArcanumSettings()),
             workspace,
-            new CommandCenterWardCoordinator(new CommandCenterHardModalArbiter()),
             NullLogger<ShellCommandDispatcher>.Instance);
     }
 
@@ -753,6 +847,77 @@ public sealed class ShellCommandDispatcherTests
                     Content = new ByteArrayContent(payload),
 
                 });
+
+        }
+
+    }
+
+    private sealed class RecordingWardResolutionHandler(string wardId) : HttpMessageHandler
+    {
+
+        public Collection<HttpRequestMessage> Requests { get; } = [];
+
+        public Collection<string> Bodies { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Requests.Add(request);
+
+            if (request.Method == HttpMethod.Get)
+            {
+
+                WardDto active = new(
+                    wardId,
+                    "execute_command",
+                    Arguments: null,
+                    SessionId: null,
+                    PlacedAt: DateTimeOffset.Parse("2026-08-30T11:59:00Z"),
+                    ExpiresAt: DateTimeOffset.Parse("2026-08-30T12:01:00Z"));
+
+                byte[] listedPayload = JsonSerializer.SerializeToUtf8Bytes(
+                    new ApiResponse<WardDto[]>([active], true, null),
+                    ArcanumJsonContext.Default.ApiResponseWardDtoArray);
+
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+
+                    Content = new ByteArrayContent(listedPayload),
+
+                };
+
+            }
+
+            string body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+
+            Bodies.Add(body);
+
+            using JsonDocument document = JsonDocument.Parse(body);
+
+            bool allowed = document.RootElement.GetProperty("allow").GetBoolean();
+
+            WardResolutionDto resolution = new(
+                wardId,
+                Allowed: allowed,
+                Reason: null,
+                ResolvedAt: DateTimeOffset.Parse("2026-08-30T12:00:00Z"));
+
+            byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<WardResolutionDto>(resolution, true, null),
+                ArcanumJsonContext.Default.ApiResponseWardResolutionDto);
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+
+                    Content = new ByteArrayContent(payload),
+
+                };
 
         }
 

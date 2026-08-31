@@ -25,8 +25,11 @@ internal static class CovenantCanonicalSchemaVersionOneFixture
     /// <summary>Every Covenant canonical object as version 1 declared it.</summary>
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CovenantCanonicalObjects.Where(
-            static definition => !definition.Name.StartsWith(CurationObjectPrefix, StringComparison.Ordinal)),
+        .. GrimoireSchemaCatalog.CovenantCanonicalObjects
+            .Where(static definition => !definition.Name.StartsWith(CurationObjectPrefix, StringComparison.Ordinal))
+            .Select(static definition => definition.Name == "covenant_versions"
+                ? CovenantCanonicalSchemaVersionTwoFixture.CovenantVersionsObject
+                : definition),
     ];
 
     /// <summary>The fingerprint the version-1 tree published, computed from the reconstruction above.</summary>

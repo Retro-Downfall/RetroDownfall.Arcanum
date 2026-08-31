@@ -473,7 +473,7 @@ public static class ErrorCodes
         /// <summary>Diagnostic MCP Invocation: the requested tool name was not found on any visible external server.</summary>
         public const string ToolNotFound = "Mcp.ToolNotFound";
 
-        /// <summary>Diagnostic MCP Invocation: the requested tool belongs to the internal server or is a Forbidden Art and cannot be invoked from the diagnostic endpoint.</summary>
+        /// <summary>Diagnostic MCP Invocation: the requested tool belongs to the internal server or requires the Master tool execution pipeline.</summary>
         public const string DiagnosticBlocked = "Mcp.DiagnosticBlocked";
 
         /// <summary>Diagnostic MCP Invocation: the tool name is provided by more than one visible external server; specify serverName.</summary>
@@ -905,7 +905,7 @@ public static class ErrorCodes
 
     }
 
-    /// <summary>Ward — operator approval gates for risky tool invocations.</summary>
+    /// <summary>Ward — tool-call audit records and retained active-record compatibility.</summary>
     public static class Ward
     {
 

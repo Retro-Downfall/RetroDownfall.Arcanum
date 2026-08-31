@@ -103,7 +103,7 @@ flowchart TD
     C --> D["Admit context and reserve worst-case turn cost"]
     D --> E["Call provider through IModelCallExecutor"]
     E --> F{"Tool calls?"}
-    F -- Yes --> G["Check mana, attunement, Ward, and Sanctum"]
+    F -- Yes --> G["Check mana and attunement, record Ward audit, enforce Sanctum"]
     G --> H["Execute tools and record structured results"]
     H --> I["Reconcile materialized context and remaining budget"]
     I --> E
@@ -125,7 +125,7 @@ The useful distinction is the owner and failure model, not whether a number appe
 
 | Kind | Example | Product behavior |
 |---|---|---|
-| Security or integrity boundary | Authentication, workspace containment, SSRF/DNS checks, Wards, Sanctum, cryptographic framing | Fail closed and name the safe action; these are never silently bypassed. |
+| Security or integrity boundary | Authentication, workspace containment, SSRF/DNS checks, Sanctum, cryptographic framing | Fail closed and name the safe action; these are never silently bypassed. Ward records are audit, not authorization. |
 | Provider/model fact | Context window, supported request shape, provider response frame | Adapt the request where possible, then name the provider/model fact and next model/compaction action. |
 | Explicit operator policy | Token/cost budget, retention choice, allowlist | Stop exactly at the chosen policy and report measured/reserved state plus how to change or resume it. |
 | Physical resource protection | One allocation/frame, concurrency admission, post-cancellation cleanup | Stream, page, queue, or checkpoint the rest; a local slice must not become a hidden total-work ceiling. |
@@ -256,14 +256,14 @@ Security checks are layered:
 1. endpoint authentication;
 2. edition and feature gates;
 3. bounded request validation;
-4. Ward policy for tool action;
+4. explicit tool-advertisement policy plus a Ward audit record;
 5. Sanctum path policy for filesystem scope;
 6. platform containment where supported;
 7. bounded, sanitized output.
 
 Host-process tools require the `Development` edition plus an explicit environment opt-in. `workspace_check` has a narrower eligibility contract and is currently available only on an eligible macOS host with active Seatbelt and a trusted .NET launch chain. It can execute repository-authored build or test code, so it is never described as harmless file inspection.
 
-A Ward is **consent**, not containment. That distinction is what makes step 4 above safe to delegate: an operator who trusts one particular action can name it in the auto-approval allowlist (`Arcanum:Security:Ward:AutoApprove`, off by default) so it stops asking, and every other step in the list still runs unchanged. Nothing about the boundary moves — the same Sanctum path policy, platform containment, and output bounds apply to an auto-approved action as to one the operator clicked through. Two rules keep the feature honest: a denial is evaluated before an approval, so turning consent on can never override a policy that says no; and consent given in advance for one named tool is never consent for a tool that is unavailable, unadvertised, or excluded elsewhere. Auto-approved actions are reported in the transcript rather than silently skipped, so "it ran without asking" and "it ran without being seen" stay different things.
+A Ward is an **audit record**, not consent or containment. Every server-executed tool call records an immediate `ungated` Ward pair and continues without a prompt. `ForbiddenArts` defaults empty and only hides named tools when the request explicitly selects `noForbiddenArts`; it never blocks an invocation. `UnattendedMode` controls whether genuine human-input tools are offered, not whether ordinary tools execute. Sanctum, workspace containment, platform eligibility, tool capabilities, and explicit operator policies remain the real boundaries, and removed Ward approval keys are rejected instead of becoming hidden ways to restore a prompt.
 
 Platform containment is not identical:
 
@@ -322,7 +322,7 @@ The normal CLI is good for scripts and focused commands. Interactive selectors a
 
 The chat renderer keeps one Markdig/Spectre allocation bounded by parsing at most 256 Ki characters at a time, but lazily renders every chunk in order. Large valid answers take longer to display; they are not replaced by a truncation marker.
 
-The unified `run` verb defaults to ordinary inference. `--research` chooses progress-driven server-owned research, while `--spell <exact-name-or-unique-prefix>` forces one named Spell without bypassing normal loading, resonances, tools, Wards, or Sanctum. Those two route flags are the only conflict; stdin, repeated `--with`, context, common sampling controls, and recursive `--plain` / `--json`compose normally. `--dry-run` sends the resolved route and payload to the authenticated context preview with retrieval disabled. It is a spend-free static pre-inference plan—not an exact live request—and stops before search, embedding, main/synthesis inference, tools, spend reservation, and persistence. A named Spell still resolves in the plan; a later live Agent handoff may add local PatternSnapshot and Chronosync context.
+The unified `run` verb defaults to ordinary inference. `--research` chooses progress-driven server-owned research, while `--spell <exact-name-or-unique-prefix>` forces one named Spell without bypassing normal loading, resonances, tools, Ward recording, or Sanctum. Those two route flags are the only conflict; stdin, repeated `--with`, context, common sampling controls, and recursive `--plain` / `--json` compose normally. `--dry-run` sends the resolved route and payload to the authenticated context preview with retrieval disabled. It is a spend-free static pre-inference plan—not an exact live request—and stops before search, embedding, main/synthesis inference, tools, spend reservation, and persistence. A named Spell still resolves in the plan; a later live Agent handoff may add local PatternSnapshot and Chronosync context.
 
 The `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal` family is an HTTP client for the host-owned attachment lifecycle. Snapshot add may read any client-local path; reference never does. `ask --attachment <guid>` and `chat --attachment <guid>` name bound Session versions directly. Metadata and JSON remain content-free, while export is the explicit atomic plaintext operation.
 
@@ -340,7 +340,7 @@ That claim authorizes later work; it does not say the full reset has finished. W
 
 Client-side files are fenced too. One retained client-mutation boundary covers the whole logical local write across the CLI, Compendium, and The Forge. When a value came from the host, it is revalidated inside that admission before publication; a reset or replacement restore publishes a durable blocker before effects and removes it last. Thus an old response cannot repopulate a newly reset installation after the maintenance window closes, and an unsafe or ambiguous control path runs no callback.
 
-Command Center is the terminal-native session workbench. It combines streaming chat, Wards, human prompts, attachment state, context telemetry, session mutation, and operator refresh without creating a second backend.
+Command Center is the terminal-native session workbench. It combines streaming chat, informational Ward audit notes, genuine human prompts, attachment state, context telemetry, session mutation, and operator refresh without creating a second backend. Ward frames never open a modal or consume allow/deny keys; explicit `/ward` commands remain for the retained compatibility API.
 
 Bare `arcanum` remains the convenient automatic entry and respects`ARCANUM_NO_COMMAND_CENTER`. The explicit `center` and `open center` commands are deliberate user requests and are not suppressed by that automatic-launch escape hatch; they retain the ordinary terminal/UI prerequisites.
 
@@ -354,7 +354,7 @@ Onboarding presets are transparent local configuration helpers, not a second set
 | `coding-workspace` v1 | Workspace checks and workspace-scoped writes, without silently enabling indexing, apprentices, or custom checks. |
 | `research` v1 | Native web research, only after its separately stored research credential is available. |
 | `private-offline` v1 | Loopback host/provider use with built-in research and telemetry off; authored third-party integrations remain visible for the operator to review. |
-| `automation` v1 | Unattended Ward auto-denial, only after the operator has already enabled a positive daily budget. The preset never invents or enlarges that budget. |
+| `automation` v1 | Operator-facing unattended default, only after the operator has already enabled a positive daily budget. It omits genuine human-input tools but never auto-denies ordinary calls; the preset never invents or enlarges that budget. |
 | `advanced-custom` v1 | Inspection and guidance with no owned configuration values. |
 
 Each definition is a versioned **partial overlay**. It owns an explicit list of public dot-paths; everything else remains operator-owned and unchanged. Presets do not own credentials, provider endpoints, implementation retry/timeout/loop/queue tuning, budget amounts, forbidden-art bypasses, network allowlists, or unsandboxed child-process enablement. They also never silently enable a non-loopback host. This keeps the workflow useful without turning onboarding into a collection of new capability restrictions or high-risk defaults.
@@ -479,7 +479,7 @@ The fantasy names are functional labels:
 | Workspace | Registered server filesystem boundary |
 | Session / Entry | Conversation and ordered transcript item |
 | Spell / Prompt | Reusable instruction and parameterized template |
-| Ward / Sanctum | Tool policy and filesystem boundary |
+| Ward / Sanctum | Per-tool audit record / filesystem boundary |
 | Mana | Token and context budget |
 | Context preview | A dry, read-only pre-inference plan; live handoff may still add local context |
 | Scrying | Image input |

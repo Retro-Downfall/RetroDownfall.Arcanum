@@ -707,6 +707,8 @@ internal sealed class FileConfigurationPresetPersistence(
 
         ArcanumSettings persisted = ConfigurationBootstrapper.LoadPersistedArcanumSettings();
 
+        ConfigurationPresetProvenance? normalizedProvenance = null;
+
         Result<ConfigurationPresetProvenance?> state = await ReadProvenanceAsync(
                 ArcanumPaths.ConfigurationPresetStateFile,
                 optional: true,
@@ -751,6 +753,18 @@ internal sealed class FileConfigurationPresetPersistence(
 
             }
 
+            Result<ConfigurationPresetProvenance> normalized =
+                NormalizeStoredProvenance(state.Value);
+
+            if (normalized.IsFailure)
+            {
+
+                return Result<ConfigurationPresetSnapshot>.Failure(normalized.Error);
+
+            }
+
+            normalizedProvenance = normalized.Value;
+
         }
         else
         {
@@ -777,7 +791,7 @@ internal sealed class FileConfigurationPresetPersistence(
             ConfigurationEnvironmentResolver.Resolve(persisted);
 
         return Result<ConfigurationPresetSnapshot>.Success(
-            new ConfigurationPresetSnapshot(persisted, environment, state.Value));
+            new ConfigurationPresetSnapshot(persisted, environment, normalizedProvenance));
 
     }
 
@@ -1026,7 +1040,8 @@ internal sealed class FileConfigurationPresetPersistence(
 
         Result configurationRestore = await RestoreOwnedValuesAsync(
                 journal,
-                CancellationToken.None)
+                CancellationToken.None,
+                allowValidatedLegacyRetiredPaths: true)
             .ConfigureAwait(false);
 
         Result sidecarRestore = await RestoreSidecarsAsync(
@@ -1052,12 +1067,16 @@ internal sealed class FileConfigurationPresetPersistence(
 
     private async Task<Result> RestoreOwnedValuesAsync(
         ConfigurationPresetJournalDocument journal,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowValidatedLegacyRetiredPaths = false)
     {
 
         ArcanumSettings current = ConfigurationBootstrapper.LoadPersistedArcanumSettings();
 
-        Result<ArcanumSettings> merged = BuildConditionalRestore(current, journal);
+        Result<ArcanumSettings> merged = BuildConditionalRestore(
+            current,
+            journal,
+            allowValidatedLegacyRetiredPaths);
 
         if (merged.IsFailure)
         {
@@ -1099,7 +1118,8 @@ internal sealed class FileConfigurationPresetPersistence(
 
     private static Result<ArcanumSettings> BuildConditionalRestore(
         ArcanumSettings current,
-        ConfigurationPresetJournalDocument journal)
+        ConfigurationPresetJournalDocument journal,
+        bool allowValidatedLegacyRetiredPaths)
     {
 
         Dictionary<string, string> candidate = journal.CandidateValues.ToDictionary(
@@ -1109,6 +1129,14 @@ internal sealed class FileConfigurationPresetPersistence(
 
         ArcanumSettings restored = ConfigurationPathAccessor.Clone(current);
 
+        ConfigurationPresetProvenance? owner = journal.Operation == "apply"
+            ? journal.NextProvenance
+            : journal.PreviousProvenance;
+
+        bool skipLegacyRetiredPaths = allowValidatedLegacyRetiredPaths
+            && owner is not null
+            && IsAffectedLegacyProvenance(owner);
+
         foreach (ConfigurationPresetBaselineValue previous in journal.PreviousValues)
         {
 
@@ -1116,6 +1144,13 @@ internal sealed class FileConfigurationPresetPersistence(
             {
 
                 return Result<ArcanumSettings>.Failure(InvalidJournalError());
+
+            }
+
+            if (skipLegacyRetiredPaths && IsRetiredWardApprovalPath(previous.Path))
+            {
+
+                continue;
 
             }
 
@@ -1347,6 +1382,24 @@ internal sealed class FileConfigurationPresetPersistence(
         foreach (ConfigurationPresetBaselineValue baseline in provenance.BaselineValues)
         {
 
+            if (IsAffectedLegacyDefinition(definition)
+                && IsRetiredWardApprovalPath(baseline.Path))
+            {
+
+                if (!IsCanonicalBoolean(baseline.CanonicalJson))
+                {
+
+                    return Result.Failure(
+                        new Error(
+                            "Preset.RollbackSnapshotInvalid",
+                            $"Preset baseline '{baseline.Path}' is not an exact canonical boolean."));
+
+                }
+
+                continue;
+
+            }
+
             ConfigurationPathUpdate parsed = ConfigurationPathAccessor.SetCanonicalValue(
                 new ArcanumSettings(),
                 baseline.Path,
@@ -1373,6 +1426,101 @@ internal sealed class FileConfigurationPresetPersistence(
                     "Preset provenance owned-values hash is invalid."));
 
     }
+
+    private static Result<ConfigurationPresetProvenance> NormalizeStoredProvenance(
+        ConfigurationPresetProvenance provenance)
+    {
+
+        if (!IsAffectedLegacyProvenance(provenance))
+        {
+
+            return Result<ConfigurationPresetProvenance>.Success(provenance);
+
+        }
+
+        ConfigurationPresetDefinition current = ConfigurationPresetCatalog.FindVersion(
+            provenance.PresetId,
+            2)!;
+
+        Dictionary<string, string> baselines = provenance.BaselineValues.ToDictionary(
+            static value => value.Path,
+            static value => value.CanonicalJson,
+            StringComparer.OrdinalIgnoreCase);
+
+        Dictionary<string, string> applied = provenance.AppliedValues.ToDictionary(
+            static value => value.Path,
+            static value => value.CanonicalJson,
+            StringComparer.OrdinalIgnoreCase);
+
+        ImmutableArray<ConfigurationPresetBaselineValue> normalizedBaselines =
+        [
+            .. current.OwnedSettings.Select(setting =>
+                new ConfigurationPresetBaselineValue(
+                    setting.Path,
+                    baselines[setting.Path])),
+        ];
+
+        ImmutableArray<ConfigurationPresetBaselineValue> normalizedApplied =
+        [
+            .. current.OwnedSettings.Select(setting =>
+                new ConfigurationPresetBaselineValue(
+                    setting.Path,
+                    applied[setting.Path])),
+        ];
+
+        ConfigurationPresetProvenance normalized = provenance with
+        {
+
+            Version = 2,
+
+            OwnedValuesHash = ConfigurationPresetHash.ComputeCanonicalValues(
+                normalizedApplied),
+
+            BaselineValues = normalizedBaselines,
+
+            AppliedValues = normalizedApplied,
+
+        };
+
+        Result validation = ValidateStoredProvenance(normalized);
+
+        return validation.IsSuccess
+            ? Result<ConfigurationPresetProvenance>.Success(normalized)
+            : Result<ConfigurationPresetProvenance>.Failure(validation.Error);
+
+    }
+
+    private static bool IsAffectedLegacyProvenance(
+        ConfigurationPresetProvenance provenance)
+    {
+
+        ConfigurationPresetDefinition? definition = ConfigurationPresetCatalog.FindVersion(
+            provenance.PresetId,
+            provenance.Version);
+
+        return definition is not null && IsAffectedLegacyDefinition(definition);
+
+    }
+
+    private static bool IsAffectedLegacyDefinition(
+        ConfigurationPresetDefinition definition) =>
+        definition.Version == 1
+        && definition.Id is "general-assistant"
+            or "coding-workspace"
+            or "research"
+            or "private-offline"
+            or "automation";
+
+    private static bool IsRetiredWardApprovalPath(string path) =>
+        string.Equals(path, "security.ward.enabled", StringComparison.Ordinal)
+        || string.Equals(
+            path,
+            "security.ward.autoDenyInUnattendedMode",
+            StringComparison.Ordinal);
+
+    private static bool IsCanonicalBoolean(string canonicalJson) =>
+        string.Equals(canonicalJson, "true", StringComparison.Ordinal)
+        || string.Equals(canonicalJson, "false", StringComparison.Ordinal);
 
     private static Result ValidateJournal(ConfigurationPresetJournalDocument journal)
     {

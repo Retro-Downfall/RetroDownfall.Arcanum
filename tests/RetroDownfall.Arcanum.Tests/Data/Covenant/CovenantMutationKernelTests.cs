@@ -920,7 +920,7 @@ public sealed class CovenantMutationKernelTests
     }
 
     [Fact]
-    public async Task An_approved_agent_retirement_the_factory_built_persists_its_ward_evidence()
+    public async Task An_ungated_agent_retirement_the_factory_built_persists_null_legacy_ward_fields()
     {
 
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
@@ -957,8 +957,6 @@ public sealed class CovenantMutationKernelTests
 
         Assert.Equal(CovenantMutationOutcome.Applied, Assert.Single(retired.Value).Outcome);
 
-        // covenant_versions permits a Ward digest only under OriginCode 3, and demands a Ward mode
-        // with it. Any other origin makes the tombstone insert a raw CHECK failure at commit time.
         Assert.Equal(
             (long)CovenantOrigin.AgentApproved,
             await ScalarAsync(fixture, "SELECT OriginCode FROM covenant_versions WHERE OperationCode = 2;"));
@@ -967,13 +965,78 @@ public sealed class CovenantMutationKernelTests
             1,
             await ScalarAsync(
                 fixture,
-                "SELECT COUNT(*) FROM covenant_versions WHERE OperationCode = 2 AND WardReceiptDigest IS NOT NULL;"));
+                "SELECT COUNT(*) FROM covenant_versions WHERE OperationCode = 2 AND WardReceiptDigest IS NULL;"));
 
         Assert.Equal(
-            (long)CovenantAuthorizationMode.WardInteractive,
+            1,
+            await ScalarAsync(
+                fixture,
+                "SELECT COUNT(*) FROM covenant_versions WHERE OperationCode = 2 AND AuthorizationModeCode IS NULL;"));
+
+    }
+
+    [Fact]
+    public async Task A_historical_ward_backed_agent_retirement_preserves_its_exact_digest_and_mode()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(CovenantTask6Fixture.CampaignId, "one", Token);
+
+        _ = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(
+                fixture,
+                Token,
+                CovenantMutationFixture.AgentPropose(
+                    CovenantTask6Fixture.CampaignId,
+                    "campaign.a",
+                    "Prefer repo-root builds.",
+                    0,
+                    0)),
+            Token);
+
+        CovenantMutationIntent historical = CovenantMutationFixture.HistoricalWardBackedAgentRetire(
+            CovenantOperationScope.ForCampaign(CovenantTask6Fixture.CampaignId),
+            "campaign.a",
+            CovenantLane.Proposed,
+            expectedRevision: 1,
+            expectedKeyEpoch: 1,
+            mode: CovenantAuthorizationMode.WardConfiguredAutoApproval);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> retired = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(fixture, Token, historical),
+            Token);
+
+        Assert.True(retired.IsSuccess, retired.IsFailure ? retired.Error.Message : string.Empty);
+
+        Assert.Equal(
+            (long)CovenantOrigin.AgentApproved,
+            await ScalarAsync(fixture, "SELECT OriginCode FROM covenant_versions WHERE OperationCode = 2;"));
+
+        Assert.Equal(
+            historical.Authorization.WardReceiptDigest!.Value.Bytes,
+            await BlobAsync(fixture, "SELECT WardReceiptDigest FROM covenant_versions WHERE OperationCode = 2;"));
+
+        Assert.Equal(
+            (long)CovenantAuthorizationMode.WardConfiguredAutoApproval,
             await ScalarAsync(
                 fixture,
                 "SELECT AuthorizationModeCode FROM covenant_versions WHERE OperationCode = 2;"));
+
+    }
+
+    private static async Task<byte[]> BlobAsync(CovenantCanonicalFixture fixture, string sql)
+    {
+
+        await using SqliteCommand command = fixture.Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        object? value = await command.ExecuteScalarAsync(Token);
+
+        return Assert.IsType<byte[]>(value);
 
     }
 
@@ -1021,7 +1084,6 @@ public sealed class CovenantMutationKernelTests
                 CovenantCapabilityFixtures.RetirementPreflight(
                     targetLaneRevision: targetLaneRevision,
                     keyEpoch: keyEpoch),
-                CovenantCapabilityFixtures.WardReceipt(CovenantWardDecision.Approved),
                 _turn.Token);
 
         }

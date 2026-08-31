@@ -1,0 +1,1 @@
+DROP TABLE covenant_version_attachment_provenance;

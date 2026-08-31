@@ -227,6 +227,19 @@ public sealed class ArcanumSettingsBindingTests
 
     }
 
+    [Fact]
+    public void Annals_feature_defaults_true_and_binds_explicit_false_through_generated_configuration()
+    {
+
+        Assert.True(new FeatureSettings().Annals);
+
+        Assert.True(BindArcanum("""{"Arcanum":{"features":{}}}""").Features.Annals);
+
+        Assert.False(
+            BindArcanum("""{"Arcanum":{"features":{"annals":false}}}""").Features.Annals);
+
+    }
+
     private static ArcanumSettings BindArcanum(string json)
     {
 

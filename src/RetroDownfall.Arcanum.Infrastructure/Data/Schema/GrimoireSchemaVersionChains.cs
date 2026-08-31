@@ -47,11 +47,11 @@ internal static class GrimoireSchemaVersionChains
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
     /// Version 2 added the curation substrate: which scoped lane heads an operator has pinned against
-    /// agent authorship, and which Global keys a Campaign has masked. Every object is new, so the step
-    /// adds and alters nothing - which is what lets a fresh installation and an evolved one describe
-    /// the same tree, since CREATE TABLE stores its statement verbatim and ALTER TABLE does not.
+    /// agent authorship, and which Global keys a Campaign has masked. Version 3 rebuilt
+    /// <c>covenant_versions</c> so new AgentApproved retirements can carry no Ward receipt while every
+    /// historical Ward-backed tuple remains unchanged.
     /// </remarks>
-    internal const int CovenantCanonicalSchemaVersion = 2;
+    internal const int CovenantCanonicalSchemaVersion = 3;
 
     /// <summary>The version of Covenant's inspection index this binary declares.</summary>
     internal const int CovenantAcceleratorSchemaVersion = 1;
@@ -101,6 +101,13 @@ internal static class GrimoireSchemaVersionChains
             // installation.
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",
+
+            // Read out of the Covenant canonical head tree immediately before covenant_versions.sql
+            // admitted receipt-free AgentApproved retirements. CovenantCanonicalSchemaVersionTwoFixture
+            // reconstructs that tree with its frozen table resource and hashes it, so a wrong value here
+            // fails before any version-two installation can be refused during the rebuild.
+            [(GrimoireSchemaTransactionTier.CovenantCanonical, 3)] =
+                "BC0914DABEF7A54B0637E66697EE47CC7F2077E67B40BCE6D824EDE2913EDC61",
 
         };
 

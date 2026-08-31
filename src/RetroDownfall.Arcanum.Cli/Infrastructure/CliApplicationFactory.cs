@@ -210,8 +210,6 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<CommandCenterHardModalArbiter>();
 
-        services.AddSingleton<CommandCenterWardCoordinator>();
-
         services.AddSingleton<CommandCenterHumanPromptCoordinator>();
 
         services.AddTransient<CommandCenterChatRunner>();

@@ -353,7 +353,7 @@ public sealed class McpToolCommandTests
 
     [Fact]
 
-    public void Mcp_invoke_explains_forbidden_art_policy_without_invoking_it()
+    public void Mcp_invoke_explains_master_pipeline_policy_without_invoking_it()
     {
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -362,7 +362,7 @@ public sealed class McpToolCommandTests
                 false,
                 new Error(
                     "Mcp.DiagnosticBlocked",
-                    "This tool cannot be invoked from the diagnostic endpoint because it is a Forbidden Art or requires the Master tool execution pipeline.")),
+                    "This internal tool requires the Master tool execution pipeline.")),
             ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse,
             HttpStatusCode.BadRequest));
 
@@ -371,8 +371,6 @@ public sealed class McpToolCommandTests
             ["mcp", "invoke", "execute_command", "{}"]);
 
         Assert.Equal(1, result.ExitCode);
-
-        Assert.Contains("Forbidden Art", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("Master", result.Error, StringComparison.OrdinalIgnoreCase);
 

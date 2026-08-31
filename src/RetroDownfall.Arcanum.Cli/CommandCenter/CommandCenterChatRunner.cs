@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -8,7 +9,6 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
-using RetroDownfall.Arcanum.Core.Wards;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -20,7 +20,6 @@ internal sealed class CommandCenterChatRunner(
     ArcanumApiClient apiClient,
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     SessionWorkspaceService sessionWorkspace,
-    CommandCenterWardCoordinator wardCoordinator,
     CommandCenterHumanPromptCoordinator humanPromptCoordinator,
     ILogger<CommandCenterChatRunner> logger)
 {
@@ -231,19 +230,9 @@ internal sealed class CommandCenterChatRunner(
 
                     case IntelligenceEventType.WardResolved:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
-                        // An automatic outcome is labelled as such so the transcript never implies the
-                        // operator was asked when the host answered on their behalf.
-                        string resolvedVerb = evt.WardOrigin is { } resolvedOrigin
-                            && resolvedOrigin != WardResolutionOrigin.Human
-                                ? "auto-"
-                                : string.Empty;
-                        string resolved = evt.WardAllowed == true
-                            ? $"Ward {resolvedVerb}allowed: {NormalizeToolName(evt.WardToolName ?? evt.Message)}"
-                            : $"Ward {resolvedVerb}denied: {NormalizeToolName(evt.WardToolName ?? evt.Message)}"
-                              + (string.IsNullOrWhiteSpace(evt.WardReason) ? string.Empty : $" ({evt.WardReason})");
                         _ = state.Incantations.AppendWardNote(
                             NormalizeToolName(evt.WardToolName ?? evt.Message),
-                            resolved,
+                            ResolvedWardNote(evt),
                             evt.WardId);
                         await uiUpdates.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
@@ -429,100 +418,12 @@ internal sealed class CommandCenterChatRunner(
     {
         string wardId = evt.WardId ?? string.Empty;
         string toolName = NormalizeToolName(evt.WardToolName ?? evt.Message);
-        string argsPreview = CommandCenterWardCoordinator.FormatArgumentsPreview(evt.WardArguments);
+        string argsPreview = FormatWardArgumentsPreview(evt.WardArguments);
 
-        // The server already resolved this ward on its own (issue #53). There is nothing to approve
-        // and nothing to POST — a resolution attempt here would only lose the AlreadyResolved race —
-        // so record it in the transcript and never raise the hard modal.
-        if (evt.WardOrigin is { } automaticOrigin and not WardResolutionOrigin.Human)
-        {
-            _ = state.Incantations.AppendWardNote(
-                toolName,
-                AutomaticWardNote(automaticOrigin, toolName, argsPreview),
-                wardId);
-
-            await uiUpdates.WriteAsync(
-                    new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            return;
-        }
-
-        string pendingNote = string.IsNullOrEmpty(argsPreview)
-            ? $"Ward pending ({wardId})"
-            : $"Ward pending ({wardId}) — {argsPreview}";
-        _ = state.Incantations.AppendWardNote(toolName, pendingNote, wardId);
-        await uiUpdates.WriteAsync(
-                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (string.IsNullOrWhiteSpace(wardId))
-        {
-            state.Log.Append(SessionLogEntryKind.Error, "Ward event missing wardId; cannot resolve.");
-            await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
-                .ConfigureAwait(false);
-            return;
-        }
-
-        bool allow;
-        if (state.SessionAllowedArts.Contains(toolName))
-        {
-            allow = true;
-            _ = state.Incantations.AppendWardNote(
-                toolName,
-                $"Auto-allowing {toolName} (session allow-list)",
-                wardId);
-        }
-        else
-        {
-            WardApprovalDecision decision = await wardCoordinator
-                .RequestApprovalAsync(new WardApprovalRequest(wardId, toolName, argsPreview), cancellationToken)
-                .ConfigureAwait(false);
-
-            if (decision == WardApprovalDecision.AllowAlwaysThisTool)
-            {
-                _ = state.SessionAllowedArts.Add(toolName);
-                allow = true;
-                _ = state.Incantations.AppendWardNote(
-                    toolName,
-                    $"Always allowing {toolName} for this Command Center session",
-                    wardId);
-            }
-            else
-            {
-                allow = decision == WardApprovalDecision.Allow;
-                if (allow)
-                {
-                    _ = state.Incantations.AppendWardNote(toolName, $"Allowed once: {toolName}", wardId);
-                }
-                else
-                {
-                    _ = state.Incantations.AppendWardNote(toolName, $"Denied: {toolName}", wardId);
-                }
-            }
-        }
-
-        Result<WardResolutionDto> resolve = await apiClient
-            .ResolveWardAsync(wardId, allow, reason: null, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (resolve.IsFailure)
-        {
-            state.Log.Append(
-                SessionLogEntryKind.Error,
-                $"Failed to resolve ward {wardId}: {resolve.Error.Message}");
-            await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
-                .ConfigureAwait(false);
-        }
-        else
-        {
-            _ = state.Incantations.AppendWardNote(
-                toolName,
-                allow ? $"Submitted allow for ward {wardId}" : $"Submitted deny for ward {wardId}",
-                wardId);
-        }
+        _ = state.Incantations.AppendWardNote(
+            toolName,
+            InformationalWardNote(evt.WardOrigin, toolName, argsPreview),
+            wardId);
 
         await uiUpdates.WriteAsync(
                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
@@ -638,28 +539,71 @@ internal sealed class CommandCenterChatRunner(
         string.IsNullOrWhiteSpace(name) ? "unknown" : name.Trim();
 
     /// <summary>
-    /// Transcript line for a ward the host resolved without asking. The operator still sees exactly
-    /// what ran and why it was not prompted for.
+    /// Transcript line for an informational Ward record. Command Center never turns a stream frame
+    /// into an approval request or a tool restriction.
     /// </summary>
-    private static string AutomaticWardNote(
-        WardResolutionOrigin origin,
+    private static string InformationalWardNote(
+        WardResolutionOrigin? origin,
         string toolName,
         string argumentsPreview)
     {
         string headline = origin switch
         {
+            WardResolutionOrigin.Ungated =>
+                $"Ward recorded (ungated): {toolName}",
             WardResolutionOrigin.AutoApproved =>
-                $"Auto-approved {toolName} (operator auto-approval policy)",
+                $"Ward recorded (host allowed): {toolName}",
             WardResolutionOrigin.AutoDenied =>
-                $"Auto-denied {toolName} (host policy)",
+                $"Ward recorded (host denied): {toolName}",
             WardResolutionOrigin.TimedOut =>
-                $"Ward for {toolName} timed out",
-            _ => $"Ward for {toolName} was resolved automatically",
+                $"Ward recorded (timed out): {toolName}",
+            WardResolutionOrigin.Human =>
+                $"Ward recorded (human resolution): {toolName}",
+            _ => $"Ward recorded: {toolName}",
         };
 
         return string.IsNullOrEmpty(argumentsPreview)
             ? headline
             : $"{headline} — {argumentsPreview}";
+    }
+
+    private static string ResolvedWardNote(IntelligenceEvent evt)
+    {
+        string toolName = NormalizeToolName(evt.WardToolName ?? evt.Message);
+        string outcome = evt.WardAllowed == true ? "allowed" : "denied";
+        string headline = evt.WardOrigin switch
+        {
+            WardResolutionOrigin.Ungated => $"Ward record resolved (ungated, {outcome}): {toolName}",
+            WardResolutionOrigin.AutoApproved => $"Ward record resolved (host allowed): {toolName}",
+            WardResolutionOrigin.AutoDenied => $"Ward record resolved (host denied): {toolName}",
+            WardResolutionOrigin.TimedOut => $"Ward record resolved (timed out): {toolName}",
+            WardResolutionOrigin.Human => $"Ward record resolved (human, {outcome}): {toolName}",
+            _ => $"Ward record resolved ({outcome}): {toolName}",
+        };
+
+        return string.IsNullOrWhiteSpace(evt.WardReason)
+            ? headline
+            : $"{headline} ({evt.WardReason})";
+    }
+
+    internal static string FormatWardArgumentsPreview(JsonElement? arguments, int maxChars = 480)
+    {
+        if (arguments is null)
+        {
+            return string.Empty;
+        }
+
+        string raw = arguments.Value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+            ? string.Empty
+            : arguments.Value.ToString();
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        raw = raw.Replace('\r', ' ').Replace('\n', ' ');
+        return raw.Length <= maxChars ? raw : raw[..maxChars] + "…";
     }
 
     private static bool LooksLikeJsonObject(string? text) =>

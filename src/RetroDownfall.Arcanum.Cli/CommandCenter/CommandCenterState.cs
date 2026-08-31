@@ -73,11 +73,6 @@ internal sealed class CommandCenterState
 
     public IReadOnlyList<SessionAttachmentDto> SessionAttachments { get; set; } = [];
 
-    /// <summary>
-    /// Forbidden Arts the operator chose "always allow" for this Command Center run (in-memory).
-    /// </summary>
-    public HashSet<string> SessionAllowedArts { get; } = new(StringComparer.OrdinalIgnoreCase);
-
     private int _turnActive;
 
     /// <summary>True while a chat turn is in flight (atomic with <see cref="TryBeginTurn"/>).</summary>
@@ -410,7 +405,6 @@ internal enum CommandCenterOverlayKind
     SessionPicker,
     QuitConfirm,
     DiscardConfirm,
-    WardConfirm,
     HumanPrompt,
     ModelPicker,
 }

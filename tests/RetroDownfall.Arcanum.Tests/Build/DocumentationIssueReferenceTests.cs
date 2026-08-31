@@ -19,7 +19,8 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// is a contract, plus the two structured inventories that are read the same way. Dated review
 /// snapshots and the plan and specification archive under <c>docs/superpowers</c> are historical
 /// records of a single run and are deliberately left alone.</para>
-/// <para>The pattern is anchored on the word <c>issue</c>. A bare <c>#</c> and digits is how every
+/// <para>The pattern is anchored on the word <c>issue</c> and accepts the tracker spellings
+/// <c>issue #55</c>, <c>issue-55</c>, and <c>issue 55</c>. A bare <c>#</c> and digits is how every
 /// Markdown section anchor in these documents is spelled, so matching that instead would flag the
 /// cross-references the documents are supposed to carry.</para>
 /// </remarks>
@@ -51,7 +52,7 @@ public sealed class DocumentationIssueReferenceTests
     ];
 
     private static readonly Regex TrackerIssueReference = new(
-        @"\bissues?\s*#\d+",
+        @"\bissues?(?:\s*#\s*|[- ])\d+",
         RegexOptions.IgnoreCase,
         TimeSpan.FromSeconds(5));
 

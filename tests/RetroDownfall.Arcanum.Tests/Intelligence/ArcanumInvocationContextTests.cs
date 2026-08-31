@@ -36,6 +36,7 @@ public sealed class ArcanumInvocationContextTests
         Assert.Null(context.ReadAuthorityEpoch);
         Assert.False(context.CanReadCovenant);
         Assert.False(context.CanStageCovenantMutation);
+        Assert.False(context.CanPrepareCovenantRetirement);
 
     }
 
@@ -60,6 +61,7 @@ public sealed class ArcanumInvocationContextTests
         Assert.Equal(ToolPolicy.NoTools, context.ToolPolicy);
 
         Assert.False(context.CanStageCovenantMutation);
+        Assert.False(context.CanPrepareCovenantRetirement);
 
     }
 
@@ -84,6 +86,7 @@ public sealed class ArcanumInvocationContextTests
         Assert.Same(epoch, result.Value.ReadAuthorityEpoch);
         Assert.True(result.Value.CanReadCovenant);
         Assert.True(result.Value.CanStageCovenantMutation);
+        Assert.True(result.Value.CanPrepareCovenantRetirement);
 
     }
 
@@ -124,6 +127,7 @@ public sealed class ArcanumInvocationContextTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value.CanReadCovenant);
         Assert.False(result.Value.CanStageCovenantMutation);
+        Assert.False(result.Value.CanPrepareCovenantRetirement);
 
     }
 
@@ -142,6 +146,7 @@ public sealed class ArcanumInvocationContextTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value.CanReadCovenant);
         Assert.False(result.Value.CanStageCovenantMutation);
+        Assert.False(result.Value.CanPrepareCovenantRetirement);
 
     }
 
@@ -166,12 +171,13 @@ public sealed class ArcanumInvocationContextTests
             Assert.True(result.IsSuccess);
             Assert.True(result.Value.CanReadCovenant);
             Assert.False(result.Value.CanStageCovenantMutation);
+            Assert.False(result.Value.CanPrepareCovenantRetirement);
         }
 
     }
 
     [Fact]
-    public void Create_GlobalOnlyAndUnattendedSessionTurnsCannotStage()
+    public void Create_GlobalOnlyAndToollessSessionTurnsCannotStage()
     {
 
         Result<ArcanumInvocationContext> globalOnly = ArcanumInvocationContext.Create(
@@ -184,17 +190,7 @@ public sealed class ArcanumInvocationContextTests
 
         Assert.True(globalOnly.Value.CanReadCovenant);
         Assert.False(globalOnly.Value.CanStageCovenantMutation);
-
-        Result<ArcanumInvocationContext> unattended = ArcanumInvocationContext.Create(
-            ArcanumExecutionSurface.SessionBackedOperatorTurn,
-            CampaignContext(),
-            InvocationAttendance.Unattended,
-            CovenantContextPolicy.Default,
-            ToolPolicy.AllTools,
-            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
-
-        Assert.True(unattended.Value.CanReadCovenant);
-        Assert.False(unattended.Value.CanStageCovenantMutation);
+        Assert.False(globalOnly.Value.CanPrepareCovenantRetirement);
 
         Result<ArcanumInvocationContext> toolless = ArcanumInvocationContext.Create(
             ArcanumExecutionSurface.SessionBackedOperatorTurn,
@@ -206,6 +202,25 @@ public sealed class ArcanumInvocationContextTests
 
         Assert.True(toolless.Value.CanReadCovenant);
         Assert.False(toolless.Value.CanStageCovenantMutation);
+        Assert.False(toolless.Value.CanPrepareCovenantRetirement);
+
+    }
+
+    [Fact]
+    public void Create_UnattendedSessionTurnCanPrepareRetirementButCannotStageProposal()
+    {
+
+        Result<ArcanumInvocationContext> unattended = ArcanumInvocationContext.Create(
+            ArcanumExecutionSurface.SessionBackedOperatorTurn,
+            CampaignContext(),
+            InvocationAttendance.Unattended,
+            CovenantContextPolicy.Default,
+            ToolPolicy.AllTools,
+            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
+
+        Assert.True(unattended.Value.CanReadCovenant);
+        Assert.False(unattended.Value.CanStageCovenantMutation);
+        Assert.True(unattended.Value.CanPrepareCovenantRetirement);
 
     }
 
@@ -224,6 +239,7 @@ public sealed class ArcanumInvocationContextTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value.CanReadCovenant);
         Assert.False(result.Value.CanStageCovenantMutation);
+        Assert.False(result.Value.CanPrepareCovenantRetirement);
 
     }
 

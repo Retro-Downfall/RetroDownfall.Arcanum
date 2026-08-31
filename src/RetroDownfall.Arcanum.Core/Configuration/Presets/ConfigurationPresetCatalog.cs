@@ -23,10 +23,15 @@ public static class ConfigurationPresetCatalog
     public static ImmutableArray<ConfigurationPresetDefinition> Versions { get; } =
     [
         GeneralAssistant(),
+        GeneralAssistantV2(),
         CodingWorkspace(),
+        CodingWorkspaceV2(),
         Research(),
+        ResearchV2(),
         PrivateOffline(),
+        PrivateOfflineV2(),
         Automation(),
+        AutomationV2(),
         AdvancedCustom(),
     ];
 
@@ -39,7 +44,7 @@ public static class ConfigurationPresetCatalog
     [
         new(
             "Ward",
-            "An approval gate for tool actions."),
+            "A per-tool audit record; Covenant retirement retains independent authorization, preflight, disclosure, and one-call capability checks."),
         new(
             "Sanctum",
             "A workspace sandbox that enforces approved path boundaries."),
@@ -103,9 +108,9 @@ public static class ConfigurationPresetCatalog
                 SafetySetting("security.ward.autoDenyInUnattendedMode", "true"),
                 SafetySetting("security.allowUnsandboxedToolChildren", "false")),
             new ConfigurationPresetDisclosure(
-                "Attachments and normal guarded tool use.",
+                "Attachments and ordinary tool use with per-call Ward records.",
                 "Automatic long-term-memory extraction and destructive memory management.",
-                "Ward remains enabled and unsandboxed child processes remain disabled.",
+                "Ordinary tools do not pause for Ward approval; Covenant retirement remains separately authorized, and unsandboxed child processes remain disabled.",
                 "A configured inference provider and model are required for first success.",
                 "No budget or concurrency limit is changed."),
             Prerequisites(ProviderModel()),
@@ -132,7 +137,7 @@ public static class ConfigurationPresetCatalog
             new ConfigurationPresetDisclosure(
                 "Workspace validation and workspace-scoped file writes.",
                 "Nothing outside the owned values; indexing remains an explicit later choice.",
-                "File changes can modify project data; Ward and Sanctum boundaries remain active.",
+                "File changes can modify project data; Ward records each call and Sanctum path boundaries remain active.",
                 "A configured inference provider/model and a workspace are required.",
                 "No research, apprentice, retry, timeout, or indexing limit is changed."),
             Prerequisites(ProviderModel(), Workspace()),
@@ -192,7 +197,7 @@ public static class ConfigurationPresetCatalog
                 SafetySetting("security.ward.autoDenyInUnattendedMode", "true"),
                 SafetySetting("security.allowUnsandboxedToolChildren", "false")),
             new ConfigurationPresetDisclosure(
-                "Loopback inference with local attachments and guarded tools.",
+                "Loopback inference with local attachments and per-call tool records.",
                 "Built-in external web research, enterprise telemetry, and non-loopback host binding.",
                 "Configured third-party integrations are not erased; inspect them before assuming fully offline operation.",
                 "The selected inference provider endpoint must be loopback.",
@@ -211,16 +216,16 @@ public static class ConfigurationPresetCatalog
             "automation",
             1,
             "Automation",
-            "Enables unattended Ward behavior only after an operator supplies a positive explicit budget.",
+            "Enables unattended execution only after an operator supplies a positive explicit budget.",
             Owned(
                 SafetySetting("security.ward.enabled", "true"),
                 SafetySetting("security.ward.autoDenyInUnattendedMode", "true"),
                 Setting("security.ward.unattendedMode", "true"),
                 SafetySetting("security.allowUnsandboxedToolChildren", "false")),
             new ConfigurationPresetDisclosure(
-                "Unattended execution under Ward auto-denial.",
-                "No forbidden-art bypass, unsandboxed child process, destructive memory action, or untrusted MCP server.",
-                "Actions that require approval are denied while unattended; existing tool permissions still apply.",
+                "Unattended ordinary tool execution with per-call Ward records.",
+                "No unsandboxed child process, destructive memory action, or untrusted MCP server.",
+                "Ordinary calls do not pause for approval; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
                 "A configured inference provider/model is required.",
                 "An already enabled, positive daily budget is required and is never invented or enlarged."),
             Prerequisites(ProviderModel(), PositiveBudget()),
@@ -253,6 +258,140 @@ public static class ConfigurationPresetCatalog
                 "Review the effective configuration before enabling advanced features.",
                 "All features remain individually configurable.",
                 "Run arcanum config show."));
+
+    private static ConfigurationPresetDefinition GeneralAssistantV2() =>
+        new(
+            "general-assistant",
+            2,
+            "General Assistant",
+            "A balanced conversational setup with attachments and conservative memory defaults.",
+            Owned(
+                Setting("features.attachments", "true"),
+                SafetySetting("features.saga", "false"),
+                SafetySetting("features.sagaExtraction", "false"),
+                SafetySetting("features.memoryManagement", "false"),
+                SafetySetting("security.allowUnsandboxedToolChildren", "false")),
+            new ConfigurationPresetDisclosure(
+                "Attachments and ordinary tool use with per-call Ward records.",
+                "Automatic long-term-memory extraction and destructive memory management.",
+                "Ward records are informational; Covenant retirement remains separately authorized, and unsandboxed child processes remain disabled.",
+                "A configured inference provider and model are required for first success.",
+                "No budget or concurrency limit is changed."),
+            Prerequisites(ProviderModel()),
+            Recommendations(new ConfigurationPresetRecommendation(
+                "Verify the selected model can answer a simple request.",
+                "arcanum run \"Hello\"")),
+            Progressive(
+                "Choose the provider and model you intend to use.",
+                "Saga, semantic retrieval, MCP servers, and automation remain optional.",
+                "Run arcanum run \"Hello\"."));
+
+    private static ConfigurationPresetDefinition CodingWorkspaceV2() =>
+        new(
+            "coding-workspace",
+            2,
+            "Coding Workspace",
+            "Enables workspace checks and file editing under the configured default workspace root.",
+            Owned(
+                Setting("features.workspaceChecks", "true"),
+                Setting("workspaces.enableFileWrite", "true"),
+                SafetySetting("security.allowUnsandboxedToolChildren", "false")),
+            new ConfigurationPresetDisclosure(
+                "Workspace validation and workspace-scoped file writes.",
+                "Nothing outside the owned values; indexing remains an explicit later choice.",
+                "File changes can modify project data; Ward records each call and Sanctum path boundaries remain active.",
+                "A configured inference provider/model and a workspace are required.",
+                "No research, apprentice, retry, timeout, or indexing limit is changed."),
+            Prerequisites(ProviderModel(), Workspace()),
+            Recommendations(
+                new ConfigurationPresetRecommendation(
+                    "Run a first workspace-scoped coding request.",
+                    "arcanum run --workspace . \"Inspect this workspace and summarize it.\""),
+                new ConfigurationPresetRecommendation(
+                    "Add semantic code retrieval only when the workspace benefits from it.",
+                    "arcanum workspace index .",
+                    IsAdvancedFeature: true)),
+            Progressive(
+                "Configure the default workspace root that Arcanum may edit.",
+                "Codebase indexing, apprentices, and custom workspace checks remain optional.",
+                "Run arcanum run --workspace . \"Inspect this workspace and summarize it.\""));
+
+    private static ConfigurationPresetDefinition ResearchV2() =>
+        new(
+            "research",
+            2,
+            "Research",
+            "Enables native web research while preserving explicit provider and credential setup.",
+            Owned(
+                Setting(
+                    "features.webBrowsing",
+                    "true",
+                    ResearchCredentialPrerequisite),
+                SafetySetting("security.allowUnsandboxedToolChildren", "false")),
+            new ConfigurationPresetDisclosure(
+                "Native web search and URL reading.",
+                "No local memory, citation, retry, hop, timeout, or loop setting is changed.",
+                "Research sends queries and selected page requests to external services.",
+                "An inference provider/model and a securely stored Perplexity credential are required.",
+                "External research can incur provider cost; existing explicit budgets remain unchanged."),
+            Prerequisites(ProviderModel(), ResearchCredential()),
+            Recommendations(new ConfigurationPresetRecommendation(
+                "Run one cited research request.",
+                "arcanum run --research \"What changed?\"")),
+            Progressive(
+                "Store the research credential and review the external-data disclosure.",
+                "Semantic memory and custom research workflows remain optional.",
+                "Run arcanum run --research \"What changed?\"."));
+
+    private static ConfigurationPresetDefinition PrivateOfflineV2() =>
+        new(
+            "private-offline",
+            2,
+            "Private/Offline",
+            "Keeps the primary runtime loopback-only and turns off built-in external research and telemetry.",
+            Owned(
+                SafetySetting("host.listenAny", "false"),
+                SafetySetting("features.webBrowsing", "false"),
+                SafetySetting("features.enterpriseTelemetry", "false"),
+                SafetySetting("security.allowUnsandboxedToolChildren", "false")),
+            new ConfigurationPresetDisclosure(
+                "Loopback inference with local attachments and per-call tool records.",
+                "Built-in external web research, enterprise telemetry, and non-loopback host binding.",
+                "Configured third-party integrations are not erased; inspect them before assuming fully offline operation.",
+                "The selected inference provider endpoint must be loopback.",
+                "No budget, storage-retention, or concurrency value is changed."),
+            Prerequisites(LoopbackProvider()),
+            Recommendations(new ConfigurationPresetRecommendation(
+                "Verify the local provider answers without external research.",
+                "arcanum run \"Hello\"")),
+            Progressive(
+                "Choose a loopback provider and model.",
+                "Review MCP and other authored integration allowlists separately if strict offline operation is required.",
+                "Run arcanum run \"Hello\"."));
+
+    private static ConfigurationPresetDefinition AutomationV2() =>
+        new(
+            "automation",
+            2,
+            "Automation",
+            "Enables unattended execution only after an operator supplies a positive explicit budget.",
+            Owned(
+                Setting("security.ward.unattendedMode", "true"),
+                SafetySetting("security.allowUnsandboxedToolChildren", "false")),
+            new ConfigurationPresetDisclosure(
+                "Unattended ordinary tool execution with per-call Ward records.",
+                "No unsandboxed child process, destructive memory action, or untrusted MCP server.",
+                "Ward records are informational; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
+                "A configured inference provider/model is required.",
+                "An already enabled, positive daily budget is required and is never invented or enlarged."),
+            Prerequisites(ProviderModel(), PositiveBudget()),
+            Recommendations(new ConfigurationPresetRecommendation(
+                "Inspect daemon state before scheduling unattended work.",
+                "arcanum daemon status")),
+            Progressive(
+                "Set and review an explicit positive daily budget.",
+                "Jobs, schedules, apprentices, and integration-specific permissions remain separate choices.",
+                "Run arcanum daemon status."));
 
     private static ConfigurationPresetPrerequisite ProviderModel() =>
         new(

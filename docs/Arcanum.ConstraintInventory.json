@@ -4051,18 +4051,17 @@
         "ArcanumSettingClamps.MaxActiveWards": "public static int MaxActiveWards(int value) => Math.Clamp(value, 1, 500);"
       },
       "currentValue": "public static int MaxActiveWards(int value) => Math.Clamp(value, 1, 500);",
-      "owner": "security",
+      "owner": "physical-resource",
       "enforcementPoint": "ArcanumSettingClamps.MaxActiveWards",
-      "userVisibleBehavior": "The request or child process fails closed at a named security/resource policy.",
-      "originalRationale": "The value protects authentication, containment, approval, audit, or OS-resource enforcement.",
-      "threatOrFailureModel": "Removing it could expose secrets, bypass approval, or permit host resource exhaustion.",
-      "classification": "Required security boundary",
+      "userVisibleBehavior": "The retained Ward compatibility engine refuses to create more than the configured number of simultaneous active records; ordinary tool calls create resolved audit records and never consume this capacity.",
+      "originalRationale": "Bound the memory and coordination cost of active compatibility records without imposing a limit on ordinary tool execution.",
+      "threatOrFailureModel": "An unbounded compatibility client could otherwise retain pending records and exhaust process memory or coordination capacity.",
+      "classification": "Required physical resource protection",
       "action": "retain",
-      "replacementOrContinuation": "The error names the boundary and safe operator action; security gates are never silently bypassed.",
+      "replacementOrContinuation": "Resolve or expire retained compatibility records before creating more; ordinary record-only tool calls continue independently.",
       "tests": [
-        "ApiKeyEndpointFilterTests",
-        "SanctumGuardTests",
-        "WardGateTests"
+        "WardGateTests",
+        "ConstraintInventoryTests"
       ]
     },
     {
@@ -6371,17 +6370,16 @@
         "ArcanumSettingClamps.WardTimeoutSeconds": "public static int WardTimeoutSeconds(int value) => Math.Clamp(value, 10, 600);"
       },
       "currentValue": "public static int WardTimeoutSeconds(int value) => Math.Clamp(value, 10, 600);",
-      "owner": "security",
-      "enforcementPoint": "WardGate and ToolExecutionPipeline approval reservation",
-      "userVisibleBehavior": "A forbidden-art execution fails closed if approval is not granted within the configured security window.",
-      "originalRationale": "A pending approval must not leave dangerous execution implicitly authorized or retain security reservations indefinitely.",
-      "threatOrFailureModel": "Removing fail-closed expiry could turn an abandoned prompt into later unintended authority or exhaust approval capacity.",
-      "classification": "Required security boundary",
+      "owner": "physical-resource",
+      "enforcementPoint": "WardGate resolved-tombstone pruning",
+      "userVisibleBehavior": "A resolved compatibility record remains recognizable for the clamped timeout plus 60 seconds, then its tombstone may be pruned; ordinary tool calls never wait on this timer.",
+      "originalRationale": "Resolved compatibility identifiers need a bounded recognition window so repeated or late resolution requests can report AlreadyResolved without retaining tombstones forever.",
+      "threatOrFailureModel": "Without pruning, resolved compatibility tombstones could accumulate until they exhaust process memory.",
+      "classification": "Required physical resource protection",
       "action": "retain",
-      "replacementOrContinuation": "Approve within the displayed window or retry the operation and resolve the Ward; timeout never grants execution authority.",
+      "replacementOrContinuation": "After the recognition window, an old resolved id may read as absent; the timer neither grants nor denies ordinary tool execution.",
       "tests": [
         "WardGateTests",
-        "ToolExecutionPipelineWardTests",
         "ConstraintInventoryTests"
       ]
     },

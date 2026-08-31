@@ -19,9 +19,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// an error here: it produces a context with no epoch, which reads as "this turn carries no Covenant
 /// authority" and lets ordinary inference continue exactly as it does today.</para>
 ///
-/// <para>Attendance and tool policy are read from the request rather than assumed. An unattended turn
-/// cannot answer an interactive Ward, and the retirement arm of the Covenant mutation surface is a
-/// Forbidden Art, so attendance is part of what decides whether that surface exists at all.</para>
+/// <para>Attendance and tool policy are read from the request rather than assumed. Attendance decides
+/// whether genuine human-input tools can be offered and whether a Covenant proposal may be staged;
+/// it does not gate Covenant retirement or turn Ward records into approval prompts.</para>
 /// </remarks>
 internal static class ArcanumInvocationContexts
 {

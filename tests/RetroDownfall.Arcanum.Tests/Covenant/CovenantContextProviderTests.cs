@@ -186,6 +186,58 @@ public sealed class CovenantContextProviderTests
 
     }
 
+    [Fact]
+    public async Task An_eligible_unattended_turn_retains_retirement_preparation_material()
+    {
+
+        FakeCovenantAvailability availability = new();
+
+        FakeCovenantAuthorityProvider authority = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
+            availability,
+            authority);
+
+        CovenantAuthoritySnapshot currentAuthority = authority.Current!;
+
+        ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(
+            ArcanumExecutionSurface.SessionBackedOperatorTurn,
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignOne),
+            InvocationAttendance.Unattended,
+            CovenantContextPolicy.Default,
+            ToolPolicy.AllTools,
+            CovenantReadAuthorityEpoch.CreateForTests(
+                Guid.Parse(currentAuthority.InstallationIdentity),
+                currentAuthority.RuntimeAuthorityGeneration,
+                currentAuthority.AuthorityEpoch)).Value;
+
+        Assert.False(invocation.CanStageCovenantMutation);
+
+        Assert.True(invocation.CanPrepareCovenantRetirement);
+
+        CovenantContextProvider provider = new(
+            availability,
+            gate,
+            new SuccessfulStore(),
+            new CovenantLinker());
+
+        Result<CovenantTurnContext> begun = await provider.BeginTurnAsync(
+            invocation,
+            TurnId,
+            CancellationToken.None);
+
+        Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : string.Empty);
+
+        await using CovenantTurnContext context = begun.Value;
+
+        Assert.True(context.HasPlan);
+
+        Assert.NotNull(context.Collector);
+
+        Assert.NotNull(context.HeadProbe);
+
+    }
+
     private static Task<CovenantTurnContext> Begin(
         CovenantContextProvider provider,
         ArcanumInvocationContext invocation) =>

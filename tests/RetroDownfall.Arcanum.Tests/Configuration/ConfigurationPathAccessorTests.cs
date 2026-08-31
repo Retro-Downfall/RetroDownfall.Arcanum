@@ -86,8 +86,6 @@ public sealed class ConfigurationPathAccessorTests
 
     [InlineData("security.ward.forbiddenArts", "shell_exec,apply_patch", """["shell_exec","apply_patch"]""")]
 
-    [InlineData("security.ward.autoApprove.tools", "apply_patch", """["apply_patch"]""")]
-
     public void Set_parses_comma_separated_values_for_string_list_paths(
         string key,
         string value,

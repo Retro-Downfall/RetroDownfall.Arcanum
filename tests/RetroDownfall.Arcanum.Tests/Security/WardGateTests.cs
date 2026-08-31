@@ -920,6 +920,86 @@ public sealed class WardGateTests
 
     }
 
+    [Fact]
+    public async Task Runtime_settings_are_resolved_once_and_reused_by_active_and_automatic_paths()
+    {
+
+        CountingOptionsMonitor settings = new(new ArcanumSettings());
+
+        WardGate gate = new(settings);
+
+        Task<WardResolution> activeWardTask = gate.WardAsync(
+            "ward-runtime-settings-active",
+            "write_file",
+            arguments: null,
+            sessionId: "session-1",
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        ResolveStatus activeStatus = gate.Resolve(
+            "ward-runtime-settings-active",
+            allow: true,
+            reason: "Operator approved");
+
+        WardResolution activeResolution = await activeWardTask;
+
+        WardResolution automaticResolution = gate.RecordAutomaticResolution(
+            "ward-runtime-settings-automatic",
+            allowed: true,
+            reason: null,
+            WardResolutionOrigin.Ungated);
+
+        IReadOnlyList<ActiveWard> activeWards = gate.GetActiveWards();
+
+        ResolveStatus lateStatus = gate.Resolve(
+            "ward-runtime-settings-automatic",
+            allow: false,
+            reason: "Late manual denial");
+
+        Assert.Equal(ResolveStatus.Success, activeStatus);
+
+        Assert.True(activeResolution.Allowed);
+
+        Assert.Equal(WardResolutionOrigin.Human, activeResolution.Origin);
+
+        Assert.True(automaticResolution.Allowed);
+
+        Assert.Equal(WardResolutionOrigin.Ungated, automaticResolution.Origin);
+
+        Assert.Empty(activeWards);
+
+        Assert.Equal(ResolveStatus.AlreadyResolved, lateStatus);
+
+        Assert.Equal(1, settings.CurrentValueReadCount);
+
+    }
+
+    private sealed class CountingOptionsMonitor(ArcanumSettings value)
+        : IOptionsMonitor<ArcanumSettings>
+    {
+
+        public int CurrentValueReadCount { get; private set; }
+
+        public ArcanumSettings CurrentValue
+        {
+
+            get
+            {
+
+                CurrentValueReadCount++;
+
+                return value;
+
+            }
+
+        }
+
+        public ArcanumSettings Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
+
+    }
+
     private sealed class FakeOptionsMonitor(ArcanumSettings value) : IOptionsMonitor<ArcanumSettings>
     {
 

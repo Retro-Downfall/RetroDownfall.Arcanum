@@ -120,10 +120,14 @@ internal sealed class ConfigCommands(
 
         ConfigurationCommandSnapshot snapshot = read.Value;
 
-        if (!ConfigurationPathAccessor.Exists(snapshot.Settings, key))
+        string? pathError = ConfigurationPathAccessor.GetPathResolutionError(
+            snapshot.Settings,
+            key);
+
+        if (pathError is not null)
         {
 
-            console.WriteDiagnostic($"Unknown configuration key '{key}'.");
+            console.WriteDiagnostic(pathError);
 
             return (int)CliExitCode.ConfigurationError;
 

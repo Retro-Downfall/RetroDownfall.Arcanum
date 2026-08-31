@@ -45,7 +45,7 @@ internal static class SlashCommandRegistry
         new("session", "/session list|archive <id>", "Manage sessions without leaving Command Center.", []),
         new("campaign", "/campaign list [offset]", "List a bounded display page of campaigns.", []),
         new("spell", "/spell list [cursor]", "List a bounded display page of spells.", []),
-        new("ward", "/ward list|allow|deny [<id>]", "Review and resolve Ward approvals.", []),
+        new("ward", "/ward list [offset] | allow <id> | deny <id>", "Inspect the retained Ward record API or submit an explicit compatibility resolution.", []),
         new("fork", "/fork [at|confirm|alternative] [<entry-id>]", "Fork the active session and open the branch.", []),
         new("branch", "/branch parent|child", "Open the visible parent or newest child branch.", []),
         new("attach", "/attach <path>", "Stage a local text file or image for the next turn.", []),

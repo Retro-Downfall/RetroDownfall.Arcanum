@@ -25,7 +25,6 @@ internal sealed class CommandCenterHost(
     CommandCenterChatRunner chatRunner,
     CommandCenterApp commandCenterApp,
     SessionWorkspaceService sessionWorkspace,
-    CommandCenterWardCoordinator wardCoordinator,
     CommandCenterHardModalArbiter hardModalArbiter,
     CommandCenterHumanPromptCoordinator humanPromptCoordinator,
 
@@ -137,51 +136,13 @@ internal sealed class CommandCenterHost(
                 window.FocusInput(app);
                 state.FocusRegion = CommandCenterFocusRegion.Composer;
 
-                wardCoordinator.SetUiCallbacks(
-                    onShow: request =>
-                    {
-                        app.Invoke(() =>
-                        {
-                            state.Overlay = CommandCenterOverlayKind.WardConfirm;
-                            state.FocusRegion = CommandCenterFocusRegion.Overlay;
-                            List<string> lines =
-                            [
-                                $"Forbidden art requires approval: {request.ToolName}",
-                                $"Ward: {request.WardId}",
-                            ];
-                            if (!string.IsNullOrWhiteSpace(request.ArgumentsPreview))
-                            {
-                                lines.Add(request.ArgumentsPreview!);
-                            }
-
-                            lines.AddRange(WardOverlayContent.ChoiceLines);
-
-                            window.ShowOverlay(
-                                CommandCenterOverlayKind.WardConfirm,
-                                lines,
-                                "Ward",
-                                showFilter: false);
-                            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
-                        });
-                    },
-                    onHide: () =>
-                    {
-                        app.Invoke(() =>
-                        {
-                            if (state.Overlay == CommandCenterOverlayKind.WardConfirm)
-                            {
-                                CloseOverlay(state, window, app);
-                            }
-                        });
-                    });
-
                 humanPromptCoordinator.SetUiCallbacks(
                     onShow: (request, status) =>
                     {
                         app.Invoke(() =>
                         {
-                            // Hard modals are never preempted — arbiter only invokes show when this
-                            // HumanPrompt is the active slot (queued wards keep observing timeout).
+                            // Hard modals are never preempted — the arbiter invokes show only when this
+                            // HumanPrompt owns the active slot.
                             state.Overlay = CommandCenterOverlayKind.HumanPrompt;
                             state.FocusRegion = CommandCenterFocusRegion.Overlay;
                             state.FooterHint = status;
@@ -514,38 +475,10 @@ internal sealed class CommandCenterHost(
 
                     if (e == Key.Esc
                         && state.Overlay is CommandCenterOverlayKind.QuitConfirm
-                            or CommandCenterOverlayKind.DiscardConfirm
-                            or CommandCenterOverlayKind.WardConfirm)
+                            or CommandCenterOverlayKind.DiscardConfirm)
                     {
                         e.Handled = true;
                         CancelPending(state, window, app);
-                        return;
-                    }
-
-                    if (state.Overlay == CommandCenterOverlayKind.WardConfirm
-                        && (e == Key.A || e == Key.A.WithShift))
-                    {
-                        e.Handled = true;
-                        _ = wardCoordinator.TryCompletePending(WardApprovalDecision.AllowAlwaysThisTool);
-                        CloseOverlayAndFocusInput(state, window, app);
-                        return;
-                    }
-
-                    if (state.Overlay == CommandCenterOverlayKind.WardConfirm
-                        && (e == Key.O || e == Key.O.WithShift))
-                    {
-                        e.Handled = true;
-                        _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Allow);
-                        CloseOverlayAndFocusInput(state, window, app);
-                        return;
-                    }
-
-                    if (state.Overlay == CommandCenterOverlayKind.WardConfirm
-                        && (e == Key.D || e == Key.D.WithShift))
-                    {
-                        e.Handled = true;
-                        _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Deny);
-                        CloseOverlayAndFocusInput(state, window, app);
                         return;
                     }
 
@@ -661,7 +594,6 @@ internal sealed class CommandCenterHost(
 
                 StopThinkingTimer();
                 linked.Cancel();
-                wardCoordinator.SetUiCallbacks(null, null);
                 humanPromptCoordinator.SetUiCallbacks(null, null, null);
                 uiChannel.Writer.TryComplete();
                 try
@@ -854,7 +786,6 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.Quit:
-                wardCoordinator.DenyAllPending();
                 RequestQuit(state, window, app);
                 break;
 
@@ -942,8 +873,7 @@ internal sealed class CommandCenterHost(
                 }
 
                 if (state.Overlay is CommandCenterOverlayKind.QuitConfirm
-                    or CommandCenterOverlayKind.DiscardConfirm
-                    or CommandCenterOverlayKind.WardConfirm)
+                    or CommandCenterOverlayKind.DiscardConfirm)
                 {
                     CancelPending(state, window, app);
                 }
@@ -1056,14 +986,6 @@ internal sealed class CommandCenterHost(
             }
 
             case CommandCenterAction.ConfirmPending:
-                if (state.Overlay == CommandCenterOverlayKind.WardConfirm)
-                {
-                    // Enter defaults to session always-allow (scaffolding rarely wants once-only).
-                    _ = wardCoordinator.TryCompletePending(WardApprovalDecision.AllowAlwaysThisTool);
-                    CloseOverlayAndFocusInput(state, window, app);
-                    break;
-                }
-
                 await ConfirmPendingAsync(state, window, app, ui, linked).ConfigureAwait(false);
                 break;
 
@@ -1488,19 +1410,12 @@ internal sealed class CommandCenterHost(
 
     private void CancelPending(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
-        if (state.Overlay == CommandCenterOverlayKind.WardConfirm)
-        {
-            _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Deny);
-        }
-
         _pendingConfirm = null;
         CloseOverlayAndFocusInput(state, window, app);
     }
 
     private void RequestQuit(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
-        wardCoordinator.DenyAllPending();
-
         if (state.Generating)
         {
             _pendingConfirm = new PendingConfirm(PendingConfirmKind.Quit, null);
@@ -2093,8 +2008,7 @@ internal sealed class CommandCenterHost(
         {
             e.Handled = true;
             if (state.Overlay is CommandCenterOverlayKind.QuitConfirm
-                or CommandCenterOverlayKind.DiscardConfirm
-                or CommandCenterOverlayKind.WardConfirm)
+                or CommandCenterOverlayKind.DiscardConfirm)
             {
                 CancelPending(state, window, app);
             }
@@ -2103,33 +2017,6 @@ internal sealed class CommandCenterHost(
                 CloseOverlayAndFocusInput(state, window, app);
             }
 
-            return true;
-        }
-
-        if (state.Overlay == CommandCenterOverlayKind.WardConfirm
-            && (e == Key.A || e == Key.A.WithShift))
-        {
-            e.Handled = true;
-            _ = wardCoordinator.TryCompletePending(WardApprovalDecision.AllowAlwaysThisTool);
-            CloseOverlayAndFocusInput(state, window, app);
-            return true;
-        }
-
-        if (state.Overlay == CommandCenterOverlayKind.WardConfirm
-            && (e == Key.O || e == Key.O.WithShift))
-        {
-            e.Handled = true;
-            _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Allow);
-            CloseOverlayAndFocusInput(state, window, app);
-            return true;
-        }
-
-        if (state.Overlay == CommandCenterOverlayKind.WardConfirm
-            && (e == Key.D || e == Key.D.WithShift))
-        {
-            e.Handled = true;
-            _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Deny);
-            CloseOverlayAndFocusInput(state, window, app);
             return true;
         }
 
@@ -2161,15 +2048,12 @@ internal sealed class CommandCenterHost(
     {
         if (!hardModalArbiter.BlocksAuxiliary
             && !humanPromptCoordinator.IsActive
-            && state.Overlay is not (CommandCenterOverlayKind.HumanPrompt or CommandCenterOverlayKind.WardConfirm))
+            && state.Overlay != CommandCenterOverlayKind.HumanPrompt)
         {
             return false;
         }
 
-        state.FooterHint = hardModalArbiter.ActiveKind == CommandCenterHardModalKind.WardConfirm
-                || state.Overlay == CommandCenterOverlayKind.WardConfirm
-            ? "Resolve the Ward prompt first, or cancel the turn (Ctrl+C)."
-            : "Answer the Mage prompt first (Ctrl+Enter), or cancel the turn (Ctrl+C).";
+        state.FooterHint = "Answer the Mage prompt first (Ctrl+Enter), or cancel the turn (Ctrl+C).";
         app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter));
         return true;
     }

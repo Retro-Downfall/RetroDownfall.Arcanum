@@ -238,7 +238,7 @@ Disabling future injection does not erase history. If a Session already contains
 
 ### 6.3 Protected disclosure is acknowledged before sending
 
-Before protected material leaves Arcanum for a provider, external MCP server, process, network destination, message sink, or another content-bearing external effect, the system durably acknowledges the disclosure identity. Some effects also require an attended **Ward**, which is Arcanum's explicit operator approval boundary for sensitive or dangerous work.
+Before protected material leaves Arcanum for a provider, external MCP server, process, network destination, message sink, or another content-bearing external effect, the system durably acknowledges the disclosure identity. A sensitive retirement additionally needs exact canonical preflight, Campaign scope, and a one-call capability. Its **Ward** pair is an informational tool audit record, not an approval prompt.
 
 The receipt does not make disclosure reversible. It makes the decision visible, ordered, and recoverable.
 
@@ -284,7 +284,7 @@ If protected Session history contributes to a summary, title, fact, embedding, f
 - carry the combined sensitivity and lineage;
 - use a deliberately content-free projection;
 - stay inside an approved destination that preserves the same protection;
-- leave through the required attended Ward and acknowledged disclosure when policy permits; or
+- leave through the required exact capability and acknowledged disclosure when policy permits; or
 - be refused.
 
 The model is not allowed to label its own output as less sensitive than its inputs. Multiple inputs combine conservatively.
@@ -393,7 +393,7 @@ OATH combines built foundations with an activated data-lifecycle erasure surface
 | **Restore-credential proof** | Arcanum proves a profile's restore history is over and removes its three restore credentials in a fixed order, one at a time, checking each still holds what the proof said. It runs only after the database is provably deleted. |
 | **A full reset that finishes** | An externally authorized full reset now deletes the database, removes what is left, checks nothing survived, and reports the installation clean. Every ordinary cleanup still keeps the things a full reset takes. |
 | **Storage upgrades** | An existing installation can now be carried from one storage version to the next through changes the build declares, including data passes that run in bounded batches and survive a restart. Upgrades have shipped since — how many is the build's own declaration rather than a number kept here — and an installation that has taken them is compared against the same tree a brand-new one installs — which is the thing that would otherwise go wrong silently, because a developer's own database is always brand new. |
-| **Curating what is remembered** | An operator can now correct one preference in place, naming the exact version and the exact text they decided was wrong so a correction can never land on something they never read; pin one so the agent may not touch it; and stop an installation-wide preference applying inside a single campaign. Every one of them says what will be true afterwards before it asks. The agent can now ask to retire a preference too, and the operator is shown the words that will disappear rather than the model's request. |
+| **Curating what is remembered** | An operator can now correct one preference in place, naming the exact version and the exact text they decided was wrong so a correction can never land on something they never read; pin one so the agent may not touch it; and stop an installation-wide preference applying inside a single campaign. Every one of those direct operator mutations says what will be true before it asks. An eligible agent retirement instead records its exact target, binds a one-call capability, acknowledges disclosure before the effect, and emits an informational Ward audit pair without opening a prompt. |
 | **Still unregistered** | Covenant repair, rebuild, path, and Session-binding management routes and commands remain separate work. |
 | **Curating what was remembered for you** | An operator can now read one automatically extracted memory in full, replace its text, take it out of what the assistant can recall, put it back, and mark it so the automatic clean-up will not remove it. Every change that speaks about the memory's text names the exact text the operator read, checked at the moment of the write, so a change can never land on something they never saw. Taking a memory out also leaves a small unreadable fingerprint of what was rejected, which is what stops the next automatic pass from quietly putting it back — and asking for something a memory already is — already out, already back — succeeds and says which happened rather than arguing. Marking a memory to be kept is the one change that makes no statement about its text, so it needs no proof of what was read and simply takes effect. |
 | **Campaign-scoped recall** | Every Saga memory now records who owns it, and the Lexicon can hold one entity per Campaign. `features.campaignScopedMemory` makes retrieval, inspection, and reset honor that ownership together. It ships **off**, so an installation that never names it recalls exactly what it recalled before. |
@@ -440,7 +440,7 @@ OATH does permit authority to become narrower. It also permits an authenticated 
 | **Receipt** | Durable evidence binding a particular mutation, provider attempt, disclosure authorization, or lifecycle outcome; its exact meaning depends on the receipt type |
 | **Sensitivity** | The conservative protection level that follows information and its derivatives |
 | **Tombstone** | An immutable retirement version that stops current use without erasing history |
-| **Ward** | Attended operator approval for a classified sensitive or dangerous effect |
+| **Ward** | Informational per-tool audit record; retained active-record routes exist for compatibility |
 
 ## 14. Where to go next
 

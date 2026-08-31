@@ -771,7 +771,7 @@
         {
           "name": "--unattended",
           "aliases": [],
-          "description": "Apply unattended human-prompt and Ward behavior to the selected live route.",
+          "description": "Omit human-prompt tools on the selected live route; Ward records remain informational.",
           "recursive": false,
           "takesValue": false,
           "repeatable": false,
@@ -4693,7 +4693,7 @@
     {
       "path": "ward",
       "name": "ward",
-      "description": "Ward approval gates for Forbidden Arts (requires arcanum serve).",
+      "description": "Retained Ward record compatibility API (requires arcanum serve).",
       "runnable": false,
       "aliases": [],
       "arguments": [],
@@ -4703,7 +4703,7 @@
         {
           "path": "ward list",
           "name": "list",
-          "description": "List active wards.",
+          "description": "List active compatibility wards.",
           "runnable": true,
           "aliases": [],
           "arguments": [],
@@ -4716,7 +4716,7 @@
         {
           "path": "ward show",
           "name": "show",
-          "description": "Show ward detail.",
+          "description": "Show compatibility ward detail.",
           "runnable": true,
           "aliases": [],
           "arguments": [
@@ -4737,7 +4737,7 @@
         {
           "path": "ward resolve",
           "name": "resolve",
-          "description": "Allow or deny a ward.",
+          "description": "Resolve a compatibility ward.",
           "runnable": true,
           "aliases": [],
           "arguments": [
@@ -4753,7 +4753,7 @@
             {
               "name": "--allow",
               "aliases": [],
-              "description": "Allow the warded tool call to proceed.",
+              "description": "Record an allowed resolution.",
               "recursive": false,
               "takesValue": false,
               "repeatable": false,
@@ -4762,7 +4762,7 @@
             {
               "name": "--deny",
               "aliases": [],
-              "description": "Deny the warded tool call.",
+              "description": "Record a denied resolution.",
               "recursive": false,
               "takesValue": false,
               "repeatable": false,
@@ -6094,7 +6094,7 @@
         {
           "path": "mcp invoke",
           "name": "invoke",
-          "description": "Invoke one external MCP tool diagnostically; internal and Forbidden Art tools remain blocked server-side.",
+          "description": "Invoke one external MCP tool diagnostically; internal tool names are reserved for the Master execution pipeline.",
           "runnable": true,
           "aliases": [],
           "arguments": [

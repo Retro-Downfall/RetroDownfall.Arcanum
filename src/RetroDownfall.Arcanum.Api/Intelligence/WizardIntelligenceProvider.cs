@@ -3000,6 +3000,7 @@ public sealed partial class WizardIntelligenceProvider(
                             streamAdmitted.Receipt,
                             streamAdmitted.Receipt.Materialization,
                             stagingScope.HeadProbe,
+                            invocationContext.CanStageCovenantMutation,
                             covenantToolCapabilities,
                             inferenceToken));
 
@@ -4229,8 +4230,6 @@ public sealed partial class WizardIntelligenceProvider(
 
         string? workspaceRoot = null;
 
-        bool campaignRequiresWard = true;
-
         bool sanctumEnabled = false;
 
         SanctumMode sanctumMode = SanctumMode.Strict;
@@ -4246,10 +4245,6 @@ public sealed partial class WizardIntelligenceProvider(
                 campaignId = campaign.Id.ToString();
 
                 workspaceRoot = campaign.Path;
-
-                CampaignSettings campaignSettings = CampaignRepository.DeserializeSettings(campaign.Settings);
-
-                campaignRequiresWard = campaignSettings.RequireWardForForbiddenArts;
 
                 SanctumConfig sanctumConfig = CampaignRepository.GetSanctumConfig(campaign);
 
@@ -4282,7 +4277,6 @@ public sealed partial class WizardIntelligenceProvider(
             AssistantEntryId = grimoireTurn.AssistantEntryId,
             InvocationId = grimoireTurn.AssistantEntryId?.ToString("D"),
             ModelUsed = targetModel,
-            CampaignRequiresWard = campaignRequiresWard,
             Invocation = invocation,
             SanctumEnabled = sanctumEnabled,
             SanctumMode = sanctumMode,
@@ -6599,7 +6593,8 @@ public sealed partial class WizardIntelligenceProvider(
             ToolPolicy.ReadOnlyTools => FilterToolsToAllowlist(tools, ReadOnlyToolNames),
             ToolPolicy.NoForbiddenArts => FilterToolsExcludingNames(
                 tools,
-                ToolRiskClassifier.BuildForbiddenToolNames(settings.Value.ResolveWard().ForbiddenArts)),
+                ToolRiskClassifier.BuildForbiddenToolNames(
+                    settings.Value.Security?.Ward?.ForbiddenArts ?? [])),
             _ => [],
         };
 

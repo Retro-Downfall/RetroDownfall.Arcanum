@@ -21,7 +21,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// Drives one <c>retire_covenant</c> call through the production tool pipeline.
 /// </summary>
 /// <remarks>
-/// The pipeline is real, the Ward policy is real, the egress guard is real. What is stood up around
+/// The pipeline is real, the retirement policy is real, the egress guard is real. What is stood up around
 /// them is the staging material a live provider attempt publishes — a collector, an admission receipt,
 /// and a head probe — because what is under test is what the pipeline does with a retirement, not how
 /// a provider attempt comes to have one.
@@ -62,7 +62,11 @@ internal sealed class CovenantRetirementHarness
     /// <summary>Everything that happened, in the order it happened.</summary>
     internal List<string> Order { get; } = [];
 
+    internal List<ToolExecutionEvent> ObservedEvents { get; } = [];
+
     internal bool ToolRan { get; private set; }
+
+    internal CovenantDisclosureDraft? DisclosureDraft => _journal.Drafts.SingleOrDefault();
 
     /// <summary>Set to make the disclosure journal refuse, so the guard stops the effect.</summary>
     internal Error? JournalFailure
@@ -87,16 +91,12 @@ internal sealed class CovenantRetirementHarness
     /// <summary>
     /// Publishes the staging material a live provider attempt publishes.
     /// </summary>
-    /// <param name="admitTarget">
-    /// Whether this turn's admission carried the entry the retirement names, which is what decides
-    /// whether configured auto-approval may apply.
-    /// </param>
-    internal IDisposable PublishStaging(bool admitTarget = true)
+    internal IDisposable PublishStaging(CovenantRetirementPreflight? preflight = null)
     {
 
         CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
 
-        _probe.Preflight = Preflight(admitTarget ? plan : null);
+        _probe.Preflight = preflight ?? Preflight();
 
         return CovenantToolStagingAmbient.Push(new CovenantToolStagingContext(
             new CovenantMutationCollector(Guid.CreateVersion7(), plan.Digest, CovenantTask6Fixture.BranchId),
@@ -104,20 +104,25 @@ internal sealed class CovenantRetirementHarness
             CovenantCapabilityFixtures.Admission(plan),
             CovenantCapabilityFixtures.Materialization(),
             _probe,
+            false,
             new CovenantToolCapabilityRegistry(),
             CancellationToken.None));
 
     }
 
-    internal Task<ToolExecutionPipeline.ProcessedToolCall> RetireAsync() =>
+    internal Task<ToolExecutionPipeline.ProcessedToolCall> RetireAsync(
+        InvocationAttendance attendance = InvocationAttendance.Attended,
+        bool eligibleInvocation = true,
+        string key = "preference.builds",
+        string lane = "Confirmed") =>
         _pipeline.ProcessSingleToolCallAsync(
             new FunctionCallContent(
                 "call-retire",
                 CovenantToolNames.RetireCovenant,
                 new Dictionary<string, object?>
                 {
-                    ["key"] = "preference.builds",
-                    ["lane"] = "Confirmed",
+                    ["key"] = key,
+                    ["lane"] = lane,
                 }),
             new PingRequest("hi", WorkingDirectory: "/tmp"),
             new ChatOptions
@@ -126,29 +131,38 @@ internal sealed class CovenantRetirementHarness
             },
             activeSpell: null,
             sessionId: "session-1",
-            new ToolExecutionPipeline.TurnContext { Invocation = EligibleInvocation() },
+            new ToolExecutionPipeline.TurnContext
+            {
+                Invocation = eligibleInvocation
+                    ? EligibleInvocation(attendance)
+                    : ArcanumInvocationContext.None,
+            },
             suppressInvocationFailures: false,
-            CancellationToken.None);
+            CancellationToken.None,
+            observer: evt =>
+            {
+                ObservedEvents.Add(evt);
+
+                return ValueTask.CompletedTask;
+            });
 
     /// <summary>
-    /// A preflight whose version identity either is or is not one this turn's plan admitted, so the
-    /// auto-approval carve-out is decided by the plan rather than by a flag the suite asserts.
+    /// The exact canonical target the live probe resolved before staging.
     /// </summary>
-    private static CovenantRetirementPreflight Preflight(CovenantTurnPlan? admittedFrom)
+    internal static CovenantRetirementPreflight Preflight(
+        string normalizedKey = "preference.builds",
+        CovenantLane lane = CovenantLane.Confirmed)
     {
 
         CovenantRetirementPreflight baseline = CovenantCapabilityFixtures.RetirementPreflight();
 
-        Guid versionId = admittedFrom?.EligibleDecisions.FirstOrDefault()?.Candidate.VersionId
-            ?? Guid.Parse("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
-
         return new CovenantRetirementPreflight(
             baseline.EntryId,
-            versionId,
-            CovenantLane.Confirmed,
+            baseline.VersionId,
+            lane,
             baseline.TargetLaneRevision,
-            "preference.builds",
-            $"- preference.builds: \"{Disclosure}\"",
+            normalizedKey,
+            $"- {normalizedKey}: \"{Disclosure}\"",
             baseline.RenderedHash,
             globalFallbackApplies: true,
             baseline.KeyEpoch,
@@ -156,11 +170,11 @@ internal sealed class CovenantRetirementHarness
 
     }
 
-    private static ArcanumInvocationContext EligibleInvocation() =>
+    private static ArcanumInvocationContext EligibleInvocation(InvocationAttendance attendance) =>
         ArcanumInvocationContext.Create(
             ArcanumExecutionSurface.SessionBackedOperatorTurn,
             CovenantCapabilityFixtures.Campaign(),
-            InvocationAttendance.Attended,
+            attendance,
             CovenantContextPolicy.Default,
             ToolPolicy.AllTools,
             CovenantReadAuthorityEpoch.CreateForTests(
@@ -185,6 +199,8 @@ internal sealed class CovenantRetirementHarness
 
         internal Error? Failure { get; set; }
 
+        internal List<CovenantDisclosureDraft> Drafts { get; } = [];
+
         public ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
             CovenantDisclosureDraft draft,
             CovenantDisclosureEffectCategory category,
@@ -200,6 +216,8 @@ internal sealed class CovenantRetirementHarness
             }
 
             order.Add("disclosed");
+
+            Drafts.Add(draft);
 
             return ValueTask.FromResult(Result<CovenantDisclosureReceipt>.Success(
                 new CovenantDisclosureReceipt(draft, allocatedSubjectOrdinal: 1)));
