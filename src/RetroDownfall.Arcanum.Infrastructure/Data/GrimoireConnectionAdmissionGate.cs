@@ -335,7 +335,19 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             foreach (CancellationTokenSource revocation in revocations)
             {
 
-                revocation.Cancel();
+                try
+                {
+
+                    revocation.Cancel();
+
+                }
+                catch (AggregateException)
+                {
+
+                    // A consumer callback cannot take ownership of the already-linearized
+                    // maintenance transition or prevent later lifetimes from being signalled.
+
+                }
 
             }
 
@@ -851,6 +863,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             if (_state != GateState.Ordinary
                 || lease.IsReleased
                 || !_workLeases.Contains(lease)
+                || lease.Generation != _generation
+                || lease.MaintenanceRevocation.IsCancellationRequested
                 || lease.ActiveEffectGroup is not null)
             {
 

@@ -857,6 +857,123 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    [Fact]
+    public async Task Revoked_work_cannot_start_effect_after_proven_stage_one_abort()
+    {
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        Assert.True(gate.TryAcquireWorkLease(
+            GrimoireWorkKind.EntryWeaving,
+            out IGrimoireWorkLease? revokedWork));
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(22));
+
+        Task<Result> drain = gate
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        await clock.WaitForScheduledTimerCountAsync(1);
+
+        clock.Advance(OpeningTimeout);
+
+        Assert.True((await drain).IsFailure);
+
+        Result aborted = await gate.AbortClosingAsync(
+            closing,
+            static _ => ValueTask.FromResult(true),
+            CancellationToken.None);
+
+        Assert.True(aborted.IsSuccess, aborted.IsFailure ? aborted.Error.Message : null);
+
+        Assert.True(revokedWork!.MaintenanceRevocation.IsCancellationRequested);
+
+        Assert.False(revokedWork.TryBeginExternalEffectGroup(
+            out IGrimoireExternalEffectGroup? staleEffect));
+
+        Assert.Null(staleEffect);
+
+        Assert.True(gate.TryAcquireWorkLease(
+            GrimoireWorkKind.EntryWeaving,
+            out IGrimoireWorkLease? newGenerationWork));
+
+        Assert.True(newGenerationWork!.TryBeginExternalEffectGroup(
+            out IGrimoireExternalEffectGroup? newGenerationEffect));
+
+        await newGenerationEffect!.DisposeAsync();
+
+        await newGenerationWork.DisposeAsync();
+
+        await revokedWork.DisposeAsync();
+
+    }
+
+    [Fact]
+    public async Task Throwing_revocation_callbacks_do_not_prevent_all_signals_or_exact_closing_token()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.QuiesceableStream,
+            out IGrimoireRequestLease? request));
+
+        Assert.True(gate.TryAcquireWorkLease(
+            GrimoireWorkKind.SessionAttachmentIndexing,
+            out IGrimoireWorkLease? first));
+
+        Assert.True(gate.TryAcquireWorkLease(
+            GrimoireWorkKind.SagaExtraction,
+            out IGrimoireWorkLease? second));
+
+        using CancellationTokenRegistration requestThrowingCallback =
+            request!.MaintenanceRevocation.Register(
+                static () => throw new InvalidOperationException("request callback failure"));
+
+        using CancellationTokenRegistration firstThrowingCallback =
+            first!.MaintenanceRevocation.Register(
+                static () => throw new InvalidOperationException("first callback failure"));
+
+        using CancellationTokenRegistration secondThrowingCallback =
+            second!.MaintenanceRevocation.Register(
+                static () => throw new InvalidOperationException("second callback failure"));
+
+        CovenantExclusiveRecoveryOwner owner = Owner(23);
+
+        Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(owner);
+
+        Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
+
+        await using IGrimoireClosingOwner closing = begun.Value;
+
+        Assert.True(request.MaintenanceRevocation.IsCancellationRequested);
+
+        Assert.True(first.MaintenanceRevocation.IsCancellationRequested);
+
+        Assert.True(second.MaintenanceRevocation.IsCancellationRequested);
+
+        Result<IGrimoireClosingOwner> resumed = gate.BeginOrResumeExclusive(owner);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        Assert.Same(closing, resumed.Value);
+
+        await request.DisposeAsync();
+
+        await first.DisposeAsync();
+
+        await second.DisposeAsync();
+
+        Result drained = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+    }
+
     private static GrimoireConnectionAdmissionGate CreateGate(TimeProvider? timeProvider = null) =>
         new(timeProvider ?? TimeProvider.System, OpeningTimeout);
 
