@@ -390,6 +390,98 @@ public sealed class InstallationResetApplyBoundaryTests
     }
 
     [Fact]
+    public async Task Fresh_global_failure_attempts_safe_client_blocker_removal()
+    {
+
+        List<string> events = [];
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
+
+        InstallationResetApplyBoundary boundary = new(
+            _ => Task.FromResult(Result<bool>.Success(true)),
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not call the host factory route."),
+            new RecordingResetService((_, _) => Task.FromResult(
+                Result<InstallationResetResult>.Failure(new Error(
+                    ErrorCodes.Data.ControlPathUnavailable,
+                    "failed before active publication")))),
+            _ => Acquired(new RecordingLease()),
+            new ImmediateTimeProvider(),
+            (_, _, _, _) => Task.FromResult(
+                Result<IInstallationResetClientCoordinationLease>.Success(
+                    new RecordingClientCoordinationLease(events))),
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not create a host handoff."),
+            _ => throw new InvalidOperationException(
+                "Fresh local apply must not read the pair before the lock."));
+
+        Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
+            new InstallationResetPlanRequest(
+                InstallationResetScope.Global,
+                "/workspace"),
+            CreateStoppedPlan(plan),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, result.Error.Code);
+
+        Assert.Equal(
+            ["remove-client-blocker", "release-client-mutation"],
+            events);
+
+    }
+
+    [Fact]
+    public async Task Fresh_global_cancellation_attempts_safe_client_blocker_removal_uncancelled()
+    {
+
+        List<string> events = [];
+
+        using CancellationTokenSource cancellation = new();
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
+
+        InstallationResetApplyBoundary boundary = new(
+            _ => Task.FromResult(Result<bool>.Success(true)),
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not call the host factory route."),
+            new RecordingResetService((_, cancellationToken) =>
+            {
+
+                cancellation.Cancel();
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                throw new InvalidOperationException(
+                    "The cancelled fresh apply must not continue.");
+
+            }),
+            _ => Acquired(new RecordingLease()),
+            new ImmediateTimeProvider(),
+            (_, _, _, _) => Task.FromResult(
+                Result<IInstallationResetClientCoordinationLease>.Success(
+                    new RecordingClientCoordinationLease(events))),
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not create a host handoff."),
+            _ => throw new InvalidOperationException(
+                "Fresh local apply must not read the pair before the lock."));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            boundary.ApplyFreshAsync(
+                new InstallationResetPlanRequest(
+                    InstallationResetScope.Global,
+                    "/workspace"),
+                CreateStoppedPlan(plan),
+                cancellation.Token));
+
+        Assert.Equal(
+            ["remove-client-blocker", "release-client-mutation"],
+            events);
+
+    }
+
+    [Fact]
     public async Task Resumed_durable_completion_skips_host_replay_and_continues_under_the_exact_lock()
     {
 

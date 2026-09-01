@@ -1218,6 +1218,29 @@ internal sealed class InstallationResetService(
 
         }
 
+        Result<InstallationResetActiveRecoveryState> recovered = await activeStore
+            .RecoverAsync(heldInstallationLock, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recovered.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(recovered.Error);
+
+        }
+
+        if (recovered.Value.Outcome
+                is not InstallationResetActiveRecoveryOutcome.NoActiveRecord
+            || recovered.Value.Publication is not null
+            || recovered.Value.LegacyRecord is not null)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ResetInProgress,
+                "An existing installation reset must resume through its authenticated recovery path."));
+
+        }
+
         StoppedHostGrimoireAuthorityIssuer issuer =
             CreateInstallationResetStoppedHostIssuer(heldInstallationLock);
 
@@ -1253,29 +1276,6 @@ internal sealed class InstallationResetService(
                     : new Error(
                         ErrorCodes.Data.ControlPathUnavailable,
                         "The installation identity is unavailable."));
-
-        }
-
-        Result<InstallationResetActiveRecoveryState> recovered = await activeStore
-            .RecoverAsync(heldInstallationLock, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (recovered.IsFailure)
-        {
-
-            return Result<InstallationResetResult>.Failure(recovered.Error);
-
-        }
-
-        if (recovered.Value.Outcome
-                is not InstallationResetActiveRecoveryOutcome.NoActiveRecord
-            || recovered.Value.Publication is not null
-            || recovered.Value.LegacyRecord is not null)
-        {
-
-            return Result<InstallationResetResult>.Failure(new Error(
-                ErrorCodes.Data.ResetInProgress,
-                "An existing installation reset must resume through its authenticated recovery path."));
 
         }
 

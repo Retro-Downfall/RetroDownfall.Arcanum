@@ -541,38 +541,51 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         await using IInstallationResetClientCoordinationLease coordinationLease =
             coordinated.Value;
 
-        Result<InstallationResetResult> applied = confirmedPlan is null
-            ? await _resetService.ApplyUnderMaintenanceLockAsync(
-                    request,
-                    maintenanceLock,
-                    cancellationToken)
-                .ConfigureAwait(false)
-            : await _resetService.ApplyFreshUnderMaintenanceLockAsync(
-                    request.Request,
-                    confirmedPlan,
-                    maintenanceLock,
-                    cancellationToken)
+        Result<InstallationResetResult> applied;
+
+        try
+        {
+
+            applied = confirmedPlan is null
+                ? await _resetService.ApplyUnderMaintenanceLockAsync(
+                        request,
+                        maintenanceLock,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : await _resetService.ApplyFreshUnderMaintenanceLockAsync(
+                        request.Request,
+                        confirmedPlan,
+                        maintenanceLock,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (confirmedPlan is not null)
+        {
+
+            _ = await coordinationLease
+                .RemoveBlockerIfSafeAsync(CancellationToken.None)
                 .ConfigureAwait(false);
+
+            throw;
+
+        }
 
         if (applied.IsFailure)
         {
 
-            if (confirmedPlan is not null
-                && string.Equals(
-                    applied.Error.Code,
-                    ErrorCodes.Data.PlanChanged,
-                    StringComparison.Ordinal))
+            if (confirmedPlan is not null)
             {
 
-                Result removedAfterPlanChange = await coordinationLease
-                    .RemoveBlockerIfSafeAsync(cancellationToken)
+                Result removedAfterFreshFailure = await coordinationLease
+                    .RemoveBlockerIfSafeAsync(CancellationToken.None)
                     .ConfigureAwait(false);
 
-                if (removedAfterPlanChange.IsFailure)
+                if (removedAfterFreshFailure.IsFailure)
                 {
 
                     return Result<InstallationResetResult>.Failure(
-                        removedAfterPlanChange.Error);
+                        removedAfterFreshFailure.Error);
 
                 }
 
@@ -583,7 +596,10 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         }
 
         Result removed = await coordinationLease
-            .RemoveBlockerIfSafeAsync(cancellationToken)
+            .RemoveBlockerIfSafeAsync(
+                confirmedPlan is null
+                    ? cancellationToken
+                    : CancellationToken.None)
             .ConfigureAwait(false);
 
         return removed.IsSuccess

@@ -247,8 +247,11 @@ public sealed partial class InstallationResetServiceTests
 
     }
 
-    [Fact]
-    public async Task Fresh_locked_apply_never_reinterprets_an_existing_active_record()
+    [Theory]
+    [InlineData("dirty-pair")]
+    [InlineData("identity-failure")]
+    public async Task Fresh_locked_apply_rejects_an_existing_active_before_local_evidence(
+        string failingEvidence)
     {
 
         DataRetentionPlan dataPlan = CreateDataPlan("existing-active-data") with
@@ -262,9 +265,13 @@ public sealed partial class InstallationResetServiceTests
                 DisclosureCountKind: CovenantDisclosureCountKind.Exact),
         };
 
-        SequentialStoppedHostDataService stoppedData = new(dataPlan);
-
         FakeActiveStore active = new();
+
+        FakePairReader pairReader = new(
+            JoinResult(HostProcessToolsMarkerPairDisposition.Clean),
+            failingEvidence is "dirty-pair"
+                ? JoinResult(HostProcessToolsMarkerPairDisposition.TaintedMatched)
+                : JoinResult(HostProcessToolsMarkerPairDisposition.Clean));
 
         InstallationResetService service = CreateService(
             new FakeDataService(dataPlan),
@@ -272,9 +279,8 @@ public sealed partial class InstallationResetServiceTests
             active,
             new FakeOfflineCleanup(),
             stateRoots: new FixedStateRoots(["/state"]),
-            stoppedHostDataService: stoppedData,
             stoppedHostPairReader: new TestStoppedHostPairReader(
-                CleanPairReader()));
+                pairReader));
 
         InstallationResetPlanRequest request = new(
             InstallationResetScope.Global,
@@ -284,6 +290,14 @@ public sealed partial class InstallationResetServiceTests
             await PlanUnderTestLockAsync(service, service, request);
 
         Assert.True(confirmed.IsSuccess, confirmed.Error.Message);
+
+        int pairReadsBeforeApply = pairReader.ReadCount;
+
+        int identityReadsBeforeApply = active.IdentityReadCount;
+
+        active.IdentityReadResult = Result<Guid>.Failure(new Error(
+            ErrorCodes.Data.ControlPathUnavailable,
+            "Fresh evidence must not mask an existing active reset."));
 
         active.Seed(CreateActive(
             confirmed.Value.Plan,
@@ -302,7 +316,9 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.Empty(active.Writes);
 
-        Assert.Equal(0, stoppedData.ApplyCount);
+        Assert.Equal(pairReadsBeforeApply, pairReader.ReadCount);
+
+        Assert.Equal(identityReadsBeforeApply, active.IdentityReadCount);
 
     }
 
@@ -3853,6 +3869,10 @@ public sealed partial class InstallationResetServiceTests
 
         public int IdentityReadCount { get; private set; }
 
+        public Result<Guid> IdentityReadResult { get; set; } =
+            Result<Guid>.Success(
+                Guid.Parse("40404040-4040-4040-8040-404040404040"));
+
         public int RecoverCount { get; private set; }
 
         /// <summary>Settable so a test can seed the durable state a resumed attempt would find.</summary>
@@ -3972,8 +3992,7 @@ public sealed partial class InstallationResetServiceTests
 
             IdentityReadCount++;
 
-            return Task.FromResult(Result<Guid>.Success(
-                Guid.Parse("40404040-4040-4040-8040-404040404040")));
+            return Task.FromResult(IdentityReadResult);
 
         }
 
