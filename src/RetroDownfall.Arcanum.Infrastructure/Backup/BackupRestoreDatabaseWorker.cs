@@ -31,7 +31,7 @@ internal sealed record BackupRestoreDatabaseReconciliation(
     long StaleAttachmentSources,
     long UploadedFiles,
     long BatchFiles,
-    long EmbeddingsRebuilt,
+    long EmbeddingsToRebuild,
     long PendingOperationsCleared);
 
 /// <summary>
@@ -529,7 +529,7 @@ internal static class BackupRestoreDatabaseWorker
             stale,
             uploaded,
             batches,
-            EmbeddingsRebuilt: 0,
+            EmbeddingsToRebuild: 0,
             PendingOperationsCleared: 0);
 
     }

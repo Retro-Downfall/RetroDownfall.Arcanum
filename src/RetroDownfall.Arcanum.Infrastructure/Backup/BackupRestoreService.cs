@@ -1216,7 +1216,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 request,
                 effectivePlan.DestinationRoot,
                 staged.GrimoireSecret,
-                staged.EmbeddingsRebuilt,
+                staged.EmbeddingsToRebuild,
                 staged.PendingOperationsCleared,
                 cancellationToken).ConfigureAwait(false);
 
@@ -2115,7 +2115,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             import.Attachments,
             UploadedFiles: 0,
             BatchFiles: 0,
-            EmbeddingsRebuilt: 0,
+            EmbeddingsToRebuild: 0,
             PendingOperationsCleared: 0,
             Issues: []);
 
@@ -2197,7 +2197,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 import.Attachments,
                 UploadedFiles: 0,
                 BatchFiles: 0,
-                EmbeddingsRebuilt: 0,
+                EmbeddingsToRebuild: 0,
                 PendingOperationsCleared: 0,
                 Issues: []),
             [.. phases],
@@ -2227,7 +2227,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         BackupRestoreRequest request,
         string destinationRoot,
         string grimoireSecret,
-        long embeddingsRebuilt,
+        long embeddingsToRebuild,
         long pendingCleared,
         CancellationToken cancellationToken)
     {
@@ -2238,7 +2238,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             || !File.Exists(databasePath))
         {
 
-            return new BackupRestoreReconciliation(0, 0, 0, 0, embeddingsRebuilt, pendingCleared, []);
+            return new BackupRestoreReconciliation(0, 0, 0, 0, embeddingsToRebuild, pendingCleared, []);
 
         }
 
@@ -2258,7 +2258,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 counts.StaleAttachmentSources,
                 counts.UploadedFiles,
                 counts.BatchFiles,
-                embeddingsRebuilt,
+                embeddingsToRebuild,
                 pendingCleared,
                 []);
 
@@ -2275,7 +2275,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 0,
                 0,
                 0,
-                embeddingsRebuilt,
+                embeddingsToRebuild,
                 pendingCleared,
                 [
                     "The restored generation is committed but could not be re-opened for "
@@ -2715,7 +2715,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     private sealed record StageResult(
         BackupRestorePlan Plan,
         string GrimoireSecret,
-        long EmbeddingsRebuilt,
+        long EmbeddingsToRebuild,
         long PendingOperationsCleared,
         BackupVerifyIssue[] Issues)
     {

@@ -1,6 +1,10 @@
 using System.Security.Cryptography;
 
+using System.Text.Json;
+
 using Microsoft.Data.Sqlite;
+
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
@@ -298,7 +302,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         // The archive's vectors are 768-wide and this installation is configured for 1536, so the drop
         // is what this restore actually did — pinned before the mirror is looked at.
-        Assert.Equal(1, result.Reconciliation?.EmbeddingsRebuilt);
+        Assert.Equal(1, result.Reconciliation?.EmbeddingsToRebuild);
 
         await using SqliteConnection connection = await OpenRestoredAsync(fixture.GrimoireSecret);
 
@@ -309,6 +313,54 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Equal(
             "0",
             await ScalarAsync(connection, "SELECT COUNT(*) FROM entry_embeddings_vec;"));
+
+    }
+
+    /// <summary>
+    /// The JSON restore document reports the vectors a restore dropped under a name that does not
+    /// claim it rebuilt them.
+    /// </summary>
+    /// <remarks>
+    /// Asserted over the exact document <c>--output-format json</c> emits — the same
+    /// <see cref="CliJsonContext"/> type info the command serializes through — because the field name
+    /// is the whole contract here. The count reaching it is a DELETE count: nothing in a restore
+    /// recomputes a vector, and the method that produces it says so in its own remarks. An automation
+    /// reading the old <c>embeddingsRebuilt</c> concluded the restored Grimoire had that many freshly
+    /// computed vectors when it has that many fewer than the archive carried.
+    ///
+    /// <para>The rendered text was always honest ("N embeddings to rebuild"); it was the machine-
+    /// readable half that was not, and nothing in the documentation disambiguated it.</para>
+    /// </remarks>
+    [Fact]
+    public async Task The_json_restore_document_names_dropped_vectors_without_claiming_a_rebuild()
+    {
+
+        Fixture fixture = await CreateFixtureAsync(mirroredEmbeddings: true);
+
+        string archive = await fixture.CreateBackupAsync("embedding-width-json.arcbackup");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        string document = JsonSerializer.Serialize(
+            result,
+            CliJsonContext.Default.BackupRestoreResult);
+
+        using JsonDocument parsed = JsonDocument.Parse(document);
+
+        JsonElement reconciliation = parsed.RootElement.GetProperty("reconciliation");
+
+        Assert.Equal(1, reconciliation.GetProperty("embeddingsToRebuild").GetInt64());
+
+        Assert.False(
+            reconciliation.TryGetProperty("embeddingsRebuilt", out _),
+            "The restore document still claims it rebuilt the vectors it deleted.");
 
     }
 
