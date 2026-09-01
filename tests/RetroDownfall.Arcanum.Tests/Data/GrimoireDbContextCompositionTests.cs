@@ -53,6 +53,9 @@ public sealed class GrimoireDbContextCompositionTests
 
         ICovenantConnectionDrain drain = provider.GetRequiredService<ICovenantConnectionDrain>();
 
+        IGrimoireConnectionAdmissionGate admissionGate = provider
+            .GetRequiredService<IGrimoireConnectionAdmissionGate>();
+
         IGrimoireOrdinaryConnectionFactory ordinaryFactory = provider
             .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
@@ -84,6 +87,8 @@ public sealed class GrimoireDbContextCompositionTests
         Assert.Same(lifecycle, GetLifecycle(interceptor));
 
         Assert.Same(drain, GetDrain(interceptor));
+
+        Assert.Same(drain, GetDrain(admissionGate));
 
         Assert.Same(drain, GetDrain(lifecycle));
 
@@ -119,12 +124,17 @@ public sealed class GrimoireDbContextCompositionTests
 
         ICovenantConnectionDrain drain = provider.GetRequiredService<ICovenantConnectionDrain>();
 
+        IGrimoireConnectionAdmissionGate admissionGate = provider
+            .GetRequiredService<IGrimoireConnectionAdmissionGate>();
+
         IGrimoireOrdinaryConnectionFactory ordinaryFactory = provider
             .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
         Assert.Same(lifecycle, GetLifecycle(interceptor));
 
         Assert.Same(drain, GetDrain(interceptor));
+
+        Assert.Same(drain, GetDrain(admissionGate));
 
         Assert.Same(drain, GetDrain(lifecycle));
 
@@ -226,6 +236,19 @@ public sealed class GrimoireDbContextCompositionTests
             ?? throw new InvalidOperationException("The interceptor drain field is missing.");
 
         return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(interceptor));
+
+    }
+
+    private static ICovenantConnectionDrain GetDrain(
+        IGrimoireConnectionAdmissionGate gate)
+    {
+
+        FieldInfo field = typeof(GrimoireConnectionAdmissionGate).GetField(
+            "_drain",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The admission gate drain field is missing.");
+
+        return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(gate));
 
     }
 

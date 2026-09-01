@@ -103,7 +103,7 @@ public sealed class CovenantConnectionDrainTests
 
         CovenantConnectionDrain drain = new();
 
-        GrimoireConnectionAdmissionGate admission = new(TimeProvider.System);
+        GrimoireConnectionAdmissionGate admission = new(TimeProvider.System, drain);
 
         using IDisposable otherHolder = drain.Register(database.Connection);
 
@@ -163,6 +163,83 @@ public sealed class CovenantConnectionDrainTests
             Assert.Equal(ConnectionState.Closed, second.State);
 
         }
+
+    }
+
+    [Fact]
+    public async Task Every_enrolled_handle_is_observed_physically_closed_before_all_pools_clear()
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        await using SqliteConnection pooled = new(
+            new SqliteConnectionStringBuilder(database.Connection.ConnectionString)
+            {
+
+                Pooling = true,
+
+            }.ToString());
+
+        await pooled.OpenAsync(Token);
+
+        await pooled.CloseAsync();
+
+        await using ObservedCloseConnection first = new(database.Connection.ConnectionString);
+
+        await using ObservedCloseConnection second = new(database.Connection.ConnectionString);
+
+        await first.OpenAsync(Token);
+
+        await second.OpenAsync(Token);
+
+        await database.Connection.CloseAsync();
+
+        CovenantConnectionDrain drain = new();
+
+        using IDisposable firstEnrolment = drain.Register(first);
+
+        using IDisposable secondEnrolment = drain.Register(second);
+
+        Task<Result> draining = Task.Run(() => drain.DrainAsync(Token), Token);
+
+        Task firstEntered = await Task.WhenAny(first.Entered, second.Entered);
+
+        ObservedCloseConnection firstClosing = ReferenceEquals(firstEntered, first.Entered)
+            ? first
+            : second;
+
+        ObservedCloseConnection secondClosing = ReferenceEquals(firstClosing, first)
+            ? second
+            : first;
+
+        firstClosing.AllowPhysicalClose();
+
+        await firstClosing.PhysicallyClosed;
+
+        Assert.Contains(
+            CovenantResidualArtifactClass.WriteAheadLog,
+            CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        firstClosing.AllowCloseReturn();
+
+        await secondClosing.Entered;
+
+        secondClosing.AllowPhysicalClose();
+
+        await secondClosing.PhysicallyClosed;
+
+        Assert.Contains(
+            CovenantResidualArtifactClass.WriteAheadLog,
+            CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        secondClosing.AllowCloseReturn();
+
+        Result drained = await draining;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
 
     }
 
@@ -563,6 +640,47 @@ public sealed class CovenantConnectionDrainTests
             await _released.Task;
 
             await base.CloseAsync();
+
+        }
+
+    }
+
+    private sealed class ObservedCloseConnection(string connectionString)
+        : SqliteConnection(connectionString)
+    {
+
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _allowPhysicalClose =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _physicallyClosed =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _allowCloseReturn =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Entered => _entered.Task;
+
+        internal Task PhysicallyClosed => _physicallyClosed.Task;
+
+        internal void AllowPhysicalClose() => _allowPhysicalClose.TrySetResult();
+
+        internal void AllowCloseReturn() => _allowCloseReturn.TrySetResult();
+
+        public override async Task CloseAsync()
+        {
+
+            _entered.TrySetResult();
+
+            await _allowPhysicalClose.Task;
+
+            await base.CloseAsync();
+
+            _physicallyClosed.TrySetResult();
+
+            await _allowCloseReturn.Task;
 
         }
 

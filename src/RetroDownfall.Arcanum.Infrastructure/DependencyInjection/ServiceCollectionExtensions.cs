@@ -1639,7 +1639,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new GrimoireConnectionAdmissionGate(
-                sp.GetRequiredService<TimeProvider>()));
+                sp.GetRequiredService<TimeProvider>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>()));
 
         services.AddSingleton<IGrimoireConnectionAdmissionGate>(
             static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());

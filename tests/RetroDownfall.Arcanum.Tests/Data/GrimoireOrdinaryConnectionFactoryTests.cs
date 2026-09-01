@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -10,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
@@ -367,9 +369,9 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
     public async Task Generation_advance_while_native_open_is_blocked_loses_revalidation_and_drains()
     {
 
-        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
-
         RecordingDrain drain = new();
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System, drain);
 
         GrimoireOrdinaryConnectionLifecycle lifecycle = new(gate, drain);
 
@@ -416,6 +418,66 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
         Assert.Equal(ConnectionState.Closed, connection.State);
 
         Assert.Equal(1, drain.ClearCount);
+
+        Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+    }
+
+    [Fact]
+    public async Task Raw_open_attempt_while_stage_two_drain_is_blocked_is_refused_before_native_open()
+    {
+
+        BlockingStageTwoDrain drain = new();
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        await using IGrimoireClosingOwner closing = BeginClosing(gate);
+
+        Result stageOne = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(stageOne.IsSuccess, stageOne.IsFailure ? stageOne.Error.Message : null);
+
+        Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Task first = await Task.WhenAny(drain.Entered, closingAdmission);
+
+        Assert.Same(drain.Entered, first);
+
+        RecordingTestSeam seam = new();
+
+        GrimoireOrdinaryConnectionFactory factory = CreateFactory(
+            new GrimoireOrdinaryConnectionLifecycle(gate, drain),
+            new RecordingRuntime(initializeProvider: true),
+            drain,
+            seam);
+
+        await using SqliteConnection connection = CanonicalScopedConnection();
+
+        Result<IGrimoireOrdinaryConnectionLease> acquisition = await factory.AcquireScopedAsync(
+            connection,
+            CovenantSqliteConnectionMode.ReadWrite,
+            CancellationToken.None);
+
+        Assert.True(acquisition.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, acquisition.Error.Code);
+
+        Assert.Equal(0, seam.BeforeNativeOpenCount);
+
+        Assert.Equal(ConnectionState.Closed, connection.State);
+
+        drain.Release();
 
         Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
 
@@ -579,9 +641,9 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
     public async Task Successful_open_enrolls_before_ticket_terminal_and_can_be_borrowed()
     {
 
-        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
-
         RecordingDrain drain = new();
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System, drain);
 
         GrimoireOrdinaryConnectionLifecycle lifecycle = new(gate, drain);
 
@@ -828,6 +890,19 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
             runtime,
             seam ?? new RecordingTestSeam());
 
+    private static ServiceProvider CreateProvider(ICovenantConnectionDrain drain)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddArcanumGrimoireForCli();
+
+        services.AddSingleton<ICovenantConnectionDrain>(drain);
+
+        return services.BuildServiceProvider();
+
+    }
+
     private static SqliteConnection CanonicalScopedConnection() =>
         new(new SqliteConnectionStringBuilder
         {
@@ -1048,6 +1123,36 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
+
+    }
+
+    private sealed class BlockingStageTwoDrain : ICovenantConnectionDrain
+    {
+
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _released =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Entered => _entered.Task;
+
+        internal void Release() => _released.TrySetResult();
+
+        public IDisposable Register(SqliteConnection connection) => new NoopDisposable();
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
+
+        public async Task<Result> DrainAsync(CancellationToken cancellationToken)
+        {
+
+            _entered.TrySetResult();
+
+            await _released.Task.WaitAsync(cancellationToken);
+
+            return Result.Success();
+
+        }
 
     }
 

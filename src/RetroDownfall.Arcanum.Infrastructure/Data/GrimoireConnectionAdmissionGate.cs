@@ -2,6 +2,7 @@ using System.Data.Common;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -27,6 +28,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private readonly TimeProvider _timeProvider;
 
+    private readonly ICovenantConnectionDrain _drain;
+
     private readonly TimeSpan _openingAttemptTimeout;
 
     private readonly HashSet<OpenTicket> _unresolvedOpens = [];
@@ -48,16 +51,36 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private TaskCompletionSource<long> _nextOpenGeneration = NewOpenGenerationSignal();
 
     internal GrimoireConnectionAdmissionGate(TimeProvider timeProvider)
-        : this(timeProvider, ProductionOpeningAttemptTimeout)
+        : this(
+            timeProvider,
+            new CovenantConnectionDrain(),
+            ProductionOpeningAttemptTimeout)
+    {
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain)
+        : this(timeProvider, drain, ProductionOpeningAttemptTimeout)
     {
     }
 
     internal GrimoireConnectionAdmissionGate(
         TimeProvider timeProvider,
         TimeSpan openingAttemptTimeout)
+        : this(timeProvider, new CovenantConnectionDrain(), openingAttemptTimeout)
+    {
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        TimeSpan openingAttemptTimeout)
     {
 
         ArgumentNullException.ThrowIfNull(timeProvider);
+
+        ArgumentNullException.ThrowIfNull(drain);
 
         if (openingAttemptTimeout <= TimeSpan.Zero)
         {
@@ -67,6 +90,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         }
 
         _timeProvider = timeProvider;
+
+        _drain = drain;
 
         _openingAttemptTimeout = openingAttemptTimeout;
 
@@ -482,6 +507,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         Task[] terminalCallbacks;
 
+        Closure closure;
+
+        long closedGeneration;
+
         lock (_sync)
         {
 
@@ -504,6 +533,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
+            if (token.Closure.StageTwoInProgress)
+            {
+
+                return Result<IGrimoireExclusiveClosedLease>.Failure(
+                    LifecycleConflict(
+                        "The exact Grimoire owner already has a stage-two close in progress."));
+
+            }
+
             if (_state == GateState.Closing)
             {
 
@@ -512,6 +550,12 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 _state = GateState.Closed;
 
             }
+
+            token.Closure.StageTwoInProgress = true;
+
+            closure = token.Closure;
+
+            closedGeneration = _generation;
 
             foreach (OpenTicket ticket in _unresolvedOpens)
             {
@@ -526,48 +570,78 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-
         try
         {
 
-            await Task.WhenAll(terminalCallbacks)
-                .WaitAsync(_openingAttemptTimeout, _timeProvider, cancellationToken)
-                .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
 
-        }
-        catch (TimeoutException)
-        {
+            try
+            {
 
-            return Result<IGrimoireExclusiveClosedLease>.Failure(
-                new Error(
-                    OpeningTimeoutCode,
-                    "A physical Grimoire open did not reach its terminal callback before maintenance closing timed out."));
+                await Task.WhenAll(terminalCallbacks)
+                    .WaitAsync(_openingAttemptTimeout, _timeProvider, cancellationToken)
+                    .ConfigureAwait(false);
 
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        lock (_sync)
-        {
-
-            if (!OwnsClosingToken(token)
-                || _state != GateState.Closed
-                || _unresolvedOpens.Count != 0)
+            }
+            catch (TimeoutException)
             {
 
                 return Result<IGrimoireExclusiveClosedLease>.Failure(
-                    LifecycleConflict("The Grimoire closing generation changed before exclusive authority was issued."));
+                    new Error(
+                        OpeningTimeoutCode,
+                        "A physical Grimoire open did not reach its terminal callback before maintenance closing timed out."));
 
             }
 
-            ClosedLease lease = new(this, token.Closure, _generation);
+            cancellationToken.ThrowIfCancellationRequested();
 
-            token.Closure.ActiveClosingOwner = null;
+            Result drained = await _drain.DrainAsync(cancellationToken).ConfigureAwait(false);
 
-            token.Closure.ActiveClosedLease = lease;
+            cancellationToken.ThrowIfCancellationRequested();
 
-            return Result<IGrimoireExclusiveClosedLease>.Success(lease);
+            if (drained.IsFailure)
+            {
+
+                return Result<IGrimoireExclusiveClosedLease>.Failure(drained.Error);
+
+            }
+
+            lock (_sync)
+            {
+
+                if (!OwnsClosingToken(token)
+                    || !ReferenceEquals(_closure, closure)
+                    || _state != GateState.Closed
+                    || _generation != closedGeneration
+                    || !closure.StageOneDrained
+                    || !closure.StageTwoInProgress
+                    || _unresolvedOpens.Count != 0
+                    || _maintenanceAdoptionInterlockOwner is not null
+                    || closure.ActiveScopedConnectionPermit is { IsReleased: false }
+                    || closure.LiveOneShotAuthorities.Count != 0
+                    || closure.LiveMaintenanceHandles.Count != 0)
+                {
+
+                    return Result<IGrimoireExclusiveClosedLease>.Failure(
+                        LifecycleConflict("The Grimoire closing generation changed before exclusive authority was issued."));
+
+                }
+
+                ClosedLease lease = new(this, token.Closure, _generation);
+
+                token.Closure.ActiveClosingOwner = null;
+
+                token.Closure.ActiveClosedLease = lease;
+
+                return Result<IGrimoireExclusiveClosedLease>.Success(lease);
+
+            }
+
+        }
+        finally
+        {
+
+            ResetStageTwoAttempt(closure);
 
         }
 
@@ -748,7 +822,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             lock (_sync)
             {
 
-                if (_maintenanceAdoptionInterlockOwner is not null)
+                if (_maintenanceAdoptionInterlockOwner is not null
+                    || IsClosedLeaseReservationPendingWhileLocked())
                 {
 
                     return Result<IGrimoireExpiredLeaseAdoptionInterlock>.Failure(
@@ -959,6 +1034,22 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         }
 
     }
+
+    private void ResetStageTwoAttempt(Closure closure)
+    {
+
+        lock (_sync)
+        {
+
+            closure.StageTwoInProgress = false;
+
+        }
+
+    }
+
+    private bool IsClosedLeaseReservationPendingWhileLocked() =>
+        _state == GateState.Closed
+        && _closure is { StageTwoInProgress: true, ActiveClosedLease: null };
 
     private void ReleaseRequest(RequestLease lease)
     {
@@ -1782,7 +1873,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             if (_unresolvedOpens.Count != 0
                 || lease.Closure.ActiveScopedConnectionPermit is { IsReleased: false }
                 || lease.Closure.LiveOneShotAuthorities.Count != 0
-                || lease.Closure.LiveMaintenanceHandles.Count != 0)
+                || lease.Closure.LiveMaintenanceHandles.Count != 0
+                || (_maintenanceAdoptionInterlockOwner is MaintenanceIoLane lane
+                    && ReferenceEquals(lane.Closure, lease.Closure)))
             {
 
                 return LifecycleConflict(
@@ -1896,6 +1989,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         internal bool StageOneDrained { get; set; }
 
         internal bool StageOneTimedOut { get; set; }
+
+        internal bool StageTwoInProgress { get; set; }
 
     }
 

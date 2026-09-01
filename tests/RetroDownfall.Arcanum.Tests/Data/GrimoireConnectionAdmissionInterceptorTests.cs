@@ -2,12 +2,14 @@ using System.Data;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
@@ -38,6 +40,52 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
         Assert.Equal(0, drain.RegisterCount);
 
         Assert.Equal(0, drain.DisposeCount);
+
+    }
+
+    [Fact]
+    public async Task Ef_open_attempt_while_stage_two_drain_is_blocked_is_refused_before_native_open()
+    {
+
+        BlockingStageTwoDrain drain = new();
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        await using IGrimoireClosingOwner closing = Begin(gate, 23);
+
+        Result stageOne = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(stageOne.IsSuccess, stageOne.IsFailure ? stageOne.Error.Message : null);
+
+        Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Task first = await Task.WhenAny(drain.Entered, closingAdmission);
+
+        Assert.Same(drain.Entered, first);
+
+        await using TrackingSqliteConnection connection = new(ConnectionString);
+
+        await using ProbeDbContext context = CreateContext(connection, gate, drain);
+
+        _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(
+            () => context.Database.OpenConnectionAsync());
+
+        Assert.Equal(0, connection.ProviderOpenCount);
+
+        drain.Release();
+
+        Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
 
     }
 
@@ -770,6 +818,19 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         }.ToString();
 
+    private static ServiceProvider CreateProvider(ICovenantConnectionDrain drain)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddArcanumGrimoireForCli();
+
+        services.AddSingleton<ICovenantConnectionDrain>(drain);
+
+        return services.BuildServiceProvider();
+
+    }
+
     private static ProbeDbContext CreateContext(
         SqliteConnection connection,
         IGrimoireConnectionAdmissionGate gate,
@@ -1385,6 +1446,45 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
                 _ = Interlocked.Decrement(ref owner._activeCount);
 
+            }
+
+        }
+
+    }
+
+    private sealed class BlockingStageTwoDrain : ICovenantConnectionDrain
+    {
+
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _released =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Entered => _entered.Task;
+
+        internal void Release() => _released.TrySetResult();
+
+        public IDisposable Register(SqliteConnection connection) => new NoOpRegistration();
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
+
+        public async Task<Result> DrainAsync(CancellationToken cancellationToken)
+        {
+
+            _entered.TrySetResult();
+
+            await _released.Task.WaitAsync(cancellationToken);
+
+            return Result.Success();
+
+        }
+
+        private sealed class NoOpRegistration : IDisposable
+        {
+
+            public void Dispose()
+            {
             }
 
         }

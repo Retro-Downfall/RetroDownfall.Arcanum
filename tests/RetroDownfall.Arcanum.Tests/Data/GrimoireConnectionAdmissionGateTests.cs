@@ -1,10 +1,13 @@
 using System.Data.Common;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -247,6 +250,211 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    [Fact]
+    public async Task Closed_lease_waits_for_ticket_terminalization_then_the_singleton_drain()
+    {
+
+        RecordingStageTwoDrain drain = new(block: true);
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        using SqliteConnection connection = new();
+
+        using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(connection);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(37));
+
+        Result stageOne = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(stageOne.IsSuccess, stageOne.IsFailure ? stageOne.Error.Message : null);
+
+        Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Assert.False(drain.Entered.IsCompleted);
+
+        Assert.False(closingAdmission.IsCompleted);
+
+        ticket.MarkFailed();
+
+        Task firstAfterTerminal = await Task.WhenAny(drain.Entered, closingAdmission);
+
+        Assert.Same(drain.Entered, firstAfterTerminal);
+
+        Assert.Equal(1, drain.CallCount);
+
+        Assert.False(closingAdmission.IsCompleted);
+
+        drain.Release();
+
+        Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+    }
+
+    [Fact]
+    public async Task Drain_failure_issues_no_closed_lease_and_keeps_admission_closed()
+    {
+
+        RecordingStageTwoDrain drain = new(
+            block: false,
+            result: Result.Failure(
+                new Error(ErrorCodes.Covenant.MaintenanceFailed, "physical drain failed")));
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(38);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, owner);
+
+        Result stageOne = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(stageOne.IsSuccess, stageOne.IsFailure ? stageOne.Error.Message : null);
+
+        long closingGeneration = checked(gate.CurrentGeneration + 1);
+
+        Result<IGrimoireExclusiveClosedLease> closed = await gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(closed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, closed.Error.Code);
+
+        Assert.Equal(1, drain.CallCount);
+
+        Assert.Equal(closingGeneration, gate.CurrentGeneration);
+
+        using SqliteConnection refused = new();
+
+        _ = Assert.Throws<GrimoireMaintenanceUnavailableException>(
+            () => gate.AcquireOrdinaryOpen(refused));
+
+        Result<IGrimoireClosingOwner> resumed = gate.BeginOrResumeExclusive(owner);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        Assert.Same(closing, resumed.Value);
+
+    }
+
+    [Fact]
+    public async Task Drain_cancellation_issues_no_closed_lease_and_keeps_admission_closed()
+    {
+
+        RecordingStageTwoDrain drain = new(block: true);
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(39);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, owner);
+
+        Result stageOne = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(stageOne.IsSuccess, stageOne.IsFailure ? stageOne.Error.Message : null);
+
+        long closingGeneration = checked(gate.CurrentGeneration + 1);
+
+        using CancellationTokenSource cancelled = new();
+
+        Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
+            .CloseConnectionAdmissionAsync(closing, cancelled.Token)
+            .AsTask();
+
+        Task first = await Task.WhenAny(drain.Entered, closingAdmission);
+
+        Assert.Same(drain.Entered, first);
+
+        cancelled.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => closingAdmission);
+
+        Assert.Equal(1, drain.CallCount);
+
+        Assert.Equal(closingGeneration, gate.CurrentGeneration);
+
+        using SqliteConnection refused = new();
+
+        _ = Assert.Throws<GrimoireMaintenanceUnavailableException>(
+            () => gate.AcquireOrdinaryOpen(refused));
+
+        Result<IGrimoireClosingOwner> resumed = gate.BeginOrResumeExclusive(owner);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        Assert.Same(closing, resumed.Value);
+
+    }
+
+    [Fact]
+    public async Task Adoption_interlock_cannot_enter_between_drain_and_closed_lease_reservation()
+    {
+
+        RecordingStageTwoDrain drain = new(block: true);
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(40);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, owner);
+
+        Result stageOne = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(stageOne.IsSuccess, stageOne.IsFailure ? stageOne.Error.Message : null);
+
+        Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Task first = await Task.WhenAny(drain.Entered, closingAdmission);
+
+        Assert.Same(drain.Entered, first);
+
+        Task<Result<IGrimoireExpiredLeaseAdoptionInterlock>> adoption = gate
+            .AcquireExpiredLeaseAdoptionInterlockAsync(
+                owner,
+                static (_, _) => ValueTask.FromResult(true),
+                CancellationToken.None)
+            .AsTask();
+
+        Result<IGrimoireExpiredLeaseAdoptionInterlock> refusedAdoption = await adoption;
+
+        Assert.True(refusedAdoption.IsFailure);
+
+        drain.Release();
+
+        Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
 
     }
 
@@ -1298,6 +1506,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await permit.DisposeAsync();
 
+        await lane.DisposeAsync();
+
         Result keptClosed = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,
             CancellationToken.None);
@@ -1428,6 +1638,76 @@ public sealed class GrimoireConnectionAdmissionGateTests
     }
 
     [Fact]
+    public async Task Closed_lease_disposition_refuses_an_active_zero_handle_lane()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, Owner(41));
+
+        await using IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        Result disposition = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            CancellationToken.None);
+
+        Assert.True(disposition.IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Lane_disposal_waits_for_real_physical_close_before_disposition()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(42);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceRenewalTicket ticket =
+            closed.IssueMaintenanceRenewalTicket(lane).Value;
+
+        Result<IGrimoireTrackedMaintenanceHandle> handle = ticket.Consume(
+            owner,
+            closed.Generation,
+            lane);
+
+        Assert.True(handle.IsSuccess, handle.IsFailure ? handle.Error.Message : null);
+
+        Assert.True(handle.Value.ReportOpenStarted().IsSuccess);
+
+        Task laneDisposal = lane.DisposeAsync().AsTask();
+
+        Assert.False(laneDisposal.IsCompleted);
+
+        Result refusedWhileDisposing = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            CancellationToken.None);
+
+        Assert.True(refusedWhileDisposing.IsFailure);
+
+        Assert.True(handle.Value.ReportPhysicallyClosed().IsSuccess);
+
+        await laneDisposal;
+
+        Result reopened = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            CancellationToken.None);
+
+        Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
+
+    }
+
+    [Fact]
     public async Task Renewal_ticket_is_one_shot_owner_generation_bound_and_physically_tracked()
     {
 
@@ -1500,6 +1780,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.True(renewal.Value.ReportPhysicallyClosed().IsSuccess);
 
+        await lane.DisposeAsync();
+
         Result keptClosed = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,
             CancellationToken.None);
@@ -1565,6 +1847,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await permit.DisposeAsync();
 
+        await secondLane.DisposeAsync();
+
         Result keptClosed = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,
             CancellationToken.None);
@@ -1623,6 +1907,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(lateRenewal.IsFailure);
 
         Assert.True(lateFactoryOpen.IsFailure);
+
+        await secondLane.DisposeAsync();
 
         Result keptClosed = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,
@@ -1787,6 +2073,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         CovenantExclusiveRecoveryOwner owner = Owner(31);
 
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
         Result<IGrimoireExpiredLeaseAdoptionInterlock> acquiredAdoption =
             await gate.AcquireExpiredLeaseAdoptionInterlockAsync(
                 owner,
@@ -1798,8 +2086,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
             acquiredAdoption.IsFailure ? acquiredAdoption.Error.Message : null);
 
         IGrimoireExpiredLeaseAdoptionInterlock adoption = acquiredAdoption.Value;
-
-        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
 
         Task<Result<IGrimoireMaintenanceIoLane>> competingLane = closed
             .AcquireMaintenanceIoLaneAsync(
@@ -1864,6 +2150,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
         }
         else
         {
+
+            await lane.DisposeAsync();
 
             Result keptClosed = await closed.CompleteAsync(
                 CovenantExclusiveLeaseDisposition.KeepClosed,
@@ -1935,7 +2223,23 @@ public sealed class GrimoireConnectionAdmissionGateTests
     }
 
     private static GrimoireConnectionAdmissionGate CreateGate(TimeProvider? timeProvider = null) =>
-        new(timeProvider ?? TimeProvider.System, OpeningTimeout);
+        new(
+            timeProvider ?? TimeProvider.System,
+            new RecordingStageTwoDrain(block: false),
+            OpeningTimeout);
+
+    private static ServiceProvider CreateProvider(ICovenantConnectionDrain drain)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddArcanumGrimoireForCli();
+
+        services.AddSingleton<ICovenantConnectionDrain>(drain);
+
+        return services.BuildServiceProvider();
+
+    }
 
     private static async Task<IGrimoireExclusiveClosedLease> Close(
         GrimoireConnectionAdmissionGate gate,
@@ -2054,6 +2358,56 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     private static TaskCompletionSource NewBarrier() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private sealed class RecordingStageTwoDrain(
+        bool block,
+        Result? result = null) : ICovenantConnectionDrain
+    {
+
+        private readonly TaskCompletionSource _entered = NewBarrier();
+
+        private readonly TaskCompletionSource _released = NewBarrier();
+
+        private int _callCount;
+
+        internal int CallCount => Volatile.Read(ref _callCount);
+
+        internal Task Entered => _entered.Task;
+
+        internal void Release() => _released.TrySetResult();
+
+        public IDisposable Register(SqliteConnection connection) => new NoOpRegistration();
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
+
+        public async Task<Result> DrainAsync(CancellationToken cancellationToken)
+        {
+
+            _ = Interlocked.Increment(ref _callCount);
+
+            _entered.TrySetResult();
+
+            if (block)
+            {
+
+                await _released.Task.WaitAsync(cancellationToken);
+
+            }
+
+            return result ?? Result.Success();
+
+        }
+
+        private sealed class NoOpRegistration : IDisposable
+        {
+
+            public void Dispose()
+            {
+            }
+
+        }
+
+    }
 
     private sealed class AsyncScopeDisposalSentinel(
         IAsyncDisposable inner,
