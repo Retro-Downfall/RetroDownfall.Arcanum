@@ -158,6 +158,7 @@ internal sealed class CovenantV3MaintenanceConnectionFactory(
         DataSource = ExportStagingDatabasePath,
         Password = _passphrase.Passphrase,
         Pooling = false,
+        Mode = SqliteOpenMode.ReadOnly,
     };
 
     private SqliteConnectionStringBuilder ImmutableReadOnlyBuilder() => new()

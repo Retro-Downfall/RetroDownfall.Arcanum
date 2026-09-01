@@ -39,6 +39,23 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs", "CovenantHealthyCatalogErasureGuard", "RequireHealthyAsync(1)"),
     ];
 
+    private static readonly string[] Task9AmbientMaintenanceTestBridge =
+    [
+        "tests/RetroDownfall.Arcanum.Tests/Covenant/CovenantArchitectureBoundaryTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantCanonicalErasureFixture.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantCanonicalErasureTransactionTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantDisclosureWriterTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureFreshProcessRecoveryTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureInventorySourceTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureSameProcessTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantMaintenanceConnectionFactoryTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantV3MaintenanceTestAuthority.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/GrimoireConnectionAcquisitionInventoryTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Fixtures/CovenantSchemaScratchDatabase.cs",
+        "tests/RetroDownfall.Arcanum.Tests/InstallationReset/HostToolsMarkerPairResetCoordinatorTests.cs",
+        "tests/RetroDownfall.Arcanum.Tests/InstallationReset/HostToolsMarkerPairResetDatabaseTests.cs",
+    ];
+
     [Fact]
     public void Injected_unlisted_acquisition_fails_independently()
     {
@@ -544,6 +561,24 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
+    public void Ambient_maintenance_factory_is_confined_to_the_task9_bridge()
+    {
+
+        Assert.Equal(
+            [
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantMaintenanceConnectionFactory.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetDatabase.cs",
+            ],
+            SourcesReferencingAmbientMaintenanceFactory(ProductionSources()));
+
+        Assert.Equal(
+            Task9AmbientMaintenanceTestBridge,
+            SourcesReferencingAmbientMaintenanceFactory(TestSources()));
+
+    }
+
+    [Fact]
     public void Production_inventory_is_bijective()
     {
 
@@ -623,5 +658,36 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ];
 
     }
+
+    private static IReadOnlyList<AcquisitionSource> TestSources()
+    {
+
+        string repositoryRoot = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string testRoot = Path.Combine(repositoryRoot, "tests", "RetroDownfall.Arcanum.Tests");
+
+        return
+        [
+            .. Directory.EnumerateFiles(testRoot, "*.cs", SearchOption.AllDirectories)
+                .Where(static path =>
+                    !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                    && !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                .Select(path => new AcquisitionSource(
+                    Path.GetRelativePath(repositoryRoot, path).Replace('\\', '/'),
+                    File.ReadAllText(path))),
+        ];
+
+    }
+
+    private static string[] SourcesReferencingAmbientMaintenanceFactory(
+        IReadOnlyList<AcquisitionSource> sources) =>
+        [
+            .. sources
+                .Where(static source => source.Text.Contains(
+                    "ICovenantMaintenanceConnectionFactory",
+                    StringComparison.Ordinal))
+                .Select(static source => source.RelativePath)
+                .Order(StringComparer.Ordinal),
+        ];
 
 }

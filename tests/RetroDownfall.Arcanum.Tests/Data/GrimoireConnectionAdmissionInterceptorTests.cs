@@ -181,6 +181,53 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
     }
 
     [Fact]
+    public async Task Controlled_refusal_close_keeps_its_exact_lifecycle_registration_until_terminal()
+    {
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        RecordingConnectionDrain drain = new();
+
+        await using GatedOpenSqliteConnection connection = new(ConnectionString);
+
+        await using ProbeDbContext context = CreateContext(connection, gate, drain);
+
+        Task opening = context.Database.OpenConnectionAsync();
+
+        await connection.OpenEntered;
+
+        await using IGrimoireClosingOwner closing = Begin(gate, 24);
+
+        Result requestsDrained = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(
+            requestsDrained.IsSuccess,
+            requestsDrained.IsFailure ? requestsDrained.Error.Message : null);
+
+        Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        connection.AllowOpen();
+
+        Exception refused = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(
+            () => opening);
+
+        Assert.IsType<GrimoireMaintenanceUnavailableException>(refused);
+
+        Assert.Equal(ConnectionState.Closed, connection.State);
+
+        Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+    }
+
+    [Fact]
     public async Task Closure_during_post_open_initializer_closes_before_ticket_completion()
     {
 

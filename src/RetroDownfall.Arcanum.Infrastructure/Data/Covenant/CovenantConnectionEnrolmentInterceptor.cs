@@ -318,9 +318,31 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         if (change.CurrentState == ConnectionState.Closed && sender is DbConnection connection)
         {
 
+            if (IsControlledReleaseInProgress(connection))
+            {
+
+                return;
+
+            }
+
             _lifecycle.ReleaseAfterExternalClose(connection);
 
             Release(connection, closePhysicalConnection: false);
+
+        }
+
+    }
+
+    private bool IsControlledReleaseInProgress(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            return _registrations.TryGetValue(
+                    connection,
+                    out InterceptorRegistration? registration)
+                && registration.ReleaseInProgress;
 
         }
 

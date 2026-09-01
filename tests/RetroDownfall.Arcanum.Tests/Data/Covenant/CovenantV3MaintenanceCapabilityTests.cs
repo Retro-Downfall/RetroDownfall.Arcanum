@@ -156,6 +156,7 @@ public sealed class CovenantV3MaintenanceCapabilityTests
         Assert.Equal(ArcanumPaths.GrimoireDatabaseFile, canonical.DataSource);
         Assert.Equal(CovenantResidualArtifacts.ExportStagingPath(ArcanumPaths.GrimoireDatabaseFile), staging.DataSource);
         Assert.Contains("immutable=1", immutable.DataSource, StringComparison.Ordinal);
+        Assert.Equal(SqliteOpenMode.ReadOnly, staging.Mode);
         Assert.Equal(SqliteOpenMode.ReadOnly, immutable.Mode);
         Assert.False(canonical.Pooling);
         Assert.False(staging.Pooling);

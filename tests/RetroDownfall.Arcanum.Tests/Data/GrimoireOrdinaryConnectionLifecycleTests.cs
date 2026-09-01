@@ -211,6 +211,41 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
 
     }
 
+    [Fact]
+    public async Task External_drain_close_invalidates_every_holder_before_a_fresh_open()
+    {
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        CovenantConnectionDrain drain = new();
+
+        GrimoireOrdinaryConnectionLifecycle lifecycle = new(gate, drain);
+
+        using SqliteConnection connection = new(ConnectionString);
+
+        IGrimoireOrdinaryConnectionRegistration owner = ProveOpen(lifecycle, connection);
+
+        IGrimoireOrdinaryConnectionRegistration borrowed =
+            lifecycle.BorrowCurrentOpen(connection).Value;
+
+        Result drained = await drain.DrainAsync(CancellationToken.None);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Equal(ConnectionState.Closed, connection.State);
+
+        Assert.True(lifecycle.BorrowCurrentOpen(connection).IsFailure);
+
+        owner.Dispose();
+
+        borrowed.Dispose();
+
+        using IGrimoireOrdinaryConnectionRegistration fresh = lifecycle.BeginOpen(connection);
+
+        fresh.MarkFailed();
+
+    }
+
     private static IGrimoireOrdinaryConnectionRegistration ProveOpen(
         IGrimoireOrdinaryConnectionLifecycle lifecycle,
         SqliteConnection connection)
