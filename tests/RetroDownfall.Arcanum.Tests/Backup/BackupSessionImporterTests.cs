@@ -550,7 +550,7 @@ public sealed class BackupSessionImporterTests : IDisposable
     /// that started needing it. What is under test here is the archive the planner reads and the graph
     /// the store copies — not the arbitration, which has its own suite.
     /// </remarks>
-    private sealed class ProtectedTransferGate : ICovenantOperationGate
+    internal sealed class ProtectedTransferGate : ICovenantOperationGate
     {
 
         public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(

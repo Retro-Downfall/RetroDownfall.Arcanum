@@ -24,6 +24,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -1161,6 +1163,112 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A selective import stopped by its third Session reports the two it already committed rather
+    /// than the status that means the destination was never touched.
+    /// </summary>
+    /// <remarks>
+    /// Entered at <see cref="BackupRestoreService.RestoreAsync"/> over a real archive and the real
+    /// live installation, because the property under test is what the operator is told about a
+    /// destination that has already changed — and that sentence is only assembled at this layer.
+    ///
+    /// <para>The refusal is a source taint, which is the one class of per-Session refusal no preflight
+    /// can answer: it is read out of that Session's own graph inside the transfer store, after the
+    /// Sessions before it have committed under their own compound leases with no outer transaction
+    /// over them. The archive carries all three, and the selection names all three.</para>
+    ///
+    /// <para>The destination is queried for what landed rather than trusting the returned counts. The
+    /// installation this archive was taken from is also the installation being imported into, so both
+    /// committed Sessions arrive beside their originals under fresh identities — two rows for each of
+    /// the titles that committed, one for the title that was refused.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_selective_import_refused_partway_reports_the_Sessions_it_already_committed()
+    {
+
+        Fixture fixture = await CreateFixtureAsync(refusableSessionTrio: true);
+
+        string archive = await fixture.CreateBackupAsync("import-partial.arcbackup");
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret },
+                ProtectedSelectiveImport())
+            .RestoreAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    BackupRestoreConflictMode.ImportSelectedSessions,
+                    SessionIds:
+                    [
+                        Fixture.CleanSessionA,
+                        Fixture.CleanSessionB,
+                        Fixture.TaintedSessionC,
+                    ],
+                    Confirmed: true,
+                    CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        // The refusal this case is about, pinned before anything else is asserted: a coverage or digest
+        // refusal would stop the import somewhere else entirely and prove nothing about a partial commit.
+        Assert.Contains(
+            result.Issues,
+            static issue => issue.Message.Contains(
+                "Covenant-derived artifacts",
+                StringComparison.Ordinal));
+
+        Assert.NotEqual(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        BackupVerifyIssue committed = Assert.Single(
+            result.Issues,
+            static issue => issue.Code == "backup.restore_import_partially_committed");
+
+        Assert.Contains(
+            Fixture.CleanSessionA.ToString("D"),
+            committed.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            Fixture.CleanSessionB.ToString("D"),
+            committed.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            Fixture.TaintedSessionC.ToString("D"),
+            committed.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        await using SqliteConnection connection = await OpenRestoredAsync(fixture.GrimoireSecret);
+
+        Assert.Equal(
+            "2",
+            await ScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Title\" = 'Session A';"));
+
+        Assert.Equal(
+            "2",
+            await ScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Title\" = 'Session B';"));
+
+        Assert.Equal(
+            "1",
+            await ScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Title\" = 'Session C';"));
+
+        // The graph, not just the Session row: an import that committed an empty Session would satisfy
+        // every count above.
+        Assert.Equal(
+            "2",
+            await ScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM \"Entries\" WHERE \"Content\" = 'ask A';"));
+
+    }
+
     [Fact]
     public async Task Importing_a_session_the_archive_does_not_contain_is_refused()
     {
@@ -1735,6 +1843,27 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The selective-import arm as a Covenant-enabled installation composes it: the real transfer
+    /// store, and a gate that grants the compound lease rather than arbitrating it.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="SelectiveImportEnabled"/>, whose store throws: that one exists for the
+    /// planning cases, where presence of the arm is all that is read. A case about what the import
+    /// commits has to run the store that commits it.
+    /// </remarks>
+    private static BackupRestoreServiceOptions ProtectedSelectiveImport() =>
+        new()
+        {
+
+            SelectiveImport = new CovenantSelectiveImportServices(
+                new BackupSessionImporterTests.ProtectedTransferGate(),
+                new ProtectedArtifactTransferStore(
+                    CovenantSqliteConnectionInitializer.Instance,
+                    TimeProvider.System)),
+
+        };
+
     private static BackupRestoreServiceOptions SelectiveImportEnabled() =>
         new()
         {
@@ -1852,12 +1981,14 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
-    private async Task<Fixture> CreateFixtureAsync(bool listenAny = false)
+    private async Task<Fixture> CreateFixtureAsync(
+        bool listenAny = false,
+        bool refusableSessionTrio = false)
     {
 
         Fixture fixture = new(_installation, _archives, Paths(), Codec());
 
-        await fixture.BuildAsync(listenAny);
+        await fixture.BuildAsync(listenAny, refusableSessionTrio);
 
         return fixture;
 
@@ -1877,6 +2008,26 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public static readonly Guid SessionId =
             Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        /// <summary>
+        /// The three Sessions a selective import selects together, in the order the plan sorts them.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="BackupRestoreService"/> orders the selection (<c>Distinct().Order()</c>), so the
+        /// one that is refused has to sort last by <see cref="Guid"/> comparison rather than by the
+        /// order the request happens to list — otherwise the refusal lands before anything committed
+        /// and the case proves nothing. The leading field is what that comparison reads first, and
+        /// these three increase in it. Hex letters throughout, so an identity spelled uppercase in the
+        /// archive and lowercase in the request is a difference this fixture can actually see.
+        /// </remarks>
+        public static readonly Guid CleanSessionA =
+            Guid.Parse("1a1a1a1a-2b2b-4c3c-8d4d-5e5e6f6f7070");
+
+        public static readonly Guid CleanSessionB =
+            Guid.Parse("2b2b2b2b-3c3c-4d4d-8e5e-6f6f70708181");
+
+        public static readonly Guid TaintedSessionC =
+            Guid.Parse("3c3c3c3c-4d4d-4e5e-8f6f-707081819292");
 
         public static readonly Guid CampaignId =
             Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -1915,7 +2066,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public IBackupService BackupService { get; private set; } = null!;
 
-        public async Task BuildAsync(bool listenAny)
+        public async Task BuildAsync(bool listenAny, bool refusableSessionTrio = false)
         {
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(installation);
@@ -1942,6 +2093,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await File.WriteAllTextAsync(attachment, "attachment bytes");
 
             await BuildDatabaseAsync();
+
+            if (refusableSessionTrio)
+            {
+
+                await SeedRefusableSessionTrioAsync();
+
+            }
 
             BackupService = new BackupService(
                 paths,
@@ -2069,6 +2227,85 @@ public sealed class BackupRestoreServiceTests : IDisposable
             _ = await curation.ExecuteNonQueryAsync();
 
         }
+
+        /// <summary>
+        /// Three more Sessions, of which the last carries a Covenant sensitivity label.
+        /// </summary>
+        /// <remarks>
+        /// Seeded into the installation the archive is taken from, so all three travel inside a real
+        /// archive rather than being handed to the importer directly. The label is what the protected
+        /// transfer store's own taint scan reads, and it is the refusal a selective import cannot
+        /// preflight: it is discovered while reading that Session's graph, after the Sessions before it
+        /// have already committed under their own leases.
+        ///
+        /// <para>The identities are spelled the way the object-relational writer spells one — uppercase
+        /// dashed — because that is what an ordinary archive holds and what the schema's identity guards
+        /// admit.</para>
+        /// </remarks>
+        private async Task SeedRefusableSessionTrioAsync()
+        {
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+                DatabasePath,
+                GrimoireSecret,
+                readOnly: false,
+                CancellationToken.None);
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = $"""
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{Upper(CleanSessionA)}', NULL, 'Session A', 'active',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{Upper(CleanSessionB)}', NULL, 'Session B', 'active',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{Upper(TaintedSessionC)}', NULL, 'Session C', 'active',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Entries"
+                    ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                VALUES ('{Upper(EntryOfA)}', '{Upper(CleanSessionA)}', 0, 'ask A', 'test',
+                        '2026-01-01T00:00:00Z', 1);
+
+                INSERT INTO "Entries"
+                    ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                VALUES ('{Upper(EntryOfB)}', '{Upper(CleanSessionB)}', 0, 'ask B', 'test',
+                        '2026-01-01T00:00:00Z', 1);
+
+                INSERT INTO "Entries"
+                    ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                VALUES ('{Upper(EntryOfC)}', '{Upper(TaintedSessionC)}', 0, 'ask C', 'test',
+                        '2026-01-01T00:00:00Z', 1);
+
+                INSERT INTO artifact_sensitivity
+                    ("LabelId", "ArtifactKindCode", "ArtifactId", "SensitivityCode",
+                     "ProvenanceModeCode", "ExactGenerationIds", "GenerationBloom", "SessionId",
+                     "CampaignId", "TurnId", "ArtifactRevision", "ArtifactContentDigest",
+                     "SensitivityDigest", "ProducingPlanDigest", "ProducingAdmissionDigest",
+                     "ProducingMaintenanceReceiptDigest", "ArtifactLabelDigest", "CreatedAtUtc")
+                VALUES ('{Upper(Guid.Parse("4d4d4d4d-5e5e-4f6f-8070-81819292a3a3"))}', 1,
+                        '{Upper(EntryOfC)}', 1, 1,
+                        X'000102030405060708090A0B0C0D0E0F', NULL, '{Upper(TaintedSessionC)}',
+                        NULL, NULL, 0,
+                        X'{new string('1', 64)}', X'{new string('2', 64)}', NULL, NULL, NULL,
+                        X'{new string('3', 64)}', '2026-01-01T00:00:00Z');
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync();
+
+        }
+
+        public static readonly Guid EntryOfA = Guid.Parse("a1a1a1a1-b2b2-4c3c-8d4d-5e5e6f6f7071");
+
+        public static readonly Guid EntryOfB = Guid.Parse("b2b2b2b2-c3c3-4d4d-8e5e-6f6f70708182");
+
+        public static readonly Guid EntryOfC = Guid.Parse("c3c3c3c3-d4d4-4e5e-8f6f-707081819293");
+
+        private static string Upper(Guid value) => value.ToString("D").ToUpperInvariant();
 
         private sealed class FixtureSecretReader(string grimoireSecret) : IBackupSecretSnapshotReader
         {

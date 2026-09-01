@@ -2079,7 +2079,12 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         if (import.Issues.Length > 0)
         {
 
-            return Rejected(operationId, plan, phases, import.Issues);
+            // Rejected means the destination was never mutated, so it is only available while nothing
+            // committed. A protected import commits Session by Session, and once one has landed the
+            // truthful outcome is a committed installation that still needs an operator.
+            return import.Committed.Length == 0
+                ? Rejected(operationId, plan, phases, import.Issues)
+                : PartiallyImported(operationId, request, plan, phases, import);
 
         }
 
@@ -2117,6 +2122,79 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             reconciliation,
             [.. phases],
             []);
+
+    }
+
+    /// <summary>
+    /// The outcome when a selective import was refused after earlier Sessions had already committed.
+    /// </summary>
+    /// <remarks>
+    /// Everything here exists because the alternative was <see cref="BackupRestoreStatus.Rejected"/>,
+    /// whose whole meaning is that the destination was not mutated — reported over an installation
+    /// that had gained Sessions, with a null reconciliation that carried no count at all.
+    ///
+    /// <para>The committed Sessions are named by both identities. A protected import mints the
+    /// destination identity per run, so nothing the operator already has can be matched to the
+    /// selection they asked for without being told the pairing, and nothing about a re-run is safe:
+    /// the store's replay guard is keyed to an operation identity this restore will never present
+    /// again, so the same selection imports the same Sessions a second time under new identities. The
+    /// issue says so rather than leaving the operator to discover it.</para>
+    /// </remarks>
+    private static BackupRestoreResult PartiallyImported(
+        Guid operationId,
+        BackupRestoreRequest request,
+        BackupRestorePlan plan,
+        List<BackupRestorePhaseRecord> phases,
+        BackupSessionImportResult import)
+    {
+
+        string pairs = string.Join(
+            ", ",
+            import.Committed.Select(
+                static committed =>
+                    $"{committed.SourceSessionId:D} as {committed.DestinationSessionId:D}"));
+
+        Record(
+            phases,
+            BackupRestorePhase.Commit,
+            $"Imported {import.Sessions} Sessions, {import.Entries} entries, and "
+            + $"{import.Attachments} attachments before the import was refused; the destination holds "
+            + pairs + ".");
+
+        Record(
+            phases,
+            BackupRestorePhase.Reconcile,
+            "The import stopped partway, so this installation needs an operator: it holds the "
+            + "Sessions named above and none of the ones after them.");
+
+        return new BackupRestoreResult(
+            BackupRestoreStatus.ReconciliationRequired,
+            plan.ArchivePath,
+            operationId,
+            request.ConflictMode,
+            plan.DestinationRoot,
+            SafetyBackupPath: null,
+            plan,
+            Manifest: null,
+            new BackupRestoreReconciliation(
+                import.Attachments,
+                import.Attachments,
+                UploadedFiles: 0,
+                BatchFiles: 0,
+                EmbeddingsRebuilt: 0,
+                PendingOperationsCleared: 0,
+                Issues: []),
+            [.. phases],
+            [
+                .. import.Issues,
+                new BackupVerifyIssue(
+                    "backup.restore_import_partially_committed",
+                    $"{import.Sessions} Sessions were already imported into this installation before "
+                    + $"the refusal above: {pairs}. Do not re-run this import as it stands — every run "
+                    + "mints new identities, so the same selection would import them a second time. "
+                    + "Remove the imported Sessions, or re-run naming only the Sessions that did not "
+                    + "land."),
+            ]);
 
     }
 
