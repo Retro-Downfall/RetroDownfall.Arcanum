@@ -312,6 +312,7 @@ public static class ServiceCollectionExtensions
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
 
         // GrimoireRepository requires the attachment store (session fork/purge hooks). Register it
@@ -1122,6 +1123,7 @@ public static class ServiceCollectionExtensions
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()),
             poolSize: 32);
 
@@ -1650,6 +1652,13 @@ public static class ServiceCollectionExtensions
             new GrimoireOrdinaryConnectionLifecycle(
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>()));
+
+        services.AddSingleton<ISqliteNativeRuntime>(SqliteNativeRuntime.Instance);
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactoryTestSeam>(static _ =>
+            new NoOpGrimoireOrdinaryConnectionFactoryTestSeam());
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory, GrimoireOrdinaryConnectionFactory>();
 
         services.AddSingleton<ICovenantCampaignScopeProbe>(
             static sp => new CovenantCampaignScopeProbe(sp.GetRequiredService<IServiceScopeFactory>()));

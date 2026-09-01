@@ -1,3 +1,6 @@
+using System.Reflection;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
@@ -7,7 +10,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 331;
+    private const int ExpectedProductionAcquisitionCount = 336;
 
     [Fact]
     public void Injected_unlisted_acquisition_fails_independently()
@@ -263,6 +266,70 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ]));
 
         Assert.Equal("Local(0)", identity.EnclosingMember);
+
+    }
+
+    [Fact]
+    public void Ordinary_factory_marker_declaration_and_route_inventory_are_exact()
+    {
+
+        AttributeUsageAttribute usage = Assert.Single(
+            typeof(GrimoireConnectionAcquisitionRouteAttribute)
+                .GetCustomAttributes<AttributeUsageAttribute>());
+
+        Assert.Equal(AttributeTargets.Method, usage.ValidOn);
+
+        Assert.False(usage.AllowMultiple);
+
+        Assert.False(usage.Inherited);
+
+        IReadOnlyList<AcquisitionSource> sources = ProductionSources();
+
+        IReadOnlyList<AcquisitionIdentity> discoveries =
+            GrimoireConnectionAcquisitionScanner.Discover(sources);
+
+        IReadOnlyList<AcquisitionIdentity> ordinaryRoutes =
+        [
+            .. discoveries.Where(static identity =>
+                identity.RelativePath.EndsWith(
+                    "/GrimoireOrdinaryConnectionFactory.cs",
+                    StringComparison.Ordinal)
+                && identity.ConstructKind == AcquisitionConstructKind.MarkedRouteDeclaration),
+        ];
+
+        Assert.Equal(
+            ["AcquireScopedAsync", "OpenFreshAsync"],
+            ordinaryRoutes.Select(static identity => identity.CalleeOrConstructedType).Order());
+
+        IReadOnlyList<InventoryFailure> markerFailures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage(
+                sources.Where(static source => source.RelativePath.EndsWith(
+                    "/GrimoireOrdinaryConnectionFactory.cs",
+                    StringComparison.Ordinal)));
+
+        Assert.Empty(markerFailures);
+
+        HashSet<AcquisitionIdentity> catalog =
+        [
+            .. GrimoireConnectionAcquisitionScanner.Catalog()
+                .Select(static entry => entry.Identity),
+        ];
+
+        HashSet<(string Name, int Arity)> routes =
+        [
+            .. ordinaryRoutes.Select(static identity =>
+                (identity.CalleeOrConstructedType, identity.Arity)),
+        ];
+
+        AcquisitionIdentity[] routeSurface =
+        [
+            .. discoveries.Where(identity =>
+                ordinaryRoutes.Contains(identity)
+                || (identity.ConstructKind == AcquisitionConstructKind.MarkedRouteInvocation
+                    && routes.Contains((identity.CalleeOrConstructedType, identity.Arity)))),
+        ];
+
+        Assert.All(routeSurface, identity => Assert.Contains(identity, catalog));
 
     }
 

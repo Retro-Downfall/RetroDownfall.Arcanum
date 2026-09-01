@@ -183,6 +183,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                         .AddInterceptors(
                             new CovenantConnectionEnrolmentInterceptor(
                                 sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                                sp.GetRequiredService<ICovenantConnectionDrain>(),
                                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>())));
             }
             else

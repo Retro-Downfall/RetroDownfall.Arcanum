@@ -782,6 +782,7 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
             .AddInterceptors(
                 new CovenantConnectionEnrolmentInterceptor(
                     new GrimoireOrdinaryConnectionLifecycle(gate, drain),
+                    drain,
                     initializer ?? NoOpConnectionInitializer.Instance))
             .Options;
 

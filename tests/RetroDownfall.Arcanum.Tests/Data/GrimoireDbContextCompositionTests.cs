@@ -51,6 +51,11 @@ public sealed class GrimoireDbContextCompositionTests
         IGrimoireOrdinaryConnectionLifecycle lifecycle = provider
             .GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>();
 
+        ICovenantConnectionDrain drain = provider.GetRequiredService<ICovenantConnectionDrain>();
+
+        IGrimoireOrdinaryConnectionFactory ordinaryFactory = provider
+            .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
         await using AsyncServiceScope firstScope = provider.CreateAsyncScope();
 
         await using AsyncServiceScope secondScope = provider.CreateAsyncScope();
@@ -63,6 +68,14 @@ public sealed class GrimoireDbContextCompositionTests
             lifecycle,
             secondScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>());
 
+        Assert.Same(
+            ordinaryFactory,
+            firstScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>());
+
+        Assert.Same(
+            ordinaryFactory,
+            secondScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>());
+
         DbContextOptions<ArcanumDbContext> options = firstScope.ServiceProvider
             .GetRequiredService<DbContextOptions<ArcanumDbContext>>();
 
@@ -70,9 +83,15 @@ public sealed class GrimoireDbContextCompositionTests
 
         Assert.Same(lifecycle, GetLifecycle(interceptor));
 
-        Assert.Same(
-            provider.GetRequiredService<ICovenantConnectionDrain>(),
-            GetDrain(lifecycle));
+        Assert.Same(drain, GetDrain(interceptor));
+
+        Assert.Same(drain, GetDrain(lifecycle));
+
+        Assert.Same(lifecycle, GetLifecycle(ordinaryFactory));
+
+        Assert.Same(drain, GetDrain(ordinaryFactory));
+
+        Assert.Same(SqliteNativeRuntime.Instance, provider.GetRequiredService<ISqliteNativeRuntime>());
 
         AssertSingleServingConnectionInterceptor(options);
 
@@ -98,9 +117,22 @@ public sealed class GrimoireDbContextCompositionTests
         IGrimoireOrdinaryConnectionLifecycle lifecycle = provider
             .GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>();
 
+        ICovenantConnectionDrain drain = provider.GetRequiredService<ICovenantConnectionDrain>();
+
+        IGrimoireOrdinaryConnectionFactory ordinaryFactory = provider
+            .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
         Assert.Same(lifecycle, GetLifecycle(interceptor));
 
-        Assert.Same(provider.GetRequiredService<ICovenantConnectionDrain>(), GetDrain(lifecycle));
+        Assert.Same(drain, GetDrain(interceptor));
+
+        Assert.Same(drain, GetDrain(lifecycle));
+
+        Assert.Same(lifecycle, GetLifecycle(ordinaryFactory));
+
+        Assert.Same(drain, GetDrain(ordinaryFactory));
+
+        Assert.Same(SqliteNativeRuntime.Instance, provider.GetRequiredService<ISqliteNativeRuntime>());
 
         AssertSingleServingConnectionInterceptor(options);
 
@@ -181,6 +213,45 @@ public sealed class GrimoireDbContextCompositionTests
             ?? throw new InvalidOperationException("The interceptor lifecycle field is missing.");
 
         return Assert.IsAssignableFrom<IGrimoireOrdinaryConnectionLifecycle>(field.GetValue(interceptor));
+
+    }
+
+    private static ICovenantConnectionDrain GetDrain(
+        CovenantConnectionEnrolmentInterceptor interceptor)
+    {
+
+        FieldInfo field = typeof(CovenantConnectionEnrolmentInterceptor).GetField(
+            "_drain",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The interceptor drain field is missing.");
+
+        return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(interceptor));
+
+    }
+
+    private static IGrimoireOrdinaryConnectionLifecycle GetLifecycle(
+        IGrimoireOrdinaryConnectionFactory factory)
+    {
+
+        FieldInfo field = typeof(GrimoireOrdinaryConnectionFactory).GetField(
+            "_lifecycle",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The ordinary factory lifecycle field is missing.");
+
+        return Assert.IsAssignableFrom<IGrimoireOrdinaryConnectionLifecycle>(field.GetValue(factory));
+
+    }
+
+    private static ICovenantConnectionDrain GetDrain(
+        IGrimoireOrdinaryConnectionFactory factory)
+    {
+
+        FieldInfo field = typeof(GrimoireOrdinaryConnectionFactory).GetField(
+            "_drain",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The ordinary factory drain field is missing.");
+
+        return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(factory));
 
     }
 

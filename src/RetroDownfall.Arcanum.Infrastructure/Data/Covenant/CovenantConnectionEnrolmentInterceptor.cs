@@ -17,6 +17,8 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     private readonly IGrimoireOrdinaryConnectionLifecycle _lifecycle;
 
+    private readonly ICovenantConnectionDrain _drain;
+
     private readonly ICovenantSqliteConnectionInitializer _initializer;
 
     private readonly Lock _gate = new();
@@ -25,14 +27,19 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     internal CovenantConnectionEnrolmentInterceptor(
         IGrimoireOrdinaryConnectionLifecycle lifecycle,
+        ICovenantConnectionDrain drain,
         ICovenantSqliteConnectionInitializer initializer)
     {
 
         ArgumentNullException.ThrowIfNull(lifecycle);
 
+        ArgumentNullException.ThrowIfNull(drain);
+
         ArgumentNullException.ThrowIfNull(initializer);
 
         _lifecycle = lifecycle;
+
+        _drain = drain;
 
         _initializer = initializer;
 
@@ -352,6 +359,8 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             }
 
+            ClearExactPoolAfterClose(connection);
+
             registration.Registration.MarkRefusedAfterOpen();
 
             registration.Registration.Dispose();
@@ -391,6 +400,8 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
                 await connection.CloseAsync().ConfigureAwait(false);
 
             }
+
+            ClearExactPoolAfterClose(connection);
 
             registration.Registration.MarkRefusedAfterOpen();
 
@@ -434,6 +445,13 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             }
 
+            if (!registration.Opened && registration.NativeOpenRevalidated)
+            {
+
+                ClearExactPoolAfterClose(connection);
+
+            }
+
             CompleteRegistration(registration);
 
             CompleteRelease(connection, registration);
@@ -471,6 +489,13 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
             {
 
                 await connection.CloseAsync().ConfigureAwait(false);
+
+            }
+
+            if (!registration.Opened && registration.NativeOpenRevalidated)
+            {
+
+                ClearExactPoolAfterClose(connection);
 
             }
 
@@ -610,6 +635,35 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         {
 
             return true;
+
+        }
+
+    }
+
+    private void ClearExactPoolAfterClose(DbConnection connection)
+    {
+
+        if (connection is not SqliteConnection sqlite)
+        {
+
+            return;
+
+        }
+
+        Result cleared = _drain.ClearExactPoolAfterClose(sqlite);
+
+        if (cleared.IsFailure)
+        {
+
+            throw new InvalidOperationException(cleared.Error.Message);
+
+        }
+
+        if (!IsPhysicallyClosed(connection))
+        {
+
+            throw new InvalidOperationException(
+                "A refused ordinary Grimoire open remained physically open.");
 
         }
 

@@ -113,6 +113,7 @@ public sealed class CovenantConnectionDrainTests
                 .AddInterceptors(
                     new CovenantConnectionEnrolmentInterceptor(
                         new GrimoireOrdinaryConnectionLifecycle(admission, drain),
+                        drain,
                         CovenantSqliteConnectionInitializer.Instance))
                 .Options;
 

@@ -1,9 +1,55 @@
 using System.Data.Common;
 
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
+
+internal interface IGrimoireOrdinaryConnectionFactory
+{
+
+    Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
+        SqliteConnection connection,
+        CovenantSqliteConnectionMode mode,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+        GrimoireOrdinaryFreshConnectionKind kind,
+        CancellationToken cancellationToken);
+
+}
+
+internal interface IGrimoireOrdinaryConnectionLease : IDisposable, IAsyncDisposable
+{
+
+    SqliteConnection Connection { get; }
+
+}
+
+internal enum GrimoireOrdinaryFreshConnectionKind : byte
+{
+
+    ReadOnly = 1,
+
+    ReadWrite = 2,
+
+    IsolatedHeartbeat = 3,
+
+}
+
+internal interface IGrimoireOrdinaryConnectionFactoryTestSeam
+{
+
+    void BeforeProviderConstruction();
+
+    ValueTask BeforeNativeOpenAsync(CancellationToken cancellationToken);
+
+    void AfterExactPoolClear(SqliteConnection connection);
+
+}
 
 /// <summary>
 /// Process-local authority over ordinary physical Grimoire opens and exclusive maintenance closure.

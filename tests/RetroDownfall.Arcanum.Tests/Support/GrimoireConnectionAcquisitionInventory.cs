@@ -202,10 +202,9 @@ internal static class GrimoireConnectionAcquisitionScanner
 
                     markedRouteArities[method.Identifier.ValueText] = method.ParameterList.Parameters.Count;
 
-                    identities.Add(Identity(
+                    identities.Add(MarkedRouteIdentity(
                         source.RelativePath,
                         method,
-                        AcquisitionConstructKind.MarkedRouteDeclaration,
                         method.Identifier.ValueText,
                         method.ParameterList.Parameters.Count));
 
@@ -221,10 +220,9 @@ internal static class GrimoireConnectionAcquisitionScanner
 
                     markedRouteArities[localFunction.Identifier.ValueText] = localFunction.ParameterList.Parameters.Count;
 
-                    identities.Add(Identity(
+                    identities.Add(MarkedRouteIdentity(
                         source.RelativePath,
                         localFunction,
-                        AcquisitionConstructKind.MarkedRouteDeclaration,
                         localFunction.Identifier.ValueText,
                         localFunction.ParameterList.Parameters.Count));
 
@@ -2596,14 +2594,14 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
         
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs", "ServiceCollectionExtensions", "AddArcanumGrimoireForCli(1)", AcquisitionConstructKind.AddDbContext, "services.AddDbContext<ArcanumDbContext>", 1, "services.AddDbContext<ArcanumDbContext>((sp,options)=>ArcanumDbContextOptionsConfigurator.Configure(options,sp.GetRequiredService<IGrimoireDbPassphraseSource>(),sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),sp.GetRequiredService<ICovenantConnectionDrain>(),sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()))"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs", "ServiceCollectionExtensions", "AddArcanumGrimoireForCli(1)", AcquisitionConstructKind.AddDbContext, "services.AddDbContext<ArcanumDbContext>", 1, "services.AddDbContext<ArcanumDbContext>((sp,options)=>ArcanumDbContextOptionsConfigurator.Configure(options,sp.GetRequiredService<IGrimoireDbPassphraseSource>(),sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),sp.GetRequiredService<ICovenantConnectionDrain>(),sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()))"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingEfOrdinary,
             GrimoireRuntimeAdmissionRoute.SharedEfInterceptor,
             null),
         
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs", "ServiceCollectionExtensions", "AddArcanumInfrastructure(2)", AcquisitionConstructKind.AddDbContext, "services.AddDbContextPool<ArcanumDbContext>", 2, "services.AddDbContextPool<ArcanumDbContext>((sp,options)=>ArcanumDbContextOptionsConfigurator.Configure(options,sp.GetRequiredService<IGrimoireDbPassphraseSource>(),sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),sp.GetRequiredService<ICovenantConnectionDrain>(),sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()),poolSize:32)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs", "ServiceCollectionExtensions", "AddArcanumInfrastructure(2)", AcquisitionConstructKind.AddDbContext, "services.AddDbContextPool<ArcanumDbContext>", 2, "services.AddDbContextPool<ArcanumDbContext>((sp,options)=>ArcanumDbContextOptionsConfigurator.Configure(options,sp.GetRequiredService<IGrimoireDbPassphraseSource>(),sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),sp.GetRequiredService<ICovenantConnectionDrain>(),sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()),poolSize:32)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingEfOrdinary,
             GrimoireRuntimeAdmissionRoute.SharedEfInterceptor,
@@ -2748,6 +2746,41 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionFactory.cs", "GrimoireOrdinaryConnectionFactory", "AcquireScopedAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "AcquireScopedAsync", 3, "AcquireScopedAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionFactory.cs", "GrimoireOrdinaryConnectionFactory", "AcquireScopedAsync(3)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionFactory.cs", "GrimoireOrdinaryConnectionFactory", "OpenFreshAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenFreshAsync", 2, "OpenFreshAsync(2)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionFactory.cs", "GrimoireOrdinaryConnectionFactory", "OpenFreshAsync(2)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "newSqliteConnection(builder.ToString())"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionFactory.cs", "GrimoireOrdinaryConnectionFactory", "OpenFreshAsync(2)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
         
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(3)", AcquisitionConstructKind.ProviderOpen, "_connections.OpenAsync", 1, "_connections.OpenAsync(cancellationToken)"),
@@ -2798,10 +2831,9 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         }
 
-        AcquisitionIdentity identity = Identity(
+        AcquisitionIdentity identity = MarkedRouteIdentity(
             source.RelativePath,
             method,
-            AcquisitionConstructKind.MarkedRouteDeclaration,
             method.Identifier.ValueText,
             method.ParameterList.Parameters.Count);
 
@@ -2838,10 +2870,9 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         }
 
-        AcquisitionIdentity identity = Identity(
+        AcquisitionIdentity identity = MarkedRouteIdentity(
             source.RelativePath,
             localFunction,
-            AcquisitionConstructKind.MarkedRouteDeclaration,
             localFunction.Identifier.ValueText,
             localFunction.ParameterList.Parameters.Count);
 
@@ -3018,6 +3049,20 @@ internal static class GrimoireConnectionAcquisitionScanner
             calleeOrConstructedType,
             arity,
             Tokens(node));
+
+    private static AcquisitionIdentity MarkedRouteIdentity(
+        string relativePath,
+        SyntaxNode node,
+        string methodName,
+        int arity) =>
+        new(
+            relativePath.Replace('\\', '/'),
+            EnclosingType(node),
+            EnclosingMember(node),
+            AcquisitionConstructKind.MarkedRouteDeclaration,
+            methodName,
+            arity,
+            $"{methodName}({arity})");
 
     private static string EnclosingType(SyntaxNode node)
     {
