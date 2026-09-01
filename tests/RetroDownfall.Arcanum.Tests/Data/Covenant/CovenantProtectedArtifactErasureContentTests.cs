@@ -222,10 +222,12 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
             CovenantConnectionDrain drain = new();
 
-            Ledger = new ArtifactSensitivityLedger(new CovenantConnectionSource(db, drain));
+            RecordingScopedOrdinaryConnectionFactory connections = new();
+
+            Ledger = new ArtifactSensitivityLedger(new CovenantConnectionSource(db, connections));
 
             Kernel = new CovenantProtectedArtifactErasureKernel(
-                new CovenantConnectionSource(db, drain),
+                new CovenantConnectionSource(db, connections),
                 CovenantSqliteConnectionInitializer.Instance,
                 TimeProvider.System);
 
@@ -326,12 +328,16 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
             _ = services.AddSingleton(VectorAccelerator);
 
+            _ = services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+                new RecordingScopedOrdinaryConnectionFactory());
+
             _ = services.AddScoped<IGrimoireRepository>(
-                _ => new GrimoireRepository(
+                sp => new GrimoireRepository(
                     _db,
                     new NoOpSessionAttachmentStore(),
                     NullLogger<GrimoireRepository>.Instance,
-                    new TestOptionsSnapshot<ArcanumSettings>(settings)));
+                    new TestOptionsSnapshot<ArcanumSettings>(settings),
+                    serviceProvider: sp));
 
             await using ServiceProvider provider = services.BuildServiceProvider();
 

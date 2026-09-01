@@ -1,6 +1,8 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
@@ -36,50 +38,55 @@ internal interface ICovenantConnectionSource
 /// The ordinary source: the scoped Grimoire context's own connection.
 /// </summary>
 /// <remarks>
-/// This type opens the scope's connection and never closes it, so the handle it hands out is held for
-/// the life of the scope rather than the life of a statement. That is what makes enrolment its
-/// responsibility rather than somebody else's: an open handle nothing enrolled is invisible to the
-/// drain, survives the pool clear because it is in use rather than idle, and costs the exclusive
-/// maintenance connection that follows one busy timeout per wal-index lock — tens of seconds of
-/// waiting ending in <c>database is locked</c>, with no way for that caller to name the holder.
-///
-/// <para>It is not the only enrolment on that connection, and it is deliberately kept alongside
-/// <c>CovenantConnectionEnrolmentInterceptor</c> rather than deleted as redundant. The interceptor
-/// enrols on the opens Entity Framework performs; the open below is a raw one against the underlying
-/// handle, which reaches neither <c>RelationalConnection</c> nor any interceptor, so this scope's
-/// enrolment is the only one that covers it. <c>LongRunningOperationStore</c> enrols the same
-/// connection again in the scopes that resolve one. Enrolling several times over is what the drain
-/// counts registrations for: each holder releases its own, and the handle stays the drain's to close
-/// until the last of them has.</para>
+/// This type acquires the scope's connection once and retains that ordinary admission lease for the
+/// scope lifetime. Downstream Covenant components keep the existing bare-connection contract, while
+/// the source remains the one owner that cannot accidentally discard the admission or drain lifetime
+/// before the last scoped statement finishes.
 /// </remarks>
 internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDisposable
 {
 
     private readonly ArcanumDbContext _db;
 
-    private IDisposable? _enrolment;
+    private readonly IGrimoireOrdinaryConnectionFactory _connections;
 
-    internal CovenantConnectionSource(ArcanumDbContext db, ICovenantConnectionDrain drain)
+    private readonly SemaphoreSlim _leaseGate = new(1, 1);
+
+    private IGrimoireOrdinaryConnectionLease? _lease;
+
+    private int _disposed;
+
+    internal CovenantConnectionSource(
+        ArcanumDbContext db,
+        IGrimoireOrdinaryConnectionFactory connections)
     {
 
         ArgumentNullException.ThrowIfNull(db);
 
-        ArgumentNullException.ThrowIfNull(drain);
+        ArgumentNullException.ThrowIfNull(connections);
 
         _db = db;
 
-        // Enrolled before the first open, not on it. A handle enrolled only once somebody asked for it
-        // would leave the window between the context opening its own connection and the first Covenant
-        // read invisible to the drain, and that window is exactly where an erasure runs.
-        _enrolment = db.Database.GetDbConnection() is SqliteConnection sqlite
-            ? drain.Register(sqlite)
-            : null;
+        _connections = connections;
 
     }
 
     /// <summary>Releases this scope's handle from the process-wide Covenant drain.</summary>
-    public void Dispose() =>
-        Interlocked.Exchange(ref _enrolment, null)?.Dispose();
+    public void Dispose()
+    {
+
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+
+            return;
+
+        }
+
+        Interlocked.Exchange(ref _lease, null)?.Dispose();
+
+        _leaseGate.Dispose();
+
+    }
 
     public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
@@ -95,6 +102,15 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
     public async ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken)
     {
 
+        IGrimoireOrdinaryConnectionLease? retained = Volatile.Read(ref _lease);
+
+        if (retained is not null)
+        {
+
+            return retained.Connection;
+
+        }
+
         if (_db.Database.GetDbConnection() is not SqliteConnection connection)
         {
 
@@ -103,14 +119,45 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
 
         }
 
-        if (connection.State != System.Data.ConnectionState.Open)
+        await _leaseGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
         {
 
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            retained = _lease;
+
+            if (retained is not null)
+            {
+
+                return retained.Connection;
+
+            }
+
+            Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+                .AcquireScopedAsync(
+                    connection,
+                    CovenantSqliteConnectionMode.ReadWrite,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (acquired.IsFailure)
+            {
+
+                throw new GrimoireMaintenanceUnavailableException();
+
+            }
+
+            _lease = acquired.Value;
+
+            return acquired.Value.Connection;
 
         }
+        finally
+        {
 
-        return connection;
+            _leaseGate.Release();
+
+        }
 
     }
 

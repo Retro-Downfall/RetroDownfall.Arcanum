@@ -1,11 +1,13 @@
 using System.Data.Common;
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Weave;
@@ -59,7 +61,15 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
                     },
                 }));
 
-        _resetService = new EmbeddingsResetService(_db, availability);
+        ServiceCollection services = new();
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+            new RecordingScopedOrdinaryConnectionFactory());
+
+        _resetService = new EmbeddingsResetService(
+            _db,
+            availability,
+            services.BuildServiceProvider());
 
         return Task.CompletedTask;
 

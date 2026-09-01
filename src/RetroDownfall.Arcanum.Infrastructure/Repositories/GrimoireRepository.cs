@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -27,6 +28,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     private readonly ArcanumDbContext _db;
 
     private readonly SessionEntryPersistence _entryPersistence;
+
+    private readonly IGrimoireOrdinaryConnectionFactory _connections;
 
     private readonly ISessionAttachmentStore _attachments;
 
@@ -72,8 +75,18 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         ILogger<GrimoireRepository> logger,
         IOptionsSnapshot<ArcanumSettings> arcOptions,
         ISessionAttachmentIndexMaintenance? attachmentIndex = null,
-        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
-        : this(db, attachments, logger, arcOptions, attachmentIndex, covenantKernel: null, labeledArtifactGuard)
+        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null,
+        IServiceProvider? serviceProvider = null)
+        : this(
+            db,
+            attachments,
+            logger,
+            arcOptions,
+            attachmentIndex,
+            covenantKernel: null,
+            connections: serviceProvider?.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+                ?? UnavailableOrdinaryConnectionFactory.Instance,
+            labeledArtifactGuard: labeledArtifactGuard)
     {
     }
 
@@ -90,10 +103,36 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         ISessionAttachmentIndexMaintenance? attachmentIndex,
         CovenantMutationKernel? covenantKernel,
         ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
+        : this(
+            db,
+            attachments,
+            logger,
+            arcOptions,
+            attachmentIndex,
+            covenantKernel,
+            UnavailableOrdinaryConnectionFactory.Instance,
+            labeledArtifactGuard)
+    {
+    }
+
+    /// <summary>
+    /// The serving composition, including the exact singleton ordinary-connection factory.
+    /// </summary>
+    internal GrimoireRepository(
+        ArcanumDbContext db,
+        ISessionAttachmentStore attachments,
+        ILogger<GrimoireRepository> logger,
+        IOptionsSnapshot<ArcanumSettings> arcOptions,
+        ISessionAttachmentIndexMaintenance? attachmentIndex,
+        CovenantMutationKernel? covenantKernel,
+        IGrimoireOrdinaryConnectionFactory connections,
+        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
     {
         _db = db;
 
-        _entryPersistence = new SessionEntryPersistence(db);
+        _connections = connections;
+
+        _entryPersistence = new SessionEntryPersistence(db, connections);
 
         _attachments = attachments;
 
@@ -108,6 +147,30 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         _labeledArtifactGuard = labeledArtifactGuard;
 
         _finalizationCapacity = new CovenantQuotaGuard();
+    }
+
+    private sealed class UnavailableOrdinaryConnectionFactory : IGrimoireOrdinaryConnectionFactory
+    {
+
+        internal static readonly UnavailableOrdinaryConnectionFactory Instance = new();
+
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
+                new Error(
+                    ErrorCodes.Grimoire.WriteFailed,
+                    "Ordinary Grimoire connection admission is not configured.")));
+
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind kind,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
+                new Error(
+                    ErrorCodes.Grimoire.WriteFailed,
+                    "Ordinary Grimoire connection admission is not configured.")));
+
     }
 
     public async Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(

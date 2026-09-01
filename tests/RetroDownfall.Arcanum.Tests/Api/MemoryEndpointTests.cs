@@ -28,11 +28,15 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Data;
 
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -53,6 +57,41 @@ public sealed class MemoryEndpointTests
     {
 
         _factory = factory;
+
+    }
+
+    [SkippableFact]
+
+    public async Task Status_retains_read_only_admission_through_all_count_commands()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingScopedOrdinaryConnectionFactory connections = new();
+
+        await using ArcanumWebApplicationFactory admitted = new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                services.RemoveAll<IGrimoireOrdinaryConnectionFactory>();
+
+                services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
+
+            },
+        };
+
+        HttpClient client = admitted.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/memory/status");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
+
+        Assert.Equal(0, connections.LiveLeaseCount);
 
     }
 

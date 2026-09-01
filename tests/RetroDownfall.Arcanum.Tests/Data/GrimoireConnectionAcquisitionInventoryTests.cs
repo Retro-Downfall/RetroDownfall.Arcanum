@@ -12,6 +12,19 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
 
     private const int ExpectedProductionAcquisitionCount = 336;
 
+    private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
+    [
+        ("src/RetroDownfall.Arcanum.Api/Health/GrimoireLivenessProbe.cs", "ExecuteProbeAsync(1)"),
+        ("src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs", "JoinWorkspaceChunkMetadataAsync(5)"),
+        ("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "OpenConnectionAsync(3)"),
+        ("src/RetroDownfall.Arcanum.Api/Tower/SessionDivinationEndpoints.cs", "JoinSessionMetadataAsync(7)"),
+        ("src/RetroDownfall.Arcanum.Api/Workspaces/WorkspaceDivinationEndpoints.cs", "JoinWorkspaceChunksAsync(6)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantCampaignScopeProbe.cs", "HasDeletionEventAsync(4)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ICovenantConnectionSource.cs", "GetOpenCoreConnectionAsync(1)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.TurnCommit.cs", "CommitWithinImmediateTransactionAsync(2)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs", "PurgeLabeledKindAsync(2)"),
+    ];
+
     [Fact]
     public void Injected_unlisted_acquisition_fails_independently()
     {
@@ -334,6 +347,19 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
+    public void Scoped_serving_raw_members_have_no_direct_provider_open()
+    {
+
+        Assert.DoesNotContain(
+            ProductionServingRawDiscoveries(),
+            discovery => discovery.Identity.ConstructKind
+                is AcquisitionConstructKind.ProviderOpen
+                && ScopedMigrationMembers.Contains(
+                    (discovery.Identity.RelativePath, discovery.Identity.EnclosingMember)));
+
+    }
+
+    [Fact]
     public void Production_inventory_is_bijective()
     {
 
@@ -373,6 +399,24 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             proof);
 
     private static AcquisitionSource Source(string text) => new("Fixtures/Fixture.cs", text);
+
+    private static IReadOnlyList<GrimoireAcquisitionCatalogEntry> ProductionServingRawDiscoveries()
+    {
+
+        HashSet<AcquisitionIdentity> discoveries =
+        [
+            .. GrimoireConnectionAcquisitionScanner.Discover(ProductionSources()),
+        ];
+
+        return
+        [
+            .. GrimoireConnectionAcquisitionScanner.Catalog()
+                .Where(entry =>
+                    entry.AcquisitionKind == GrimoireAcquisitionKind.ServingRawOrdinary
+                    && discoveries.Contains(entry.Identity)),
+        ];
+
+    }
 
     private static IReadOnlyList<AcquisitionSource> ProductionSources()
     {

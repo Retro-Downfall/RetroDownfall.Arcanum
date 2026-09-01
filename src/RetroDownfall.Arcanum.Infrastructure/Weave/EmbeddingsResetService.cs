@@ -2,12 +2,14 @@ using System.Data;
 using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -21,8 +23,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 public sealed class EmbeddingsResetService(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
+    IServiceProvider serviceProvider,
     ICovenantSensitiveArtifactPurger? purger = null)
 {
+
+    private readonly IGrimoireOrdinaryConnectionFactory _connections =
+        serviceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
     private static readonly IReadOnlyList<string> EntryTables =
     [
@@ -172,14 +178,29 @@ public sealed class EmbeddingsResetService(
 
             List<(Guid ArtifactId, string LabelId)> page = [];
 
-            DbConnection connection = db.Database.GetDbConnection();
-
-            if (connection.State is not ConnectionState.Open)
+            if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
             {
-
-                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
 
             }
+
+            Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+                .AcquireScopedAsync(
+                    scopedConnection,
+                    CovenantSqliteConnectionMode.ReadOnly,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (acquired.IsFailure)
+            {
+
+                return acquired.Error;
+
+            }
+
+            await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+            DbConnection connection = lease.Connection;
 
             await using (DbCommand command = connection.CreateCommand())
             {

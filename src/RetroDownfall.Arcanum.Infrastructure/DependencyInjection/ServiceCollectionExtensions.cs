@@ -334,7 +334,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ILogger<GrimoireRepository>>(),
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
                 sp.GetService<ISessionAttachmentIndexMaintenance>(),
-                sp.GetService<CovenantMutationKernel>()));
+                sp.GetService<CovenantMutationKernel>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -993,6 +994,7 @@ public static class ServiceCollectionExtensions
             static sp => new EmbeddingsResetService(
                 sp.GetRequiredService<ArcanumDbContext>(),
                 sp.GetRequiredService<WeaveIndexAvailability>(),
+                sp,
                 sp.GetRequiredService<ICovenantSensitiveArtifactPurger>()));
         services.AddScoped<ITapestryStore, TapestryStore>();
         services.AddScoped<SessionAttachmentIndexRepository>();
@@ -1226,7 +1228,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ILogger<GrimoireRepository>>(),
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
                 sp.GetService<ISessionAttachmentIndexMaintenance>(),
-                sp.GetService<CovenantMutationKernel>()));
+                sp.GetService<CovenantMutationKernel>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -1681,7 +1684,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICovenantConnectionSource>(
             static sp => new CovenantConnectionSource(
                 sp.GetRequiredService<ArcanumDbContext>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()));
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
         services.AddScoped<ICovenantStore>(
             static sp => new CovenantStore(sp.GetRequiredService<ICovenantConnectionSource>()));

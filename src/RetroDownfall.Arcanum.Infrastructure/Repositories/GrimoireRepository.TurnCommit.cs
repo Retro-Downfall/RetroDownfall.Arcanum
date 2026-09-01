@@ -75,10 +75,21 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
         }
 
-        if (connection.State != System.Data.ConnectionState.Open)
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+            .AcquireScopedAsync(
+                connection,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            return Result<TurnCommitReceipt>.Failure(acquired.Error);
         }
+
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+        connection = lease.Connection;
 
         await using SqliteTransaction sqliteTransaction = connection.BeginTransaction(deferred: false);
 

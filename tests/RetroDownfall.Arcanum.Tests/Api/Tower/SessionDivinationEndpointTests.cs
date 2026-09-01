@@ -15,7 +15,9 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
@@ -118,7 +120,9 @@ public sealed class SessionDivinationEndpointTests
 
         FakeWeaveService weave = new();
 
-        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(weave);
+        RecordingScopedOrdinaryConnectionFactory connections = new();
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(weave, connections);
 
         HttpClient client = enabled.CreateAuthenticatedClient();
 
@@ -148,6 +152,10 @@ public sealed class SessionDivinationEndpointTests
         Assert.Contains("stale cache", hit.EntryContentPreview, StringComparison.Ordinal);
 
         Assert.True(hit.Similarity > 0.99f);
+
+        Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
+
+        Assert.Equal(0, connections.LiveLeaseCount);
 
     }
 
@@ -241,7 +249,9 @@ public sealed class SessionDivinationEndpointTests
 
     }
 
-    private static ArcanumWebApplicationFactory CreateEnabledFactory(IWeaveService weaveService) =>
+    private static ArcanumWebApplicationFactory CreateEnabledFactory(
+        IWeaveService weaveService,
+        RecordingScopedOrdinaryConnectionFactory? connections = null) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -265,6 +275,15 @@ public sealed class SessionDivinationEndpointTests
                 services.RemoveAll<IWeaveService>();
 
                 services.AddSingleton(weaveService);
+
+                if (connections is not null)
+                {
+
+                    services.RemoveAll<IGrimoireOrdinaryConnectionFactory>();
+
+                    services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
+
+                }
 
             },
         };

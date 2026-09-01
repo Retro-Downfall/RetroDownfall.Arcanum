@@ -10,10 +10,12 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
@@ -44,6 +46,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
@@ -95,7 +98,8 @@ public sealed partial class WizardIntelligenceProvider(
     IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null,
     ITapestryStore? tapestryStore = null,
     CovenantDispatchGate? covenantDispatch = null,
-    CovenantToolCapabilityRegistry? covenantToolCapabilities = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
+    CovenantToolCapabilityRegistry? covenantToolCapabilities = null,
+    IServiceProvider? serviceProvider = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
 {
     /// <summary>
     /// The token allowance charged for one emitted Covenant section's headings, notice, and fences.
@@ -119,6 +123,9 @@ public sealed partial class WizardIntelligenceProvider(
     private IModelCallExecutor ModelCallExecutor => _tokenAccounting.Executor;
 
     private readonly Lazy<ITurnExecutionFacade>? _turnCoordinator = turnCoordinator;
+
+    private readonly IGrimoireOrdinaryConnectionFactory? _ordinaryConnections =
+        serviceProvider?.GetService<IGrimoireOrdinaryConnectionFactory>();
 
     private const string PublicInferenceFailureMessage =
         PublicInferenceErrorMessages.NativeGenericFailure;
@@ -6093,7 +6100,7 @@ public sealed partial class WizardIntelligenceProvider(
     /// <paramref name="workspacePath"/>, to populate the retrieved chunk's file path/index/content, and
     /// computes <see cref="SemanticContextChunk.TotalChunks"/> per file.
     /// </summary>
-    private static async Task<SemanticContextChunk[]> JoinWorkspaceChunkMetadataAsync(
+    private async Task<SemanticContextChunk[]> JoinWorkspaceChunkMetadataAsync(
         ArcanumDbContext db,
         DivinationResult[] hits,
         string workspacePath,
@@ -6107,12 +6114,29 @@ public sealed partial class WizardIntelligenceProvider(
             similarityByChunkId[hit.Id] = hit.Similarity;
         }
 
-        DbConnection connection = db.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
+        if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
         }
+
+        IGrimoireOrdinaryConnectionFactory connections = _ordinaryConnections
+            ?? throw new InvalidOperationException("Ordinary Grimoire connection admission is not configured.");
+
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
+            .AcquireScopedAsync(
+                scopedConnection,
+                CovenantSqliteConnectionMode.ReadOnly,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
+        {
+            throw new GrimoireMaintenanceUnavailableException();
+        }
+
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+        DbConnection connection = lease.Connection;
 
         List<(string ChunkId, string RelativePath, int ChunkIndex, string Content)> rows = [];
 

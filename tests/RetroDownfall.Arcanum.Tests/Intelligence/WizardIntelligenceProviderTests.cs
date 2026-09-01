@@ -30,6 +30,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
@@ -39,6 +40,7 @@ using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -5186,13 +5188,16 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         chat.EnqueueText("buffered answer");
 
+        RecordingScopedOrdinaryConnectionFactory connections = new();
+
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
             weaveService: weave,
             divinationService: divination,
             workspaceIndexingService: indexing,
-            db: db);
+            db: db,
+            ordinaryConnections: connections);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "how does Foo work?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
@@ -5210,6 +5215,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Contains("public class Foo {}", systemPrompt, StringComparison.Ordinal);
 
         Assert.Contains(_workspace.Root, indexing.RegisteredPaths);
+
+        Assert.Equal([CovenantSqliteConnectionMode.ReadOnly], connections.Modes);
+
+        Assert.Equal(0, connections.LiveLeaseCount);
 
     }
 
@@ -8217,7 +8226,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ILogger<WizardIntelligenceProvider>? logger = null,
         ILogger<ToolExecutionPipeline>? toolLogger = null,
         ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
-        ISessionAttachmentStore? sessionAttachmentStore = null)
+        ISessionAttachmentStore? sessionAttachmentStore = null,
+        RecordingScopedOrdinaryConnectionFactory? ordinaryConnections = null)
     {
         settings ??= DefaultSettings();
 
@@ -8271,6 +8281,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         sessionAttachmentStore ??= new NoOpSessionAttachmentStore();
 
+        ServiceCollection ordinaryServices = new();
+
+        ordinaryServices.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+            ordinaryConnections ?? new RecordingScopedOrdinaryConnectionFactory());
+
+        ServiceProvider ordinaryProvider = ordinaryServices.BuildServiceProvider();
+
         GrimoireTurnWriter grimoireTurnWriter = new(
             grimoire,
             grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
@@ -8315,7 +8332,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             turnRunWriter: turnRunWriter,
             budgetReservationService: budgetReservationService,
             webResearchProviderCatalog: new WebResearchProviderCatalog([]),
-            sessionAttachmentRetrieval: sessionAttachmentRetrieval);
+            sessionAttachmentRetrieval: sessionAttachmentRetrieval,
+            serviceProvider: ordinaryProvider);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>

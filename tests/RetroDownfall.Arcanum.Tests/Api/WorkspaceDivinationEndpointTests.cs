@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -162,7 +164,9 @@ public sealed class WorkspaceDivinationEndpointTests
 
         FakeWeaveService weave = new();
 
-        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(weave);
+        RecordingScopedOrdinaryConnectionFactory connections = new();
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(weave, connections);
 
         HttpClient client = enabled.CreateAuthenticatedClient();
 
@@ -197,6 +201,10 @@ public sealed class WorkspaceDivinationEndpointTests
         Assert.Equal("src/Foo.cs", hit.RelativePath);
 
         Assert.Contains("public class Foo", hit.ContentPreview, StringComparison.Ordinal);
+
+        Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
+
+        Assert.Equal(0, connections.LiveLeaseCount);
 
     }
 
@@ -257,7 +265,9 @@ public sealed class WorkspaceDivinationEndpointTests
 
     }
 
-    private static ArcanumWebApplicationFactory CreateEnabledFactory(IWeaveService weaveService) =>
+    private static ArcanumWebApplicationFactory CreateEnabledFactory(
+        IWeaveService weaveService,
+        RecordingScopedOrdinaryConnectionFactory? connections = null) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -281,6 +291,15 @@ public sealed class WorkspaceDivinationEndpointTests
                 services.RemoveAll<IWeaveService>();
 
                 services.AddSingleton(weaveService);
+
+                if (connections is not null)
+                {
+
+                    services.RemoveAll<IGrimoireOrdinaryConnectionFactory>();
+
+                    services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
+
+                }
 
             },
         };

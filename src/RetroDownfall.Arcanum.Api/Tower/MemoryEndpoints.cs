@@ -12,6 +12,8 @@ using Microsoft.AspNetCore.Routing;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Data.Sqlite;
+
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Primitives;
@@ -37,6 +39,8 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
@@ -176,6 +180,7 @@ internal static class MemoryEndpoints
             options.CurrentValue,
             context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestServices.GetService<ICovenantManagementService>(),
+            context.RequestServices.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
             context.RequestAborted).ConfigureAwait(false);
 
         if (result.IsSuccess)
@@ -210,6 +215,7 @@ internal static class MemoryEndpoints
             options.CurrentValue,
             context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestServices.GetService<ICovenantManagementService>(),
+            context.RequestServices.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
             context.RequestAborted).ConfigureAwait(false);
 
         Result<MemorySourcesDto> result;
@@ -262,6 +268,7 @@ internal static class MemoryEndpoints
             options.CurrentValue,
             context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestServices.GetService<ICovenantManagementService>(),
+            context.RequestServices.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
             context.RequestAborted).ConfigureAwait(false);
 
         Result<MemoryExplainDto> result;
@@ -350,6 +357,7 @@ internal static class MemoryEndpoints
         ArcanumDbContext db,
         ILexiconService lexicon,
         ISagaMemoryStore sagaStore,
+        IGrimoireOrdinaryConnectionFactory connections,
         HttpContext context)
     {
 
@@ -417,9 +425,12 @@ internal static class MemoryEndpoints
 
         }
 
-        DbConnection connection = await OpenConnectionAsync(
+        await using IGrimoireOrdinaryConnectionLease lease = await OpenConnectionAsync(
             db,
+            connections,
             context.RequestAborted).ConfigureAwait(false);
+
+        DbConnection connection = lease.Connection;
 
         string query = request.Query.Trim();
 
@@ -850,6 +861,7 @@ internal static class MemoryEndpoints
         ArcanumSettings settings,
         ICovenantAvailability? availability,
         ICovenantManagementService? management,
+        IGrimoireOrdinaryConnectionFactory connections,
         CancellationToken cancellationToken)
     {
 
@@ -874,9 +886,12 @@ internal static class MemoryEndpoints
 
         }
 
-        DbConnection connection = await OpenConnectionAsync(
+        await using IGrimoireOrdinaryConnectionLease lease = await OpenConnectionAsync(
             db,
+            connections,
             cancellationToken).ConfigureAwait(false);
+
+        DbConnection connection = lease.Connection;
 
         int entries = await CountAsync(
             connection,
@@ -1460,21 +1475,33 @@ internal static class MemoryEndpoints
 
     }
 
-    private static async Task<DbConnection> OpenConnectionAsync(
+    private static async Task<IGrimoireOrdinaryConnectionLease> OpenConnectionAsync(
         ArcanumDbContext db,
+        IGrimoireOrdinaryConnectionFactory connections,
         CancellationToken cancellationToken)
     {
 
-        DbConnection connection = db.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
+        if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
         {
-
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
 
         }
 
-        return connection;
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
+            .AcquireScopedAsync(
+                scopedConnection,
+                CovenantSqliteConnectionMode.ReadOnly,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
+        {
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
+
+        return acquired.Value;
 
     }
 

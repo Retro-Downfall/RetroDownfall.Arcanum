@@ -1,8 +1,10 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -54,7 +56,14 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
 
         }
 
-        bool deleted = await HasDeletionEventAsync(db, campaignId, cancellationToken).ConfigureAwait(false);
+        IGrimoireOrdinaryConnectionFactory connections =
+            scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+        bool deleted = await HasDeletionEventAsync(
+            db,
+            connections,
+            campaignId,
+            cancellationToken).ConfigureAwait(false);
 
         return deleted
             ? CovenantCampaignScopeState.Deleted
@@ -64,11 +73,35 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
 
     private static async Task<bool> HasDeletionEventAsync(
         ArcanumDbContext db,
+        IGrimoireOrdinaryConnectionFactory connections,
         Guid campaignId,
         CancellationToken cancellationToken)
     {
 
-        await using System.Data.Common.DbCommand command = db.Database.GetDbConnection().CreateCommand();
+        if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
+        {
+
+            throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
+
+        }
+
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
+            .AcquireScopedAsync(
+                scopedConnection,
+                CovenantSqliteConnectionMode.ReadOnly,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
+        {
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
+
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+        await using System.Data.Common.DbCommand command = lease.Connection.CreateCommand();
 
         command.CommandText = """
             SELECT 1
@@ -80,13 +113,6 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
         AddParameter(command, "$kind", CampaignOwnerKindCode);
 
         AddParameter(command, "$owner", campaignId.ToString("D"));
-
-        if (command.Connection!.State != System.Data.ConnectionState.Open)
-        {
-
-            await command.Connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        }
 
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 

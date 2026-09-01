@@ -25,10 +25,16 @@ internal sealed class SessionEntryPersistence
 
     private readonly ArcanumDbContext _db;
 
-    public SessionEntryPersistence(ArcanumDbContext db)
+    private readonly IGrimoireOrdinaryConnectionFactory? _connections;
+
+    public SessionEntryPersistence(
+        ArcanumDbContext db,
+        IGrimoireOrdinaryConnectionFactory? connections = null)
     {
 
         _db = db;
+
+        _connections = connections;
 
     }
 

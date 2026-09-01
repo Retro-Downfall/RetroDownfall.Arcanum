@@ -176,7 +176,9 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
     private ICovenantLabeledArtifactGuard CreateGuard()
     {
 
-        ICovenantConnectionSource connections = new CovenantConnectionSource(_db!, new CovenantConnectionDrain());
+        ICovenantConnectionSource connections = new CovenantConnectionSource(
+            _db!,
+            new RecordingScopedOrdinaryConnectionFactory());
 
         return new CovenantLabeledArtifactGuard(
             new ArtifactSensitivityLedger(connections),

@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
@@ -186,7 +187,8 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         SagaMemoryCurationRow row = (await Store.ReadCurationRowAsync(id.ToString(), CancellationToken.None)
             .ConfigureAwait(false))!;
 
-        ArtifactSensitivityLedger ledger = new(new CovenantConnectionSource(_db, new CovenantConnectionDrain()));
+        ArtifactSensitivityLedger ledger = new(
+            new CovenantConnectionSource(_db, new RecordingScopedOrdinaryConnectionFactory()));
 
         DerivedArtifactWrite write = new(
             SensitiveArtifactKind.Saga,
