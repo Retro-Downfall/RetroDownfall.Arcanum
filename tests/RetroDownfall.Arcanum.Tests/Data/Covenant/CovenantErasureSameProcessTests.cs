@@ -1779,7 +1779,9 @@ public sealed class CovenantErasureSameProcessTests
                 IServiceProvider services = operationScope.ServiceProvider;
 
                 CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.AttachAsync(
-                    factory.Services.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                    new DesignTimeGrimoireConnectionFactory(
+                        factory.Services.GetRequiredService<
+                            IGrimoireDbPassphraseSource>()),
                     factory.Services.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                     factory.Services.GetRequiredService<ICovenantConnectionDrain>(),
                     CancellationToken.None);

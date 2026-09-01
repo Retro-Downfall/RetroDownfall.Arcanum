@@ -38,7 +38,7 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
     private readonly SqliteConnection? _attachedConnection;
 
-    private readonly ICovenantMaintenanceConnectionFactory? _attachedConnections;
+    private readonly IDesignTimeGrimoireConnectionFactory? _attachedConnections;
 
     private readonly ICovenantSqliteConnectionInitializer? _attachedInitializer;
 
@@ -62,7 +62,7 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
     private CovenantCanonicalErasureFixture(
         SqliteConnection connection,
-        ICovenantMaintenanceConnectionFactory connections,
+        IDesignTimeGrimoireConnectionFactory connections,
         ICovenantSqliteConnectionInitializer initializer,
         IDisposable enrolment)
     {
@@ -152,7 +152,7 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
     /// the database, runtime generation, gate, writer, and every erasure component.
     /// </summary>
     internal static async Task<CovenantCanonicalErasureFixture> AttachAsync(
-        ICovenantMaintenanceConnectionFactory connections,
+        IDesignTimeGrimoireConnectionFactory connections,
         ICovenantSqliteConnectionInitializer initializer,
         ICovenantConnectionDrain drain,
         CancellationToken cancellationToken)
@@ -198,7 +198,7 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
     /// <summary>
     /// Hands the erasure its own unpooled handle to this same file.
     /// </summary>
-    internal ICovenantMaintenanceConnectionFactory Connections() =>
+    internal IDesignTimeGrimoireConnectionFactory Connections() =>
         _database?.MaintenanceConnections()
         ?? _attachedConnections
         ?? throw new ObjectDisposedException(nameof(CovenantCanonicalErasureFixture));

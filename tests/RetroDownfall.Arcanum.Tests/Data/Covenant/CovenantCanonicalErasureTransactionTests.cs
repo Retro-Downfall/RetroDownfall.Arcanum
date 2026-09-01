@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -614,8 +615,8 @@ public sealed class CovenantCanonicalErasureTransactionTests
     }
 
     private sealed class RecordingConnectionFactory(
-        ICovenantMaintenanceConnectionFactory inner,
-        List<string> steps) : ICovenantMaintenanceConnectionFactory
+        IDesignTimeGrimoireConnectionFactory inner,
+        List<string> steps) : IDesignTimeGrimoireConnectionFactory
     {
 
         public string DatabasePath => inner.DatabasePath;

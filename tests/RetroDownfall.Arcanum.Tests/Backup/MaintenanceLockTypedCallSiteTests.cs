@@ -28,4 +28,30 @@ public sealed class MaintenanceLockTypedCallSiteTests
 
     }
 
+    [Theory]
+    [InlineData(
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs",
+        2)]
+    [InlineData(
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs",
+        1)]
+    public void Stopped_host_authority_issuers_are_derived_only_from_explicit_typed_locks(
+        string repositoryRelativePath,
+        int expectedIssuerConstructions)
+    {
+
+        ProductionSource source = Assert.Single(
+            ProductionSourceInventory.Sources(),
+            candidate => candidate.IsExactOwner(repositoryRelativePath));
+
+        Assert.Equal(
+            expectedIssuerConstructions,
+            source.Occurrences("StoppedHostGrimoireAuthorityIssuer issuer = new("));
+
+        Assert.False(
+            source.Names("InstallationResetMaintenanceLockAccessor"),
+            $"{repositoryRelativePath} must receive the exact held lock explicitly.");
+
+    }
+
 }

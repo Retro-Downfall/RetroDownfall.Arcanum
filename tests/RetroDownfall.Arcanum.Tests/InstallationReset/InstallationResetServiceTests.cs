@@ -2573,7 +2573,7 @@ public sealed partial class InstallationResetServiceTests
 
         };
 
-        InstallationResetService restarted = new(
+        InstallationResetService restarted = CreateService(
             retryData,
             new FakeCredentialInventory([]),
             active,
@@ -2788,8 +2788,17 @@ public sealed partial class InstallationResetServiceTests
         IInstallationResetHostProcessToolsPairReader? pairReader = null,
         IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null,
         Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null,
-        Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null) =>
-        new(
+        Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null)
+    {
+
+        IInstallationResetHostProcessToolsPairReader effectivePairReader =
+            pairReader ?? CleanPairReader();
+
+        IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
+            identityReader
+            ?? activeStore as IInstallationResetDatabaseIdentityReader;
+
+        return new InstallationResetService(
             dataService,
             credentialService,
             activeStore,
@@ -2800,10 +2809,17 @@ public sealed partial class InstallationResetServiceTests
             preDataMutation,
             controlPaths,
             identityReader,
-            pairReader ?? CleanPairReader(),
+            effectivePairReader,
             remediationVerifier,
             markerPairReset,
-            terminalContinuation);
+            terminalContinuation,
+            new TestStoppedHostDataService(
+                dataService,
+                workspaceResolver,
+                effectiveIdentityReader),
+            new TestStoppedHostPairReader(effectivePairReader));
+
+    }
 
     private static async Task<Result<InstallationResetResult>>
         ApplyUnderTestLockAsync(
@@ -3020,6 +3036,67 @@ public sealed partial class InstallationResetServiceTests
                 Result<HostProcessToolsMarkerPairJoinResult>.Success(result));
 
         }
+
+    }
+
+    private sealed class TestStoppedHostPairReader(
+        IInstallationResetHostProcessToolsPairReader inner)
+        : IInstallationResetStoppedHostProcessToolsPairReader
+    {
+
+        public Task<Result<HostProcessToolsMarkerPairJoinResult>>
+            ReadUnderStoppedHostAuthorityAsync(
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken = default) =>
+            inner.ReadAsync(cancellationToken);
+
+    }
+
+    private sealed class TestStoppedHostDataService(
+        IInstallationResetDataService data,
+        IInstallationResetWorkspaceResolver? workspace,
+        IInstallationResetDatabaseIdentityReader? identity)
+        : IInstallationResetStoppedHostDataService
+    {
+
+        public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
+            InstallationResetDataPlanRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            data.PlanAsync(request, cancellationToken);
+
+        public Task<Result<InstallationResetWorkspaceResolution>>
+            ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+                string invocationDirectory,
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken) =>
+            workspace is null
+                ? Task.FromResult(
+                    Result<InstallationResetWorkspaceResolution>.Failure(new Error(
+                        ErrorCodes.Data.InventoryUnavailable,
+                        "The test workspace inventory is unavailable.")))
+                : workspace.ResolveAsync(invocationDirectory, cancellationToken);
+
+        public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            identity is null
+                ? Task.FromResult(Result<Guid>.Failure(new Error(
+                    ErrorCodes.Data.ControlPathUnavailable,
+                    "The test installation identity is unavailable.")))
+                : identity.ReadAsync(cancellationToken);
+
+        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
+            ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<Result<DataRetentionApplyResult>> ApplyUnderStoppedHostAuthorityAsync(
+            DataRetentionApplyRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            data.ApplyAsync(request, cancellationToken);
 
     }
 

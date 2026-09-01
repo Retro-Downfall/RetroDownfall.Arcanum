@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data;
 
@@ -356,7 +357,7 @@ public sealed class CovenantDisclosureWriterTests
                     | System.Reflection.BindingFlags.NonPublic)
                 .SelectMany(static constructor => constructor.GetParameters()),
             static parameter =>
-                parameter.ParameterType == typeof(ICovenantMaintenanceConnectionFactory)
+                parameter.ParameterType == typeof(IStoppedHostGrimoireConnectionFactory)
                 || parameter.ParameterType == typeof(ICovenantConnectionDrain));
 
         Result<CovenantDisclosureReceipt> acknowledged = await harness.AcknowledgeAsync(1);

@@ -966,8 +966,8 @@ public sealed class CovenantErasureInventorySourceTests
 
     }
 
-    internal sealed class CountingConnectionFactory(ICovenantMaintenanceConnectionFactory inner)
-        : ICovenantMaintenanceConnectionFactory
+    internal sealed class CountingConnectionFactory(IDesignTimeGrimoireConnectionFactory inner)
+        : IDesignTimeGrimoireConnectionFactory
     {
 
         private int _readOnlyOpenCount;

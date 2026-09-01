@@ -1809,7 +1809,9 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     private sealed class InertDatabase : IHostToolsMarkerPairResetDatabase
     {
 
-        public Task<Result<HostToolsMarkerPairResetDatabaseSession>> OpenAsync(
+        public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
+            OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+            IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 

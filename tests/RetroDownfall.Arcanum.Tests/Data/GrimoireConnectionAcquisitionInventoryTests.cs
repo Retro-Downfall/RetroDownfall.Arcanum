@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 365;
+    private const int ExpectedProductionAcquisitionCount = 378;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -48,7 +48,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureFreshProcessRecoveryTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureInventorySourceTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureSameProcessTests.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantMaintenanceConnectionFactoryTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantV3MaintenanceTestAuthority.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/GrimoireConnectionAcquisitionInventoryTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Fixtures/CovenantSchemaScratchDatabase.cs",
@@ -552,7 +551,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 candidate => candidate.RelativePath == relativePath);
 
             Assert.DoesNotContain(
-                "ICovenantMaintenanceConnectionFactory",
+                "IDesignTimeGrimoireConnectionFactory",
                 source.Text,
                 StringComparison.Ordinal);
 
@@ -561,20 +560,12 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
-    public void Ambient_maintenance_factory_is_confined_to_the_task9_bridge()
+    public void Ambient_maintenance_factory_has_no_production_or_test_reference()
     {
 
-        Assert.Equal(
-            [
-                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantMaintenanceConnectionFactory.cs",
-                "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs",
-                "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetDatabase.cs",
-            ],
-            SourcesReferencingAmbientMaintenanceFactory(ProductionSources()));
+        Assert.Empty(SourcesReferencingAmbientMaintenanceFactory(ProductionSources()));
 
-        Assert.Equal(
-            Task9AmbientMaintenanceTestBridge,
-            SourcesReferencingAmbientMaintenanceFactory(TestSources()));
+        Assert.Empty(SourcesReferencingAmbientMaintenanceFactory(TestSources()));
 
     }
 
@@ -684,7 +675,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         [
             .. sources
                 .Where(static source => source.Text.Contains(
-                    "ICovenantMaintenanceConnectionFactory",
+                    "ICovenant" + "MaintenanceConnectionFactory",
                     StringComparison.Ordinal))
                 .Select(static source => source.RelativePath)
                 .Order(StringComparer.Ordinal),

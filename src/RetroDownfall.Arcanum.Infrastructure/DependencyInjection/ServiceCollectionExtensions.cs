@@ -437,9 +437,14 @@ public static class ServiceCollectionExtensions
                 provider.GetService<TimeProvider>() ?? TimeProvider.System,
                 provider.GetService<ILoggerFactory>()
                     ?? LoggerFactory.Create(static _ => { }),
-                provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
+                provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                provider.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>()));
 
         services.TryAddScoped<IInstallationResetDataService>(provider =>
+            provider.GetRequiredService<InstallationResetExistingGrimoire>());
+
+        services.TryAddScoped<IInstallationResetStoppedHostDataService>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
         services.TryAddScoped<IInstallationResetWorkspaceResolver>(provider =>
@@ -460,9 +465,16 @@ public static class ServiceCollectionExtensions
             IInstallationResetHostProcessToolsDatabaseEvidenceReader>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
+        services.TryAddScoped<InstallationResetHostProcessToolsPairReader>();
+
+        services.TryAddScoped<IInstallationResetHostProcessToolsPairReader>(provider =>
+            provider.GetRequiredService<
+                InstallationResetHostProcessToolsPairReader>());
+
         services.TryAddScoped<
-            IInstallationResetHostProcessToolsPairReader,
-            InstallationResetHostProcessToolsPairReader>();
+            IInstallationResetStoppedHostProcessToolsPairReader>(provider =>
+            provider.GetRequiredService<
+                InstallationResetHostProcessToolsPairReader>());
 
         services.TryAddScoped<IInstallationResetCredentialService>(provider =>
             new InstallationResetCredentialCatalog(
@@ -505,8 +517,7 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton<IHostToolsMarkerPairResetDatabase>(provider =>
             new HostToolsMarkerPairResetDatabase(
-                provider.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-                provider.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>()));
 
         services.TryAddSingleton<IFullInstallationResetCampaignSchemaReadiness>(provider =>
             new FullInstallationResetCampaignSchemaReadiness(
@@ -1773,7 +1784,14 @@ public static class ServiceCollectionExtensions
         // identity would make every subject look like it belonged to a boot that had already ended.
         services.AddSingleton<CovenantProcessBootIdentity>();
 
-        services.AddSingleton<ICovenantMaintenanceConnectionFactory, CovenantMaintenanceConnectionFactory>();
+        services.AddSingleton<StoppedHostGrimoireConnectionFactory>(static sp =>
+            new StoppedHostGrimoireConnectionFactory(
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ISqliteNativeRuntime>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddSingleton<IStoppedHostGrimoireConnectionFactory>(static sp =>
+            sp.GetRequiredService<StoppedHostGrimoireConnectionFactory>());
 
         services.AddSingleton<CovenantV3MaintenanceConnectionFactory>(
             static sp => new CovenantV3MaintenanceConnectionFactory(

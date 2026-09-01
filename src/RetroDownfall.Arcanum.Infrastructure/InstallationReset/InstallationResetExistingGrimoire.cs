@@ -35,8 +35,11 @@ internal sealed class InstallationResetExistingGrimoire(
     ArcanumSettings settings,
     TimeProvider timeProvider,
     ILoggerFactory loggerFactory,
-    IGrimoireOrdinaryConnectionFactory ordinaryConnections)
+    IGrimoireOrdinaryConnectionFactory ordinaryConnections,
+    IGrimoireDbPassphraseSource passphraseSource,
+    IStoppedHostGrimoireConnectionFactory stoppedHostConnections)
     : IInstallationResetDataService,
+      IInstallationResetStoppedHostDataService,
       IInstallationResetWorkspaceResolver,
       IInstallationResetDatabaseIdentityReader,
       IInstallationResetHostProcessToolsDatabaseEvidenceReader
@@ -71,8 +74,33 @@ internal sealed class InstallationResetExistingGrimoire(
 
         }
 
-        return ExecuteAsync(
-            writable: false,
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Unavailable<DataRetentionPlan>());
+
+    }
+
+    public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
+        InstallationResetDataPlanRequest request,
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+
+        DataRetentionRequest? dataRequest = ToDataRequest(request);
+
+        if (dataRequest is null)
+        {
+
+            return Task.FromResult(InvalidDataPlan());
+
+        }
+
+        return ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetPlanReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetPlanReadAsync(authority, token),
             async (retention, _, _, token) =>
             {
 
@@ -94,8 +122,26 @@ internal sealed class InstallationResetExistingGrimoire(
 
         ArgumentNullException.ThrowIfNull(request);
 
-        return ExecuteAsync(
-            writable: true,
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Unavailable<DataRetentionApplyResult>());
+
+    }
+
+    public Task<Result<DataRetentionApplyResult>> ApplyUnderStoppedHostAuthorityAsync(
+        DataRetentionApplyRequest request,
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        return ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetApplyAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetApplyAsync(authority, token),
             async (retention, operations, _, token) =>
             {
 
@@ -163,9 +209,28 @@ internal sealed class InstallationResetExistingGrimoire(
 
     public Task<Result<InstallationResetWorkspaceResolution>> ResolveAsync(
         string invocationDirectory,
-        CancellationToken cancellationToken) =>
-        ExecuteAsync(
-            writable: false,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Unavailable<InstallationResetWorkspaceResolution>());
+
+    }
+
+    public Task<Result<InstallationResetWorkspaceResolution>>
+        ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+            string invocationDirectory,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+        ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetWorkspaceResolutionAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetWorkspaceResolutionAsync(
+                    authority,
+                    token),
             async (_, _, context, token) =>
             {
 
@@ -183,9 +248,24 @@ internal sealed class InstallationResetExistingGrimoire(
             cancellationToken);
 
     public Task<Result<Guid>> ReadAsync(
-        CancellationToken cancellationToken = default) =>
-        ExecuteAsync(
-            writable: false,
+        CancellationToken cancellationToken = default)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Unavailable<Guid>());
+
+    }
+
+    public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken) =>
+        ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetIdentityReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetIdentityReadAsync(authority, token),
             static async (_, _, context, token) =>
                 await InstallationResetDatabaseIdentityReader
                     .ReadOpenConnectionAsync(
@@ -196,9 +276,27 @@ internal sealed class InstallationResetExistingGrimoire(
 
     Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
         IInstallationResetHostProcessToolsDatabaseEvidenceReader.ReadMarkerEvidenceAsync(
+            CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(HostProcessToolsEvidenceUnavailable());
+
+    }
+
+    public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
+        ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken) =>
-        ExecuteAsync(
-            writable: false,
+        ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetHostToolsEvidenceReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(
+                    authority,
+                    token),
             static async (_, _, context, token) =>
             {
 
@@ -216,8 +314,16 @@ internal sealed class InstallationResetExistingGrimoire(
             },
             cancellationToken);
 
-    private async Task<Result<T>> ExecuteAsync<T>(
-        bool writable,
+    private async Task<Result<T>> ExecuteUnderStoppedHostAuthorityAsync<T>(
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        Func<
+            IStoppedHostGrimoireAuthorityIssuer,
+            Result<IStoppedHostGrimoireConnectionAuthority>> issue,
+        Func<
+            IStoppedHostGrimoireConnectionFactory,
+            IStoppedHostGrimoireConnectionAuthority,
+            CancellationToken,
+            Task<Result<IStoppedHostGrimoireConnectionLease>>> open,
         Func<
             DataRetentionService,
             LongRunningOperationStore,
@@ -226,6 +332,8 @@ internal sealed class InstallationResetExistingGrimoire(
             Task<Result<T>>> action,
         CancellationToken cancellationToken)
     {
+
+        ArgumentNullException.ThrowIfNull(issuer);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -261,23 +369,39 @@ internal sealed class InstallationResetExistingGrimoire(
                     secret.Value,
                     sidecar.GetSaltBytes());
 
-            SqliteNativeRuntime.Instance.Initialize();
-
-            GrimoireDbPassphraseSource passphraseSource = new();
-
             passphraseSource.SetPassphrase(passphrase);
+
+            Result<IStoppedHostGrimoireConnectionAuthority> issued = issue(issuer);
+
+            if (issued.IsFailure)
+            {
+
+                return Result<T>.Failure(issued.Error);
+
+            }
+
+            await using IStoppedHostGrimoireConnectionAuthority authority =
+                issued.Value;
+
+            Result<IStoppedHostGrimoireConnectionLease> opened = await open(
+                stoppedHostConnections,
+                authority,
+                cancellationToken).ConfigureAwait(false);
+
+            if (opened.IsFailure)
+            {
+
+                return Result<T>.Failure(opened.Error);
+
+            }
+
+            await using IStoppedHostGrimoireConnectionLease lease = opened.Value;
 
             DbContextOptions<ArcanumDbContext> options =
                 new DbContextOptionsBuilder<ArcanumDbContext>()
-                    .UseSqlite(new SqliteConnectionStringBuilder
-                    {
-                        DataSource = databasePath,
-                        Password = passphrase,
-                        Pooling = false,
-                        Mode = writable
-                            ? SqliteOpenMode.ReadWrite
-                            : SqliteOpenMode.ReadOnly,
-                    }.ToString())
+                    .UseSqlite(
+                        lease.Connection,
+                        contextOwnsConnection: false)
                     .UseModel(ArcanumDbContextModel.Instance)
                     .Options;
 
@@ -285,29 +409,6 @@ internal sealed class InstallationResetExistingGrimoire(
                 options,
                 secretStore,
                 passphraseSource);
-
-            await context.Database.OpenConnectionAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            SqliteConnection connection = (SqliteConnection)context.Database
-                .GetDbConnection();
-
-            if (writable)
-            {
-
-                await SqliteConnectionPragmas.ApplyAsync(
-                    connection,
-                    cancellationToken).ConfigureAwait(false);
-
-            }
-            else
-            {
-
-                await ApplyReadOnlyPragmasAsync(
-                    connection,
-                    cancellationToken).ConfigureAwait(false);
-
-            }
 
             LongRunningOperationStore operations = new(
                 context,

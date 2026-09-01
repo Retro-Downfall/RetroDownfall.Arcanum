@@ -459,7 +459,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     OsEvidence(),
                     capability));
 
-            ICovenantMaintenanceConnectionFactory connections =
+            IDesignTimeGrimoireConnectionFactory connections =
                 new RecordingMaintenanceConnections(
                     database.MaintenanceConnections(),
                     events);
@@ -5214,7 +5214,9 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     private sealed class FailingOpenDatabase : IHostToolsMarkerPairResetDatabase
     {
 
-        public Task<Result<HostToolsMarkerPairResetDatabaseSession>> OpenAsync(
+        public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
+            OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+            IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<HostToolsMarkerPairResetDatabaseSession>.Failure(
                 new Error(
@@ -5226,7 +5228,9 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     private sealed class ThrowingDatabase : IHostToolsMarkerPairResetDatabase
     {
 
-        public Task<Result<HostToolsMarkerPairResetDatabaseSession>> OpenAsync(
+        public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
+            OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+            IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "The database sentinel diagnostic must not escape.");
@@ -5373,9 +5377,9 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     }
 
     private sealed class RecordingMaintenanceConnections(
-        ICovenantMaintenanceConnectionFactory inner,
+        IDesignTimeGrimoireConnectionFactory inner,
         List<string> events)
-        : ICovenantMaintenanceConnectionFactory
+        : IDesignTimeGrimoireConnectionFactory
     {
 
         public string DatabasePath => inner.DatabasePath;

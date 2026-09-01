@@ -884,55 +884,31 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
-        
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs", "InstallationResetExistingGrimoire", "ExecuteAsync(3)", AcquisitionConstructKind.UseSqlite, "newDbContextOptionsBuilder<ArcanumDbContext>().UseSqlite", 1, "newDbContextOptionsBuilder<ArcanumDbContext>().UseSqlite(newSqliteConnectionStringBuilder{DataSource=databasePath,Password=passphrase,Pooling=false,Mode=writable?SqliteOpenMode.ReadWrite:SqliteOpenMode.ReadOnly,}.ToString())"),
-            GrimoirePathAuthority.StoppedHostGrimoire,
-            GrimoireAcquisitionKind.StoppedHostRecovery,
-            GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
-            new(ExactNonServingProofKind.StoppedHostAuthority, "InstallationResetExistingGrimoire.ExecuteAsync(3)", 0)),
-        
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs", "InstallationResetExistingGrimoire", "ExecuteAsync(3)", AcquisitionConstructKind.ProviderOpen, "context.Database.OpenConnectionAsync", 1, "context.Database.OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.StoppedHostGrimoire,
-            GrimoireAcquisitionKind.StoppedHostRecovery,
-            GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
-            new(ExactNonServingProofKind.StoppedHostAuthority, "InstallationResetExistingGrimoire.ExecuteAsync(3)", 0)),
-        
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetDatabase.cs", "HostToolsMarkerPairResetDatabase", "OpenAsync(1)", AcquisitionConstructKind.ProviderOpen, "_connections.OpenAsync", 1, "_connections.OpenAsync(cancellationToken)"),
-            GrimoirePathAuthority.StoppedHostGrimoire,
-            GrimoireAcquisitionKind.StoppedHostRecovery,
-            GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
-            new(ExactNonServingProofKind.StoppedHostAuthority, "HostToolsMarkerPairResetDatabase.OpenAsync(1)", 0)),
-        
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs", "HostToolsMarkerPairResetCoordinator", "BeginCoreAsync(5)", AcquisitionConstructKind.ProviderOpen, "_database.OpenAsync", 1, "_database.OpenAsync(cancellationToken)"),
-            GrimoirePathAuthority.StoppedHostGrimoire,
-            GrimoireAcquisitionKind.StoppedHostRecovery,
-            GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
-            new(ExactNonServingProofKind.StoppedHostAuthority, "HostToolsMarkerPairResetCoordinator.BeginCoreAsync(5)", 0)),
-        
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs", "HostToolsMarkerPairResetCoordinator", "ResumeAsync(3)", AcquisitionConstructKind.ProviderOpen, "_database.OpenAsync", 1, "_database.OpenAsync(recoveryCheckpoint.Token)"),
-            GrimoirePathAuthority.StoppedHostGrimoire,
-            GrimoireAcquisitionKind.StoppedHostRecovery,
-            GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
-            new(ExactNonServingProofKind.StoppedHostAuthority, "HostToolsMarkerPairResetCoordinator.ResumeAsync(3)", 0)),
-        
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs", "HostToolsMarkerPairResetCoordinator", "ResumeFromDatabaseDeletedOsAbsentAsync(4)", AcquisitionConstructKind.ProviderOpen, "_database.OpenAsync", 1, "_database.OpenAsync(cancellationToken)"),
-            GrimoirePathAuthority.StoppedHostGrimoire,
-            GrimoireAcquisitionKind.StoppedHostRecovery,
-            GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
-            new(ExactNonServingProofKind.StoppedHostAuthority, "HostToolsMarkerPairResetCoordinator.ResumeFromDatabaseDeletedOsAbsentAsync(4)", 0)),
-        
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs", "HostToolsMarkerPairResetCoordinator", "ResumeFromAbsentPairStateAsync(4)", AcquisitionConstructKind.ProviderOpen, "_database.OpenAsync", 1, "_database.OpenAsync(cancellationToken)"),
-            GrimoirePathAuthority.StoppedHostGrimoire,
-            GrimoireAcquisitionKind.StoppedHostRecovery,
-            GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
-            new(ExactNonServingProofKind.StoppedHostAuthority, "HostToolsMarkerPairResetCoordinator.ResumeFromAbsentPairStateAsync(4)", 0)),
+
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetPlanReadAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenStoppedHostInstallationResetPlanReadAsync", 2, "OpenStoppedHostInstallationResetPlanReadAsync(2)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetPlanReadAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetWorkspaceResolutionAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenStoppedHostInstallationResetWorkspaceResolutionAsync", 2, "OpenStoppedHostInstallationResetWorkspaceResolutionAsync(2)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetWorkspaceResolutionAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetIdentityReadAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenStoppedHostInstallationResetIdentityReadAsync", 2, "OpenStoppedHostInstallationResetIdentityReadAsync(2)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetIdentityReadAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync", 2, "OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(2)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetApplyAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenStoppedHostInstallationResetApplyAsync", 2, "OpenStoppedHostInstallationResetApplyAsync(2)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetApplyAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostMarkerPairResetAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenStoppedHostMarkerPairResetAsync", 2, "OpenStoppedHostMarkerPairResetAsync(2)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostMarkerPairResetAsync(2)"),
+
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs", "InstallationResetExistingGrimoire", "PlanUnderStoppedHostAuthorityAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenStoppedHostInstallationResetPlanReadAsync", 2, "factory.OpenStoppedHostInstallationResetPlanReadAsync(authority,token)"), "InstallationResetExistingGrimoire.PlanUnderStoppedHostAuthorityAsync(3)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs", "InstallationResetExistingGrimoire", "ApplyUnderStoppedHostAuthorityAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenStoppedHostInstallationResetApplyAsync", 2, "factory.OpenStoppedHostInstallationResetApplyAsync(authority,token)"), "InstallationResetExistingGrimoire.ApplyUnderStoppedHostAuthorityAsync(3)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs", "InstallationResetExistingGrimoire", "ResolveWorkspaceUnderStoppedHostAuthorityAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenStoppedHostInstallationResetWorkspaceResolutionAsync", 2, "factory.OpenStoppedHostInstallationResetWorkspaceResolutionAsync(authority,token)"), "InstallationResetExistingGrimoire.ResolveWorkspaceUnderStoppedHostAuthorityAsync(3)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs", "InstallationResetExistingGrimoire", "ReadIdentityUnderStoppedHostAuthorityAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenStoppedHostInstallationResetIdentityReadAsync", 2, "factory.OpenStoppedHostInstallationResetIdentityReadAsync(authority,token)"), "InstallationResetExistingGrimoire.ReadIdentityUnderStoppedHostAuthorityAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs", "InstallationResetExistingGrimoire", "ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync", 2, "factory.OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(authority,token)"), "InstallationResetExistingGrimoire.ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs", "InstallationResetExistingGrimoire", "ExecuteUnderStoppedHostAuthorityAsync(5)", AcquisitionConstructKind.UseSqlite, "newDbContextOptionsBuilder<ArcanumDbContext>().UseSqlite", 2, "newDbContextOptionsBuilder<ArcanumDbContext>().UseSqlite(lease.Connection,contextOwnsConnection:false)"), "InstallationResetExistingGrimoire.ExecuteUnderStoppedHostAuthorityAsync(5)"),
+
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetDatabase.cs", "HostToolsMarkerPairResetDatabase", "OpenHostToolsMarkerPairResetDatabaseSessionAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenStoppedHostMarkerPairResetAsync", 2, "_connections.OpenStoppedHostMarkerPairResetAsync(authority,cancellationToken)"), "HostToolsMarkerPairResetDatabase.OpenHostToolsMarkerPairResetDatabaseSessionAsync(2)"),
+
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetPlanReadAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 4, "OpenAsync(authority,StoppedHostGrimoireOperation.InstallationResetPlanRead,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetPlanReadAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetWorkspaceResolutionAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 4, "OpenAsync(authority,StoppedHostGrimoireOperation.InstallationResetWorkspaceResolution,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetWorkspaceResolutionAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetIdentityReadAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 4, "OpenAsync(authority,StoppedHostGrimoireOperation.InstallationResetIdentityRead,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetIdentityReadAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 4, "OpenAsync(authority,StoppedHostGrimoireOperation.InstallationResetHostToolsEvidenceRead,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostInstallationResetApplyAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 4, "OpenAsync(authority,StoppedHostGrimoireOperation.InstallationResetApply,CovenantSqliteConnectionMode.ReadWrite,cancellationToken)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostInstallationResetApplyAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenStoppedHostMarkerPairResetAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 4, "OpenAsync(authority,StoppedHostGrimoireOperation.MarkerPairReset,CovenantSqliteConnectionMode.ReadWrite,cancellationToken)"), "StoppedHostGrimoireConnectionFactory.OpenStoppedHostMarkerPairResetAsync(2)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenAsync(4)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"), "StoppedHostGrimoireConnectionFactory.OpenAsync(4)"),
+        Stopped(new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs", "StoppedHostGrimoireConnectionFactory", "OpenAsync(4)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "newSqliteConnection(newSqliteConnectionStringBuilder{DataSource=canonicalDatabasePath,Password=_passphrase.Passphrase,Pooling=false,Mode=modeisCovenantSqliteConnectionMode.ReadOnly?SqliteOpenMode.ReadOnly:SqliteOpenMode.ReadWrite,Cache=SqliteCacheMode.Private,}.ToString())"), "StoppedHostGrimoireConnectionFactory.OpenAsync(4)"),
         
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetActiveStore.cs", "InstallationResetActiveStore", "OpenEnvelope(4)", AcquisitionConstructKind.ProviderOpen, "InstallationResetActiveRecordAuthenticator.Open", 4, "InstallationResetActiveRecordAuthenticator.Open(key.Value,location,installationId,envelope)"),
@@ -2836,13 +2812,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
         
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantMaintenanceConnectionFactory.cs", "CovenantMaintenanceConnectionFactory", "OpenCoreAsync(2)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.LegacyV3Maintenance,
-            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
-            new(ExactNonServingProofKind.LegacyV3ExclusiveLease, "CovenantMaintenanceConnectionFactory.OpenCoreAsync(2)", 248)),
-        
         V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3CanonicalErasureAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3CanonicalErasureAsync", 2, "OpenV3CanonicalErasureAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3CanonicalErasureAsync(2)"),
         V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3WalTruncationAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3WalTruncationAsync", 2, "OpenV3WalTruncationAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3WalTruncationAsync(2)"),
         V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3VacuumAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3VacuumAsync", 2, "OpenV3VacuumAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3VacuumAsync(2)"),
@@ -2872,6 +2841,16 @@ internal static class GrimoireConnectionAcquisitionScanner
         V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "ReplaceAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3PostReplaceJournalRestoreAsync", 2, "_connections.OpenV3PostReplaceJournalRestoreAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.ReplaceAsync(3)"),
         V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "VacuumAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3VacuumAsync", 2, "_connections.OpenV3VacuumAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.VacuumAsync(2)")
     ];
+
+    private static GrimoireAcquisitionCatalogEntry Stopped(
+        AcquisitionIdentity identity,
+        string evidenceMember) =>
+        new(
+            identity,
+            GrimoirePathAuthority.StoppedHostGrimoire,
+            GrimoireAcquisitionKind.StoppedHostRecovery,
+            GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
+            new(ExactNonServingProofKind.StoppedHostAuthority, evidenceMember));
 
     private static GrimoireAcquisitionCatalogEntry V3(
         AcquisitionIdentity identity,

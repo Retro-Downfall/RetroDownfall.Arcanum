@@ -295,8 +295,9 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
     private static async Task<SqliteConnection> InitializeProcessAsync(ServiceProvider provider)
     {
 
-        ICovenantMaintenanceConnectionFactory connections = provider
-            .GetRequiredService<ICovenantMaintenanceConnectionFactory>();
+        IDesignTimeGrimoireConnectionFactory connections =
+            new DesignTimeGrimoireConnectionFactory(
+                provider.GetRequiredService<IGrimoireDbPassphraseSource>());
 
         SqliteConnection connection = await connections.OpenAsync(CancellationToken.None);
 

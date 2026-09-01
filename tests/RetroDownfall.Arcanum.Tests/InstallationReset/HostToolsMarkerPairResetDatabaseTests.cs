@@ -310,11 +310,14 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
                 .GetConstructors(declared),
             constructor => !constructor.IsStatic);
 
+        await using DesignTimeStoppedHostGrimoireConnectionLease invalidLease =
+            new(new SqliteConnection());
+
         System.Reflection.TargetInvocationException sessionFailure = Assert.Throws<
             System.Reflection.TargetInvocationException>(() =>
                 sessionConstructor.Invoke(
                     [
-                        new SqliteConnection(),
+                        invalidLease,
                         owner,
                         NoopHostToolsMarkerPairResetDatabaseTestSeam.Instance,
                         TimeSpan.FromSeconds(5),
@@ -587,7 +590,9 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
             TimeSpan.FromMilliseconds(25));
 
         Result<HostToolsMarkerPairResetDatabaseSession> opened =
-            await subject.OpenAsync(Token);
+            await subject.OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+                TestStoppedHostAuthority.Instance,
+                Token);
 
         Assert.True(opened.IsSuccess, opened.Error.Message);
 
@@ -1244,7 +1249,7 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
     }
 
     [Fact]
-    public async Task Session_opens_one_unpooled_initialized_core_connection_per_attempt()
+    public async Task Session_uses_one_factory_initialized_unpooled_core_connection_per_attempt()
     {
 
         await using CovenantSchemaScratchDatabase database =
@@ -1253,15 +1258,17 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
         RecordingMaintenanceConnectionFactory connections = new(
             database.MaintenanceConnections());
 
-        RecordingInitializer initializer = new();
-
-        HostToolsMarkerPairResetDatabase subject = new(connections, initializer);
+        HostToolsMarkerPairResetDatabase subject = new(connections);
 
         Result<HostToolsMarkerPairResetDatabaseSession> first =
-            await subject.OpenAsync(Token);
+            await subject.OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+                TestStoppedHostAuthority.Instance,
+                Token);
 
         Result<HostToolsMarkerPairResetDatabaseSession> second =
-            await subject.OpenAsync(Token);
+            await subject.OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+                TestStoppedHostAuthority.Instance,
+                Token);
 
         Assert.True(first.IsSuccess, first.Error.Message);
 
@@ -1277,23 +1284,11 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
 
         Assert.Equal(2, connections.Opened.Count);
 
-        Assert.Equal(2, initializer.Initialized.Count);
-
         Assert.NotSame(firstConnection, secondConnection);
 
         Assert.Same(firstConnection, connections.Opened[0]);
 
         Assert.Same(secondConnection, connections.Opened[1]);
-
-        Assert.Same(firstConnection, initializer.Initialized[0].Connection);
-
-        Assert.Same(secondConnection, initializer.Initialized[1].Connection);
-
-        Assert.All(
-            initializer.Initialized,
-            initialized => Assert.Equal(
-                CovenantSqliteConnectionMode.ReadWrite,
-                initialized.Mode));
 
         Assert.All(
             connections.Opened,
@@ -1313,17 +1308,6 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
         Assert.Same(firstConnection, firstSession.BorrowCoreConnection());
 
         Assert.Same(secondConnection, secondSession.BorrowCoreConnection());
-
-        using CancellationTokenSource openCancellation = new();
-
-        HostToolsMarkerPairResetDatabase canceledOpen = new(
-            connections,
-            new CancellingInitializer(openCancellation));
-
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-            await canceledOpen.OpenAsync(openCancellation.Token));
-
-        Assert.Equal(System.Data.ConnectionState.Closed, connections.Opened[2].State);
 
         Guid transitionId = Guid.Parse("AA6CA430-9D8F-46ED-88A8-1372681E9ECA");
 
@@ -1518,7 +1502,9 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
             testSeam);
 
         Result<HostToolsMarkerPairResetDatabaseSession> opened =
-            await subject.OpenAsync(Token);
+            await subject.OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+                TestStoppedHostAuthority.Instance,
+                Token);
 
         Assert.True(opened.IsSuccess, opened.Error.Message);
 
@@ -1752,9 +1738,19 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
 
     }
 
+    private sealed class TestStoppedHostAuthority
+        : IStoppedHostGrimoireConnectionAuthority
+    {
+
+        internal static TestStoppedHostAuthority Instance { get; } = new();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    }
+
     private sealed class RecordingMaintenanceConnectionFactory(
-        ICovenantMaintenanceConnectionFactory inner)
-        : ICovenantMaintenanceConnectionFactory
+        IDesignTimeGrimoireConnectionFactory inner)
+        : IDesignTimeGrimoireConnectionFactory
     {
 
         internal List<SqliteConnection> Opened { get; } = [];
@@ -1792,74 +1788,6 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
             string alias,
             string path,
             CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-    }
-
-    private sealed class RecordingInitializer : ICovenantSqliteConnectionInitializer
-    {
-
-        internal List<(SqliteConnection Connection, CovenantSqliteConnectionMode Mode)>
-            Initialized { get; } = [];
-
-        public async ValueTask InitializeAsync(
-            SqliteConnection connection,
-            CovenantSqliteConnectionMode mode,
-            CancellationToken cancellationToken)
-        {
-
-            Initialized.Add((connection, mode));
-
-            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
-                connection,
-                mode,
-                cancellationToken);
-
-        }
-
-        public CovenantSqliteAuthorizationScope Authorize(
-            SqliteConnection connection,
-            CovenantSqliteAuthorizationKind kind) =>
-            CovenantSqliteConnectionInitializer.Instance.Authorize(connection, kind);
-
-        public CovenantSqliteAuthorizationScope
-            AuthorizeRestoreStagingManagedAuthoritySanitization(
-                RestoreStagingManagedAuthoritySanitizationCapability authority,
-                RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
-            CovenantSqliteConnectionInitializer.Instance
-                .AuthorizeRestoreStagingManagedAuthoritySanitization(
-                    authority,
-                    runIdentity);
-
-    }
-
-    private sealed class CancellingInitializer(CancellationTokenSource cancellation)
-        : ICovenantSqliteConnectionInitializer
-    {
-
-        public ValueTask InitializeAsync(
-            SqliteConnection connection,
-            CovenantSqliteConnectionMode mode,
-            CancellationToken cancellationToken)
-        {
-
-            cancellation.Cancel();
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            throw new InvalidOperationException("The initializer did not observe cancellation.");
-
-        }
-
-        public CovenantSqliteAuthorizationScope Authorize(
-            SqliteConnection connection,
-            CovenantSqliteAuthorizationKind kind) =>
-            throw new NotSupportedException();
-
-        public CovenantSqliteAuthorizationScope
-            AuthorizeRestoreStagingManagedAuthoritySanitization(
-                RestoreStagingManagedAuthoritySanitizationCapability authority,
-                RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
             throw new NotSupportedException();
 
     }

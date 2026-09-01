@@ -12,47 +12,59 @@ internal sealed class HostToolsMarkerPairResetDatabase
 
     private static TimeSpan ProductionCheckpointTimeout => TimeSpan.FromSeconds(5);
 
-    private readonly ICovenantMaintenanceConnectionFactory _connections;
-
-    private readonly ICovenantSqliteConnectionInitializer _initializer;
+    private readonly IStoppedHostGrimoireConnectionFactory _connections;
 
     private readonly IHostToolsMarkerPairResetDatabaseTestSeam _testSeam;
 
     private readonly TimeSpan _checkpointTimeout;
 
     internal HostToolsMarkerPairResetDatabase(
-        ICovenantMaintenanceConnectionFactory connections,
-        ICovenantSqliteConnectionInitializer initializer)
+        IStoppedHostGrimoireConnectionFactory connections)
         : this(
             connections,
-            initializer,
             NoopHostToolsMarkerPairResetDatabaseTestSeam.Instance,
             ProductionCheckpointTimeout)
     {
     }
 
     internal HostToolsMarkerPairResetDatabase(
-        ICovenantMaintenanceConnectionFactory connections,
-        ICovenantSqliteConnectionInitializer initializer,
+        IStoppedHostGrimoireConnectionFactory connections,
+        ICovenantSqliteConnectionInitializer initializer)
+        : this(connections)
+    {
+
+        ArgumentNullException.ThrowIfNull(initializer);
+
+    }
+
+    internal HostToolsMarkerPairResetDatabase(
+        IStoppedHostGrimoireConnectionFactory connections,
         IHostToolsMarkerPairResetDatabaseTestSeam testSeam)
         : this(
             connections,
-            initializer,
             testSeam,
             ProductionCheckpointTimeout)
     {
     }
 
     internal HostToolsMarkerPairResetDatabase(
-        ICovenantMaintenanceConnectionFactory connections,
+        IStoppedHostGrimoireConnectionFactory connections,
         ICovenantSqliteConnectionInitializer initializer,
+        IHostToolsMarkerPairResetDatabaseTestSeam testSeam)
+        : this(connections, testSeam)
+    {
+
+        ArgumentNullException.ThrowIfNull(initializer);
+
+    }
+
+    internal HostToolsMarkerPairResetDatabase(
+        IStoppedHostGrimoireConnectionFactory connections,
         IHostToolsMarkerPairResetDatabaseTestSeam testSeam,
         TimeSpan checkpointTimeout)
     {
 
         _connections = connections ?? throw new ArgumentNullException(nameof(connections));
-
-        _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
 
         _testSeam = testSeam ?? throw new ArgumentNullException(nameof(testSeam));
 
@@ -63,36 +75,59 @@ internal sealed class HostToolsMarkerPairResetDatabase
 
     }
 
-    public async Task<Result<HostToolsMarkerPairResetDatabaseSession>> OpenAsync(
+    internal HostToolsMarkerPairResetDatabase(
+        IStoppedHostGrimoireConnectionFactory connections,
+        ICovenantSqliteConnectionInitializer initializer,
+        IHostToolsMarkerPairResetDatabaseTestSeam testSeam,
+        TimeSpan checkpointTimeout)
+        : this(connections, testSeam, checkpointTimeout)
+    {
+
+        ArgumentNullException.ThrowIfNull(initializer);
+
+    }
+
+    public async Task<Result<HostToolsMarkerPairResetDatabaseSession>>
+        OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+        IStoppedHostGrimoireConnectionAuthority authority,
         CancellationToken cancellationToken)
     {
 
+        ArgumentNullException.ThrowIfNull(authority);
+
         cancellationToken.ThrowIfCancellationRequested();
 
-        SqliteConnection? connection = null;
+        IStoppedHostGrimoireConnectionLease? lease = null;
 
         try
         {
 
-            connection = await _connections.OpenAsync(cancellationToken)
-                .ConfigureAwait(false);
+            Result<IStoppedHostGrimoireConnectionLease> opened =
+                await _connections.OpenStoppedHostMarkerPairResetAsync(
+                    authority,
+                    cancellationToken).ConfigureAwait(false);
 
-            await _initializer.InitializeAsync(
-                connection,
-                CovenantSqliteConnectionMode.ReadWrite,
-                cancellationToken).ConfigureAwait(false);
+            if (opened.IsFailure)
+            {
+
+                return Result<HostToolsMarkerPairResetDatabaseSession>.Failure(
+                    opened.Error);
+
+            }
+
+            lease = opened.Value;
 
             return Result<HostToolsMarkerPairResetDatabaseSession>.Success(
-                CreateSession(connection));
+                CreateSession(lease));
 
         }
         catch (OperationCanceledException)
         {
 
-            if (connection is not null)
+            if (lease is not null)
             {
 
-                await connection.DisposeAsync().ConfigureAwait(false);
+                await lease.DisposeAsync().ConfigureAwait(false);
 
             }
 
@@ -102,10 +137,10 @@ internal sealed class HostToolsMarkerPairResetDatabase
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
 
-            if (connection is not null)
+            if (lease is not null)
             {
 
-                await connection.DisposeAsync().ConfigureAwait(false);
+                await lease.DisposeAsync().ConfigureAwait(false);
 
             }
 
@@ -129,13 +164,15 @@ internal sealed class HostToolsMarkerPairResetDatabase
     }
 
     private HostToolsMarkerPairResetDatabaseSession CreateSession(
-        SqliteConnection connection)
+        IStoppedHostGrimoireConnectionLease lease)
     {
+
+        SqliteConnection connection = lease.Connection;
 
         object creationTicket = new SessionCreationTicket(connection);
 
         return new HostToolsMarkerPairResetDatabaseSession(
-            connection,
+            lease,
             this,
             _testSeam,
             _checkpointTimeout,

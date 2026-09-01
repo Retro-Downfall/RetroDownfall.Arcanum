@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
@@ -226,7 +227,13 @@ public sealed class CovenantArchitectureBoundaryTests
 
         AssertSingleRegistration<ICovenantConnectionDrain>(services, ServiceLifetime.Singleton);
 
-        AssertSingleRegistration<ICovenantMaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
+        AssertSingleRegistration<StoppedHostGrimoireConnectionFactory>(
+            services,
+            ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<IStoppedHostGrimoireConnectionFactory>(
+            services,
+            ServiceLifetime.Singleton);
 
         AssertSingleRegistration<CovenantV3MaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
 
@@ -531,8 +538,9 @@ public sealed class CovenantArchitectureBoundaryTests
             firstScope.ServiceProvider.GetRequiredService<ICovenantConnectionDrain>());
 
         Assert.Same(
-            provider.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-            firstScope.ServiceProvider.GetRequiredService<ICovenantMaintenanceConnectionFactory>());
+            provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>(),
+            firstScope.ServiceProvider
+                .GetRequiredService<IStoppedHostGrimoireConnectionFactory>());
 
         Assert.Same(
             provider.GetRequiredService<CovenantV3MaintenanceConnectionFactory>(),

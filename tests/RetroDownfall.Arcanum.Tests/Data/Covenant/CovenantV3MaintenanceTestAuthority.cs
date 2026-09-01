@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -58,7 +59,7 @@ internal static class CovenantV3MaintenanceTestAuthority
 }
 
 internal sealed class CovenantV3MaintenanceTestConnectionFactory(
-    ICovenantMaintenanceConnectionFactory inner,
+    IDesignTimeGrimoireConnectionFactory inner,
     ICovenantSqliteConnectionInitializer initializer)
     : ICovenantV3MaintenanceConnectionFactory, ICovenantV3MaintenancePathAuthority
 {
