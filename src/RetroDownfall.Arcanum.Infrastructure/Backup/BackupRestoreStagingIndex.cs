@@ -316,9 +316,12 @@ internal static class BackupRestoreStagingIndex
     /// a tree that does not exist yet.
     ///
     /// <para>Roots whose directory is gone are dropped first, since they are the ones a prune would
-    /// have taken anyway. Absence alone is not enough to drop one, though: <c>Add</c> runs before the
-    /// staging root is created, so a rule that dropped every absent entry would drop the live one.
-    /// Only the excess is taken.</para>
+    /// have taken anyway — but the newest entry is exempt from that pass, and the exemption is the
+    /// whole point rather than a refinement of it. <c>Add</c> writes before its own staging root
+    /// exists, so the newest entry is <em>always</em> the absent one: a pass that took the excess from
+    /// whatever was absent would take exactly the pointer this index exists to keep, and would do it
+    /// on the one installation where every earlier root is still live. Whatever survives that pass is
+    /// then cut from the front, which is the least recent end.</para>
     /// </remarks>
     private static List<string> WithinBound(IReadOnlyList<string> stagingRoots)
     {
@@ -332,12 +335,16 @@ internal static class BackupRestoreStagingIndex
 
         int excess = stagingRoots.Count - MaximumRoots;
 
+        int newest = stagingRoots.Count - 1;
+
         List<string> kept = [];
 
-        foreach (string root in stagingRoots)
+        for (int index = 0; index < stagingRoots.Count; index++)
         {
 
-            if (excess > 0 && !Directory.Exists(root))
+            string root = stagingRoots[index];
+
+            if (index != newest && excess > 0 && !Directory.Exists(root))
             {
 
                 excess--;
@@ -353,6 +360,8 @@ internal static class BackupRestoreStagingIndex
         if (kept.Count > MaximumRoots)
         {
 
+            // From the front, so the newest entry survives this cut too: it is the last one appended
+            // and the only one naming a tree nothing else can find.
             kept.RemoveRange(0, kept.Count - MaximumRoots);
 
         }

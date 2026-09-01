@@ -67,7 +67,8 @@ public sealed class BackupRestoreStagingIndexTests : IDisposable
     ///
     /// <para>The newest root is asserted rather than only the count, because a trim that kept the
     /// oldest entries would satisfy a count and lose the one entry that still points at a decrypted
-    /// tree.</para>
+    /// tree — and the newest entry is the one root whose directory does not exist yet, so a trim that
+    /// takes the excess from whatever is absent takes exactly the pointer the index exists for.</para>
     /// </remarks>
     [Fact]
     public async Task An_index_grown_past_the_readers_bound_is_still_read_rather_than_refused()
@@ -81,6 +82,18 @@ public sealed class BackupRestoreStagingIndexTests : IDisposable
             newest = Path.Combine(_root, BackupRestoreJournal.CreateStagingName());
 
             BackupRestoreStagingIndex.Add(_live, newest);
+
+            // Every root but the newest one is then created, which is the shape a real installation
+            // has at this moment: Add is called before its own staging root exists, and every earlier
+            // root either still holds a decrypted tree or has already been pruned out of the index. An
+            // arrangement where none of them exist lets a trim that takes the newest entry pass,
+            // because then there is nothing to distinguish it from the roots that are genuinely gone.
+            if (added < OnePastTheReadersBound - 1)
+            {
+
+                Directory.CreateDirectory(newest);
+
+            }
 
         }
 
