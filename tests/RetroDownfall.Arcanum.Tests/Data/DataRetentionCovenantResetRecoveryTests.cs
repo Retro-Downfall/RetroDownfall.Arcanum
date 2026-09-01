@@ -1338,6 +1338,7 @@ public sealed partial class DataRetentionServiceTests
                     dueAt = dueAt.Add(Period);
 
                 }
+
                 while (dueAt <= now);
 
                 DueAt = dueAt;

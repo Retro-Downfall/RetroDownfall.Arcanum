@@ -1738,7 +1738,6 @@ public sealed class CovenantErasureSameProcessTests
                         static _ => new RouteFailureTransition());
 
                 }
-
                 else if (routeFailure is RouteFailure.CancelAfterProof)
                 {
 

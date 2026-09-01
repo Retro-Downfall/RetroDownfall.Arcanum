@@ -502,7 +502,6 @@ public sealed partial class InstallationResetServiceTests
 
     }
 
-
     [Fact]
     public async Task Workspace_apply_preserves_global_daemon_registration()
     {
@@ -2173,7 +2172,6 @@ public sealed partial class InstallationResetServiceTests
 
     }
 
-
     [Theory]
     [InlineData(HostProcessToolsMarkerPairDisposition.PendingBlocked)]
     [InlineData(HostProcessToolsMarkerPairDisposition.TaintedMatched)]
@@ -3075,7 +3073,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.Single(active.Writes);
 
     }
-
 
     private static InstallationResetService CreateService(
         IInstallationResetDataService dataService,

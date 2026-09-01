@@ -1069,7 +1069,6 @@ public sealed class InstallationResetApplyBoundaryTests
                     PossibleDisclosures: 1,
                     RetroDownfall.Arcanum.Core.Covenant.CovenantDisclosureCountKind.Exact));
 
-
     private static DataRetentionApplyResult CreateOnlineResult(
         InstallationResetHostHandoff handoff) =>
         new(
@@ -1083,7 +1082,6 @@ public sealed class InstallationResetApplyBoundaryTests
             Blockers: [],
             Conflicts: [],
             RequestedOperationId: handoff.RequestedOperationId);
-
 
     private static InstallationResetApplyRequest CreateRequest() =>
         new(
@@ -1240,7 +1238,6 @@ public sealed class InstallationResetApplyBoundaryTests
         }
 
     }
-
 
     private sealed class RecordingLease
     {

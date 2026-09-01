@@ -665,7 +665,6 @@ public sealed class CovenantErasureCoordinatorTests
                 };
 
             }
-
             else if (raceMode == LifecycleFailureRaceMode.NonActiveCheckpoint)
             {
 

@@ -100,6 +100,7 @@ public sealed class CovenantErasureInventorySourceTests
             }
 
         }
+
         while (true);
 
         Assert.Equal(4, databaseCalls);
@@ -146,6 +147,7 @@ public sealed class CovenantErasureInventorySourceTests
             }
 
         }
+
         while (true);
 
         Assert.Equal(4, managedCalls);
@@ -1045,6 +1047,7 @@ public sealed class CovenantErasureInventorySourceTests
                 }
 
             }
+
             while (Interlocked.CompareExchange(ref _maximumActiveCount, active, maximum) != maximum);
 
             return new TrackingEnrollment(this, enrollment);
