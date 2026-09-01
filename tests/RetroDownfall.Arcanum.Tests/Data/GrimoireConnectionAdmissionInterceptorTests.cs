@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -285,6 +286,172 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
         }
         finally
         {
+
+            await context.DisposeAsync();
+
+            await connection.DisposeAsync();
+
+        }
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Pooled_generation_loss_refusal_releases_the_native_resource_end_to_end(
+        bool asynchronous)
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.Connection.CloseAsync();
+
+        string connectionString = PooledConnectionString(database.Connection.ConnectionString);
+
+        await using PooledGatedOpenSqliteConnection connection = new(connectionString);
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        CovenantConnectionDrain drain = new();
+
+        await using ProbeDbContext context = CreateContext(connection, gate, drain);
+
+        try
+        {
+
+            Task opening = asynchronous
+                ? context.Database.OpenConnectionAsync()
+                : Task.Run(context.Database.OpenConnection);
+
+            await connection.OpenEntered;
+
+            await using IGrimoireClosingOwner closing = Begin(gate, 22);
+
+            Result requestsDrained = await gate.DrainRequestAndWorkAsync(
+                closing,
+                CancellationToken.None);
+
+            Assert.True(
+                requestsDrained.IsSuccess,
+                requestsDrained.IsFailure ? requestsDrained.Error.Message : null);
+
+            Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
+                .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+                .AsTask();
+
+            Assert.False(closingAdmission.IsCompleted);
+
+            connection.AllowNativeOpen();
+
+            await connection.NativeOpenCompleted;
+
+            Assert.True(new SqliteConnectionStringBuilder(connectionString).Pooling);
+
+            Assert.Contains(
+                CovenantResidualArtifactClass.WriteAheadLog,
+                CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+            connection.AllowProviderReturn();
+
+            _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(() => opening);
+
+            Assert.Equal(ConnectionState.Closed, connection.State);
+
+            Assert.Equal(1, connection.PhysicalCloseCount);
+
+            Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+            Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+            await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+            Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        }
+        finally
+        {
+
+            connection.AllowNativeOpen();
+
+            connection.AllowProviderReturn();
+
+            SqliteConnection.ClearPool(connection);
+
+        }
+
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Pooled_initializer_termination_releases_the_native_resource_end_to_end(
+        bool asynchronous,
+        bool canceled)
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.Connection.CloseAsync();
+
+        string connectionString = PooledConnectionString(database.Connection.ConnectionString);
+
+        TrackingSqliteConnection connection = new(connectionString);
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        CovenantConnectionDrain drain = new();
+
+        TerminatingConnectionInitializer initializer = new();
+
+        ProbeDbContext context = CreateContext(connection, gate, drain, initializer);
+
+        try
+        {
+
+            Task opening = asynchronous
+                ? context.Database.OpenConnectionAsync()
+                : Task.Run(context.Database.OpenConnection);
+
+            await initializer.Entered;
+
+            Assert.True(new SqliteConnectionStringBuilder(connectionString).Pooling);
+
+            Assert.Contains(
+                CovenantResidualArtifactClass.WriteAheadLog,
+                CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+            initializer.Terminate(canceled);
+
+            if (canceled)
+            {
+
+                _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => opening);
+
+            }
+            else
+            {
+
+                _ = await Assert.ThrowsAsync<InvalidOperationException>(() => opening);
+
+            }
+
+            Assert.Equal(ConnectionState.Closed, connection.State);
+
+            Assert.Equal(1, connection.PhysicalCloseCount);
+
+            Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        }
+        finally
+        {
+
+            initializer.Terminate(canceled);
+
+            SqliteConnection.ClearPool(connection);
 
             await context.DisposeAsync();
 
@@ -595,6 +762,14 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
     private const string ConnectionString = "Data Source=:memory:;Pooling=False";
 
+    private static string PooledConnectionString(string connectionString) =>
+        new SqliteConnectionStringBuilder(connectionString)
+        {
+
+            Pooling = true,
+
+        }.ToString();
+
     private static ProbeDbContext CreateContext(
         SqliteConnection connection,
         IGrimoireConnectionAdmissionGate gate,
@@ -844,6 +1019,82 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         public override Task OpenAsync(CancellationToken cancellationToken) =>
             Task.FromException(new InvalidOperationException("provider open failed"));
+
+    }
+
+    private sealed class PooledGatedOpenSqliteConnection : SqliteConnection
+    {
+
+        private readonly TaskCompletionSource _openEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _allowNativeOpen =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _nativeOpenCompleted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _allowProviderReturn =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal PooledGatedOpenSqliteConnection(string connectionString)
+            : base(connectionString)
+        {
+
+            StateChange += (_, args) =>
+            {
+
+                if (args.OriginalState != ConnectionState.Closed
+                    && args.CurrentState == ConnectionState.Closed)
+                {
+
+                    PhysicalCloseCount++;
+
+                }
+
+            };
+
+        }
+
+        internal Task OpenEntered => _openEntered.Task;
+
+        internal Task NativeOpenCompleted => _nativeOpenCompleted.Task;
+
+        internal int PhysicalCloseCount { get; private set; }
+
+        internal void AllowNativeOpen() => _allowNativeOpen.TrySetResult();
+
+        internal void AllowProviderReturn() => _allowProviderReturn.TrySetResult();
+
+        public override void Open()
+        {
+
+            _openEntered.TrySetResult();
+
+            _allowNativeOpen.Task.GetAwaiter().GetResult();
+
+            base.Open();
+
+            _nativeOpenCompleted.TrySetResult();
+
+            _allowProviderReturn.Task.GetAwaiter().GetResult();
+
+        }
+
+        public override async Task OpenAsync(CancellationToken cancellationToken)
+        {
+
+            _openEntered.TrySetResult();
+
+            await _allowNativeOpen.Task.WaitAsync(cancellationToken);
+
+            await base.OpenAsync(cancellationToken);
+
+            _nativeOpenCompleted.TrySetResult();
+
+            await _allowProviderReturn.Task.WaitAsync(cancellationToken);
+
+        }
 
     }
 
