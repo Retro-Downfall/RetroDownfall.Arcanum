@@ -890,7 +890,13 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
         // set` reads the whole pipe as authored content — so the read below returns null immediately
         // and the caller reports a cancellation the operator never made. Refusing here turns that
         // silent success into the typed refusal that names --yes.
-        if (_isOutputRedirected() || _isInputRedirected())
+        //
+        // The structured-output modes join it because they are non-interactive by declaration rather
+        // than by plumbing: an operator who asked for a JSON document or for --print asked for output
+        // a program consumes, and nothing redirects the handles when a CI wrapper allocates a pty. A
+        // prompt written for that caller waits forever. CliEnvironment.IsInteractive and
+        // SensitiveValueInput already read both flags; this was the one console path that did not.
+        if (_isOutputRedirected() || _isInputRedirected() || options.Json || options.Print)
         {
 
             throw new NonInteractiveConfirmationException();
