@@ -275,6 +275,62 @@ public sealed class HostProcessToolsStartupGateTests
     }
 
     /// <summary>
+    /// Evidence that could not be read is not evidence that disagrees.
+    /// </summary>
+    /// <remarks>
+    /// Three of the six hard stops are read or validation failures rather than disagreements: a
+    /// credential store that is locked or unreachable, an authority row that will not read, and an
+    /// authority row that does not describe a valid host-tools state. The first needs no transition
+    /// to have been attempted at all, which makes it the most reachable block in the gate — and
+    /// telling that operator the recorded evidence disagrees with itself sends them hunting for a
+    /// corruption that is not there instead of unlocking the keychain.
+    /// </remarks>
+    [Fact]
+    public async Task A_read_failure_is_not_reported_as_evidence_that_disagrees_with_itself()
+    {
+
+        Harness unreadableMarker = Harness.Create();
+
+        unreadableMarker.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Unavailable;
+
+        Result<HostProcessToolsStartupDecision> marker = await unreadableMarker.Gate
+            .ClassifyAndPublishAsync(CancellationToken.None);
+
+        Assert.True(marker.IsFailure);
+
+        Assert.DoesNotContain("disagrees", marker.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("credential store", marker.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Harness unreadableRow = Harness.Create();
+
+        unreadableRow.Authority.TryReadFailure = true;
+
+        Result<HostProcessToolsStartupDecision> row = await unreadableRow.Gate
+            .ClassifyAndPublishAsync(CancellationToken.None);
+
+        Assert.True(row.IsFailure);
+
+        Assert.DoesNotContain("disagrees", row.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("Grimoire", row.Error.Message, StringComparison.Ordinal);
+
+        Harness invalidRow = Harness.Create();
+
+        invalidRow.Authority.InvalidRow = true;
+
+        Result<HostProcessToolsStartupDecision> invalid = await invalidRow.Gate
+            .ClassifyAndPublishAsync(CancellationToken.None);
+
+        Assert.True(invalid.IsFailure);
+
+        Assert.DoesNotContain("disagrees", invalid.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("Grimoire", invalid.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
     /// Every command a refused startup tells the operator to run has to be one the CLI has.
     /// </summary>
     /// <remarks>
@@ -487,6 +543,12 @@ public sealed class HostProcessToolsStartupGateTests
 
         internal int ReadCount { get; set; }
 
+        /// <summary>Makes the durable read fail the way an unopenable Grimoire does.</summary>
+        internal bool TryReadFailure { get; set; }
+
+        /// <summary>Returns a row whose shape <c>ToEvidence()</c> refuses to validate.</summary>
+        internal bool InvalidRow { get; set; }
+
         internal HostProcessToolsAuthorityRow Row => _inner.Row;
 
         public Task<Result<HostProcessToolsAuthorityRow>> ReadAsync(CancellationToken cancellationToken)
@@ -502,6 +564,25 @@ public sealed class HostProcessToolsStartupGateTests
         {
 
             ReadCount++;
+
+            if (TryReadFailure)
+            {
+
+                return Task.FromResult<Result<HostProcessToolsAuthorityRow?>>(new Error(
+                    ErrorCodes.Covenant.OperatorAuthorityUnavailable,
+                    "The authority row could not be read."));
+
+            }
+
+            if (InvalidRow)
+            {
+
+                // Tainted with no transition identity: the exact shape the evidence constructor
+                // refuses, which is how a row reaches the gate's validation failure.
+                return Task.FromResult<Result<HostProcessToolsAuthorityRow?>>(
+                    _inner.Row with { State = CovenantHostToolsState.HostToolsTainted });
+
+            }
 
             return _inner.TryReadAsync(cancellationToken);
 
