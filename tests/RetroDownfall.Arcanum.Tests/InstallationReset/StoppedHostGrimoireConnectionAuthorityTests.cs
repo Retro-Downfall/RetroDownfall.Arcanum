@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 
+using System.Reflection;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
@@ -134,20 +136,51 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
     }
 
     [Fact]
-    public void Wrong_guarded_root_is_rejected_during_issuer_construction()
+    public void Authority_implementation_is_privately_constructible_only_by_the_issuer()
     {
 
-        using ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
+        Type? nestedAuthority = typeof(StoppedHostGrimoireAuthorityIssuer)
+            .GetNestedType(
+                "StoppedHostGrimoireConnectionAuthority",
+                BindingFlags.NonPublic);
+
+        Assert.NotNull(nestedAuthority);
+
+        Type authorityImplementation = nestedAuthority;
+
+        Assert.True(authorityImplementation.IsNestedPrivate);
+
+        ConstructorInfo constructor = Assert.Single(
+            authorityImplementation.GetConstructors(
+                BindingFlags.Instance | BindingFlags.NonPublic));
+
+        Assert.True(constructor.IsPrivate);
+
+    }
+
+    [Fact]
+    public void Lock_for_wrong_root_cannot_authorize_the_real_grimoire_path()
+    {
 
         string wrongRoot = Path.Combine(_testHome, "wrong-root");
 
         Directory.CreateDirectory(wrongRoot);
+
+        using ArcanumMaintenanceLock held = Acquire(wrongRoot);
+
+        RecordingStoppedHostFactoryTestSeam seam = new();
+
+        _ = Factory(new RecordingNativeRuntime(), seam);
 
         _ = Assert.Throws<InvalidOperationException>(() =>
             new StoppedHostGrimoireAuthorityIssuer(
                 held,
                 wrongRoot,
                 ArcanumPaths.GrimoireDatabaseFile));
+
+        Assert.Equal(0, seam.ProviderConstructionCount);
+
+        Assert.Equal(0, seam.NativeOpenCount);
 
     }
 
@@ -316,7 +349,7 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
     }
 
     [Fact]
-    public async Task Cancellation_constructs_and_opens_no_provider()
+    public async Task Cancellation_consumes_authority_and_retry_is_terminally_refused()
     {
 
         using ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
@@ -326,16 +359,27 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
 
         RecordingStoppedHostFactoryTestSeam seam = new();
 
+        RecordingNativeRuntime runtime = new();
+
+        StoppedHostGrimoireConnectionFactory factory = Factory(runtime, seam);
+
         using CancellationTokenSource canceled = new();
 
         await canceled.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Factory(
-                new RecordingNativeRuntime(),
-                seam)
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => factory
             .OpenStoppedHostInstallationResetPlanReadAsync(
                 authority,
                 canceled.Token));
+
+        Result<IStoppedHostGrimoireConnectionLease> replay = await factory
+            .OpenStoppedHostInstallationResetPlanReadAsync(
+                authority,
+                CancellationToken.None);
+
+        Assert.True(replay.IsFailure);
+
+        Assert.Equal(0, runtime.InitializeCount);
 
         Assert.Equal(0, seam.ProviderConstructionCount);
 

@@ -158,19 +158,11 @@ internal sealed class StoppedHostGrimoireConnectionFactory
 
         ArgumentNullException.ThrowIfNull(authority);
 
-        cancellationToken.ThrowIfCancellationRequested();
-
         string canonicalDatabasePath = Path.GetFullPath(
             ArcanumPaths.GrimoireDatabaseFile);
 
-        if (authority is not StoppedHostGrimoireConnectionAuthority stoppedHost)
-        {
-
-            return Refused();
-
-        }
-
-        Result consumed = stoppedHost.Consume(
+        Result consumed = StoppedHostGrimoireAuthorityIssuer.ConsumeAuthority(
+            authority,
             operation,
             mode,
             canonicalDatabasePath);
@@ -182,6 +174,8 @@ internal sealed class StoppedHostGrimoireConnectionFactory
                 consumed.Error);
 
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         try
         {
@@ -196,7 +190,8 @@ internal sealed class StoppedHostGrimoireConnectionFactory
 
         }
 
-        Result beforeConstruction = stoppedHost.Revalidate(canonicalDatabasePath);
+        Result beforeConstruction = StoppedHostGrimoireAuthorityIssuer
+            .RevalidateAuthority(authority, canonicalDatabasePath);
 
         if (beforeConstruction.IsFailure)
         {
@@ -229,7 +224,8 @@ internal sealed class StoppedHostGrimoireConnectionFactory
 
             _testSeam.AfterProviderConstruction();
 
-            Result beforeOpen = stoppedHost.Revalidate(canonicalDatabasePath);
+            Result beforeOpen = StoppedHostGrimoireAuthorityIssuer
+                .RevalidateAuthority(authority, canonicalDatabasePath);
 
             if (beforeOpen.IsFailure)
             {
@@ -283,10 +279,6 @@ internal sealed class StoppedHostGrimoireConnectionFactory
         }
 
     }
-
-    private static Result<IStoppedHostGrimoireConnectionLease> Refused() =>
-        Result<IStoppedHostGrimoireConnectionLease>.Failure(
-            StoppedHostGrimoireConnectionAuthority.RefusalError());
 
     private static Result<IStoppedHostGrimoireConnectionLease> Unavailable() =>
         Result<IStoppedHostGrimoireConnectionLease>.Failure(new Error(

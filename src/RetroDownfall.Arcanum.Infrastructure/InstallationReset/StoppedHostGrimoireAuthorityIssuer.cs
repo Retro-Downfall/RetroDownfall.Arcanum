@@ -45,13 +45,28 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
 
         ArgumentException.ThrowIfNullOrWhiteSpace(canonicalDatabasePath);
 
-        heldInstallationLock.AssertHeldFor(guardedGrimoireDirectory);
+        string canonicalGuardedDirectory = Path.GetFullPath(
+            guardedGrimoireDirectory);
+
+        string canonicalPath = Path.GetFullPath(canonicalDatabasePath);
+
+        if (!HasCanonicalRootBinding(
+                canonicalGuardedDirectory,
+                canonicalPath))
+        {
+
+            throw new InvalidOperationException(
+                "The stopped-host Grimoire path must belong to the guarded directory.");
+
+        }
+
+        heldInstallationLock.AssertHeldFor(canonicalGuardedDirectory);
 
         _heldInstallationLock = heldInstallationLock;
 
-        _guardedGrimoireDirectory = Path.GetFullPath(guardedGrimoireDirectory);
+        _guardedGrimoireDirectory = canonicalGuardedDirectory;
 
-        _canonicalDatabasePath = Path.GetFullPath(canonicalDatabasePath);
+        _canonicalDatabasePath = canonicalPath;
 
     }
 
@@ -102,7 +117,7 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
             _heldInstallationLock.AssertHeldFor(_guardedGrimoireDirectory);
 
             return Result<IStoppedHostGrimoireConnectionAuthority>.Success(
-                new StoppedHostGrimoireConnectionAuthority(
+                StoppedHostGrimoireConnectionAuthority.Create(
                     _heldInstallationLock,
                     _guardedGrimoireDirectory,
                     _canonicalDatabasePath,
@@ -124,111 +139,44 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
 
     private static Result<IStoppedHostGrimoireConnectionAuthority> Refused() =>
         Result<IStoppedHostGrimoireConnectionAuthority>.Failure(
-            StoppedHostGrimoireConnectionAuthority.RefusalError());
+            RefusalError());
 
-}
-
-internal sealed class StoppedHostGrimoireConnectionAuthority
-    : IStoppedHostGrimoireConnectionAuthority
-{
-
-    private readonly string _canonicalDatabasePath;
-
-    private readonly string _guardedGrimoireDirectory;
-
-    private readonly ArcanumMaintenanceLock _heldInstallationLock;
-
-    private readonly CovenantSqliteConnectionMode _mode;
-
-    private readonly StoppedHostGrimoireOperation _operation;
-
-    private int _consumedOrDisposed;
-
-    internal StoppedHostGrimoireConnectionAuthority(
-        ArcanumMaintenanceLock heldInstallationLock,
-        string guardedGrimoireDirectory,
-        string canonicalDatabasePath,
-        StoppedHostGrimoireOperation operation,
-        CovenantSqliteConnectionMode mode)
-    {
-
-        _heldInstallationLock = heldInstallationLock;
-
-        _guardedGrimoireDirectory = guardedGrimoireDirectory;
-
-        _canonicalDatabasePath = canonicalDatabasePath;
-
-        _operation = operation;
-
-        _mode = mode;
-
-    }
-
-    internal Result Consume(
+    internal static Result ConsumeAuthority(
+        IStoppedHostGrimoireConnectionAuthority authority,
         StoppedHostGrimoireOperation expectedOperation,
         CovenantSqliteConnectionMode expectedMode,
-        string expectedCanonicalDatabasePath)
-    {
+        string expectedCanonicalDatabasePath) =>
+        authority is StoppedHostGrimoireConnectionAuthority stoppedHost
+            ? stoppedHost.Consume(
+                expectedOperation,
+                expectedMode,
+                expectedCanonicalDatabasePath)
+            : Result.Failure(RefusalError());
 
-        if (Interlocked.CompareExchange(ref _consumedOrDisposed, 1, 0) != 0
-            || _operation != expectedOperation
-            || _mode != expectedMode
-            || !PathsEqual(_canonicalDatabasePath, expectedCanonicalDatabasePath))
-        {
+    internal static Result RevalidateAuthority(
+        IStoppedHostGrimoireConnectionAuthority authority,
+        string expectedCanonicalDatabasePath) =>
+        authority is StoppedHostGrimoireConnectionAuthority stoppedHost
+            ? stoppedHost.Revalidate(expectedCanonicalDatabasePath)
+            : Result.Failure(RefusalError());
 
-            return Refusal();
-
-        }
-
-        return Revalidate(expectedCanonicalDatabasePath);
-
-    }
-
-    internal Result Revalidate(string expectedCanonicalDatabasePath)
-    {
-
-        if (!PathsEqual(_canonicalDatabasePath, expectedCanonicalDatabasePath))
-        {
-
-            return Refusal();
-
-        }
-
-        try
-        {
-
-            _heldInstallationLock.AssertHeldFor(_guardedGrimoireDirectory);
-
-            return Result.Success();
-
-        }
-        catch (Exception exception) when (exception is InvalidOperationException
-            or ObjectDisposedException
-            or IOException
-            or UnauthorizedAccessException)
-        {
-
-            return Refusal();
-
-        }
-
-    }
-
-    public ValueTask DisposeAsync()
-    {
-
-        _ = Interlocked.CompareExchange(ref _consumedOrDisposed, 1, 0);
-
-        return ValueTask.CompletedTask;
-
-    }
-
-    internal static Error RefusalError() =>
+    private static Error RefusalError() =>
         new(
             ErrorCodes.Covenant.InvalidScope,
             "A stopped-host Grimoire connection requires its exact live installation lock authority.");
 
-    private static Result Refusal() => Result.Failure(RefusalError());
+    private static bool HasCanonicalRootBinding(
+        string guardedGrimoireDirectory,
+        string canonicalDatabasePath)
+    {
+
+        string? databaseDirectory = Path.GetDirectoryName(
+            Path.GetFullPath(canonicalDatabasePath));
+
+        return databaseDirectory is not null
+            && PathsEqual(guardedGrimoireDirectory, databaseDirectory);
+
+    }
 
     private static bool PathsEqual(string left, string right) =>
         string.Equals(
@@ -237,5 +185,128 @@ internal sealed class StoppedHostGrimoireConnectionAuthority
             OperatingSystem.IsWindows()
                 ? StringComparison.OrdinalIgnoreCase
                 : StringComparison.Ordinal);
+
+    private sealed class StoppedHostGrimoireConnectionAuthority
+        : IStoppedHostGrimoireConnectionAuthority
+    {
+
+        private readonly string _canonicalDatabasePath;
+
+        private readonly string _guardedGrimoireDirectory;
+
+        private readonly ArcanumMaintenanceLock _heldInstallationLock;
+
+        private readonly CovenantSqliteConnectionMode _mode;
+
+        private readonly StoppedHostGrimoireOperation _operation;
+
+        private int _consumedOrDisposed;
+
+        private StoppedHostGrimoireConnectionAuthority(
+            ArcanumMaintenanceLock heldInstallationLock,
+            string guardedGrimoireDirectory,
+            string canonicalDatabasePath,
+            StoppedHostGrimoireOperation operation,
+            CovenantSqliteConnectionMode mode)
+        {
+
+            _heldInstallationLock = heldInstallationLock;
+
+            _guardedGrimoireDirectory = guardedGrimoireDirectory;
+
+            _canonicalDatabasePath = canonicalDatabasePath;
+
+            _operation = operation;
+
+            _mode = mode;
+
+        }
+
+        internal static IStoppedHostGrimoireConnectionAuthority Create(
+            ArcanumMaintenanceLock heldInstallationLock,
+            string guardedGrimoireDirectory,
+            string canonicalDatabasePath,
+            StoppedHostGrimoireOperation operation,
+            CovenantSqliteConnectionMode mode) =>
+            new StoppedHostGrimoireConnectionAuthority(
+                heldInstallationLock,
+                guardedGrimoireDirectory,
+                canonicalDatabasePath,
+                operation,
+                mode);
+
+        internal Result Consume(
+            StoppedHostGrimoireOperation expectedOperation,
+            CovenantSqliteConnectionMode expectedMode,
+            string expectedCanonicalDatabasePath)
+        {
+
+            if (Interlocked.CompareExchange(ref _consumedOrDisposed, 1, 0) != 0
+                || !HasCanonicalRootBinding(
+                    _guardedGrimoireDirectory,
+                    _canonicalDatabasePath)
+                || _operation != expectedOperation
+                || _mode != expectedMode
+                || !PathsEqual(
+                    _canonicalDatabasePath,
+                    expectedCanonicalDatabasePath))
+            {
+
+                return Refusal();
+
+            }
+
+            return Revalidate(expectedCanonicalDatabasePath);
+
+        }
+
+        internal Result Revalidate(string expectedCanonicalDatabasePath)
+        {
+
+            if (!HasCanonicalRootBinding(
+                    _guardedGrimoireDirectory,
+                    _canonicalDatabasePath)
+                || !PathsEqual(
+                    _canonicalDatabasePath,
+                    expectedCanonicalDatabasePath))
+            {
+
+                return Refusal();
+
+            }
+
+            try
+            {
+
+                _heldInstallationLock.AssertHeldFor(_guardedGrimoireDirectory);
+
+                return Result.Success();
+
+            }
+            catch (Exception exception) when (
+                exception is InvalidOperationException
+                    or ObjectDisposedException
+                    or IOException
+                    or UnauthorizedAccessException)
+            {
+
+                return Refusal();
+
+            }
+
+        }
+
+        public ValueTask DisposeAsync()
+        {
+
+            _ = Interlocked.CompareExchange(ref _consumedOrDisposed, 1, 0);
+
+            return ValueTask.CompletedTask;
+
+        }
+
+        private static Result Refusal() => Result.Failure(RefusalError());
+
+    }
 
 }
