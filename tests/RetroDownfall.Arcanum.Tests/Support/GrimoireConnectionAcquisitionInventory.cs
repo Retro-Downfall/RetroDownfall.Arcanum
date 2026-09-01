@@ -393,6 +393,16 @@ internal static class GrimoireConnectionAcquisitionScanner
 
             }
 
+            if (entry.NonServingProof is not null && !HasExactProofEvidence(entry))
+            {
+
+                failures.Add(new(
+                    InventoryFailureCode.InvalidClassification,
+                    entry.Identity,
+                    "A non-serving proof must derive from one exact catalog identity."));
+
+            }
+
             bool canonicalLivePath = entry.Identity.Fingerprint.Contains(
                 "ArcanumPaths.GrimoireDatabaseFile",
                 StringComparison.Ordinal);
@@ -415,6 +425,28 @@ internal static class GrimoireConnectionAcquisitionScanner
                     InventoryFailureCode.MissingNonServingProof,
                     entry.Identity,
                     "Every non-live or exact-negative candidate requires an exact proof."));
+
+            }
+
+        }
+
+        foreach (IGrouping<string, GrimoireAcquisitionCatalogEntry> duplicate in catalog
+            .Where(static entry => entry.NonServingProof is not null)
+            .GroupBy(static entry => entry.NonServingProof!.EvidenceMember, StringComparer.Ordinal))
+        {
+
+            if (duplicate.Count() > 1)
+            {
+
+                foreach (GrimoireAcquisitionCatalogEntry entry in duplicate)
+                {
+
+                    failures.Add(new(
+                        InventoryFailureCode.InvalidClassification,
+                        entry.Identity,
+                        "A non-serving proof cannot be shared by multiple catalog identities."));
+
+                }
 
             }
 
@@ -474,7 +506,8 @@ internal static class GrimoireConnectionAcquisitionScanner
     }
 
     internal static IReadOnlyList<GrimoireAcquisitionCatalogEntry> Catalog() =>
-    [
+        BindProofEvidence(
+        [
         new(
             new("src/RetroDownfall.Arcanum.Cli/Infrastructure/CliCommandTree.Configuration.cs", "CliCommandTree", "BuildConfig(1)", AcquisitionConstructKind.ProviderOpen, "handler.Open", 0, "handler.Open()"),
             GrimoirePathAuthority.NotGrimoire,
@@ -2850,28 +2883,43 @@ internal static class GrimoireConnectionAcquisitionScanner
         V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "InitializeAcceleratorAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3AcceleratorInitializationAsync", 2, "_connections.OpenV3AcceleratorInitializationAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.InitializeAcceleratorAsync(2)"),
         V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "ReplaceAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3PostReplaceJournalRestoreAsync", 2, "_connections.OpenV3PostReplaceJournalRestoreAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.ReplaceAsync(3)"),
         V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "VacuumAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3VacuumAsync", 2, "_connections.OpenV3VacuumAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.VacuumAsync(2)")
-    ];
+        ]);
+
+    private static IReadOnlyList<GrimoireAcquisitionCatalogEntry> BindProofEvidence(
+        IReadOnlyList<GrimoireAcquisitionCatalogEntry> catalog) =>
+        [
+            .. catalog.Select(static entry => entry.NonServingProof is { } proof
+                ? entry with
+                {
+                    NonServingProof = proof with
+                    {
+                        EvidenceMember = ExactProofEvidenceMember(entry.Identity),
+                    },
+                }
+                : entry),
+        ];
 
     private static GrimoireAcquisitionCatalogEntry Stopped(
         AcquisitionIdentity identity,
-        string evidenceMember) =>
+        string _) =>
         new(
             identity,
             GrimoirePathAuthority.StoppedHostGrimoire,
             GrimoireAcquisitionKind.StoppedHostRecovery,
             GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
-            new(ExactNonServingProofKind.StoppedHostAuthority, evidenceMember));
+            new(ExactNonServingProofKind.StoppedHostAuthority, ExactProofEvidenceMember(identity)));
 
     private static GrimoireAcquisitionCatalogEntry V3(
         AcquisitionIdentity identity,
         GrimoirePathAuthority pathAuthority,
-        string evidenceMember) =>
+        string _) =>
         new(
             identity,
             pathAuthority,
             GrimoireAcquisitionKind.LegacyV3Maintenance,
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
-            new(ExactNonServingProofKind.LegacyV3ExclusiveLease, evidenceMember, 248));
+            new(ExactNonServingProofKind.LegacyV3ExclusiveLease, ExactProofEvidenceMember(identity), 248));
+
     private static void ValidateMethodMarker(
         AcquisitionSource source,
         MethodDeclarationSyntax method,
@@ -2899,7 +2947,10 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         }
 
-        if ((ReturnsConnectionOwningType(method.ReturnType) || ContainsProviderOpen(method)) && !IsMarked(method))
+        if (ReturnsConnectionOwningType(method.ReturnType)
+            && ContainsDirectConnectionConstruction(method)
+            && !HasMarkedEnclosingFactoryRoute(method)
+            && !IsMarked(method))
         {
 
             failures.Add(new(
@@ -2938,7 +2989,8 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         }
 
-        if ((ReturnsConnectionOwningType(localFunction.ReturnType) || ContainsProviderOpen(localFunction))
+        if (ReturnsConnectionOwningType(localFunction.ReturnType)
+            && ContainsDirectConnectionConstruction(localFunction)
             && !IsMarked(localFunction))
         {
 
@@ -2951,9 +3003,19 @@ internal static class GrimoireConnectionAcquisitionScanner
 
     }
 
-    private static bool ContainsProviderOpen(SyntaxNode node) =>
-        node.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(invocation =>
-            ProviderOpenNames.Contains(TerminalName(invocation.Expression)));
+    private static bool ContainsDirectConnectionConstruction(SyntaxNode node) =>
+        node.DescendantNodes().OfType<ObjectCreationExpressionSyntax>().Any(creation =>
+            ConnectionOwningReturnNames.Contains(TerminalName(creation.Type)));
+
+    private static bool HasMarkedEnclosingFactoryRoute(MethodDeclarationSyntax method) =>
+        method.Modifiers.Any(static modifier => modifier.IsKind(SyntaxKind.PrivateKeyword))
+        && method.Parent is TypeDeclarationSyntax type
+        && type.Members.OfType<MethodDeclarationSyntax>()
+            .Where(candidate => IsConcrete(candidate) && IsMarked(candidate))
+            .SelectMany(static candidate => candidate.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            .Any(invocation =>
+                TerminalName(invocation.Expression) == method.Identifier.ValueText
+                && invocation.ArgumentList.Arguments.Count == method.ParameterList.Parameters.Count);
 
     private static bool ReturnsConnectionOwningType(TypeSyntax type)
     {
@@ -3018,6 +3080,20 @@ internal static class GrimoireConnectionAcquisitionScanner
         || identity.EnclosingMember.Contains('*', StringComparison.Ordinal)
         || identity.CalleeOrConstructedType.Contains('*', StringComparison.Ordinal)
         || identity.Fingerprint.Contains('*', StringComparison.Ordinal);
+
+    private static bool HasExactProofEvidence(GrimoireAcquisitionCatalogEntry entry) =>
+        entry.NonServingProof?.EvidenceMember == ExactProofEvidenceMember(entry.Identity);
+
+    private static string ExactProofEvidenceMember(AcquisitionIdentity identity) =>
+        string.Join(
+            '|',
+            identity.RelativePath,
+            identity.EnclosingType,
+            identity.EnclosingMember,
+            identity.ConstructKind.ToString(),
+            identity.CalleeOrConstructedType,
+            identity.Arity.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            identity.Fingerprint);
 
     private static bool IsRouteAttribute(AttributeSyntax attribute) =>
         TerminalName(attribute.Name) == "GrimoireConnectionAcquisitionRoute";
