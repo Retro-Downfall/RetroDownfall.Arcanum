@@ -1,7 +1,6 @@
 # Issue #239: Host-wide Grimoire Admission and Offline Transitions
 
-**Status:** Internally reviewed revised design with 15 child issues created; pending user approval
-and a replacement implementation plan.
+**Status:** Approved umbrella; #243/#244 integrated; #245 current delivered child; #246–#257 pending.
 
 **Branch:** `codex/issue-239-grimoire-admission`, cut from `origin/main` at
 `988a469c765346132e5a2ea1bf3906519f6bdf00`.
