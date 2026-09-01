@@ -22,8 +22,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 ///
 /// <para>Only four dispositions exist and only one of them starts normally with Covenant. A tainted
 /// pair starts in permanent no-Covenant mode and may advertise the escape hatch; everything else
-/// keeps startup closed with <c>Covenant.HostToolsTransitionRequired</c> and the exact offline
-/// command, because a host that guessed here would either lose the evidence of an escape or run
+/// keeps startup closed with <c>Covenant.HostToolsTransitionRequired</c> and the remedy that exists
+/// today, because a host that guessed here would either lose the evidence of an escape or run
 /// Covenant beside one.</para>
 /// </remarks>
 internal sealed class HostProcessToolsStartupGate(
@@ -34,8 +34,28 @@ internal sealed class HostProcessToolsStartupGate(
     HostProcessToolsRuntimePolicy policy)
 {
 
-    /// <summary>The one remediation instruction every blocked disposition prints.</summary>
-    internal const string OfflineCommand = "arcanum security host-process-tools enable --yes";
+    /// <summary>What an operator whose host merely started with the escape hatch armed can do.</summary>
+    /// <remarks>
+    /// This used to name <c>arcanum security host-process-tools enable --yes</c>, the offline
+    /// transition command — which no verb registers, so an operator who ran it got an unknown-command
+    /// parse error and no second instruction. Clearing the variable is the remedy that exists today,
+    /// and it is an honest one: the process refuses these tools either way, so removing the opt-in
+    /// costs nothing and stops the host warning about a state it is not in.
+    /// </remarks>
+    internal const string EscapeHatchRemediation =
+        "Host process tools stay refused for this process. Clear the "
+        + "ARCANUM_ALLOW_HOST_PROCESS_TOOLS environment variable and start the host again.";
+
+    /// <summary>What an operator whose durable evidence disagrees with itself can do: not much.</summary>
+    /// <remarks>
+    /// Naming the offline command here would be the same fiction, and naming the environment
+    /// variable would be a different one — an unreadable credential store blocks through this path
+    /// too, and clearing an opt-in does nothing for it. Saying plainly that no repair has shipped is
+    /// the only instruction that is true of every disposition that reaches it.
+    /// </remarks>
+    internal const string EvidenceMismatchRemediation =
+        "The host cannot start while the recorded host-process-tools evidence disagrees with itself, "
+        + "and no offline repair command has shipped.";
 
     public async Task<Result<HostProcessToolsStartupDecision>> ClassifyAndPublishAsync(
         CancellationToken cancellationToken)
@@ -198,11 +218,21 @@ internal sealed class HostProcessToolsStartupGate(
             HostProcessToolsPermitted: false,
             blocker));
 
-        Log.Error("Arcanum cannot start: {Reason} Run `{Command}` while the host is stopped.", reason, OfflineCommand);
+        // The instruction is per blocker because the remedies are not the same thing. A clean
+        // installation that merely armed the opt-in has one an operator can act on; evidence that
+        // disagrees with itself does not, and offering the first there would be a new falsehood.
+        string remediation = blocker is HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition
+            ? EscapeHatchRemediation
+            : EvidenceMismatchRemediation;
+
+        Log.Error(
+            "The host-process-tools startup check refused this process: {Reason} {Remediation}",
+            reason,
+            remediation);
 
         return new Error(
             ErrorCodes.Covenant.HostToolsTransitionRequired,
-            $"{reason} Run `{OfflineCommand}` while the host is stopped.");
+            $"{reason} {remediation}");
 
     }
 

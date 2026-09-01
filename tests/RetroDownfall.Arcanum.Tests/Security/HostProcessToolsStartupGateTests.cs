@@ -1,8 +1,10 @@
+using System.Text.RegularExpressions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Cli;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
@@ -54,12 +56,15 @@ public sealed class HostProcessToolsStartupGateTests
 
         Assert.Equal(ErrorCodes.Covenant.HostToolsTransitionRequired, result.Error.Code);
 
-        Assert.Contains(HostProcessToolsStartupGate.OfflineCommand, result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            HostProcessToolsStartupGate.EscapeHatchRemediation,
+            result.Error.Message,
+            StringComparison.Ordinal);
 
         Assert.False(harness.Policy.CovenantPermitted);
 
         // The blocker is what lets the host tell "clean but armed" apart from "evidence disagrees":
-        // only the first is survivable, and only until the offline enable command ships.
+        // only the first is survivable, and only the first has a remedy the operator can act on.
         Assert.Equal(
             HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition,
             harness.Policy.Blocker);
@@ -266,6 +271,123 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.Equal(ErrorCodes.Covenant.OperatorAuthorityUnavailable, restored.Error.Code);
 
         Assert.False(policy.CovenantPermitted);
+
+    }
+
+    /// <summary>
+    /// Every command a refused startup tells the operator to run has to be one the CLI has.
+    /// </summary>
+    /// <remarks>
+    /// The remediation instruction is the only thing the operator of a host that will not start can
+    /// act on, and a host that spends it on a command the parser rejects has told them nothing. The
+    /// projected surface is the same tree the parser walks, so a message and the shipped verbs
+    /// cannot drift apart without this failing.
+    /// </remarks>
+    [Fact]
+    public async Task No_refusal_message_names_a_command_the_cli_does_not_have()
+    {
+
+        // The control on the extractor: it has to find both a real chain and a fictional one, or a
+        // message it silently stopped matching would satisfy the assertion below by finding nothing.
+        Assert.Equal(
+            ["ward resolve"],
+            CommandChains("Run `arcanum ward resolve --allow` while the host is stopped."));
+
+        Assert.Equal(
+            ["security host-process-tools enable"],
+            CommandChains("Run `arcanum security host-process-tools enable --yes`."));
+
+        HashSet<string> paths =
+        [
+            .. CliSurfaceTests.Walk(CliSurfaceTests.BuildMap())
+                .Select(static command => command.Path),
+        ];
+
+        Assert.Contains("ward resolve", paths);
+
+        List<string> offenders = [];
+
+        foreach (string message in await RefusalMessagesAsync())
+        {
+
+            offenders.AddRange(CommandChains(message).Where(chain => !paths.Contains(chain)));
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A blocked startup may only name a command the CLI actually registers: "
+            + string.Join("; ", offenders));
+
+    }
+
+    /// <summary>One refusal message per blocked disposition the gate can produce.</summary>
+    private static async Task<IReadOnlyList<string>> RefusalMessagesAsync()
+    {
+
+        List<string> messages = [];
+
+        Harness escapeHatch = Harness.Create();
+
+        escapeHatch.Environment.EscapeHatchOptIn = true;
+
+        messages.Add((await escapeHatch.Gate
+            .ClassifyAndPublishAsync(CancellationToken.None)).Error.Message);
+
+        Harness pending = Harness.Create();
+
+        _ = await pending.Authority.CommitPendingAsync(
+            pending.Authority.Row,
+            Transition,
+            CancellationToken.None);
+
+        messages.Add((await pending.Gate
+            .ClassifyAndPublishAsync(CancellationToken.None)).Error.Message);
+
+        Harness stray = Harness.Create();
+
+        stray.Markers.SeedForeignMarker();
+
+        messages.Add((await stray.Gate
+            .ClassifyAndPublishAsync(CancellationToken.None)).Error.Message);
+
+        Harness unreadable = Harness.Create();
+
+        unreadable.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Unavailable;
+
+        messages.Add((await unreadable.Gate
+            .ClassifyAndPublishAsync(CancellationToken.None)).Error.Message);
+
+        return messages;
+
+    }
+
+    /// <summary>The verb chain of every backtick-quoted <c>arcanum</c> invocation in a message.</summary>
+    private static IReadOnlyList<string> CommandChains(string message)
+    {
+
+        List<string> chains = [];
+
+        foreach (Match quoted in Regex.Matches(message, "`arcanum ([^`]+)`"))
+        {
+
+            string[] verbs =
+            [
+                .. quoted.Groups[1].Value
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .TakeWhile(static token => !token.StartsWith('-')),
+            ];
+
+            if (verbs.Length > 0)
+            {
+
+                chains.Add(string.Join(' ', verbs));
+
+            }
+
+        }
+
+        return chains;
 
     }
 
