@@ -973,10 +973,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireClosingOwner secondClosing = Begin(gate, Owner(27));
 
-        using SqliteConnection laterConnection = new();
-
         _ = Assert.Throws<GrimoireMaintenanceUnavailableException>(
-            () => gate.AcquireOrdinaryOpen(laterConnection));
+            () => gate.AcquireOrdinaryOpen(initialConnection));
 
         await initiating!.DisposeAsync();
 
