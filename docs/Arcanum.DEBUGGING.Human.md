@@ -174,6 +174,6 @@ Use this document when you need to understand how to debug a failing endpoint, t
 - Architecture and design source of truth: [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)
 - API source of truth: [`Arcanum.API.md`](Arcanum.API.md)
 - Human navigation guide: [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md)
-- Agent/operator primer: [`README.md`](../README.md)
+- Public repository overview: [`README.md`](../README.md)
 - Complete configuration reference: [`Compendium.README.md`](Compendium.README.md)
 - The breakpoints above are verified against the code. Correct any discrepancy here and update the owning architecture, API, or configuration document when its contract also changed.

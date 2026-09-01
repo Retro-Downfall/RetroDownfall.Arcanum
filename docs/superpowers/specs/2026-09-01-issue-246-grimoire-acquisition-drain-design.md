@@ -59,8 +59,9 @@ different authorities and cannot safely share one global policy.
 - Replace the ambient `ICovenantMaintenanceConnectionFactory` API with exact operation-specific
   legacy V3 entry points plus the new capability-bound Grimoire factory.
 - Add an exact bidirectional acquisition-callsite inventory with individual classifications.
-- Update the root README, `docs/Arcanum.DESIGN.md`, the approved #239 umbrella status, and this child
-  specification with the delivered boundary.
+- Update `docs/Arcanum.DESIGN.md`, the approved #239 umbrella status, and this child specification
+  with the delivered boundary. The root README is the curated public GitHub front page and is not
+  maintained as part of implementation delivery.
 
 ### 2.2 Excluded
 

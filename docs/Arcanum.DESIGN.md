@@ -2,18 +2,18 @@
 
 This document is the **technical architecture, design, persistence, runtime, packaging, and testing source of truth** for the Retro Downfall **Arcanum** solution. The intended audience is **senior C# / .NET engineers** who will extend, review, or operate the system.
 
-Arcanum's documentation contract contains seven canonical documents and one focused companion:
+Arcanum's documentation contract contains six canonical implementation documents, one curated public front page, and one focused companion:
 
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) — the source of truth for architecture and design details and decisions.
 - [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) — the human-readable companion to DESIGN (conceptual prose, navigation, turn-lifecycle and dependency-direction diagrams, and pointers into DESIGN for contracts).
 - [`Arcanum.API.md`](Arcanum.API.md) — the source of truth for native and OpenAI-compatible API routes, wire contracts, status mapping, and public error codes.
 - [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) — the complete user-facing CLI command, argument, option, alias, interactive-command, output, and exit-code reference.
-- [`README.md`](../README.md) — the agent/operator primer for Cursor prompts (summarized architecture/design, repo layout, invariants, verification commands, brief CLI quick reference) plus the required reinstall instruction.
+- [`README.md`](../README.md) — the curated public GitHub front page. It is not an implementation contract and changes only when its public-facing content intentionally changes.
 - [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) — the only complete `arcanum.json` key/default/bounds and credential-reference listing.
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — the verified breakpoint map and task-based debugging recipes.
 - [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md) — the focused companion for the shared model/tool loop, attachment continuation ordering, materialization ledger, memory promotion gate, and Command Center context projection. It elaborates §10.7 but does not supersede this document.
 
-When a change under `src/`, packaging scripts, or workflows alters a fact described here, update the owning section in the same change set. Pair operator-visible behavior with the root `README.md`, API changes with `Arcanum.API.md`, configuration-surface changes with `Compendium.README.md`, CLI surface changes with `Arcanum.Command.Reference.md`, navigation updates with `Arcanum.Design.Human.md`, and debugging guides with `Arcanum.DEBUGGING.Human.md`.
+When a change under `src/`, packaging scripts, or workflows alters a fact described here, update the owning section in the same change set. Pair API changes with `Arcanum.API.md`, configuration-surface changes with `Compendium.README.md`, CLI surface changes with `Arcanum.Command.Reference.md`, navigation updates with `Arcanum.Design.Human.md`, and debugging guides with `Arcanum.DEBUGGING.Human.md`. Update the root `README.md` only when the curated public front page itself intentionally changes.
 
 ---
 
@@ -3914,13 +3914,13 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 ## 18. Document maintenance
 
-The repository maintains seven canonical documents plus the focused chat-loop companion. Resolve a contradiction in the document that owns that contract. Update the owning document in every change set.
+The repository maintains six canonical implementation documents, one curated public front page, and the focused chat-loop companion. Resolve a contradiction in the document that owns that contract. Update the owning document in every change set.
 
 - `Arcanum.DESIGN.md` for architecture, design decisions, persistence, runtime behavior, testing, and packaging;
 - `Arcanum.API.md` for native and OpenAI-compatible routes, wire contracts, status mapping, and public error codes;
 - `Arcanum.Command.Reference.md` for CLI commands, arguments, options, aliases, interactive commands, output modes, and exit behavior;
 - `Compendium.README.md` for the complete public configuration surface and editor behavior;
-- the root `README.md` for concise agent/operator orientation and runnable commands;
+- the root `README.md` for the curated public GitHub front page, updated only when that public-facing content intentionally changes;
 - `Arcanum.Design.Human.md` for human navigation without duplicating technical or configuration contracts;
 - `Arcanum.DEBUGGING.Human.md` for verified breakpoint and debugging recipes.
 

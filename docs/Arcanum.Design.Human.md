@@ -6,12 +6,12 @@ This guide explains Arcanum in ordinary engineering language. It is meant to hel
 
 ## 1. Start with the document that owns the question
 
-The repository has seven canonical documents and one focused companion:
+The repository has six canonical implementation documents, one curated public front page, and one focused companion:
 
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) owns architecture, design, persistence, runtime, packaging, and test contracts.
 - [`Arcanum.API.md`](Arcanum.API.md) owns native and OpenAI-compatible HTTP contracts.
 - [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) owns complete CLI syntax, options, aliases, interactive commands, output modes, and exit behavior.
-- [`README.md`](../README.md) is the contributor and operator primer.
+- [`README.md`](../README.md) is the curated public GitHub front page, not an implementation contract.
 - This guide explains how the pieces fit together.
 - [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) is the complete public configuration reference.
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) is the verified breakpoint and debugging recipe guide.
