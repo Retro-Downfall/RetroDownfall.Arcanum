@@ -230,24 +230,95 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Publication_carries_no_handler_and_registry_handler_refuses_an_illegal_edge()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        GrimoireOfflineTransitionTypedPublication current = Value(await lifecycle.BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            PreparedPayload(),
+            CancellationToken.None));
+
+        Assert.DoesNotContain(
+            typeof(GrimoireOfflineTransitionTypedPublication).GetProperties(),
+            static property => property.PropertyType
+                == typeof(IGrimoireOfflineTransitionHandler));
+
+        CovenantResetOfflineTransitionPayloadV1 skipped = PreparedPayload() with
+        {
+            Lifecycle = PreparedPayload().Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.Applying,
+            },
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            skipped,
+            CancellationToken.None)).IsFailure);
+
+        Assert.Equal(1UL, Value(await RawStore().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None)).Publication!.Envelope.Revision);
+
+    }
+
+    [Fact]
+    public async Task Wrong_slot_epoch_typed_begin_leaves_no_active_journal()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 stale = PreparedPayload() with
+        {
+            Binding = PreparedPayload().Binding with { SlotEpoch = 99 },
+        };
+
+        Assert.True((await LifecycleStore().BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            stale,
+            CancellationToken.None)).IsFailure);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+            Value(await RawStore().RecoverAsync(
+                _lock,
+                _guarded,
+                CancellationToken.None)).Outcome);
+
+    }
+
     private IEnumerable<CovenantResetOfflineTransitionPayloadV1> TerminalSequence(
         CovenantResetOfflineTransitionPayloadV1 prepared)
     {
-
-        GrimoireOfflineTransitionClosingEvidence closed = new(
-            true,
-            true,
-            true,
-            true,
-            true,
-            prepared.Binding.SourceDatasetGeneration);
 
         CovenantResetOfflineTransitionPayloadV1 closing = prepared with
         {
             Lifecycle = prepared.Lifecycle with
             {
                 State = GrimoireOfflineTransitionState.Closing,
-                ClosingEvidence = closed,
+            },
+        };
+
+        yield return closing;
+
+        closing = closing with
+        {
+            Lifecycle = closing.Lifecycle with
+            {
+                ClosingEvidence = new(
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    prepared.Binding.SourceDatasetGeneration),
             },
         };
 
@@ -268,7 +339,22 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
             .TakeWhile(static phase => phase <= CovenantResetPhase.SidecarsVerified))
         {
 
-            applying = applying with { LastCompletedPhase = phase };
+            applying = applying with
+            {
+                InFlightPhase = phase,
+                InFlightBeforeState = new(
+                    Digest((byte)(0x60 + (byte)phase)),
+                    Digest(0x70)),
+            };
+
+            yield return applying;
+
+            applying = applying with
+            {
+                LastCompletedPhase = phase,
+                InFlightPhase = null,
+                InFlightBeforeState = null,
+            };
 
             yield return applying;
 
@@ -308,7 +394,7 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         GrimoireOfflineTransitionReconciliationEvidence suffix = new(
             GrimoireOfflineTransitionReconciliationStep.CandidateVerified,
             DatabaseTerminalWinnerDigest: null,
-            ParentReceiptNotRequired: true,
+            ParentReceiptNotRequired: false,
             ParentReceiptDigest: null,
             LaneClosed: false,
             CovenantDispositionIntent: null);
@@ -338,6 +424,7 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         suffix = suffix with
         {
             Step = GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied,
+            ParentReceiptNotRequired = true,
         };
 
         yield return reconciling = reconciling with

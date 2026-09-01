@@ -39,6 +39,9 @@ internal delegate Task<Result> GrimoireOfflineTransitionJournalReplaceDurably(
     FileHandleIdentity? expectedCurrentIdentity,
     CancellationToken cancellationToken);
 
+internal delegate Result<ReadOnlyMemory<byte>> GrimoireOfflineTransitionJournalPayloadFactory(
+    ulong slotEpoch);
+
 internal interface IGrimoireOfflineTransitionJournalStore
 {
 
@@ -50,6 +53,16 @@ internal interface IGrimoireOfflineTransitionJournalStore
         GrimoireOfflineTransitionKind kind,
         byte payloadVersion,
         ReadOnlyMemory<byte> payloadBytes,
+        CancellationToken cancellationToken);
+
+    Task<Result<GrimoireOfflineTransitionJournalPublication>> BeginBoundAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        Guid installationId,
+        Guid operationId,
+        GrimoireOfflineTransitionKind kind,
+        byte payloadVersion,
+        GrimoireOfflineTransitionJournalPayloadFactory payloadFactory,
         CancellationToken cancellationToken);
 
     Task<Result<GrimoireOfflineTransitionJournalPublication>> AdvanceAsync(
@@ -94,6 +107,81 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             new GrimoireOfflineTransitionJournalAnchorStore(credentials),
             afterStep: null)
     {
+
+    }
+
+    public async Task<Result<GrimoireOfflineTransitionJournalPublication>> BeginBoundAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        Guid installationId,
+        Guid operationId,
+        GrimoireOfflineTransitionKind kind,
+        byte payloadVersion,
+        GrimoireOfflineTransitionJournalPayloadFactory payloadFactory,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        ArgumentNullException.ThrowIfNull(payloadFactory);
+
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        Result<GrimoireOfflineTransitionJournalLocation> resolved =
+            _files.ResolveLocation(guardedDirectory);
+
+        if (resolved.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalPublication>.Failure(resolved.Error);
+
+        }
+
+        Result<GrimoireOfflineTransitionAnchorV1?> read = _anchors.Read(resolved.Value);
+
+        if (read.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalPublication>.Failure(read.Error);
+
+        }
+
+        ulong slotEpoch;
+
+        try
+        {
+
+            slotEpoch = read.Value is { State: GrimoireOfflineTransitionAnchorState.Active } active
+                ? active.SlotEpoch
+                : checked((read.Value?.SlotEpoch ?? 0) + 1);
+
+        }
+        catch (OverflowException)
+        {
+
+            return Invalid<GrimoireOfflineTransitionJournalPublication>();
+
+        }
+
+        Result<ReadOnlyMemory<byte>> payload = payloadFactory(slotEpoch);
+
+        if (payload.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalPublication>.Failure(payload.Error);
+
+        }
+
+        return await BeginAsync(
+                heldInstallationLock,
+                guardedDirectory,
+                installationId,
+                operationId,
+                kind,
+                payloadVersion,
+                payload.Value,
+                cancellationToken)
+            .ConfigureAwait(false);
 
     }
 

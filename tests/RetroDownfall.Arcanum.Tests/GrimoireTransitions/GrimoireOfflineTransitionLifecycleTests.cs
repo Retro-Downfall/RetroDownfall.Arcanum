@@ -165,6 +165,239 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
     }
 
     [Fact]
+    public void Applying_completion_requires_the_exact_prior_in_flight_publication()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 applying = Payload(
+            GrimoireOfflineTransitionState.Applying);
+
+        CovenantResetOfflineTransitionPayloadV1 direct = applying with
+        {
+            LastCompletedPhase = CovenantResetPhase.CanonicalApplied,
+        };
+
+        Assert.True(Handler().ValidateAdvance(applying, direct).IsFailure);
+
+    }
+
+    [Fact]
+    public void Edges_preserve_every_unowned_evidence_family_and_recovered_shapes_are_coherent()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 closing = Payload(
+            GrimoireOfflineTransitionState.Closing) with
+        {
+            Lifecycle = Lifecycle(GrimoireOfflineTransitionState.Closing) with
+            {
+                ClosingEvidence = new(true, false, false, false, false, null),
+            },
+        };
+
+        CovenantResetOfflineTransitionPayloadV1 closureAdvance = closing with
+        {
+            Lifecycle = closing.Lifecycle with
+            {
+                ClosingEvidence = new(true, true, false, false, false, null),
+            },
+        };
+
+        Assert.True(Handler().ValidateAdvance(closing, closureAdvance with
+        {
+            LastCompletedPhase = CovenantResetPhase.CanonicalApplied,
+        }).IsFailure);
+
+        Assert.True(Handler().ValidateAdvance(closing, closureAdvance with
+        {
+            ReplacementEvidence = Replacement(),
+        }).IsFailure);
+
+        Assert.True(Handler().ValidateAdvance(closing, closureAdvance with
+        {
+            Lifecycle = closureAdvance.Lifecycle with
+            {
+                VerificationEvidence = new(true, false, false),
+            },
+        }).IsFailure);
+
+        CovenantResetOfflineTransitionPayloadV1 applying = Payload(
+            GrimoireOfflineTransitionState.Applying,
+            inFlight: CovenantResetPhase.CanonicalApplied);
+
+        CovenantResetOfflineTransitionPayloadV1 completed = applying with
+        {
+            LastCompletedPhase = CovenantResetPhase.CanonicalApplied,
+            InFlightPhase = null,
+            InFlightBeforeState = null,
+        };
+
+        Assert.True(Handler().ValidateAdvance(applying, completed with
+        {
+            Lifecycle = completed.Lifecycle with
+            {
+                ClosingEvidence = completed.Lifecycle.ClosingEvidence with
+                {
+                    ClosedDatasetGeneration = Guid.NewGuid(),
+                },
+            },
+        }).IsFailure);
+
+        Assert.True(Handler().ValidateAdvance(applying, completed with
+        {
+            InFlightBeforeState = new(Digest(0x41), Digest(0x42)),
+        }).IsFailure);
+
+        CovenantResetOfflineTransitionPayloadV1 retirement = Payload(
+            GrimoireOfflineTransitionState.RetirementPending,
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen) with
+        {
+            InFlightPhase = CovenantResetPhase.CanonicalApplied,
+            InFlightBeforeState = new(Digest(0x31), Digest(0x32)),
+        };
+
+        Assert.False(GrimoireOfflineTransitionLifecycleValidator.ValidPayload(retirement));
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryCurrent = new(
+            closing.Binding with { Kind = GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure },
+            closing.Lifecycle,
+            closing.LastCompletedPhase,
+            closing.InFlightPhase,
+            closing.InFlightBeforeState,
+            closing.ReplacementEvidence,
+            OrdinaryFactoryContinuationCompleted: false);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryNext = factoryCurrent with
+        {
+            Lifecycle = closureAdvance.Lifecycle,
+            OrdinaryFactoryContinuationCompleted = true,
+        };
+
+        Assert.True(new HealthyCatalogFactoryErasureOfflineTransitionHandlerV1()
+            .ValidateAdvance(factoryCurrent, factoryNext).IsFailure);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryBoundary =
+            factoryCurrent with
+            {
+                Lifecycle = Lifecycle(GrimoireOfflineTransitionState.Applying),
+                LastCompletedPhase = CovenantResetPhase.ManagedArtifactsProcessed,
+            };
+
+        Assert.True(new HealthyCatalogFactoryErasureOfflineTransitionHandlerV1()
+            .ValidateAdvance(
+                factoryBoundary,
+                factoryBoundary with { OrdinaryFactoryContinuationCompleted = true })
+            .IsSuccess);
+
+    }
+
+    [Fact]
+    public void Caller_asserted_blocker_resolution_and_combined_resume_mutation_are_refused()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 applying = Payload(
+            GrimoireOfflineTransitionState.Applying,
+            inFlight: CovenantResetPhase.CanonicalApplied);
+
+        GrimoireOfflineTransitionBlocker blocker = new(
+            "Covenant.ManualRecoveryRequired",
+            GrimoireOfflineTransitionState.Applying,
+            Digest(0x71));
+
+        CovenantResetOfflineTransitionPayloadV1 kept = applying with
+        {
+            Lifecycle = applying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = blocker,
+            },
+        };
+
+        CovenantResetOfflineTransitionPayloadV1 forged = applying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x72)),
+        };
+
+        Assert.True(Handler().ValidateAdvance(kept, forged).IsFailure);
+
+        Assert.True(Handler().ValidateAdvance(kept, forged with
+        {
+            ReplacementEvidence = Replacement(),
+        }).IsFailure);
+
+    }
+
+    [Fact]
+    public void Reconciliation_suffix_requires_exact_step_shape_parent_binding_and_terminal_intent()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 reconciling = Payload(
+            GrimoireOfflineTransitionState.DatabaseReconciliationPending,
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen) with
+        {
+            LastCompletedPhase = CovenantResetPhase.SidecarsVerified,
+        };
+
+        CovenantDigest parent = Digest(0x61);
+
+        foreach (GrimoireOfflineTransitionReconciliationStep step in
+            Enum.GetValues<GrimoireOfflineTransitionReconciliationStep>())
+        {
+
+            GrimoireOfflineTransitionReconciliationEvidence absent =
+                ExactReconciliation(step, parent: null);
+
+            CovenantResetOfflineTransitionPayloadV1 absentPayload = reconciling with
+            {
+                Lifecycle = reconciling.Lifecycle with { ReconciliationEvidence = absent },
+            };
+
+            Assert.True(GrimoireOfflineTransitionLifecycleValidator.ValidPayload(absentPayload));
+
+            GrimoireOfflineTransitionReconciliationEvidence bound =
+                ExactReconciliation(step, parent);
+
+            CovenantResetOfflineTransitionPayloadV1 boundPayload = reconciling with
+            {
+                Binding = reconciling.Binding with { ParentReceiptBindingDigest = parent },
+                Lifecycle = reconciling.Lifecycle with { ReconciliationEvidence = bound },
+            };
+
+            Assert.True(GrimoireOfflineTransitionLifecycleValidator.ValidPayload(boundPayload));
+
+            GrimoireOfflineTransitionReconciliationEvidence future = step switch
+            {
+                GrimoireOfflineTransitionReconciliationStep.CandidateVerified =>
+                    absent with { DatabaseTerminalWinnerDigest = Digest(0x51) },
+                GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner =>
+                    absent with { ParentReceiptNotRequired = true },
+                GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied =>
+                    absent with { LaneClosed = true },
+                GrimoireOfflineTransitionReconciliationStep.LaneClosed =>
+                    absent with
+                    {
+                        CovenantDispositionIntent =
+                            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
+                    },
+                _ => absent with
+                {
+                    CovenantDispositionIntent =
+                        GrimoireOfflineTransitionTerminalIntent.RollbackAndReopen,
+                },
+            };
+
+            Assert.False(GrimoireOfflineTransitionLifecycleValidator.ValidPayload(
+                absentPayload with
+                {
+                    Lifecycle = absentPayload.Lifecycle with
+                    {
+                        ReconciliationEvidence = future,
+                    },
+                }));
+
+        }
+
+    }
+
+    [Fact]
     public void Keep_closed_resumes_only_exact_recorded_state_after_bound_resolution()
     {
 
@@ -175,8 +408,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         GrimoireOfflineTransitionBlocker blocker = new(
             "Covenant.ManualRecoveryRequired",
             GrimoireOfflineTransitionState.Applying,
-            Digest(0x71),
-            ResolutionProved: false);
+            Digest(0x71));
 
         CovenantResetOfflineTransitionPayloadV1 kept = applying with
         {
@@ -191,10 +423,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
 
         CovenantResetOfflineTransitionPayloadV1 resumed = applying with
         {
-            Lifecycle = applying.Lifecycle with
-            {
-                Blocker = blocker with { ResolutionProved = true },
-            },
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
         };
 
         Assert.True(Handler().ValidateAdvance(kept, resumed).IsSuccess);
@@ -214,10 +443,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
 
         Assert.True(Handler().ValidateAdvance(kept, resumed with
         {
-            Lifecycle = resumed.Lifecycle with
-            {
-                Blocker = blocker,
-            },
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x72)),
         }).IsFailure);
 
     }
@@ -254,8 +480,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                     Blocker = new(
                         "Covenant.ManualRecoveryRequired",
                         GrimoireOfflineTransitionState.Applying,
-                        Digest(0x72),
-                        ResolutionProved: false),
+                        Digest(0x72)),
                 },
             }));
 
@@ -291,6 +516,20 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
 
         CovenantResetOfflineTransitionPayloadV1 payload = Payload(state, intent);
 
+        if (intent is GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
+            && state is GrimoireOfflineTransitionState.ReopenPrepared
+                or GrimoireOfflineTransitionState.Verifying
+                or GrimoireOfflineTransitionState.DatabaseReconciliationPending
+                or GrimoireOfflineTransitionState.RetirementPending)
+        {
+
+            payload = payload with
+            {
+                LastCompletedPhase = CovenantResetPhase.SidecarsVerified,
+            };
+
+        }
+
         if (intent is GrimoireOfflineTransitionTerminalIntent.Undecided
             && state is GrimoireOfflineTransitionState.ReopenPrepared
                 or GrimoireOfflineTransitionState.Verifying
@@ -304,6 +543,21 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                 {
                     TerminalIntent = GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
                 },
+            };
+
+        }
+
+        if (payload.Lifecycle.TerminalIntent
+                is GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
+            && state is GrimoireOfflineTransitionState.ReopenPrepared
+                or GrimoireOfflineTransitionState.Verifying
+                or GrimoireOfflineTransitionState.DatabaseReconciliationPending
+                or GrimoireOfflineTransitionState.RetirementPending)
+        {
+
+            payload = payload with
+            {
+                LastCompletedPhase = CovenantResetPhase.SidecarsVerified,
             };
 
         }
@@ -327,6 +581,38 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                 };
 
             }
+
+            GrimoireOfflineTransitionTerminalIntent resumeIntent =
+                payload.Lifecycle.TerminalIntent;
+
+            GrimoireOfflineTransitionLifecycle resumeLifecycle =
+                Lifecycle(resumeState, resumeIntent);
+
+            payload = payload with
+            {
+                Lifecycle = resumeLifecycle with
+                {
+                    State = GrimoireOfflineTransitionState.KeepClosed,
+                    ClosingEvidence = !current
+                        && resumeState is GrimoireOfflineTransitionState.Closing
+                        ? new(
+                            true,
+                            true,
+                            true,
+                            true,
+                            true,
+                            Guid.Parse("22222222-2222-4222-8222-222222222222"))
+                        : resumeLifecycle.ClosingEvidence,
+                    VerificationEvidence = !current
+                        && resumeState is GrimoireOfflineTransitionState.Verifying
+                        ? new(true, true, true)
+                        : resumeLifecycle.VerificationEvidence,
+                },
+                LastCompletedPhase = resumeIntent
+                    is GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
+                    ? CovenantResetPhase.SidecarsVerified
+                    : CovenantResetPhase.InventoryPrepared,
+            };
 
         }
 
@@ -402,12 +688,17 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
             GrimoireOfflineTransitionBlocker blocker = new(
                 "Covenant.ManualRecoveryRequired",
                 to,
-                Digest(0x73),
-                ResolutionProved: !current);
+                Digest(0x73));
 
             payload = payload with
             {
-                Lifecycle = payload.Lifecycle with { Blocker = blocker },
+                Lifecycle = payload.Lifecycle with
+                {
+                    Blocker = current ? blocker : null,
+                },
+                BlockerResolutionEvidence = current
+                    ? null
+                    : new(Digest(0x73), Digest(0x73)),
             };
 
         }
@@ -422,8 +713,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                     Blocker = new(
                         "Covenant.ManualRecoveryRequired",
                         from,
-                        Digest(0x74),
-                        ResolutionProved: false),
+                        Digest(0x74)),
                 },
             };
 
@@ -455,9 +745,12 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
             },
             GrimoireOfflineTransitionState.Applying => payload with
             {
-                LastCompletedPhase = current
-                    ? CovenantResetPhase.InventoryPrepared
+                InFlightPhase = current
+                    ? null
                     : CovenantResetPhase.CanonicalApplied,
+                InFlightBeforeState = current
+                    ? null
+                    : new(Digest(0x31), Digest(0x32)),
             },
             GrimoireOfflineTransitionState.Verifying => payload with
             {
@@ -547,12 +840,41 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
             step >= GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner
                 ? Digest(0x51)
                 : null,
-            ParentReceiptNotRequired: true,
+            ParentReceiptNotRequired:
+                step >= GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied,
             ParentReceiptDigest: null,
             LaneClosed: step >= GrimoireOfflineTransitionReconciliationStep.LaneClosed,
             CovenantDispositionIntent: step >= GrimoireOfflineTransitionReconciliationStep.CovenantDispositionInFlight
                 ? GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
                 : null);
+
+    private static GrimoireOfflineTransitionReconciliationEvidence ExactReconciliation(
+        GrimoireOfflineTransitionReconciliationStep step,
+        CovenantDigest? parent) => new(
+            step,
+            step >= GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner
+                ? Digest(0x51)
+                : null,
+            ParentReceiptNotRequired: step
+                    >= GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied
+                && parent is null,
+            ParentReceiptDigest: step
+                    >= GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied
+                ? parent
+                : null,
+            LaneClosed: step >= GrimoireOfflineTransitionReconciliationStep.LaneClosed,
+            CovenantDispositionIntent: step
+                    >= GrimoireOfflineTransitionReconciliationStep.CovenantDispositionInFlight
+                ? GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
+                : null);
+
+    private static GrimoireOfflineTransitionReplacementEvidence Replacement() => new(
+        "staging.db",
+        Digest(0x81),
+        StagingPhysicalIdentityDigest: null,
+        Digest(0x82),
+        Digest(0x83),
+        StagedContentDigest: null);
 
     private static CovenantDigest Digest(byte value) => new(Enumerable.Repeat(value, 32).ToArray());
 

@@ -31,8 +31,27 @@ internal sealed partial class CovenantResetOfflineTransitionHandlerV1
 
     internal Result ValidateAdvance(
         CovenantResetOfflineTransitionPayloadV1 current,
-        CovenantResetOfflineTransitionPayloadV1 next) =>
-        GrimoireOfflineTransitionLifecycleValidator.ValidateAdvance(current, next);
+        CovenantResetOfflineTransitionPayloadV1 next)
+    {
+
+        bool proved = current.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+            && current.Lifecycle.Blocker is { } blocker
+            && next.BlockerResolutionEvidence is { } proof
+            && proof.ResolutionBindingDigest == blocker.ResolutionBindingDigest
+            && proof.CanonicalStateDigest == blocker.ResolutionBindingDigest;
+
+        bool evidencePreserved = current.BlockerResolutionEvidence
+                == next.BlockerResolutionEvidence
+            || proved && current.BlockerResolutionEvidence is null;
+
+        return GrimoireOfflineTransitionLifecycleValidator.ValidateAdvance(
+            current,
+            next,
+            evidencePreserved,
+            kindEvidenceAdvanced: false,
+            blockerResolutionProved: proved);
+
+    }
 
     internal GrimoireOfflineTransitionHandlerOutcome ResolveOutcome(
         CovenantResetOfflineTransitionPayloadV1 payload) =>
@@ -48,15 +67,35 @@ internal sealed partial class HealthyCatalogFactoryErasureOfflineTransitionHandl
         HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 next)
     {
 
-        if (current.OrdinaryFactoryContinuationCompleted
-            && !next.OrdinaryFactoryContinuationCompleted)
-        {
+        bool proved = current.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+            && current.Lifecycle.Blocker is { } blocker
+            && next.BlockerResolutionEvidence is { } proof
+            && proof.ResolutionBindingDigest == blocker.ResolutionBindingDigest
+            && proof.HealthyCatalogStateDigest == blocker.ResolutionBindingDigest;
 
-            return Conflict();
+        bool continuationPreserved = current.OrdinaryFactoryContinuationCompleted
+            == next.OrdinaryFactoryContinuationCompleted;
 
-        }
+        bool continuationAdvanced = !current.OrdinaryFactoryContinuationCompleted
+            && next.OrdinaryFactoryContinuationCompleted
+            && current.Lifecycle.State is GrimoireOfflineTransitionState.Applying
+            && next.Lifecycle.State is GrimoireOfflineTransitionState.Applying
+            && current.LastCompletedPhase is CovenantResetPhase.ManagedArtifactsProcessed
+            && next.LastCompletedPhase == current.LastCompletedPhase
+            && current.InFlightPhase is null
+            && next.InFlightPhase is null;
 
-        return GrimoireOfflineTransitionLifecycleValidator.ValidateAdvance(current, next);
+        bool evidencePreserved = continuationPreserved
+            && (current.BlockerResolutionEvidence == next.BlockerResolutionEvidence
+                || proved && current.BlockerResolutionEvidence is null);
+
+        return GrimoireOfflineTransitionLifecycleValidator.ValidateAdvance(
+            current,
+            next,
+            evidencePreserved,
+            continuationAdvanced
+                && current.BlockerResolutionEvidence == next.BlockerResolutionEvidence,
+            proved);
 
     }
 
@@ -64,23 +103,29 @@ internal sealed partial class HealthyCatalogFactoryErasureOfflineTransitionHandl
         HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 payload) =>
         GrimoireOfflineTransitionLifecycleValidator.ResolveOutcome(payload);
 
-    private static Result Conflict() => new Error(
-        ErrorCodes.Covenant.ManualRecoveryRequired,
-        "The authenticated offline transition cannot be advanced by this build.");
-
 }
 
 internal static class GrimoireOfflineTransitionLifecycleValidator
 {
 
+    private static readonly GrimoireOfflineTransitionClosingEvidence EmptyClosing =
+        new(false, false, false, false, false, null);
+
+    private static readonly GrimoireOfflineTransitionVerificationEvidence EmptyVerification =
+        new(false, false, false);
+
     internal static Result ValidateAdvance(
         IGrimoireOfflineTransitionPayload current,
-        IGrimoireOfflineTransitionPayload next)
+        IGrimoireOfflineTransitionPayload next,
+        bool kindEvidencePreserved,
+        bool kindEvidenceAdvanced,
+        bool blockerResolutionProved)
     {
 
         if (!ValidPayload(current)
             || !ValidPayload(next)
             || current.Binding != next.Binding
+            || !kindEvidencePreserved && !kindEvidenceAdvanced
             || !ValidTerminalIntentAdvance(current.Lifecycle, next.Lifecycle))
         {
 
@@ -95,58 +140,52 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
         bool valid = (from, to) switch
         {
             (GrimoireOfflineTransitionState.Prepared,
-                GrimoireOfflineTransitionState.Closing) =>
-                PreparedToClosing(current, next),
+                GrimoireOfflineTransitionState.Closing) => SameEvidence(current, next),
             (GrimoireOfflineTransitionState.Closing,
-                GrimoireOfflineTransitionState.Closing) =>
-                ClosingAdvances(current, next),
+                GrimoireOfflineTransitionState.Closing) => ClosingAdvances(current, next),
             (GrimoireOfflineTransitionState.Closing,
                 GrimoireOfflineTransitionState.Applying) =>
-                current.Lifecycle.ClosingEvidence.IsComplete
-                && current.LastCompletedPhase == next.LastCompletedPhase
-                && current.InFlightPhase == next.InFlightPhase
-                && current.InFlightBeforeState == next.InFlightBeforeState
-                && current.ReplacementEvidence == next.ReplacementEvidence,
+                current.Lifecycle.ClosingEvidence.IsComplete && SameEvidence(current, next),
             (GrimoireOfflineTransitionState.Closing,
                 GrimoireOfflineTransitionState.ReopenPrepared) =>
                 current.Lifecycle.ClosingEvidence.IsComplete
                 && current.LastCompletedPhase is CovenantResetPhase.InventoryPrepared
-                && current.InFlightPhase is null
-                && current.InFlightBeforeState is null
-                && current.ReplacementEvidence is null
                 && next.Lifecycle.TerminalIntent
-                    is GrimoireOfflineTransitionTerminalIntent.RollbackAndReopen,
+                    is GrimoireOfflineTransitionTerminalIntent.RollbackAndReopen
+                && SameEvidence(current, next),
             (GrimoireOfflineTransitionState.Applying,
                 GrimoireOfflineTransitionState.Applying) =>
-                ApplyingAdvances(current, next),
+                kindEvidencePreserved && ApplyingAdvances(current, next)
+                || kindEvidenceAdvanced && SameEvidence(current, next),
             (GrimoireOfflineTransitionState.Applying,
                 GrimoireOfflineTransitionState.ReopenPrepared) =>
                 current.LastCompletedPhase is CovenantResetPhase.SidecarsVerified
                 && current.InFlightPhase is null
-                && current.InFlightBeforeState is null
                 && next.Lifecycle.TerminalIntent
-                    is GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
+                    is GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
+                && SameEvidence(current, next),
             (GrimoireOfflineTransitionState.ReopenPrepared,
-                GrimoireOfflineTransitionState.Verifying) => true,
+                GrimoireOfflineTransitionState.Verifying) => SameEvidence(current, next),
             (GrimoireOfflineTransitionState.Verifying,
-                GrimoireOfflineTransitionState.Verifying) =>
-                VerificationAdvances(current, next),
+                GrimoireOfflineTransitionState.Verifying) => VerificationAdvances(current, next),
             (GrimoireOfflineTransitionState.Verifying,
                 GrimoireOfflineTransitionState.DatabaseReconciliationPending) =>
                 current.Lifecycle.VerificationEvidence.IsComplete
-                && IsOpeningReconciliation(next.Lifecycle.ReconciliationEvidence),
+                && SameEffectAndClosingEvidence(current, next)
+                && current.Lifecycle.VerificationEvidence
+                    == next.Lifecycle.VerificationEvidence
+                && current.Lifecycle.ReconciliationEvidence is null
+                && IsOpeningReconciliation(next),
             (GrimoireOfflineTransitionState.DatabaseReconciliationPending,
                 GrimoireOfflineTransitionState.DatabaseReconciliationPending) =>
                 ReconciliationAdvances(current, next),
             (GrimoireOfflineTransitionState.DatabaseReconciliationPending,
                 GrimoireOfflineTransitionState.RetirementPending) =>
-                current.Lifecycle.ReconciliationEvidence is { IsComplete: true }
-                && next.Lifecycle.ReconciliationEvidence
-                    == current.Lifecycle.ReconciliationEvidence,
+                ReconciliationComplete(current) && SameEvidence(current, next),
             (_, GrimoireOfflineTransitionState.KeepClosed) =>
                 CanEnterKeepClosed(current, next),
             (GrimoireOfflineTransitionState.KeepClosed, _) =>
-                CanResumeFromKeepClosed(current, next),
+                CanResumeFromKeepClosed(current, next, blockerResolutionProved),
             _ => false,
         };
 
@@ -167,6 +206,16 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
                 GrimoireOfflineTransitionHandlerOutcome.AppliedAndVerified,
             _ => GrimoireOfflineTransitionHandlerOutcome.NotApplied,
         };
+
+    internal static bool RetirementReady(IGrimoireOfflineTransitionPayload payload) =>
+        payload.Lifecycle.State is GrimoireOfflineTransitionState.RetirementPending
+        && ReconciliationComplete(payload);
+
+    private static bool ReconciliationComplete(IGrimoireOfflineTransitionPayload payload) =>
+        payload.Lifecycle.ReconciliationEvidence is { } evidence
+        && evidence.Step
+            is GrimoireOfflineTransitionReconciliationStep.CovenantDispositionVerified
+        && EvidenceMatchesStep(payload, evidence);
 
     internal static bool ValidPayload(IGrimoireOfflineTransitionPayload payload)
     {
@@ -190,14 +239,15 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
             || payload.Lifecycle.ClosingEvidence is null
             || payload.Lifecycle.VerificationEvidence is null
             || !CovenantResetPhaseMachine.IsDeclared(payload.LastCompletedPhase)
-            || payload.InFlightPhase is { } inFlight
-                && !CovenantResetPhaseMachine.IsDeclared(inFlight)
+            || payload.InFlightPhase is { } phase
+                && !CovenantResetPhaseMachine.IsDeclared(phase)
             || (payload.InFlightPhase is null) != (payload.InFlightBeforeState is null)
             || payload.InFlightBeforeState is not null
                 && (!payload.InFlightBeforeState.SourceStateDigest.IsValid
                     || !payload.InFlightBeforeState.EffectEvidenceDigest.IsValid)
             || !ValidReplacement(payload.ReplacementEvidence)
             || !ValidLifecycle(payload.Lifecycle)
+            || !ValidKindEvidence(payload)
             || !StateEvidenceCoherent(payload))
         {
 
@@ -209,113 +259,117 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
     }
 
+    private static bool ValidKindEvidence(IGrimoireOfflineTransitionPayload payload) => payload switch
+    {
+        CovenantResetOfflineTransitionPayloadV1 reset =>
+            reset.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+                ? reset.BlockerResolutionEvidence is null
+                : reset.BlockerResolutionEvidence is null
+            || reset.BlockerResolutionEvidence.ResolutionBindingDigest.IsValid
+                && reset.BlockerResolutionEvidence.CanonicalStateDigest.IsValid,
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory =>
+            factory.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+                ? factory.BlockerResolutionEvidence is null
+                : factory.BlockerResolutionEvidence is null
+            || factory.BlockerResolutionEvidence.ResolutionBindingDigest.IsValid
+                && factory.BlockerResolutionEvidence.HealthyCatalogStateDigest.IsValid,
+        _ => true,
+    };
+
     private static bool StateEvidenceCoherent(IGrimoireOfflineTransitionPayload payload)
     {
 
         GrimoireOfflineTransitionLifecycle lifecycle = payload.Lifecycle;
 
-        GrimoireOfflineTransitionClosingEvidence closing = lifecycle.ClosingEvidence;
-
-        GrimoireOfflineTransitionVerificationEvidence verifying =
-            lifecycle.VerificationEvidence;
-
-        if ((closing.RequestWorkDrained && !closing.AdmissionDenied)
-            || (closing.OpenAttemptsResolved && !closing.RequestWorkDrained)
-            || (closing.HandlesAndPoolsClosed && !closing.OpenAttemptsResolved)
-            || (closing.ClosedGenerationProved && !closing.HandlesAndPoolsClosed)
-            || (verifying.CandidateVerified && !verifying.MaintenanceLaneOpened)
-            || (verifying.RuntimeCovenantAuthorityVerified && !verifying.CandidateVerified))
+        if (!ClosingCoherent(lifecycle.ClosingEvidence)
+            || !VerificationCoherent(lifecycle.VerificationEvidence))
         {
 
             return false;
 
         }
 
-        if (lifecycle.State is GrimoireOfflineTransitionState.KeepClosed)
+        GrimoireOfflineTransitionState state = lifecycle.State
+            is GrimoireOfflineTransitionState.KeepClosed
+            ? lifecycle.Blocker!.ResumeState
+            : lifecycle.State;
+
+        if (state is not GrimoireOfflineTransitionState.Applying
+            && payload.InFlightPhase is not null)
         {
 
-            GrimoireOfflineTransitionState blocked = lifecycle.Blocker!.ResumeState;
-
-            return blocked is GrimoireOfflineTransitionState.Closing
-                    or GrimoireOfflineTransitionState.Applying
-                ? lifecycle.TerminalIntent
-                    is GrimoireOfflineTransitionTerminalIntent.Undecided
-                : lifecycle.TerminalIntent
-                    is not GrimoireOfflineTransitionTerminalIntent.Undecided;
+            return false;
 
         }
 
-        bool noVerification = verifying == new GrimoireOfflineTransitionVerificationEvidence(
-            false,
-            false,
-            false);
+        bool noVerification = lifecycle.VerificationEvidence == EmptyVerification;
 
-        return lifecycle.State switch
+        return state switch
         {
             GrimoireOfflineTransitionState.Prepared =>
-                lifecycle.TerminalIntent
-                    is GrimoireOfflineTransitionTerminalIntent.Undecided
-                && closing == new GrimoireOfflineTransitionClosingEvidence(
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    null)
+                lifecycle.TerminalIntent is GrimoireOfflineTransitionTerminalIntent.Undecided
+                && lifecycle.ClosingEvidence == EmptyClosing
                 && noVerification
                 && lifecycle.ReconciliationEvidence is null
                 && payload.LastCompletedPhase is CovenantResetPhase.InventoryPrepared
-                && payload.InFlightPhase is null
-                && payload.InFlightBeforeState is null
                 && payload.ReplacementEvidence is null,
-            GrimoireOfflineTransitionState.Closing
-                or GrimoireOfflineTransitionState.Applying =>
-                lifecycle.TerminalIntent
-                    is GrimoireOfflineTransitionTerminalIntent.Undecided
+            GrimoireOfflineTransitionState.Closing =>
+                lifecycle.TerminalIntent is GrimoireOfflineTransitionTerminalIntent.Undecided
+                && noVerification
+                && lifecycle.ReconciliationEvidence is null
+                && payload.LastCompletedPhase is CovenantResetPhase.InventoryPrepared
+                && payload.ReplacementEvidence is null,
+            GrimoireOfflineTransitionState.Applying =>
+                lifecycle.TerminalIntent is GrimoireOfflineTransitionTerminalIntent.Undecided
+                && lifecycle.ClosingEvidence.IsComplete
                 && noVerification
                 && lifecycle.ReconciliationEvidence is null,
             GrimoireOfflineTransitionState.ReopenPrepared =>
-                lifecycle.TerminalIntent
-                    is not GrimoireOfflineTransitionTerminalIntent.Undecided
-                && closing.IsComplete
-                && noVerification
-                && lifecycle.ReconciliationEvidence is null
-                && payload.InFlightPhase is null
-                && payload.InFlightBeforeState is null,
-            GrimoireOfflineTransitionState.Verifying =>
-                lifecycle.TerminalIntent
-                    is not GrimoireOfflineTransitionTerminalIntent.Undecided
-                && closing.IsComplete
+                TerminalShape(payload) && noVerification
                 && lifecycle.ReconciliationEvidence is null,
+            GrimoireOfflineTransitionState.Verifying =>
+                TerminalShape(payload) && lifecycle.ReconciliationEvidence is null,
             GrimoireOfflineTransitionState.DatabaseReconciliationPending =>
-                lifecycle.TerminalIntent
-                    is not GrimoireOfflineTransitionTerminalIntent.Undecided
-                && closing.IsComplete
-                && verifying.IsComplete
-                && lifecycle.ReconciliationEvidence is { } reconciliation
-                && EvidenceMatchesStep(reconciliation),
+                TerminalShape(payload)
+                && lifecycle.VerificationEvidence.IsComplete
+                && lifecycle.ReconciliationEvidence is { } evidence
+                && EvidenceMatchesStep(payload, evidence),
             GrimoireOfflineTransitionState.RetirementPending =>
-                lifecycle.TerminalIntent
-                    is not GrimoireOfflineTransitionTerminalIntent.Undecided
-                && closing.IsComplete
-                && verifying.IsComplete
-                && lifecycle.ReconciliationEvidence is { IsComplete: true } reconciliation
-                && EvidenceMatchesStep(reconciliation),
+                TerminalShape(payload)
+                && lifecycle.VerificationEvidence.IsComplete
+                && RetirementReady(payload),
             _ => false,
         };
 
     }
 
+    private static bool TerminalShape(IGrimoireOfflineTransitionPayload payload) =>
+        payload.Lifecycle.ClosingEvidence.IsComplete
+        && payload.InFlightPhase is null
+        && payload.Lifecycle.TerminalIntent switch
+        {
+            GrimoireOfflineTransitionTerminalIntent.RollbackAndReopen =>
+                payload.LastCompletedPhase is CovenantResetPhase.InventoryPrepared,
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen =>
+                payload.LastCompletedPhase is CovenantResetPhase.SidecarsVerified,
+            _ => false,
+        };
+
+    private static bool ClosingCoherent(GrimoireOfflineTransitionClosingEvidence evidence) =>
+        (!evidence.RequestWorkDrained || evidence.AdmissionDenied)
+        && (!evidence.OpenAttemptsResolved || evidence.RequestWorkDrained)
+        && (!evidence.HandlesAndPoolsClosed || evidence.OpenAttemptsResolved)
+        && (!evidence.ClosedGenerationProved || evidence.HandlesAndPoolsClosed)
+        && evidence.ClosedGenerationProved
+            == (evidence.ClosedDatasetGeneration is not null);
+
+    private static bool VerificationCoherent(
+        GrimoireOfflineTransitionVerificationEvidence evidence) =>
+        (!evidence.CandidateVerified || evidence.MaintenanceLaneOpened)
+        && (!evidence.RuntimeCovenantAuthorityVerified || evidence.CandidateVerified);
+
     private static bool ValidLifecycle(GrimoireOfflineTransitionLifecycle lifecycle)
     {
-
-        if (lifecycle.ClosingEvidence.ClosedGenerationProved
-            != (lifecycle.ClosingEvidence.ClosedDatasetGeneration is not null))
-        {
-
-            return false;
-
-        }
 
         if (lifecycle.ReconciliationEvidence is { } reconciliation
             && (!Enum.IsDefined(reconciliation.Step)
@@ -344,21 +398,13 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
         return lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
             ? lifecycle.Blocker is not null
-            : lifecycle.Blocker is null || lifecycle.Blocker.ResolutionProved;
+            : lifecycle.Blocker is null;
 
     }
 
-    private static bool ValidReplacement(GrimoireOfflineTransitionReplacementEvidence? replacement)
-    {
-
-        if (replacement is null)
-        {
-
-            return true;
-
-        }
-
-        return !string.IsNullOrWhiteSpace(replacement.StagingLeaf)
+    private static bool ValidReplacement(
+        GrimoireOfflineTransitionReplacementEvidence? replacement) => replacement is null
+        || !string.IsNullOrWhiteSpace(replacement.StagingLeaf)
             && replacement.StagingLeaf.Length <= 255
             && Path.GetFileName(replacement.StagingLeaf) == replacement.StagingLeaf
             && replacement.SourcePhysicalIdentityDigest.IsValid
@@ -366,8 +412,6 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
             && replacement.DestinationPhysicalIdentityDigest.IsValid
             && replacement.OriginalBackupPhysicalIdentityDigest.IsValid
             && replacement.StagedContentDigest is not { IsValid: false };
-
-    }
 
     private static bool ValidTerminalIntentAdvance(
         GrimoireOfflineTransitionLifecycle current,
@@ -401,20 +445,14 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
     }
 
-    private static bool PreparedToClosing(
-        IGrimoireOfflineTransitionPayload current,
-        IGrimoireOfflineTransitionPayload next) =>
-        current.InFlightPhase is null
-        && next.InFlightPhase is null
-        && current.Lifecycle.Blocker is null
-        && next.Lifecycle.Blocker is null;
-
     private static bool ClosingAdvances(
         IGrimoireOfflineTransitionPayload current,
         IGrimoireOfflineTransitionPayload next) =>
-        ClosingMonotonic(
-            current.Lifecycle.ClosingEvidence,
-            next.Lifecycle.ClosingEvidence)
+        SameEffectEvidence(current, next)
+        && current.Lifecycle.VerificationEvidence == next.Lifecycle.VerificationEvidence
+        && current.Lifecycle.ReconciliationEvidence == next.Lifecycle.ReconciliationEvidence
+        && current.Lifecycle.Blocker == next.Lifecycle.Blocker
+        && ClosingMonotonic(current.Lifecycle.ClosingEvidence, next.Lifecycle.ClosingEvidence)
         && current.Lifecycle.ClosingEvidence != next.Lifecycle.ClosingEvidence;
 
     private static bool ClosingMonotonic(
@@ -433,8 +471,9 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
         IGrimoireOfflineTransitionPayload next)
     {
 
-        if (current.ReplacementEvidence is not null
-            && !ReplacementMonotonic(current.ReplacementEvidence, next.ReplacementEvidence))
+        if (!SameLifecycleEvidence(current, next)
+            || current.ReplacementEvidence is not null
+                && !ReplacementMonotonic(current.ReplacementEvidence, next.ReplacementEvidence))
         {
 
             return false;
@@ -459,16 +498,11 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
         }
 
-        bool completedInFlight = current.InFlightPhase == next.LastCompletedPhase
+        return current.InFlightPhase == next.LastCompletedPhase
             && current.InFlightBeforeState is not null
             && next.InFlightPhase is null
-            && next.InFlightBeforeState is null;
-
-        bool directCompletedAdvance = current.InFlightPhase is null
-            && next.InFlightPhase is null
-            && (byte)next.LastCompletedPhase == (byte)current.LastCompletedPhase + 1;
-
-        return (completedInFlight || directCompletedAdvance)
+            && next.InFlightBeforeState is null
+            && current.ReplacementEvidence == next.ReplacementEvidence
             && (byte)next.LastCompletedPhase == (byte)current.LastCompletedPhase + 1;
 
     }
@@ -497,7 +531,11 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
         GrimoireOfflineTransitionVerificationEvidence to =
             next.Lifecycle.VerificationEvidence;
 
-        return (!from.MaintenanceLaneOpened || to.MaintenanceLaneOpened)
+        return SameEffectAndClosingEvidence(current, next)
+            && current.Lifecycle.ReconciliationEvidence
+                == next.Lifecycle.ReconciliationEvidence
+            && current.Lifecycle.Blocker == next.Lifecycle.Blocker
+            && (!from.MaintenanceLaneOpened || to.MaintenanceLaneOpened)
             && (!from.CandidateVerified || to.CandidateVerified)
             && (!from.RuntimeCovenantAuthorityVerified
                 || to.RuntimeCovenantAuthorityVerified)
@@ -505,15 +543,10 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
     }
 
-    private static bool IsOpeningReconciliation(
-        GrimoireOfflineTransitionReconciliationEvidence? evidence) => evidence is
-        {
-            Step: GrimoireOfflineTransitionReconciliationStep.CandidateVerified,
-            DatabaseTerminalWinnerDigest: null,
-            ParentReceiptDigest: null,
-            LaneClosed: false,
-            CovenantDispositionIntent: null,
-        };
+    private static bool IsOpeningReconciliation(IGrimoireOfflineTransitionPayload payload) =>
+        payload.Lifecycle.ReconciliationEvidence is { } evidence
+        && evidence.Step is GrimoireOfflineTransitionReconciliationStep.CandidateVerified
+        && EvidenceMatchesStep(payload, evidence);
 
     private static bool ReconciliationAdvances(
         IGrimoireOfflineTransitionPayload current,
@@ -526,14 +559,13 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
         GrimoireOfflineTransitionReconciliationEvidence? to =
             next.Lifecycle.ReconciliationEvidence;
 
-        if (from is null || to is null || (byte)to.Step != (byte)from.Step + 1)
-        {
-
-            return false;
-
-        }
-
-        return (from.DatabaseTerminalWinnerDigest is null
+        return from is not null
+            && to is not null
+            && (byte)to.Step == (byte)from.Step + 1
+            && SameEffectAndClosingEvidence(current, next)
+            && current.Lifecycle.VerificationEvidence == next.Lifecycle.VerificationEvidence
+            && current.Lifecycle.Blocker == next.Lifecycle.Blocker
+            && (from.DatabaseTerminalWinnerDigest is null
                 || from.DatabaseTerminalWinnerDigest == to.DatabaseTerminalWinnerDigest)
             && (!from.ParentReceiptNotRequired || to.ParentReceiptNotRequired)
             && (from.ParentReceiptDigest is null
@@ -541,87 +573,99 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
             && (!from.LaneClosed || to.LaneClosed)
             && (from.CovenantDispositionIntent is null
                 || from.CovenantDispositionIntent == to.CovenantDispositionIntent)
-            && EvidenceMatchesStep(to);
+            && EvidenceMatchesStep(current, from)
+            && EvidenceMatchesStep(next, to);
 
     }
 
     private static bool EvidenceMatchesStep(
+        IGrimoireOfflineTransitionPayload payload,
         GrimoireOfflineTransitionReconciliationEvidence evidence)
     {
 
-        if (evidence.Step >= GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner
-            && evidence.DatabaseTerminalWinnerDigest is not { IsValid: true })
-        {
+        bool parentBound = payload.Binding.ParentReceiptBindingDigest is not null;
 
-            return false;
+        bool exactParent = evidence.Step
+            >= GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied
+            ? parentBound
+                ? !evidence.ParentReceiptNotRequired
+                    && evidence.ParentReceiptDigest
+                        == payload.Binding.ParentReceiptBindingDigest
+                : evidence.ParentReceiptNotRequired && evidence.ParentReceiptDigest is null
+            : !evidence.ParentReceiptNotRequired && evidence.ParentReceiptDigest is null;
 
-        }
+        bool exactTerminal = evidence.Step
+            >= GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner
+            ? evidence.DatabaseTerminalWinnerDigest is { IsValid: true }
+            : evidence.DatabaseTerminalWinnerDigest is null;
 
-        if (evidence.Step >= GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied
-            && !evidence.ParentReceiptNotRequired
-            && evidence.ParentReceiptDigest is not { IsValid: true })
-        {
+        bool exactLane = evidence.LaneClosed
+            == (evidence.Step >= GrimoireOfflineTransitionReconciliationStep.LaneClosed);
 
-            return false;
+        bool exactDisposition = evidence.Step
+            >= GrimoireOfflineTransitionReconciliationStep.CovenantDispositionInFlight
+            ? evidence.CovenantDispositionIntent == payload.Lifecycle.TerminalIntent
+            : evidence.CovenantDispositionIntent is null;
 
-        }
-
-        if (evidence.Step >= GrimoireOfflineTransitionReconciliationStep.LaneClosed
-            && !evidence.LaneClosed)
-        {
-
-            return false;
-
-        }
-
-        return evidence.Step <
-                GrimoireOfflineTransitionReconciliationStep.CovenantDispositionInFlight
-            || evidence.CovenantDispositionIntent is not null
-                and not GrimoireOfflineTransitionTerminalIntent.Undecided;
+        return exactParent && exactTerminal && exactLane && exactDisposition;
 
     }
 
     private static bool CanEnterKeepClosed(
         IGrimoireOfflineTransitionPayload current,
-        IGrimoireOfflineTransitionPayload next)
-    {
-
-        if (current.Lifecycle.State is GrimoireOfflineTransitionState.Prepared
-            or GrimoireOfflineTransitionState.KeepClosed
-            or GrimoireOfflineTransitionState.RetirementPending
-            || next.Lifecycle.Blocker is not { ResolutionProved: false } blocker
-            || blocker.ResumeState != current.Lifecycle.State
-            || current.Lifecycle.TerminalIntent != next.Lifecycle.TerminalIntent
-            || current.InFlightPhase != next.InFlightPhase
-            || current.InFlightBeforeState != next.InFlightBeforeState
-            || current.ReplacementEvidence != next.ReplacementEvidence)
-        {
-
-            return false;
-
-        }
-
-        return current.Lifecycle.State is not GrimoireOfflineTransitionState.Closing
-            || current.Lifecycle.ClosingEvidence.IsComplete;
-
-    }
+        IGrimoireOfflineTransitionPayload next) =>
+        current.Lifecycle.State is not GrimoireOfflineTransitionState.Prepared
+            and not GrimoireOfflineTransitionState.KeepClosed
+            and not GrimoireOfflineTransitionState.RetirementPending
+        && next.Lifecycle.Blocker is { } blocker
+        && blocker.ResumeState == current.Lifecycle.State
+        && SameEvidenceExceptBlocker(current, next);
 
     private static bool CanResumeFromKeepClosed(
         IGrimoireOfflineTransitionPayload current,
-        IGrimoireOfflineTransitionPayload next)
-    {
+        IGrimoireOfflineTransitionPayload next,
+        bool blockerResolutionProved) =>
+        blockerResolutionProved
+        && current.Lifecycle.Blocker is { } blocker
+        && next.Lifecycle.State == blocker.ResumeState
+        && next.Lifecycle.Blocker is null
+        && SameEvidenceExceptBlocker(current, next);
 
-        GrimoireOfflineTransitionBlocker? blocker = current.Lifecycle.Blocker;
+    private static bool SameEvidence(
+        IGrimoireOfflineTransitionPayload current,
+        IGrimoireOfflineTransitionPayload next) =>
+        SameEffectEvidence(current, next) && SameLifecycleEvidence(current, next);
 
-        return blocker is not null
-            && next.Lifecycle.State == blocker.ResumeState
-            && next.Lifecycle.Blocker == blocker with { ResolutionProved = true }
-            && current.Lifecycle.TerminalIntent == next.Lifecycle.TerminalIntent
-            && current.InFlightPhase == next.InFlightPhase
-            && current.InFlightBeforeState == next.InFlightBeforeState
-            && current.ReplacementEvidence == next.ReplacementEvidence;
+    private static bool SameEvidenceExceptBlocker(
+        IGrimoireOfflineTransitionPayload current,
+        IGrimoireOfflineTransitionPayload next) =>
+        SameEffectEvidence(current, next)
+        && current.Lifecycle.TerminalIntent == next.Lifecycle.TerminalIntent
+        && current.Lifecycle.ClosingEvidence == next.Lifecycle.ClosingEvidence
+        && current.Lifecycle.VerificationEvidence == next.Lifecycle.VerificationEvidence
+        && current.Lifecycle.ReconciliationEvidence == next.Lifecycle.ReconciliationEvidence;
 
-    }
+    private static bool SameEffectAndClosingEvidence(
+        IGrimoireOfflineTransitionPayload current,
+        IGrimoireOfflineTransitionPayload next) =>
+        SameEffectEvidence(current, next)
+        && current.Lifecycle.ClosingEvidence == next.Lifecycle.ClosingEvidence;
+
+    private static bool SameEffectEvidence(
+        IGrimoireOfflineTransitionPayload current,
+        IGrimoireOfflineTransitionPayload next) =>
+        current.LastCompletedPhase == next.LastCompletedPhase
+        && current.InFlightPhase == next.InFlightPhase
+        && current.InFlightBeforeState == next.InFlightBeforeState
+        && current.ReplacementEvidence == next.ReplacementEvidence;
+
+    private static bool SameLifecycleEvidence(
+        IGrimoireOfflineTransitionPayload current,
+        IGrimoireOfflineTransitionPayload next) =>
+        current.Lifecycle.ClosingEvidence == next.Lifecycle.ClosingEvidence
+        && current.Lifecycle.VerificationEvidence == next.Lifecycle.VerificationEvidence
+        && current.Lifecycle.ReconciliationEvidence == next.Lifecycle.ReconciliationEvidence
+        && current.Lifecycle.Blocker == next.Lifecycle.Blocker;
 
     private static Result Conflict() => new Error(
         ErrorCodes.Covenant.ManualRecoveryRequired,

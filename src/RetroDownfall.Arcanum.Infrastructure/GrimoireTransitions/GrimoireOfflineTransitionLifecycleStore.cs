@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
 internal sealed record GrimoireOfflineTransitionTypedPublication(
     GrimoireOfflineTransitionJournalPublication Raw,
-    IGrimoireOfflineTransitionHandler Handler,
     IGrimoireOfflineTransitionPayload Payload,
     GrimoireOfflineTransitionHandlerOutcome Outcome);
 
@@ -55,23 +54,14 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
 
         }
 
-        Result<byte[]> encoded = _registry.Encode(payload);
-
-        if (encoded.IsFailure)
-        {
-
-            return RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
-
-        }
-
-        Result<GrimoireOfflineTransitionJournalPublication> begun = await _journal.BeginAsync(
+        Result<GrimoireOfflineTransitionJournalPublication> begun = await _journal.BeginBoundAsync(
                 heldInstallationLock,
                 guardedDirectory,
                 installationId,
                 payload.Binding.OperationId,
                 payload.Binding.Kind,
                 payload.Binding.PayloadVersion,
-                encoded.Value,
+                slotEpoch => EncodeBoundPayload(payload, slotEpoch),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -95,19 +85,21 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
 
         }
 
-        Result<GrimoireOfflineTransitionTypedPublication> decodedCurrent = Decode(current.Raw);
+        Result<GrimoireOfflineTransitionDecodedPayload> decodedCurrent = DecodePayload(current.Raw);
 
         if (decodedCurrent.IsFailure
             || !Equals(decodedCurrent.Value.Payload, current.Payload)
-            || decodedCurrent.Value.Handler.Kind != current.Handler.Kind
-            || decodedCurrent.Value.Handler.PayloadVersion != current.Handler.PayloadVersion)
+            || decodedCurrent.Value.Handler.Kind != current.Payload.Binding.Kind
+            || decodedCurrent.Value.Handler.PayloadVersion != current.Payload.Binding.PayloadVersion)
         {
 
             return RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
 
         }
 
-        Result valid = current.Handler.ValidateAdvance(current.Payload, next);
+        Result valid = decodedCurrent.Value.Handler.ValidateAdvance(
+            decodedCurrent.Value.Payload,
+            next);
 
         Result<byte[]> encoded = valid.IsSuccess
             ? _registry.Encode(next)
@@ -193,7 +185,7 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
                 is not GrimoireOfflineTransitionState.RetirementPending
             || terminal.Payload.Lifecycle.TerminalIntent
                 is GrimoireOfflineTransitionTerminalIntent.Undecided
-            || terminal.Payload.Lifecycle.ReconciliationEvidence is not { IsComplete: true })
+            || !GrimoireOfflineTransitionLifecycleValidator.RetirementReady(terminal.Payload))
         {
 
             return RecoveryRequired();
@@ -221,31 +213,57 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         GrimoireOfflineTransitionJournalPublication publication)
     {
 
+        Result<GrimoireOfflineTransitionDecodedPayload> decoded = DecodePayload(publication);
+
+        return decoded.IsSuccess
+            ? new GrimoireOfflineTransitionTypedPublication(
+                publication,
+                decoded.Value.Payload,
+                decoded.Value.Outcome)
+            : RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
+
+    }
+
+    private Result<GrimoireOfflineTransitionDecodedPayload> DecodePayload(
+        GrimoireOfflineTransitionJournalPublication publication)
+    {
+
         if (publication is null
             || publication.Envelope.OperationId == Guid.Empty
             || publication.Envelope.SlotEpoch == 0
             || publication.PayloadBytes is null)
         {
 
-            return RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
+            return RecoveryRequired<GrimoireOfflineTransitionDecodedPayload>();
 
         }
 
-        Result<GrimoireOfflineTransitionDecodedPayload> decoded =
-            _registry.DecodeAuthenticated(
+        return _registry.DecodeAuthenticated(
                 publication.Envelope.Kind,
                 publication.Envelope.PayloadVersion,
                 publication.PayloadBytes,
                 publication.Envelope.OperationId,
                 publication.Envelope.SlotEpoch);
 
-        return decoded.IsSuccess
-            ? new GrimoireOfflineTransitionTypedPublication(
-                publication,
-                decoded.Value.Handler,
-                decoded.Value.Payload,
-                decoded.Value.Outcome)
-            : RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
+    }
+
+    private Result<ReadOnlyMemory<byte>> EncodeBoundPayload(
+        IGrimoireOfflineTransitionPayload payload,
+        ulong allocatedSlotEpoch)
+    {
+
+        if (payload.Binding.SlotEpoch != allocatedSlotEpoch)
+        {
+
+            return RecoveryRequired<ReadOnlyMemory<byte>>();
+
+        }
+
+        Result<byte[]> encoded = _registry.Encode(payload);
+
+        return encoded.IsSuccess
+            ? Result<ReadOnlyMemory<byte>>.Success(encoded.Value)
+            : RecoveryRequired<ReadOnlyMemory<byte>>();
 
     }
 

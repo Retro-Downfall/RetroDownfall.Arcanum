@@ -149,8 +149,17 @@ internal sealed record GrimoireOfflineTransitionReconciliationEvidence(
 internal sealed record GrimoireOfflineTransitionBlocker(
     string ErrorCode,
     GrimoireOfflineTransitionState ResumeState,
+    CovenantDigest ResolutionBindingDigest);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record CovenantResetBlockerResolutionEvidence(
     CovenantDigest ResolutionBindingDigest,
-    bool ResolutionProved);
+    CovenantDigest CanonicalStateDigest);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record HealthyCatalogFactoryErasureBlockerResolutionEvidence(
+    CovenantDigest ResolutionBindingDigest,
+    CovenantDigest HealthyCatalogStateDigest);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 internal sealed record GrimoireOfflineTransitionLifecycle(
@@ -199,7 +208,8 @@ internal sealed record CovenantResetOfflineTransitionPayloadV1(
     CovenantResetPhase LastCompletedPhase,
     CovenantResetPhase? InFlightPhase,
     GrimoireOfflineTransitionBeforeStateEvidence? InFlightBeforeState,
-    GrimoireOfflineTransitionReplacementEvidence? ReplacementEvidence)
+    GrimoireOfflineTransitionReplacementEvidence? ReplacementEvidence,
+    CovenantResetBlockerResolutionEvidence? BlockerResolutionEvidence = null)
     : IGrimoireOfflineTransitionPayload;
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -210,5 +220,6 @@ internal sealed record HealthyCatalogFactoryErasureOfflineTransitionPayloadV1(
     CovenantResetPhase? InFlightPhase,
     GrimoireOfflineTransitionBeforeStateEvidence? InFlightBeforeState,
     GrimoireOfflineTransitionReplacementEvidence? ReplacementEvidence,
-    bool OrdinaryFactoryContinuationCompleted)
+    bool OrdinaryFactoryContinuationCompleted,
+    HealthyCatalogFactoryErasureBlockerResolutionEvidence? BlockerResolutionEvidence = null)
     : IGrimoireOfflineTransitionPayload;
