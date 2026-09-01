@@ -720,6 +720,12 @@ public static class GrimoireDatabaseBootstrapper
 
             }
 
+            // Advertise and invoke sites reach the policy through a static predicate, which has no
+            // service to inject. Binding the published policy is what makes them read this decision
+            // instead of re-deriving one from the edition and environment the gate has already
+            // refused — the difference between a published decision and a log line (§10.12).
+            HostProcessToolPolicy.BindStartupDecision(hostProcessToolsDecision.ProcessPolicy);
+
         }
 
         CovenantAvailability covenantAvailability = scope.ServiceProvider

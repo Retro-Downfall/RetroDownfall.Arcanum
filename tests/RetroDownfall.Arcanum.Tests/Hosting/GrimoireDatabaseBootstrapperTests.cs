@@ -931,7 +931,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             error.Message,
             StringComparison.OrdinalIgnoreCase);
 
-
         Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
 
         using ArcanumMaintenanceLock? reacquired =
@@ -3026,7 +3025,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     /// Deliberately the production types rather than the host-tools fakes the other tests use. A fake
     /// environment probe reports a canned residence value, and residence is the whole subject here.
     /// </remarks>
-    private static IServiceScopeFactory CreateCovenantAuthorityScopeFactory(
+    internal static IServiceScopeFactory CreateCovenantAuthorityScopeFactory(
         IOsCredentialStore credentials,
         bool covenantEnabled)
     {
