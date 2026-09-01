@@ -61,10 +61,58 @@ arcanum serve                  # long-lived host; thin clients talk to it over t
 arcanum key list               # what credentials Arcanum holds (presence and status only, never values)
 ```
 
+From there, `arcanum open compendium` gives you every remaining setting in a real UI — see
+[Configure it with Compendium](#configure-it-with-compendium).
+
 For a fully local setup, give the wizard `http://localhost:11434/v1` as the endpoint and whichever
 model Ollama has pulled. Credentials go to the OS credential manager — Keychain, Windows Credential
 Manager, or Secret Service — and secrets are only ever accepted on stdin or as an environment
 reference, never as a command-line argument.
+
+## Configure it with Compendium
+
+**You never have to write `arcanum.json` by hand.** Compendium is Arcanum's desktop configuration
+editor — a .NET 10 Avalonia app that ships alongside the CLI and edits the same file with typed
+controls instead of a text editor.
+
+```bash
+arcanum open compendium        # or: arcanum config open
+```
+
+It also opens from The Forge under **View → Open Compendium**, from the setup wizard, and from the
+**Settings…** item in the macOS application menu. Extract the `compendium-*` archive beside the
+`arcanum` one and the CLI will find it; if it can't, it prints every location it tried.
+
+**Presets do the first pass for you.** Rather than starting from an empty file, pick one of five
+workflow presets and Compendium applies a versioned overlay:
+
+| Preset | For |
+|---|---|
+| **General Assistant** | Everyday use — attachments on, conservative memory settings |
+| **Coding Workspace** | Working in a repository — workspace checks and file-write permission |
+| **Research** | Web browsing on; needs a research credential |
+| **Private/Offline** | Loopback-only binding, browsing off, telemetry off |
+| **Automation** | Unattended runs; needs an operator-authored daily budget |
+
+Selecting a card shows you what it would do before it does anything: exactly which settings the
+preset owns, which prerequisites are unmet, what it deliberately leaves alone, and whether your
+current configuration is **Active**, **Custom**, or **Drifted** from it. **Advanced/Custom** owns
+nothing and changes nothing, for when you want to drive every value yourself.
+
+**It will not let you save a broken configuration.** Validation runs as you type, errors render
+inline under the control that caused them, and Save stays unavailable while any field is invalid —
+so a bad value is caught in the editor rather than at the next startup. Saves are atomic: a
+temporary write, a durable flush, then a replacement of `arcanum.json`, all inside the same
+cross-process transaction the CLI and preset writers use.
+
+Compendium edits configuration and nothing else — it does not run inference, open the Grimoire,
+execute tools, or touch your encryption keys. Those stay with `arcanum data encryption ...` on
+purpose.
+
+Prefer the terminal? `arcanum config path`, `show`, `get <key>`, `set <key>`, `validate`, and `edit`
+reach the same file, with endpoint values redacted on read and secrets accepted only on stdin.
+[`Compendium.README.md`](docs/Compendium.README.md#complete-configuration-reference) is the complete
+key-by-key reference.
 
 ## Why Arcanum
 
@@ -86,7 +134,7 @@ reference, never as a command-line argument.
 | | |
 |---|---|
 | **`arcanum`** | Native AOT CLI and HTTP host — `serve`, `run`, `watch`, `session`, `memory`, `spell`, `model`, and more |
-| **Compendium** | Avalonia desktop editor for the complete configuration surface |
+| **Compendium** | Avalonia desktop editor for the complete configuration surface — [see above](#configure-it-with-compendium) |
 | **The Forge** | Avalonia desktop companion app |
 
 Arcanum names its domain concepts after a D&D metaphor — a Campaign is a persistent workspace, a
