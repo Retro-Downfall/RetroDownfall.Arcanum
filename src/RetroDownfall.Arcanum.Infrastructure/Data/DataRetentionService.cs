@@ -71,7 +71,8 @@ internal sealed partial class DataRetentionService(
     DataRetentionLeaseMaintainer? leaseMaintainer = null,
     CovenantRequestedOperationStarter? requestedOperationStarter = null,
     ICovenantFactoryErasureApplyRequestDigestCalculator? factoryApplyRequestDigests = null,
-    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null) : IDataRetentionService
+    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null,
+    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : IDataRetentionService
 {
 
     private static readonly int[] ActiveOperationStates =
@@ -1012,6 +1013,36 @@ internal sealed partial class DataRetentionService(
             }
 
             return Result<DataRetentionApplyResult>.Success(applied);
+
+        }
+        catch (RetentionCovenantLabelException ex)
+        {
+
+            // Nothing was mutated: every guard asks before its transaction opens. The operation is
+            // terminalized under the guard's own code so a client can tell protected state that must
+            // leave through the purge boundary from an ordinary retention hold, and the refusal
+            // itself is returned verbatim because its message names the boundary rather than the
+            // artifact (§10.20.2).
+            LongRunningOperation refused = await operations.GetAsync(
+                operation.Id,
+                CancellationToken.None).ConfigureAwait(false)
+                ?? lease.Operation;
+
+            bool marked = await operations.TryTransitionAsync(
+                operation.Id,
+                refused.Revision,
+                ownerId,
+                LongRunningOperationState.Failed,
+                timeProvider.GetUtcNow(),
+                ex.Error.Code,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return Result<DataRetentionApplyResult>.Failure(
+                marked
+                    ? ex.Error
+                    : new Error(
+                        ErrorCodes.Data.ReconciliationFailed,
+                        "A labelled artifact refused the deletion, but its durable marker could not be finalized."));
 
         }
         catch (RetentionBlockedException ex)
@@ -2487,6 +2518,10 @@ internal sealed partial class DataRetentionService(
             return EmptyApply(operationId, plan);
 
         }
+
+        await RefuseLabeledSessionEntriesAsync(
+            snapshot,
+            cancellationToken).ConfigureAwait(false);
 
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
@@ -5805,6 +5840,78 @@ internal sealed partial class DataRetentionService(
 
     }
 
+    /// <summary>
+    /// Whether the labelled-artifact guard permits removing one named artifact by raw delete.
+    /// </summary>
+    /// <remarks>
+    /// Asked before the mutation transaction opens, not inside it. This service and the guard read
+    /// the same scoped Grimoire connection, and a command issued on a connection that already holds
+    /// a transaction is refused by the provider, so "inside the transaction" is not a shape this
+    /// seam can take. <c>SagaMemoryStore</c>'s own bulk delete asks in the same place.
+    ///
+    /// <para>An installation whose container never registered a guard answers success: there is no
+    /// Covenant arm, so there is no label table to consult and nothing protected to refuse.</para>
+    /// </remarks>
+    private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        Guid artifactId,
+        CancellationToken cancellationToken) =>
+        labeledArtifactGuard is { } guard
+            ? await guard
+                .EnsureUnlabeledAsync(kind, artifactId, cancellationToken)
+                .ConfigureAwait(false)
+            : Result.Success();
+
+    /// <summary>
+    /// Whether the labelled-artifact guard permits a set-based delete over one whole kind.
+    /// </summary>
+    /// <remarks>
+    /// The bulk arm, for the statements that examine no identity at all. A per-artifact check cannot
+    /// see rows it never enumerated, so the only honest question is whether the kind still has a
+    /// labelled member anywhere and the only safe answer for "yes" is to refuse (§10.20.2).
+    /// </remarks>
+    private async ValueTask<Result> EnsureKindUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        CancellationToken cancellationToken) =>
+        labeledArtifactGuard is { } guard
+            ? await guard
+                .EnsureNoneLabeledAsync(kind, cancellationToken)
+                .ConfigureAwait(false)
+            : Result.Success();
+
+    /// <summary>
+    /// Refuses a Session deletion that would take a labelled assistant Entry with it.
+    /// </summary>
+    /// <remarks>
+    /// A Session delete is all or nothing — the Session row and every Entry under it leave in one
+    /// transaction — so a protected member is a reason to refuse the whole operation rather than to
+    /// leave a Session deleted around Entries that are still there. The single-entry route already
+    /// dispatches through the purge boundary; this is the bulk twin that did not.
+    /// </remarks>
+    private async Task RefuseLabeledSessionEntriesAsync(
+        SessionPlanSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+
+        foreach (Guid entryId in snapshot.EntryIds)
+        {
+
+            Result unlabeled = await EnsureArtifactUnlabeledAsync(
+                SensitiveArtifactKind.AssistantEntry,
+                entryId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (unlabeled.IsFailure)
+            {
+
+                throw new RetentionCovenantLabelException(unlabeled.Error);
+
+            }
+
+        }
+
+    }
+
     private async Task<DbConnection> OpenConnectionAsync(
         CancellationToken cancellationToken)
     {
@@ -7564,6 +7671,26 @@ internal sealed partial class DataRetentionService(
     private sealed class RetentionConflictException(string message) : Exception(message);
 
     private sealed class RetentionBlockedException(string message) : Exception(message);
+
+    /// <summary>
+    /// A retention route reached an artifact the labelled-artifact guard refuses to remove.
+    /// </summary>
+    /// <remarks>
+    /// Carries the guard's own <see cref="Error"/> rather than a message, because the code is the
+    /// half a programmatic client can act on: a route that flattened this into
+    /// <c>Data.Blocked</c> would tell an operator their deletion hit an ordinary retention hold
+    /// rather than protected state that must be dispatched through the purge boundary (§10.20.2).
+    ///
+    /// <para>Every throw site runs before its transaction is opened, so unwinding this leaves
+    /// nothing half-applied.</para>
+    /// </remarks>
+    private sealed class RetentionCovenantLabelException(Error error)
+        : Exception(error.Message)
+    {
+
+        public Error Error { get; } = error;
+
+    }
 
     private sealed class RetentionQuarantineRecoveryRequiredException(
         string message,
