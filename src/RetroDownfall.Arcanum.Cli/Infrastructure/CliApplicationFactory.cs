@@ -641,17 +641,34 @@ internal static class CliApplicationFactory
     internal static readonly TimeSpan ProcessTerminationGrace = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// Commands that install their own <see cref="Console.CancelKeyPress"/> contract and must never
-    /// be torn down by System.CommandLine's process-termination handler. Command Center is entered
-    /// before parsing, so no parsed verb currently claims the keypress; the hook stays because any
-    /// future long-lived interactive verb needs it and silently inheriting the termination handler
-    /// would kill that verb's own Ctrl+C contract.
+    /// Top-level verbs that install their own <see cref="Console.CancelKeyPress"/> contract and must
+    /// never be torn down by System.CommandLine's process-termination handler.
     /// </summary>
-    private static readonly string[] SelfManagedTerminationCommands = [];
+    /// <remarks>
+    /// Two of them, both reached by parsing. <c>run</c> reaches <c>AskCommand</c>, which installs a
+    /// handler that maps Ctrl+C to "cancel this turn" and then drains the human-in-the-loop queue
+    /// before returning 130; every <c>watch</c> verb goes through
+    /// <c>WatchCommands.WithCancellationAsync</c>, which installs one of its own. Both used to inherit
+    /// the ten-second grace, so an unwind that ran longer than it was torn down by the framework
+    /// rather than by the contract the verb advertises.
+    ///
+    /// <para>Command Center still claims nothing here: it is entered before parsing, so no parse
+    /// result describes it.</para>
+    /// </remarks>
+    private static readonly string[] SelfManagedTerminationCommands = ["run", "watch"];
 
     internal static TimeSpan? ResolveProcessTerminationTimeout(ParseResult parseResult) =>
         OwnsCancelKeyPress(parseResult) ? null : ProcessTerminationGrace;
 
+    /// <summary>
+    /// Whether the parsed invocation's top-level verb owns the keypress.
+    /// </summary>
+    /// <remarks>
+    /// The top-level verb, not any ancestor by name. <c>trial run</c> shares a bare name with the
+    /// top-level <c>run</c> and installs no handler, so a match at any depth would leave a Ctrl+C
+    /// there with nothing to answer it. Matching the outermost command below the root is what makes
+    /// <c>watch</c> cover every one of its subcommands while <c>trial run</c> keeps the grace window.
+    /// </remarks>
     private static bool OwnsCancelKeyPress(ParseResult parseResult)
     {
 
@@ -662,22 +679,24 @@ internal static class CliApplicationFactory
 
         }
 
+        string? topLevelVerb = null;
+
         for (SymbolResult? current = parseResult.CommandResult;
             current is not null;
             current = current.Parent)
         {
 
-            if (current is CommandResult commandResult
-                && SelfManagedTerminationCommands.Contains(commandResult.Command.Name, StringComparer.Ordinal))
+            if (current is CommandResult { Command: not RootCommand } commandResult)
             {
 
-                return true;
+                topLevelVerb = commandResult.Command.Name;
 
             }
 
         }
 
-        return false;
+        return topLevelVerb is not null
+            && SelfManagedTerminationCommands.Contains(topLevelVerb, StringComparer.Ordinal);
 
     }
 
