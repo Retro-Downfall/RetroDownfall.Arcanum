@@ -361,14 +361,19 @@ public sealed class HostProcessToolsStartupGateTests
 
         Assert.Contains("ward resolve", paths);
 
-        List<string> offenders = [];
+        // Six messages: every blocked disposition the gate can produce, each proven to have failed
+        // and to carry its own remedy before its command literals are read out of it.
+        string[] named =
+        [
+            .. (await RefusalMessagesAsync()).SelectMany(CommandChains),
+        ];
 
-        foreach (string message in await RefusalMessagesAsync())
-        {
+        // The positive control. Without it the assertion below is satisfied by a corpus in which no
+        // message names a command at all, which is indistinguishable from one in which every command
+        // resolves. The read-failure remedy names a real verb, so a live chain has to resolve here.
+        Assert.Contains("doctor", named, StringComparer.Ordinal);
 
-            offenders.AddRange(CommandChains(message).Where(chain => !paths.Contains(chain)));
-
-        }
+        List<string> offenders = [.. named.Where(chain => !paths.Contains(chain))];
 
         Assert.True(
             offenders.Count == 0,
@@ -378,6 +383,12 @@ public sealed class HostProcessToolsStartupGateTests
     }
 
     /// <summary>One refusal message per blocked disposition the gate can produce.</summary>
+    /// <remarks>
+    /// Every message is taken through <see cref="RefusalMessage"/>, which asserts the classification
+    /// actually failed. Reading <c>Error.Message</c> off an unchecked result is how this helper would
+    /// go quiet on the regression it exists to catch: a disposition that stopped blocking returns
+    /// <c>Error.None</c>, whose message is empty, so the caller would scan nothing and pass.
+    /// </remarks>
     private static async Task<IReadOnlyList<string>> RefusalMessagesAsync()
     {
 
@@ -387,8 +398,9 @@ public sealed class HostProcessToolsStartupGateTests
 
         escapeHatch.Environment.EscapeHatchOptIn = true;
 
-        messages.Add((await escapeHatch.Gate
-            .ClassifyAndPublishAsync(CancellationToken.None)).Error.Message);
+        messages.Add(RefusalMessage(
+            await escapeHatch.Gate.ClassifyAndPublishAsync(CancellationToken.None),
+            HostProcessToolsStartupGate.EscapeHatchRemediation));
 
         Harness pending = Harness.Create();
 
@@ -397,24 +409,64 @@ public sealed class HostProcessToolsStartupGateTests
             Transition,
             CancellationToken.None);
 
-        messages.Add((await pending.Gate
-            .ClassifyAndPublishAsync(CancellationToken.None)).Error.Message);
+        messages.Add(RefusalMessage(
+            await pending.Gate.ClassifyAndPublishAsync(CancellationToken.None),
+            HostProcessToolsStartupGate.EvidenceMismatchRemediation));
 
         Harness stray = Harness.Create();
 
         stray.Markers.SeedForeignMarker();
 
-        messages.Add((await stray.Gate
-            .ClassifyAndPublishAsync(CancellationToken.None)).Error.Message);
+        messages.Add(RefusalMessage(
+            await stray.Gate.ClassifyAndPublishAsync(CancellationToken.None),
+            HostProcessToolsStartupGate.EvidenceMismatchRemediation));
 
         Harness unreadable = Harness.Create();
 
         unreadable.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Unavailable;
 
-        messages.Add((await unreadable.Gate
-            .ClassifyAndPublishAsync(CancellationToken.None)).Error.Message);
+        messages.Add(RefusalMessage(
+            await unreadable.Gate.ClassifyAndPublishAsync(CancellationToken.None),
+            HostProcessToolsStartupGate.MarkerUnreadableRemediation));
+
+        Harness unreadableRow = Harness.Create();
+
+        unreadableRow.Authority.TryReadFailure = true;
+
+        messages.Add(RefusalMessage(
+            await unreadableRow.Gate.ClassifyAndPublishAsync(CancellationToken.None),
+            HostProcessToolsStartupGate.AuthorityUnreadableRemediation));
+
+        Harness invalidRow = Harness.Create();
+
+        invalidRow.Authority.InvalidRow = true;
+
+        messages.Add(RefusalMessage(
+            await invalidRow.Gate.ClassifyAndPublishAsync(CancellationToken.None),
+            HostProcessToolsStartupGate.AuthorityUnreadableRemediation));
 
         return messages;
+
+    }
+
+    /// <summary>
+    /// The message of a classification that must have failed, carrying the remedy for its own site.
+    /// </summary>
+    /// <remarks>
+    /// Both assertions are about vacuity rather than about the message text. A result nobody checked
+    /// yields an empty string on success, and a site whose remedy silently became a different one
+    /// would keep every caller scanning a message that no longer says what the caller assumed.
+    /// </remarks>
+    private static string RefusalMessage(
+        Result<HostProcessToolsStartupDecision> result,
+        string expectedRemediation)
+    {
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(expectedRemediation, result.Error.Message, StringComparison.Ordinal);
+
+        return result.Error.Message;
 
     }
 
