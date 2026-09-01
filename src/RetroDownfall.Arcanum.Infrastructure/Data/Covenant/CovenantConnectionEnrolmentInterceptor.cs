@@ -425,6 +425,8 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         try
         {
 
+            RevalidateObservedNativeOpen(connection, registration);
+
             if (closePhysicalConnection && !IsPhysicallyClosed(connection))
             {
 
@@ -462,6 +464,8 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
         try
         {
+
+            RevalidateObservedNativeOpen(connection, registration);
 
             if (closePhysicalConnection && !IsPhysicallyClosed(connection))
             {
@@ -508,6 +512,26 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         }
 
         registration.Registration.Dispose();
+
+    }
+
+    private static void RevalidateObservedNativeOpen(
+        DbConnection connection,
+        InterceptorRegistration registration)
+    {
+
+        if (registration.Opened
+            || registration.NativeOpenRevalidated
+            || connection.State != ConnectionState.Open)
+        {
+
+            return;
+
+        }
+
+        _ = registration.Registration.RevalidateAfterNativeOpen();
+
+        registration.NativeOpenRevalidated = true;
 
     }
 

@@ -313,6 +313,9 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            Result.Success();
+
         private sealed class Registration(RecordingConnectionDrain owner) : IDisposable
         {
 

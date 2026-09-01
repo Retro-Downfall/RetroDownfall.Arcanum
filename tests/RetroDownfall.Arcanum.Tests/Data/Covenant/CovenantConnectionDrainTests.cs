@@ -224,6 +224,44 @@ public sealed class CovenantConnectionDrainTests
 
     }
 
+    [Fact]
+    public async Task Exact_pool_clear_releases_one_closed_pooled_handle_and_observes_closure()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        CovenantConnectionDrain drain = new();
+
+        await using SqliteConnection pooled = new(
+            new SqliteConnectionStringBuilder(database.Connection.ConnectionString)
+            {
+
+                Pooling = true,
+
+            }.ToString());
+
+        await pooled.OpenAsync(Token);
+
+        await pooled.CloseAsync();
+
+        await database.Connection.CloseAsync();
+
+        Assert.Equal(ConnectionState.Closed, pooled.State);
+
+        Assert.Contains(
+            CovenantResidualArtifactClass.WriteAheadLog,
+            CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        Result cleared = drain.ClearExactPoolAfterClose(pooled);
+
+        Assert.True(cleared.IsSuccess, cleared.IsFailure ? cleared.Error.Message : null);
+
+        Assert.Equal(ConnectionState.Closed, pooled.State);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+    }
+
     /// <summary>
     /// A scope that opens the Grimoire through the Covenant connection source is closed by the drain.
     /// </summary>

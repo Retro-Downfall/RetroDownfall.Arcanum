@@ -40,63 +40,94 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
     }
 
-    [Fact]
-    public async Task Open_that_loses_admission_is_physically_closed_before_refusal_completes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Open_that_loses_admission_closes_and_clears_its_exact_pool_before_refusal(
+        bool asynchronous)
     {
 
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
-        RecordingConnectionDrain drain = new();
+        List<string> releaseOrder = [];
+
+        Task<Result<IGrimoireExclusiveClosedLease>>? closingAdmission = null;
+
+        GatedOpenSqliteConnection connection = new(ConnectionString, releaseOrder);
+
+        RecordingConnectionDrain drain = new(cleared =>
+        {
+
+            Assert.Same(connection, cleared);
+
+            Assert.Equal(ConnectionState.Closed, cleared.State);
+
+            Assert.NotNull(closingAdmission);
+
+            Assert.False(closingAdmission!.IsCompleted);
+
+            releaseOrder.Add("clear");
+
+        });
 
         RecordingConnectionInitializer initializer = new();
 
-        await using GatedOpenSqliteConnection connection = new(ConnectionString);
+        await using (connection.ConfigureAwait(false))
+        {
 
-        await using ProbeDbContext context = CreateContext(
-            connection,
-            gate,
-            drain,
-            initializer);
+            await using ProbeDbContext context = CreateContext(
+                connection,
+                gate,
+                drain,
+                initializer);
 
-        Task opening = context.Database.OpenConnectionAsync();
+            Task opening = asynchronous
+                ? context.Database.OpenConnectionAsync()
+                : Task.Run(context.Database.OpenConnection);
 
-        await connection.OpenEntered;
+            await connection.OpenEntered;
 
-        await using IGrimoireClosingOwner closing = Begin(gate, 2);
+            await using IGrimoireClosingOwner closing = Begin(gate, 2);
 
-        Result requestsDrained = await gate.DrainRequestAndWorkAsync(
-            closing,
-            CancellationToken.None);
+            Result requestsDrained = await gate.DrainRequestAndWorkAsync(
+                closing,
+                CancellationToken.None);
 
-        Assert.True(
-            requestsDrained.IsSuccess,
-            requestsDrained.IsFailure ? requestsDrained.Error.Message : null);
+            Assert.True(
+                requestsDrained.IsSuccess,
+                requestsDrained.IsFailure ? requestsDrained.Error.Message : null);
 
-        Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
-            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
-            .AsTask();
+            closingAdmission = gate
+                .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+                .AsTask();
 
-        Assert.False(closingAdmission.IsCompleted);
+            Assert.False(closingAdmission.IsCompleted);
 
-        connection.AllowOpen();
+            connection.AllowOpen();
 
-        _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(() => opening);
+            _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(() => opening);
 
-        Assert.Equal(ConnectionState.Closed, connection.State);
+            Assert.Equal(ConnectionState.Closed, connection.State);
 
-        Assert.Equal(1, connection.PhysicalCloseCount);
+            Assert.Equal(1, connection.PhysicalCloseCount);
 
-        Assert.Equal(0, initializer.CallCount);
+            Assert.Equal(0, initializer.CallCount);
 
-        Assert.Equal(0, drain.RegisterCount);
+            Assert.Equal(0, drain.RegisterCount);
 
-        Assert.Equal(0, drain.DisposeCount);
+            Assert.Equal(0, drain.DisposeCount);
 
-        Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+            Assert.Equal(1, drain.ExactPoolClearCount);
 
-        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+            Assert.Equal(["close", "clear"], releaseOrder);
 
-        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+            Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+            Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+            await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+        }
 
     }
 
@@ -157,6 +188,109 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Initializer_termination_closes_and_clears_exact_pool_before_ticket_completion(
+        bool asynchronous,
+        bool canceled)
+    {
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        List<string> releaseOrder = [];
+
+        Task<Result<IGrimoireExclusiveClosedLease>>? closingAdmission = null;
+
+        TrackingSqliteConnection connection = new(ConnectionString, releaseOrder);
+
+        RecordingConnectionDrain drain = new(cleared =>
+        {
+
+            Assert.Same(connection, cleared);
+
+            Assert.Equal(ConnectionState.Closed, cleared.State);
+
+            Assert.NotNull(closingAdmission);
+
+            Assert.False(closingAdmission!.IsCompleted);
+
+            releaseOrder.Add("clear");
+
+        });
+
+        TerminatingConnectionInitializer initializer = new();
+
+        ProbeDbContext context = CreateContext(connection, gate, drain, initializer);
+
+        try
+        {
+
+            Task opening = asynchronous
+                ? context.Database.OpenConnectionAsync()
+                : Task.Run(context.Database.OpenConnection);
+
+            await initializer.Entered;
+
+            await using IGrimoireClosingOwner closing = Begin(gate, 21);
+
+            Result requestsDrained = await gate.DrainRequestAndWorkAsync(
+                closing,
+                CancellationToken.None);
+
+            Assert.True(
+                requestsDrained.IsSuccess,
+                requestsDrained.IsFailure ? requestsDrained.Error.Message : null);
+
+            closingAdmission = gate
+                .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+                .AsTask();
+
+            Assert.False(closingAdmission.IsCompleted);
+
+            initializer.Terminate(canceled);
+
+            if (canceled)
+            {
+
+                _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => opening);
+
+            }
+            else
+            {
+
+                _ = await Assert.ThrowsAsync<InvalidOperationException>(() => opening);
+
+            }
+
+            Assert.Equal(ConnectionState.Closed, connection.State);
+
+            Assert.Equal(1, connection.PhysicalCloseCount);
+
+            Assert.Equal(1, drain.ExactPoolClearCount);
+
+            Assert.Equal(["close", "clear"], releaseOrder);
+
+            Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+            Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+            await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+        }
+        finally
+        {
+
+            await context.DisposeAsync();
+
+            await connection.DisposeAsync();
+
+        }
 
     }
 
@@ -234,6 +368,8 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
             Assert.Equal(0, drain.DisposeCount);
 
+            Assert.Equal(0, drain.ExactPoolClearCount);
+
         }
         finally
         {
@@ -300,6 +436,8 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
             Assert.Equal(0, drain.DisposeCount);
 
+            Assert.Equal(1, drain.ExactPoolClearCount);
+
         }
         finally
         {
@@ -352,6 +490,8 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
             Assert.Equal(0, drain.RegisterCount);
 
             Assert.Equal(0, drain.DisposeCount);
+
+            Assert.Equal(0, drain.ExactPoolClearCount);
 
         }
         finally
@@ -585,7 +725,9 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
     private sealed class TrackingSqliteConnection : SqliteConnection
     {
 
-        internal TrackingSqliteConnection(string connectionString)
+        internal TrackingSqliteConnection(
+            string connectionString,
+            List<string>? releaseOrder = null)
             : base(connectionString)
         {
 
@@ -597,6 +739,8 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
                 {
 
                     PhysicalCloseCount++;
+
+                    releaseOrder?.Add("close");
 
                 }
 
@@ -628,8 +772,7 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
     }
 
-    private sealed class GatedOpenSqliteConnection(string connectionString)
-        : SqliteConnection(connectionString)
+    private sealed class GatedOpenSqliteConnection : SqliteConnection
     {
 
         private readonly TaskCompletionSource _openEntered =
@@ -638,12 +781,46 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
         private readonly TaskCompletionSource _allowOpen =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        internal GatedOpenSqliteConnection(
+            string connectionString,
+            List<string>? releaseOrder = null)
+            : base(connectionString)
+        {
+
+            StateChange += (_, args) =>
+            {
+
+                if (args.OriginalState != ConnectionState.Closed
+                    && args.CurrentState == ConnectionState.Closed)
+                {
+
+                    PhysicalCloseCount++;
+
+                    releaseOrder?.Add("close");
+
+                }
+
+            };
+
+        }
+
         internal Task OpenEntered => _openEntered.Task;
 
         internal int PhysicalCloseCount { get; private set; }
 
         internal void AllowOpen() =>
             _allowOpen.TrySetResult();
+
+        public override void Open()
+        {
+
+            _openEntered.TrySetResult();
+
+            _allowOpen.Task.GetAwaiter().GetResult();
+
+            base.Open();
+
+        }
 
         public override async Task OpenAsync(CancellationToken cancellationToken)
         {
@@ -653,15 +830,6 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
             await _allowOpen.Task.WaitAsync(cancellationToken);
 
             await base.OpenAsync(cancellationToken);
-
-        }
-
-        public override Task CloseAsync()
-        {
-
-            PhysicalCloseCount++;
-
-            return base.CloseAsync();
 
         }
 
@@ -853,7 +1021,54 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
     }
 
-    private sealed class RecordingConnectionDrain : ICovenantConnectionDrain
+    private sealed class TerminatingConnectionInitializer : ICovenantSqliteConnectionInitializer
+    {
+
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _terminated =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Entered => _entered.Task;
+
+        internal void Terminate(bool canceled)
+        {
+
+            Exception failure = canceled
+                ? new OperationCanceledException("post-open initializer canceled")
+                : new InvalidOperationException("post-open initializer failed");
+
+            _terminated.TrySetException(failure);
+
+        }
+
+        public async ValueTask InitializeAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken)
+        {
+
+            _entered.TrySetResult();
+
+            await _terminated.Task;
+
+        }
+
+        public CovenantSqliteAuthorizationScope Authorize(
+            SqliteConnection connection,
+            CovenantSqliteAuthorizationKind kind) =>
+            throw new NotSupportedException();
+
+        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
+            RestoreStagingManagedAuthoritySanitizationCapability authority,
+            RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
+            throw new NotSupportedException();
+
+    }
+
+    private sealed class RecordingConnectionDrain(
+        Action<SqliteConnection>? exactPoolClear = null) : ICovenantConnectionDrain
     {
 
         private int _activeCount;
@@ -862,11 +1077,15 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         private int _registerCount;
 
+        private int _exactPoolClearCount;
+
         internal int ActiveCount => Volatile.Read(ref _activeCount);
 
         internal int DisposeCount => Volatile.Read(ref _disposeCount);
 
         internal int RegisterCount => Volatile.Read(ref _registerCount);
+
+        internal int ExactPoolClearCount => Volatile.Read(ref _exactPoolClearCount);
 
         public IDisposable Register(SqliteConnection connection)
         {
@@ -883,6 +1102,17 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection)
+        {
+
+            _ = Interlocked.Increment(ref _exactPoolClearCount);
+
+            exactPoolClear?.Invoke(connection);
+
+            return Result.Success();
+
+        }
 
         private sealed class Registration(RecordingConnectionDrain owner) : IDisposable
         {

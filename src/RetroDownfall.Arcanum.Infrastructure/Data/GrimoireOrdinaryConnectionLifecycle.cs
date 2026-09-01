@@ -289,6 +289,20 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle : IGrimoireOrdinaryCon
 
             }
 
+            if (registration.Connection is SqliteConnection sqlite)
+            {
+
+                Result cleared = _drain.ClearExactPoolAfterClose(sqlite);
+
+                if (cleared.IsFailure)
+                {
+
+                    throw new InvalidOperationException(cleared.Error.Message);
+
+                }
+
+            }
+
             if (lifecycle.RefusalAfterOpenRequired)
             {
 

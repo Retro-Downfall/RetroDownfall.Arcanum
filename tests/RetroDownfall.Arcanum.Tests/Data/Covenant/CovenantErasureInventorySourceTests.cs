@@ -979,6 +979,9 @@ public sealed class CovenantErasureInventorySourceTests
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             inner.DrainAsync(cancellationToken);
 
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            inner.ClearExactPoolAfterClose(connection);
+
         private sealed class TrackingEnrollment(
             TrackingConnectionDrain owner,
             IDisposable inner) : IDisposable

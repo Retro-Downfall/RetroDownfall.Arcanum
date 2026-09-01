@@ -895,6 +895,9 @@ public sealed class CovenantDisclosureWriterTests
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             inner.DrainAsync(cancellationToken);
 
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            inner.ClearExactPoolAfterClose(connection);
+
         private sealed class Registration(
             RecordingConnectionDrain owner,
             IDisposable inner) : IDisposable

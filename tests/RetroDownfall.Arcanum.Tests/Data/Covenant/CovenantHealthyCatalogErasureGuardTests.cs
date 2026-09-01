@@ -623,6 +623,9 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             _inner.DrainAsync(cancellationToken);
 
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            _inner.ClearExactPoolAfterClose(connection);
+
         private sealed class Registration(
             IDisposable inner,
             RecordingConnectionDrain owner) : IDisposable
@@ -776,6 +779,9 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
             throw new NotSupportedException();
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
             throw new NotSupportedException();
 
     }

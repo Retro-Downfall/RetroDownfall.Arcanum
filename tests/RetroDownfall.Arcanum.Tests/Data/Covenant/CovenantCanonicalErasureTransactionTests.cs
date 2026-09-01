@@ -655,6 +655,9 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         public IDisposable Register(SqliteConnection connection) => inner.Register(connection);
 
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            inner.ClearExactPoolAfterClose(connection);
+
         public Task<Result> DrainAsync(CancellationToken cancellationToken)
         {
 
@@ -670,6 +673,9 @@ public sealed class CovenantCanonicalErasureTransactionTests
     {
 
         public IDisposable Register(SqliteConnection connection) => throw new NotSupportedException();
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            throw new NotSupportedException();
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             Task.FromResult(

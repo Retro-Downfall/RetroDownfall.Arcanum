@@ -47,6 +47,11 @@ internal interface ICovenantConnectionDrain
     IDisposable Register(SqliteConnection connection);
 
     /// <summary>
+    /// Clears the exact pool of one physically closed handle and observes that it remains closed.
+    /// </summary>
+    Result ClearExactPoolAfterClose(SqliteConnection connection);
+
+    /// <summary>
     /// Closes every enrolled direct handle, clears every idle pool, and refuses over any handle it
     /// could not close.
     /// </summary>
@@ -100,6 +105,35 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         }
 
         return new Enrolment(this, connection);
+
+    }
+
+    public Result ClearExactPoolAfterClose(SqliteConnection connection)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        if (!IsClosed(connection))
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "A Grimoire connection must be physically closed before its exact pool is cleared.");
+
+        }
+
+        SqliteConnection.ClearPool(connection);
+
+        if (!IsClosed(connection))
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "A Grimoire connection reopened while its exact pool was being cleared.");
+
+        }
+
+        return Result.Success();
 
     }
 
