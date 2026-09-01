@@ -915,11 +915,11 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         lock (_sync)
         {
 
-            if (ticket.State is OpenTicketState.Opening
-                or OpenTicketState.RevalidatedAfterOpen)
+            if (ticket.State is not OpenTicketState.Terminal)
             {
 
-                CompleteTicketWhileLocked(ticket);
+                throw new InvalidOperationException(
+                    "A Grimoire open ticket requires an explicit terminal outcome before disposal.");
 
             }
 
@@ -2147,7 +2147,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         public void Dispose()
         {
 
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            if (Volatile.Read(ref _disposed) != 0)
             {
 
                 return;
@@ -2155,6 +2155,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
 
             gate.DisposeTicket(this);
+
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+
+                return;
+
+            }
 
             GC.SuppressFinalize(this);
 

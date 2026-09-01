@@ -122,6 +122,56 @@ public sealed class GrimoireConnectionAdmissionGateTests
     }
 
     [Fact]
+    public async Task Disposal_cannot_terminalize_a_native_open_without_an_explicit_outcome()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        using SqliteConnection connection = new();
+
+        IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(connection);
+
+        Result revalidated = ticket.RevalidateAfterNativeOpen();
+
+        Assert.True(
+            revalidated.IsSuccess,
+            revalidated.IsFailure ? revalidated.Error.Message : null);
+
+        _ = Assert.Throws<InvalidOperationException>(ticket.Dispose);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(24));
+
+        Task<Result<IGrimoireExclusiveClosedLease>> close = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Assert.False(close.IsCompleted);
+
+        Result opened = ticket.MarkOpened();
+
+        Assert.True(opened.IsFailure);
+
+        Assert.False(close.IsCompleted);
+
+        ticket.MarkRefusedAfterOpen();
+
+        Result<IGrimoireExclusiveClosedLease> closed = await close;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+        ticket.Dispose();
+
+        Result keptClosed = await lease.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None);
+
+        Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    [Fact]
     public async Task Connection_close_advances_generation_and_refuses_new_open_before_native_io()
     {
 
