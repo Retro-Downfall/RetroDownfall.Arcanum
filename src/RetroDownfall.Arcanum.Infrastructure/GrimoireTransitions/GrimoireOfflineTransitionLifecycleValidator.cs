@@ -108,6 +108,21 @@ internal sealed partial class HealthyCatalogFactoryErasureOfflineTransitionHandl
 internal static class GrimoireOfflineTransitionLifecycleValidator
 {
 
+    private enum ReplacementStage : byte
+    {
+
+        None = 0,
+
+        Base = 1,
+
+        StagingOwned = 2,
+
+        ContentProved = 3,
+
+        Invalid = byte.MaxValue,
+
+    }
+
     private static readonly GrimoireOfflineTransitionClosingEvidence EmptyClosing =
         new(false, false, false, false, false, null);
 
@@ -262,19 +277,57 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
     private static bool ValidKindEvidence(IGrimoireOfflineTransitionPayload payload) => payload switch
     {
         CovenantResetOfflineTransitionPayloadV1 reset =>
-            reset.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+            (reset.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
                 ? reset.BlockerResolutionEvidence is null
                 : reset.BlockerResolutionEvidence is null
-            || reset.BlockerResolutionEvidence.ResolutionBindingDigest.IsValid
-                && reset.BlockerResolutionEvidence.CanonicalStateDigest.IsValid,
+                    || reset.BlockerResolutionEvidence.ResolutionBindingDigest.IsValid
+                    && reset.BlockerResolutionEvidence.CanonicalStateDigest.IsValid),
         HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory =>
-            factory.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+            (factory.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
                 ? factory.BlockerResolutionEvidence is null
                 : factory.BlockerResolutionEvidence is null
-            || factory.BlockerResolutionEvidence.ResolutionBindingDigest.IsValid
-                && factory.BlockerResolutionEvidence.HealthyCatalogStateDigest.IsValid,
+                    || factory.BlockerResolutionEvidence.ResolutionBindingDigest.IsValid
+                    && factory.BlockerResolutionEvidence.HealthyCatalogStateDigest.IsValid)
+            && ValidFactoryContinuation(factory),
         _ => true,
     };
+
+    private static bool ValidFactoryContinuation(
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 payload)
+    {
+
+        bool completed = payload.OrdinaryFactoryContinuationCompleted;
+
+        if (payload.Lifecycle.TerminalIntent
+            is GrimoireOfflineTransitionTerminalIntent.RollbackAndReopen)
+        {
+
+            return !completed;
+
+        }
+
+        GrimoireOfflineTransitionState state = EffectiveState(payload);
+
+        return state switch
+        {
+            GrimoireOfflineTransitionState.Prepared
+                or GrimoireOfflineTransitionState.Closing => !completed,
+            GrimoireOfflineTransitionState.Applying
+                when payload.LastCompletedPhase
+                    < CovenantResetPhase.ManagedArtifactsProcessed => !completed,
+            GrimoireOfflineTransitionState.Applying
+                when payload.LastCompletedPhase
+                    is CovenantResetPhase.ManagedArtifactsProcessed
+                    && payload.InFlightPhase is null => true,
+            GrimoireOfflineTransitionState.Applying => completed,
+            GrimoireOfflineTransitionState.ReopenPrepared
+                or GrimoireOfflineTransitionState.Verifying
+                or GrimoireOfflineTransitionState.DatabaseReconciliationPending
+                or GrimoireOfflineTransitionState.RetirementPending => completed,
+            _ => false,
+        };
+
+    }
 
     private static bool StateEvidenceCoherent(IGrimoireOfflineTransitionPayload payload)
     {
@@ -282,6 +335,9 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
         GrimoireOfflineTransitionLifecycle lifecycle = payload.Lifecycle;
 
         if (!ClosingCoherent(lifecycle.ClosingEvidence)
+            || lifecycle.ClosingEvidence.ClosedGenerationProved
+                && lifecycle.ClosingEvidence.ClosedDatasetGeneration
+                    != payload.Binding.SourceDatasetGeneration
             || !VerificationCoherent(lifecycle.VerificationEvidence))
         {
 
@@ -289,13 +345,17 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
         }
 
-        GrimoireOfflineTransitionState state = lifecycle.State
-            is GrimoireOfflineTransitionState.KeepClosed
-            ? lifecycle.Blocker!.ResumeState
-            : lifecycle.State;
+        GrimoireOfflineTransitionState state = EffectiveState(payload);
 
-        if (state is not GrimoireOfflineTransitionState.Applying
-            && payload.InFlightPhase is not null)
+        if (state is GrimoireOfflineTransitionState.Applying
+            && payload.LastCompletedPhase > CovenantResetPhase.SidecarsVerified
+            || payload.InFlightPhase is { } inFlight
+                && (state is not GrimoireOfflineTransitionState.Applying
+                    || inFlight > CovenantResetPhase.SidecarsVerified
+                    || CovenantResetPhaseMachine.RequireAdvance(
+                        payload.LastCompletedPhase,
+                        inFlight).IsFailure)
+            || !ReplacementShapeCoherent(payload, state))
         {
 
             return false;
@@ -343,6 +403,12 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
     }
 
+    private static GrimoireOfflineTransitionState EffectiveState(
+        IGrimoireOfflineTransitionPayload payload) => payload.Lifecycle.State
+            is GrimoireOfflineTransitionState.KeepClosed
+            ? payload.Lifecycle.Blocker!.ResumeState
+            : payload.Lifecycle.State;
+
     private static bool TerminalShape(IGrimoireOfflineTransitionPayload payload) =>
         payload.Lifecycle.ClosingEvidence.IsComplete
         && payload.InFlightPhase is null
@@ -384,8 +450,10 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
         }
 
         if (lifecycle.Blocker is { } blocker
-            && (string.IsNullOrWhiteSpace(blocker.ErrorCode)
-                || blocker.ErrorCode.Length > 128
+            && (!string.Equals(
+                    blocker.ErrorCode,
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    StringComparison.Ordinal)
                 || blocker.ResumeState is GrimoireOfflineTransitionState.Prepared
                     or GrimoireOfflineTransitionState.KeepClosed
                     or GrimoireOfflineTransitionState.RetirementPending
@@ -404,14 +472,80 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
     private static bool ValidReplacement(
         GrimoireOfflineTransitionReplacementEvidence? replacement) => replacement is null
-        || !string.IsNullOrWhiteSpace(replacement.StagingLeaf)
-            && replacement.StagingLeaf.Length <= 255
-            && Path.GetFileName(replacement.StagingLeaf) == replacement.StagingLeaf
+        || GrimoireOfflineTransitionLeafName.IsValid(replacement.StagingLeaf)
             && replacement.SourcePhysicalIdentityDigest.IsValid
             && replacement.StagingPhysicalIdentityDigest is not { IsValid: false }
             && replacement.DestinationPhysicalIdentityDigest.IsValid
             && replacement.OriginalBackupPhysicalIdentityDigest.IsValid
-            && replacement.StagedContentDigest is not { IsValid: false };
+            && replacement.StagedContentDigest is not { IsValid: false }
+            && ReplacementStageOf(replacement) is not ReplacementStage.Invalid;
+
+    private static bool ReplacementShapeCoherent(
+        IGrimoireOfflineTransitionPayload payload,
+        GrimoireOfflineTransitionState state)
+    {
+
+        if (payload.ReplacementEvidence is null)
+        {
+
+            return true;
+
+        }
+
+        if (payload.Lifecycle.TerminalIntent
+            is GrimoireOfflineTransitionTerminalIntent.RollbackAndReopen)
+        {
+
+            return false;
+
+        }
+
+        ReplacementStage stage = ReplacementStageOf(payload.ReplacementEvidence);
+
+        if (state is GrimoireOfflineTransitionState.Applying)
+        {
+
+            if (payload.LastCompletedPhase is CovenantResetPhase.WalTruncated)
+            {
+
+                return payload.InFlightPhase is null
+                    ? stage is ReplacementStage.Base
+                        or ReplacementStage.StagingOwned
+                        or ReplacementStage.ContentProved
+                    : payload.InFlightPhase is CovenantResetPhase.DatabaseCompacted
+                        && stage is ReplacementStage.ContentProved;
+
+            }
+
+            return payload.LastCompletedPhase
+                    is >= CovenantResetPhase.DatabaseCompacted
+                        and <= CovenantResetPhase.SidecarsVerified
+                && stage is ReplacementStage.ContentProved;
+
+        }
+
+        return state is GrimoireOfflineTransitionState.ReopenPrepared
+                or GrimoireOfflineTransitionState.Verifying
+                or GrimoireOfflineTransitionState.DatabaseReconciliationPending
+                or GrimoireOfflineTransitionState.RetirementPending
+            && payload.Lifecycle.TerminalIntent
+                is GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
+            && stage is ReplacementStage.ContentProved;
+
+    }
+
+    private static ReplacementStage ReplacementStageOf(
+        GrimoireOfflineTransitionReplacementEvidence? replacement) => replacement switch
+        {
+            null => ReplacementStage.None,
+            { StagingPhysicalIdentityDigest: null, StagedContentDigest: null } =>
+                ReplacementStage.Base,
+            { StagingPhysicalIdentityDigest: not null, StagedContentDigest: null } =>
+                ReplacementStage.StagingOwned,
+            { StagingPhysicalIdentityDigest: not null, StagedContentDigest: not null } =>
+                ReplacementStage.ContentProved,
+            _ => ReplacementStage.Invalid,
+        };
 
     private static bool ValidTerminalIntentAdvance(
         GrimoireOfflineTransitionLifecycle current,
@@ -471,9 +605,7 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
         IGrimoireOfflineTransitionPayload next)
     {
 
-        if (!SameLifecycleEvidence(current, next)
-            || current.ReplacementEvidence is not null
-                && !ReplacementMonotonic(current.ReplacementEvidence, next.ReplacementEvidence))
+        if (!SameLifecycleEvidence(current, next))
         {
 
             return false;
@@ -482,6 +614,13 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
         if (current.LastCompletedPhase == next.LastCompletedPhase)
         {
+
+            if (current.InFlightPhase is null && next.InFlightPhase is null)
+            {
+
+                return ReplacementAdvances(current, next);
+
+            }
 
             if (current.InFlightPhase is null && next.InFlightPhase is { } begun)
             {
@@ -492,10 +631,7 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
             }
 
-            return current.InFlightPhase is not null
-                && current.InFlightPhase == next.InFlightPhase
-                && current.InFlightBeforeState == next.InFlightBeforeState
-                && current.ReplacementEvidence != next.ReplacementEvidence;
+            return false;
 
         }
 
@@ -508,18 +644,44 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
 
     }
 
-    private static bool ReplacementMonotonic(
-        GrimoireOfflineTransitionReplacementEvidence current,
-        GrimoireOfflineTransitionReplacementEvidence? next) => next is not null
-        && current.StagingLeaf == next.StagingLeaf
-        && current.SourcePhysicalIdentityDigest == next.SourcePhysicalIdentityDigest
-        && current.DestinationPhysicalIdentityDigest == next.DestinationPhysicalIdentityDigest
-        && current.OriginalBackupPhysicalIdentityDigest
-            == next.OriginalBackupPhysicalIdentityDigest
-        && (current.StagingPhysicalIdentityDigest is null
-            || current.StagingPhysicalIdentityDigest == next.StagingPhysicalIdentityDigest)
-        && (current.StagedContentDigest is null
-            || current.StagedContentDigest == next.StagedContentDigest);
+    private static bool ReplacementAdvances(
+        IGrimoireOfflineTransitionPayload current,
+        IGrimoireOfflineTransitionPayload next)
+    {
+
+        ReplacementStage currentStage = ReplacementStageOf(current.ReplacementEvidence);
+
+        ReplacementStage nextStage = ReplacementStageOf(next.ReplacementEvidence);
+
+        if (current.LastCompletedPhase is not CovenantResetPhase.WalTruncated
+            || (byte)nextStage != (byte)currentStage + 1)
+        {
+
+            return false;
+
+        }
+
+        if (current.ReplacementEvidence is null)
+        {
+
+            return nextStage is ReplacementStage.Base;
+
+        }
+
+        GrimoireOfflineTransitionReplacementEvidence from = current.ReplacementEvidence;
+
+        GrimoireOfflineTransitionReplacementEvidence? to = next.ReplacementEvidence;
+
+        return to is not null
+            && from.StagingLeaf == to.StagingLeaf
+            && from.SourcePhysicalIdentityDigest == to.SourcePhysicalIdentityDigest
+            && from.DestinationPhysicalIdentityDigest == to.DestinationPhysicalIdentityDigest
+            && from.OriginalBackupPhysicalIdentityDigest
+                == to.OriginalBackupPhysicalIdentityDigest
+            && (currentStage is not ReplacementStage.StagingOwned
+                || from.StagingPhysicalIdentityDigest == to.StagingPhysicalIdentityDigest);
+
+    }
 
     private static bool VerificationAdvances(
         IGrimoireOfflineTransitionPayload current,

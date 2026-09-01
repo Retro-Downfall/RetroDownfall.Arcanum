@@ -1,5 +1,9 @@
 using System.Text;
 
+using System.Text.Json;
+
+using System.Text.Json.Nodes;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -164,6 +168,167 @@ public sealed class GrimoireOfflineTransitionHandlerRegistryTests
     }
 
     [Fact]
+    public void Production_codecs_collapse_null_members_and_malformed_digests_without_throwing()
+    {
+
+        GrimoireOfflineTransitionHandlerRegistry registry =
+            GrimoireOfflineTransitionHandlerRegistry.Production;
+
+        CovenantResetOfflineTransitionPayloadV1 reset = ResetPayload();
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory = new(
+            reset.Binding with
+            {
+                Kind = GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            },
+            reset.Lifecycle,
+            reset.LastCompletedPhase,
+            reset.InFlightPhase,
+            reset.InFlightBeforeState,
+            reset.ReplacementEvidence,
+            OrdinaryFactoryContinuationCompleted: false);
+
+        List<Error> errors = [];
+
+        foreach (IGrimoireOfflineTransitionPayload payload in
+            (IGrimoireOfflineTransitionPayload[])[reset, factory])
+        {
+
+            IGrimoireOfflineTransitionHandler handler = Value(registry.Resolve(
+                payload.Binding.Kind,
+                payload.Binding.PayloadVersion));
+
+            byte[] canonical = Value(registry.Encode(payload));
+
+            foreach (byte[] malformed in MalformedMembers(canonical))
+            {
+
+                GrimoireOfflineTransitionAuthenticatedBinding authenticated = new(
+                    payload.Binding.OperationId,
+                    payload.Binding.Kind,
+                    payload.Binding.PayloadVersion,
+                    payload.Binding.SlotEpoch);
+
+                Result<IGrimoireOfflineTransitionPayload>? handlerResult = null;
+
+                Exception? handlerException = Record.Exception(() =>
+                    handlerResult = handler.Decode(malformed, authenticated));
+
+                Assert.Null(handlerException);
+
+                Assert.True(handlerResult!.IsFailure);
+
+                errors.Add(handlerResult.Error);
+
+                Result<GrimoireOfflineTransitionDecodedPayload>? authenticatedResult = null;
+
+                Exception? authenticatedException = Record.Exception(() =>
+                    authenticatedResult = registry.DecodeAuthenticated(
+                        payload.Binding.Kind,
+                        payload.Binding.PayloadVersion,
+                        malformed,
+                        payload.Binding.OperationId,
+                        payload.Binding.SlotEpoch));
+
+                Assert.Null(authenticatedException);
+
+                Assert.True(authenticatedResult!.IsFailure);
+
+                errors.Add(authenticatedResult.Error);
+
+                Result<GrimoireOfflineTransitionDecodedPayload>? registryResult = null;
+
+                Exception? registryException = Record.Exception(() =>
+                    registryResult = registry.Decode(
+                        payload.Binding.Kind,
+                        payload.Binding.PayloadVersion,
+                        malformed,
+                        payload.Binding));
+
+                Assert.Null(registryException);
+
+                Assert.True(registryResult!.IsFailure);
+
+                errors.Add(registryResult.Error);
+
+            }
+
+        }
+
+        Assert.NotEmpty(errors);
+
+        Assert.All(errors, static error =>
+        {
+
+            Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, error.Code);
+
+            Assert.Equal(
+                "The authenticated offline transition payload cannot be recovered by this build.",
+                error.Message);
+
+        });
+
+    }
+
+    [Fact]
+    public void Authenticated_applying_recovery_requires_the_exact_successor_in_flight_phase()
+    {
+
+        GrimoireOfflineTransitionHandlerRegistry registry =
+            GrimoireOfflineTransitionHandlerRegistry.Production;
+
+        CovenantResetOfflineTransitionPayloadV1 applying = ResetPayload() with
+        {
+            Lifecycle = ResetPayload().Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.Applying,
+                ClosingEvidence = new(
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    ResetPayload().Binding.SourceDatasetGeneration),
+            },
+            InFlightPhase = CovenantResetPhase.CanonicalApplied,
+            InFlightBeforeState = new(Digest(0x31), Digest(0x32)),
+        };
+
+        Assert.True(DecodeRaw(registry, applying).IsSuccess);
+
+        CovenantResetOfflineTransitionPayloadV1[] invalid =
+        [
+            applying with { InFlightPhase = CovenantResetPhase.ManagedArtifactsProcessed },
+            applying with { InFlightPhase = CovenantResetPhase.InventoryPrepared },
+            applying with
+            {
+                LastCompletedPhase = CovenantResetPhase.ManagedArtifactsProcessed,
+                InFlightPhase = CovenantResetPhase.CanonicalApplied,
+            },
+            applying with
+            {
+                LastCompletedPhase = CovenantResetPhase.SidecarsVerified,
+                InFlightPhase = CovenantResetPhase.ReopenedVerified,
+            },
+            applying with
+            {
+                Lifecycle = applying.Lifecycle with
+                {
+                    State = GrimoireOfflineTransitionState.KeepClosed,
+                    Blocker = new(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        GrimoireOfflineTransitionState.Applying,
+                        Digest(0x71)),
+                },
+                InFlightPhase = CovenantResetPhase.ManagedArtifactsProcessed,
+            },
+        ];
+
+        Assert.All(invalid, candidate => Assert.True(DecodeRaw(registry, candidate).IsFailure));
+
+    }
+
+    [Fact]
     public void Registry_refuses_payload_handler_binding_disagreement()
     {
 
@@ -242,6 +407,54 @@ public sealed class GrimoireOfflineTransitionHandlerRegistryTests
         InFlightPhase: null,
         InFlightBeforeState: null,
         ReplacementEvidence: null);
+
+    private static IEnumerable<byte[]> MalformedMembers(byte[] canonical)
+    {
+
+        JsonNode bindingNull = JsonNode.Parse(canonical)!;
+
+        bindingNull["binding"] = null;
+
+        yield return Encoding.UTF8.GetBytes(bindingNull.ToJsonString());
+
+        JsonNode lifecycleNull = JsonNode.Parse(canonical)!;
+
+        lifecycleNull["lifecycle"] = null;
+
+        yield return Encoding.UTF8.GetBytes(lifecycleNull.ToJsonString());
+
+        JsonNode malformedDigest = JsonNode.Parse(canonical)!;
+
+        malformedDigest["binding"]!["effectDigest"]!["bytes"] =
+            Convert.ToBase64String([0x01]);
+
+        yield return Encoding.UTF8.GetBytes(malformedDigest.ToJsonString());
+
+        JsonNode malformedDigestValue = JsonNode.Parse(canonical)!;
+
+        malformedDigestValue["binding"]!["effectDigest"]!["bytes"] = "not-base64";
+
+        yield return Encoding.UTF8.GetBytes(malformedDigestValue.ToJsonString());
+
+    }
+
+    private static Result<GrimoireOfflineTransitionDecodedPayload> DecodeRaw(
+        GrimoireOfflineTransitionHandlerRegistry registry,
+        CovenantResetOfflineTransitionPayloadV1 payload)
+    {
+
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(
+            payload,
+            GrimoireOfflineTransitionLifecycleJsonContext.Default
+                .CovenantResetOfflineTransitionPayloadV1);
+
+        return registry.Decode(
+            payload.Binding.Kind,
+            payload.Binding.PayloadVersion,
+            bytes,
+            payload.Binding);
+
+    }
 
     private static CovenantDigest Digest(byte value) => new(Enumerable.Repeat(value, 32).ToArray());
 

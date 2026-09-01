@@ -332,52 +332,40 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         GrimoireOfflineTransitionTypedPublication current =
             await BeginApplyingAsync(lifecycle);
 
+        current = await AdvanceApplyingThroughAsync(
+            lifecycle,
+            current,
+            CovenantResetPhase.WalTruncated);
+
         CovenantResetOfflineTransitionPayloadV1 applying =
             Assert.IsType<CovenantResetOfflineTransitionPayloadV1>(current.Payload);
 
-        CovenantResetOfflineTransitionPayloadV1 inFlight = applying with
+        foreach (GrimoireOfflineTransitionReplacementEvidence replacement in
+            (GrimoireOfflineTransitionReplacementEvidence[])
+            [
+                ReplacementBase(),
+                ReplacementStagingOwned(),
+                ReplacementContentProved(),
+            ])
         {
-            InFlightPhase = CovenantResetPhase.CanonicalApplied,
-            InFlightBeforeState = new(Digest(0x61), Digest(0x62)),
-        };
 
-        current = Value(await lifecycle.AdvanceAsync(
-            _lock,
-            current,
-            inFlight,
-            CancellationToken.None));
+            applying = applying with { ReplacementEvidence = replacement };
 
-        CovenantResetOfflineTransitionPayloadV1 replacementPublished = inFlight with
+            current = Value(await lifecycle.AdvanceAsync(
+                _lock,
+                current,
+                applying,
+                CancellationToken.None));
+
+        }
+
+        CovenantResetOfflineTransitionPayloadV1 invalid = applying with
         {
-            ReplacementEvidence = Replacement(),
-        };
-
-        current = Value(await lifecycle.AdvanceAsync(
-            _lock,
-            current,
-            replacementPublished,
-            CancellationToken.None));
-
-        CovenantResetOfflineTransitionPayloadV1 completed = replacementPublished with
-        {
-            LastCompletedPhase = CovenantResetPhase.CanonicalApplied,
-            InFlightPhase = null,
-            InFlightBeforeState = null,
-        };
-
-        current = Value(await lifecycle.AdvanceAsync(
-            _lock,
-            current,
-            completed,
-            CancellationToken.None));
-
-        CovenantResetOfflineTransitionPayloadV1 invalid = completed with
-        {
-            InFlightPhase = CovenantResetPhase.ManagedArtifactsProcessed,
+            InFlightPhase = CovenantResetPhase.DatabaseCompacted,
             InFlightBeforeState = new(Digest(0x63), Digest(0x64)),
-            ReplacementEvidence = completed.ReplacementEvidence! with
+            ReplacementEvidence = applying.ReplacementEvidence! with
             {
-                StagingPhysicalIdentityDigest = Digest(0x85),
+                StagingPhysicalIdentityDigest = Digest(0x99),
             },
         };
 
@@ -385,6 +373,199 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
             _lock,
             current,
             invalid,
+            CancellationToken.None)).IsFailure);
+
+        await AssertRawUnchangedAsync(current);
+
+    }
+
+    [Fact]
+    public async Task Wrong_closed_generation_is_refused_without_raw_publication()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        CovenantResetOfflineTransitionPayloadV1 prepared = PreparedPayload();
+
+        GrimoireOfflineTransitionTypedPublication current = Value(await lifecycle.BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            prepared,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 closing = prepared with
+        {
+            Lifecycle = prepared.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.Closing,
+            },
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            closing,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 wrong = closing with
+        {
+            Lifecycle = closing.Lifecycle with
+            {
+                ClosingEvidence = new(true, true, true, true, true, Guid.NewGuid()),
+            },
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            wrong,
+            CancellationToken.None)).IsFailure);
+
+        await AssertRawUnchangedAsync(current);
+
+        CovenantResetOfflineTransitionPayloadV1 matching = wrong with
+        {
+            Lifecycle = wrong.Lifecycle with
+            {
+                ClosingEvidence = wrong.Lifecycle.ClosingEvidence with
+                {
+                    ClosedDatasetGeneration = prepared.Binding.SourceDatasetGeneration,
+                },
+            },
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            matching,
+            CancellationToken.None)).IsSuccess);
+
+    }
+
+    [Fact]
+    public async Task Replacement_sequence_is_exact_and_refusals_leave_raw_bytes_unchanged()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        GrimoireOfflineTransitionTypedPublication current =
+            await BeginApplyingAsync(lifecycle);
+
+        current = await AdvanceApplyingThroughAsync(
+            lifecycle,
+            current,
+            CovenantResetPhase.WalTruncated);
+
+        CovenantResetOfflineTransitionPayloadV1 none =
+            Assert.IsType<CovenantResetOfflineTransitionPayloadV1>(current.Payload);
+
+        CovenantResetOfflineTransitionPayloadV1 baseEvidence = none with
+        {
+            ReplacementEvidence = ReplacementBase(),
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            baseEvidence,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 skipped = baseEvidence with
+        {
+            ReplacementEvidence = ReplacementContentProved(),
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            skipped,
+            CancellationToken.None)).IsFailure);
+
+        await AssertRawUnchangedAsync(current);
+
+        CovenantResetOfflineTransitionPayloadV1 stagingOwned = baseEvidence with
+        {
+            ReplacementEvidence = ReplacementStagingOwned(),
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            stagingOwned,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 mutated = stagingOwned with
+        {
+            ReplacementEvidence = stagingOwned.ReplacementEvidence! with
+            {
+                SourcePhysicalIdentityDigest = Digest(0x99),
+            },
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            mutated,
+            CancellationToken.None)).IsFailure);
+
+        await AssertRawUnchangedAsync(current);
+
+        CovenantResetOfflineTransitionPayloadV1 contentProved = stagingOwned with
+        {
+            ReplacementEvidence = ReplacementContentProved(),
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            contentProved,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 partialCompacting = contentProved with
+        {
+            InFlightPhase = CovenantResetPhase.DatabaseCompacted,
+            InFlightBeforeState = new(Digest(0x61), Digest(0x62)),
+            ReplacementEvidence = ReplacementStagingOwned(),
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            partialCompacting,
+            CancellationToken.None)).IsFailure);
+
+        await AssertRawUnchangedAsync(current);
+
+        CovenantResetOfflineTransitionPayloadV1 compacting = contentProved with
+        {
+            InFlightPhase = CovenantResetPhase.DatabaseCompacted,
+            InFlightBeforeState = new(Digest(0x61), Digest(0x62)),
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            compacting,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 compacted = compacting with
+        {
+            LastCompletedPhase = CovenantResetPhase.DatabaseCompacted,
+            InFlightPhase = null,
+            InFlightBeforeState = null,
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            compacted,
+            CancellationToken.None));
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            compacted with { ReplacementEvidence = null },
             CancellationToken.None)).IsFailure);
 
         await AssertRawUnchangedAsync(current);
@@ -634,6 +815,52 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
 
     }
 
+    private async Task<GrimoireOfflineTransitionTypedPublication> AdvanceApplyingThroughAsync(
+        GrimoireOfflineTransitionLifecycleStore lifecycle,
+        GrimoireOfflineTransitionTypedPublication current,
+        CovenantResetPhase target)
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 applying =
+            Assert.IsType<CovenantResetOfflineTransitionPayloadV1>(current.Payload);
+
+        foreach (CovenantResetPhase phase in CovenantResetPhaseMachine.Ordered
+            .Where(phase => phase > applying.LastCompletedPhase && phase <= target))
+        {
+
+            applying = applying with
+            {
+                InFlightPhase = phase,
+                InFlightBeforeState = new(
+                    Digest((byte)(0x60 + (byte)phase)),
+                    Digest(0x70)),
+            };
+
+            current = Value(await lifecycle.AdvanceAsync(
+                _lock,
+                current,
+                applying,
+                CancellationToken.None));
+
+            applying = applying with
+            {
+                LastCompletedPhase = phase,
+                InFlightPhase = null,
+                InFlightBeforeState = null,
+            };
+
+            current = Value(await lifecycle.AdvanceAsync(
+                _lock,
+                current,
+                applying,
+                CancellationToken.None));
+
+        }
+
+        return current;
+
+    }
+
     private async Task AssertRawUnchangedAsync(
         GrimoireOfflineTransitionTypedPublication current)
     {
@@ -657,6 +884,15 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         Digest(0x82),
         Digest(0x83),
         StagedContentDigest: null);
+
+    private static GrimoireOfflineTransitionReplacementEvidence ReplacementBase() =>
+        Replacement();
+
+    private static GrimoireOfflineTransitionReplacementEvidence ReplacementStagingOwned() =>
+        ReplacementBase() with { StagingPhysicalIdentityDigest = Digest(0x84) };
+
+    private static GrimoireOfflineTransitionReplacementEvidence ReplacementContentProved() =>
+        ReplacementStagingOwned() with { StagedContentDigest = Digest(0x85) };
 
     private CovenantResetOfflineTransitionPayloadV1 PreparedPayload() => new(
         new(

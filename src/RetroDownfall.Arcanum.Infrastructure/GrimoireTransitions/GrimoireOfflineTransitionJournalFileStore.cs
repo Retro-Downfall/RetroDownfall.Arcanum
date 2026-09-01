@@ -2223,11 +2223,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
     private void Emit(string step) => _afterStep?.Invoke(step);
 
     private static bool ValidLeaf(string? leaf) =>
-        !string.IsNullOrEmpty(leaf)
-        && leaf is not "." and not ".."
-        && !leaf.Contains(Path.DirectorySeparatorChar)
-        && !leaf.Contains(Path.AltDirectorySeparatorChar)
-        && System.Text.Encoding.UTF8.GetByteCount(leaf) <= 255;
+        GrimoireOfflineTransitionLeafName.IsValid(leaf);
 
     private static StringComparison PathComparison() =>
         OperatingSystem.IsWindows()

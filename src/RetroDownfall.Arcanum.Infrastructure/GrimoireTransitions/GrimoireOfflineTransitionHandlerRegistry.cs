@@ -272,6 +272,8 @@ internal static class GrimoireOfflineTransitionCodec
             TPayload? payload = JsonSerializer.Deserialize(payloadBytes, typeInfo);
 
             if (payload is null
+                || payload.Binding is null
+                || payload.Lifecycle is null
                 || payload.Binding.OperationId != expectedBinding.OperationId
                 || payload.Binding.Kind != expectedBinding.Kind
                 || payload.Binding.PayloadVersion != expectedBinding.PayloadVersion
@@ -290,7 +292,8 @@ internal static class GrimoireOfflineTransitionCodec
                 : Failure<TPayload>();
 
         }
-        catch (Exception exception) when (exception is JsonException or NotSupportedException)
+        catch (Exception exception) when (exception
+            is JsonException or NotSupportedException or ArgumentException)
         {
 
             return Failure<TPayload>();
