@@ -173,6 +173,47 @@ public sealed class BackupRestoreServiceTests : IDisposable
     }
 
     /// <summary>
+    /// An archive holding two entries whose paths differ only in case is refused rather than restored
+    /// with one file standing in for both.
+    /// </summary>
+    /// <remarks>
+    /// Entered at <see cref="BackupRestoreService.RestoreAsync"/> over a real archive the real backup
+    /// service wrote, because the collision is only interesting where it is invisible: extraction
+    /// tracks entries ordinally and writes each one with a create-or-truncate open, the manifest
+    /// comparison verifies against hashes taken from the decrypted stream rather than from the files
+    /// on disk, and staging then copies both entries over each other. Every check passes and the
+    /// restore reports completed while one attachment silently carries the other's bytes.
+    ///
+    /// <para>The refusal asserted here is unconditional rather than filesystem-dependent, and that is
+    /// deliberate: whether the two entries collide on the destination volume is a property of the
+    /// machine the archive lands on rather than of the archive, and an archive that is only safe on
+    /// some volumes is not one this build should lay down on any of them.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_archive_whose_entry_paths_differ_only_in_case_is_refused()
+    {
+
+        Fixture fixture = await CreateFixtureAsync(caseCollidingAttachment: true);
+
+        string archive = await fixture.CreateBackupAsync("case-collision.arcbackup");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(result.Issues, static issue => issue.Code == "backup.invalid_archive");
+
+        // Refused before anything was laid down: the destination is as empty as the wipe left it.
+        Assert.False(File.Exists(Path.Combine(_installation, "arcanum.db")));
+
+    }
+
+    /// <summary>
     /// A restore onto an installation configured for another embedding width takes the vector mirror
     /// with the row it mirrors.
     /// </summary>
@@ -2031,12 +2072,17 @@ public sealed class BackupRestoreServiceTests : IDisposable
     private async Task<Fixture> CreateFixtureAsync(
         bool listenAny = false,
         bool refusableSessionTrio = false,
-        bool mirroredEmbeddings = false)
+        bool mirroredEmbeddings = false,
+        bool caseCollidingAttachment = false)
     {
 
         Fixture fixture = new(_installation, _archives, Paths(), Codec());
 
-        await fixture.BuildAsync(listenAny, refusableSessionTrio, mirroredEmbeddings);
+        await fixture.BuildAsync(
+            listenAny,
+            refusableSessionTrio,
+            mirroredEmbeddings,
+            caseCollidingAttachment);
 
         return fixture;
 
@@ -2117,7 +2163,8 @@ public sealed class BackupRestoreServiceTests : IDisposable
         public async Task BuildAsync(
             bool listenAny,
             bool refusableSessionTrio = false,
-            bool mirroredEmbeddings = false)
+            bool mirroredEmbeddings = false,
+            bool caseCollidingAttachment = false)
         {
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(installation);
@@ -2156,6 +2203,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
             {
 
                 await SeedMirroredEmbeddingAsync();
+
+            }
+
+            if (caseCollidingAttachment)
+            {
+
+                await SeedCaseCollidingAttachmentAsync();
 
             }
 
@@ -2393,6 +2447,55 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
                 INSERT INTO entry_embeddings_vec ("EntryId", "Embedding")
                 VALUES ('{Upper(MirroredEntryId)}', X'0000803F');
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync();
+
+        }
+
+        /// <summary>
+        /// A second attachment whose recorded path differs from the first only in case.
+        /// </summary>
+        /// <remarks>
+        /// Both paths come out of the database and go into the archive as the writer found them: an
+        /// attachment's archive path is <c>"attachments/" + RelativePath</c>, the stored relative path
+        /// carries a user-supplied logical key and file name, and the sanitizer that admits one strips
+        /// characters without ever changing case. The archive writer's own duplicate check is ordinal,
+        /// so both entries are written.
+        ///
+        /// <para>What the two entries contain depends on the volume this suite runs on, and neither
+        /// case is the point: on a case-insensitive filesystem there is one physical file and the two
+        /// rows name it twice; on a case-sensitive one there are two files holding different bytes. The
+        /// archive carries two entries whose paths collide under case folding either way, which is the
+        /// only thing the extraction has to answer for.</para>
+        /// </remarks>
+        private async Task SeedCaseCollidingAttachmentAsync()
+        {
+
+            string colliding = Path.Combine(installation, "attachments", "session", "NOTE.bin");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(colliding)!);
+
+            await File.WriteAllTextAsync(colliding, "the other attachment");
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+                DatabasePath,
+                GrimoireSecret,
+                readOnly: false,
+                CancellationToken.None);
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = """
+                INSERT INTO "SessionAttachments"
+                    ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
+                     "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                     "SourceKind", "SourceCanonicalPath", "SourceStatus", "EncryptionVersion")
+                VALUES ('66666666-6666-4666-8666-666666666666',
+                        '11111111-1111-1111-1111-111111111111', 'Bound', 'NOTE', 'NOTE.txt', 1,
+                        'session/NOTE.bin', 'def', 'text/plain', 20, 'Text',
+                        '2026-01-01T00:00:00Z', 'WorkspaceFile',
+                        'C:\Users\Old\src\project\NOTE.txt', 'Refreshable', 0);
                 """;
 
             _ = await seed.ExecuteNonQueryAsync();

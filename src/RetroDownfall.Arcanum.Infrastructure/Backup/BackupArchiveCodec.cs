@@ -669,6 +669,8 @@ public sealed class BackupArchiveCodec
                 fullDestination,
                 cancellationToken).ConfigureAwait(false);
 
+            RefuseCaseCollidingEntries(contents.Entries.Keys);
+
             ValidateManifest(
                 contents.Manifest,
                 parsed.Header,
@@ -779,6 +781,49 @@ public sealed class BackupArchiveCodec
                 _options.BeforeTemporaryPayloadCleanupForTests?.Invoke(payload.Path);
 
                 _ = payload.TryDelete();
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Refuses an archive whose entries cannot each become their own file on the destination.
+    /// </summary>
+    /// <remarks>
+    /// The entry dictionary is keyed ordinally, because the protocol's identity for an entry is its
+    /// exact bytes and the manifest is compared under that identity. This is the second question,
+    /// which the ordinal key cannot answer: two entry paths that differ only in case are two entries
+    /// in the manifest and one file on a case-insensitive volume, where the second write truncates the
+    /// first. Nothing downstream would notice — the manifest comparison verifies against hashes taken
+    /// from the decrypted stream rather than from the files on disk, and staging tests only that each
+    /// referenced path exists — so the restore would report completed with one entry silently carrying
+    /// the other's bytes.
+    ///
+    /// <para>Refused on every platform rather than only where the volume folds the two together.
+    /// Whether the collision materialises is a property of the machine the archive lands on, and this
+    /// format exists to be carried between machines: an entry set that only some destinations can
+    /// represent is not one a restore may lay down on any of them.</para>
+    ///
+    /// <para>Placement, not integrity: <see cref="VerifyAsync"/> answers whether an archive is
+    /// authentic and its checksums hold, which this archive's do, and it stays that question.</para>
+    /// </remarks>
+    private static void RefuseCaseCollidingEntries(IEnumerable<string> archivePaths)
+    {
+
+        // Already normalized to form C: a record whose path is not its own canonical rendering is
+        // refused as it is read.
+        HashSet<string> folded = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string archivePath in archivePaths)
+        {
+
+            if (!folded.Add(archivePath))
+            {
+
+                throw new InvalidDataException(
+                    "Backup archive entry paths collide when compared without case.");
 
             }
 
