@@ -6,9 +6,9 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// <summary>
 /// Sanitizes logical keys and original filenames for session attachment paths:
 /// strips separators, <c>..</c>, control characters, characters Windows filenames reject
-/// (<c>* ? " &lt; &gt; |</c>), and leading dots; caps length; rejects empty and reserved names.
-/// The stripped set is identical on every platform so a store written on macOS or Linux stays
-/// readable on a Windows host.
+/// (<c>* ? " &lt; &gt; |</c>), leading dots, and trailing dots/spaces; caps length; rejects empty
+/// and reserved names. The stripped set is identical on every platform so a store written on macOS
+/// or Linux stays readable on a Windows host.
 /// </summary>
 public static class SessionAttachmentPathSanitizer
 {
@@ -97,6 +97,13 @@ public static class SessionAttachmentPathSanitizer
         }
 
         candidate = candidate.TrimStart('.');
+
+        // Windows normalization silently drops a trailing '.' or ' ' from a path segment at the
+        // filesystem layer (Path.GetFullPath), so "notes." and "notes" would otherwise sanitize to
+        // two distinct strings that name the same Windows directory. Trimming here, before the
+        // empty and reserved checks re-run below, keeps the sanitizer's output equal to what
+        // Windows would have normalized it to anyway.
+        candidate = candidate.TrimEnd('.', ' ');
 
         if (candidate.Length == 0)
         {
