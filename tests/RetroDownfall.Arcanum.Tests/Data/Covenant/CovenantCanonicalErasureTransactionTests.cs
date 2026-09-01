@@ -65,7 +65,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         // MATCH that found something first proves the later zero meant anything.
         Assert.Equal(1, await fixture.ScalarLongAsync(IndexedTokenQuery, Token));
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -95,7 +95,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         Guid? before = await fixture.ReadDatasetGenerationAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -155,7 +155,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             """,
             Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -184,7 +184,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -230,7 +230,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -272,7 +272,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         CovenantRetainedEvidenceSnapshot before = await fixture.CaptureRetainedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -293,7 +293,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         CovenantRetainedEvidenceSnapshot before = await fixture.CaptureRetainedAsync(Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -319,7 +319,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.SeedAsync(Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -357,7 +357,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -388,7 +388,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         // A reset reseeds nothing. Minting a singleton for a catalog that lost one would answer schema
         // damage by inventing a dataset identity nothing else in the installation agrees with.
@@ -415,7 +415,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -441,7 +441,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(operation, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(operation, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -460,12 +460,12 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.SeedAsync(Token);
 
         CovenantCanonicalErasureTransaction service = new(
-            fixture.Connections(),
+            new CovenantV3MaintenanceTestConnectionFactory(fixture.Connections(), new UnprovenSecureDeleteInitializer()),
             new UnprovenSecureDeleteInitializer(),
             fixture.Drain,
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -492,12 +492,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
         List<string> steps = [];
 
         CovenantCanonicalErasureTransaction service = new(
-            new RecordingConnectionFactory(fixture.Connections(), steps),
+            new CovenantV3MaintenanceTestConnectionFactory(
+                new RecordingConnectionFactory(fixture.Connections(), steps),
+                CovenantSqliteConnectionInitializer.Instance),
             CovenantSqliteConnectionInitializer.Instance,
             new RecordingConnectionDrain(fixture.Drain, steps),
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -519,12 +521,12 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.SeedAsync(Token);
 
         CovenantCanonicalErasureTransaction service = new(
-            fixture.Connections(),
+            fixture.V3Connections(),
             CovenantSqliteConnectionInitializer.Instance,
             new FailingConnectionDrain(),
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -549,7 +551,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             "UPDATE covenant_state SET AcceleratorEpoch = 9223372036854775807 WHERE StateKey = 1;",
             Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -568,7 +570,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     private static CovenantCanonicalErasureTransaction CreateService(CovenantCanonicalErasureFixture fixture) =>
         new(
-            fixture.Connections(),
+            fixture.V3Connections(),
             CovenantSqliteConnectionInitializer.Instance,
             fixture.Drain,
             TimeProvider.System);

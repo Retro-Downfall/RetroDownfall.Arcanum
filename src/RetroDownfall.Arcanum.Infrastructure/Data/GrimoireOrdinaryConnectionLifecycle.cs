@@ -16,6 +16,8 @@ internal interface IGrimoireOrdinaryConnectionLifecycle
 
     Result<IGrimoireOrdinaryConnectionRegistration> BorrowCurrentOpen(DbConnection connection);
 
+    void ReleaseAfterExternalClose(DbConnection connection);
+
 }
 
 internal interface IGrimoireOrdinaryConnectionRegistration : IDisposable
@@ -105,7 +107,15 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle : IGrimoireOrdinaryCon
 
             lifecycle.HolderCount = 1;
 
-            return new Registration(this, lifecycle, connection, ticket.Generation, ownsOpen: true);
+            lifecycle.LifetimeId++;
+
+            return new Registration(
+                this,
+                lifecycle,
+                connection,
+                ticket.Generation,
+                lifecycle.LifetimeId,
+                ownsOpen: true);
 
         }
 
@@ -143,7 +153,38 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle : IGrimoireOrdinaryCon
                     lifecycle,
                     connection,
                     lifecycle.ProvenGeneration,
+                    lifecycle.LifetimeId,
                     ownsOpen: false));
+
+        }
+
+    }
+
+    public void ReleaseAfterExternalClose(DbConnection connection)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        lock (_gate)
+        {
+
+            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle))
+            {
+
+                return;
+
+            }
+
+            lifecycle.Enrolment?.Dispose();
+            lifecycle.Enrolment = null;
+            lifecycle.OpenTicket?.Dispose();
+            lifecycle.OpenTicket = null;
+            lifecycle.HolderCount = 0;
+            lifecycle.NativeOpenObserved = false;
+            lifecycle.RefusalAfterOpenRequired = false;
+            lifecycle.TicketTerminal = false;
+            lifecycle.ProvenGeneration = 0;
+            lifecycle.LifetimeId++;
 
         }
 
@@ -204,7 +245,9 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle : IGrimoireOrdinaryCon
             if (registration.Connection is SqliteConnection sqlite && lifecycle.Enrolment is null)
             {
 
-                lifecycle.Enrolment = _drain.Register(sqlite);
+                lifecycle.Enrolment = _drain.Register(
+                    sqlite,
+                    () => ReleaseAfterExternalClose(sqlite));
 
             }
 
@@ -357,6 +400,15 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle : IGrimoireOrdinaryCon
 
             }
 
+            if (registration.LifetimeId != registration.Lifecycle.LifetimeId)
+            {
+
+                registration.IsDisposed = true;
+
+                return;
+
+            }
+
             if (registration.OwnsOpen && registration.Lifecycle.OpenTicket is not null)
             {
 
@@ -419,6 +471,8 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle : IGrimoireOrdinaryCon
 
         internal bool TicketTerminal { get; set; }
 
+        internal long LifetimeId { get; set; }
+
     }
 
     private sealed class Registration(
@@ -426,6 +480,7 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle : IGrimoireOrdinaryCon
         ConnectionLifecycleState lifecycle,
         DbConnection connection,
         long generation,
+        long lifetimeId,
         bool ownsOpen) : IGrimoireOrdinaryConnectionRegistration
     {
 
@@ -438,6 +493,8 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle : IGrimoireOrdinaryCon
         public DbConnection Connection { get; } = connection;
 
         public long Generation { get; } = generation;
+
+        internal long LifetimeId { get; } = lifetimeId;
 
         public Result RevalidateAfterNativeOpen() => owner.RevalidateAfterNativeOpen(this);
 

@@ -1775,10 +1775,17 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ICovenantMaintenanceConnectionFactory, CovenantMaintenanceConnectionFactory>();
 
-        services.AddSingleton<ICovenantV3MaintenanceConnectionFactory>(
+        services.AddSingleton<CovenantV3MaintenanceConnectionFactory>(
             static sp => new CovenantV3MaintenanceConnectionFactory(
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
-                sp.GetRequiredService<ISqliteNativeRuntime>()));
+                sp.GetRequiredService<ISqliteNativeRuntime>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddSingleton<ICovenantV3MaintenanceConnectionFactory>(
+            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
+
+        services.AddSingleton<ICovenantV3MaintenancePathAuthority>(
+            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
 
         services.AddSingleton(
             static sp => new CovenantHealthyCatalogErasureGuard(
@@ -1795,7 +1802,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantCanonicalErasureTransaction(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<TimeProvider>()));
@@ -1805,7 +1812,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantLocalErasureStorageHealth(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantV3MaintenancePathAuthority>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<TimeProvider>()));

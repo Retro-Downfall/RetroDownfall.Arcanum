@@ -31,6 +31,7 @@ internal interface ICovenantCanonicalErasure
     /// </param>
     Task<Result<Guid>> ApplyAsync(
         CovenantExclusiveOperation operation,
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken);
 
 }
@@ -101,7 +102,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     internal static IReadOnlyList<string> FamilyTables { get; } =
         Array.AsReadOnly(FamilyTablesInDeletionOrder);
 
-    private readonly ICovenantMaintenanceConnectionFactory _connections;
+    private readonly ICovenantV3MaintenanceConnectionFactory _connections;
 
     private readonly ICovenantSqliteConnectionInitializer _initializer;
 
@@ -110,7 +111,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     private readonly TimeProvider _timeProvider;
 
     internal CovenantCanonicalErasureTransaction(
-        ICovenantMaintenanceConnectionFactory connections,
+        ICovenantV3MaintenanceConnectionFactory connections,
         ICovenantSqliteConnectionInitializer initializer,
         ICovenantConnectionDrain drain,
         TimeProvider timeProvider)
@@ -128,6 +129,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
     public async Task<Result<Guid>> ApplyAsync(
         CovenantExclusiveOperation operation,
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken)
     {
 
@@ -154,25 +156,20 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         }
 
-        SqliteConnection connection;
+        Result<ICovenantV3MaintenanceConnectionLease> opened =
+            await _connections.OpenV3CanonicalErasureAsync(capability, cancellationToken).ConfigureAwait(false);
 
-        try
+        if (opened.IsFailure)
         {
 
-            connection = await _connections.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (SqliteException failed)
-        {
-
-            return Failure(failed, "open an exclusive maintenance connection");
+            return Result<Guid>.Failure(opened.Error);
 
         }
 
-        await using (connection.ConfigureAwait(false))
+        await using (opened.Value.ConfigureAwait(false))
         {
 
-            return await ApplyOnConnectionAsync(connection, operation, cancellationToken).ConfigureAwait(false);
+            return await ApplyOnConnectionAsync(opened.Value.Connection, operation, cancellationToken).ConfigureAwait(false);
 
         }
 
@@ -183,30 +180,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         CovenantExclusiveOperation operation,
         CancellationToken cancellationToken)
     {
-
-        try
-        {
-
-            await _initializer
-                .InitializeAsync(connection, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken)
-                .ConfigureAwait(false);
-
-        }
-        catch (InvalidOperationException failed)
-        {
-
-            return Result<Guid>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    $"A Covenant erasure connection did not initialize: {failed.Message}"));
-
-        }
-        catch (SqliteException failed)
-        {
-
-            return Failure(failed, "initialize an exclusive maintenance connection");
-
-        }
 
         try
         {

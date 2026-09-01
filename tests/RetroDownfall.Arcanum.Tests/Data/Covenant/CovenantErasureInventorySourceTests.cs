@@ -177,13 +177,16 @@ public sealed class CovenantErasureInventorySourceTests
         await fixture.ClosePrimaryConnectionAsync();
 
         CovenantCanonicalErasureTransaction canonical = new(
-            fixture.Factory,
+            new CovenantV3MaintenanceTestConnectionFactory(
+                fixture.Factory,
+                CovenantSqliteConnectionInitializer.Instance),
             CovenantSqliteConnectionInitializer.Instance,
             fixture.Drain,
             TimeProvider.System);
 
         Result<Guid> applied = await canonical.ApplyAsync(
             CovenantExclusiveOperation.CovenantReset,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             CancellationToken.None);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);

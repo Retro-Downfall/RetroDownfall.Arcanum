@@ -462,13 +462,14 @@ public sealed class CovenantDisclosureWriterTests
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
 
         CovenantCanonicalErasureTransaction erasure = new(
-            harness.Fixture.Connections(),
+            harness.Fixture.V3Connections(),
             CovenantSqliteConnectionInitializer.Instance,
             harness.Fixture.Drain,
             TimeProvider.System);
 
         Result<Guid> applied = await erasure.ApplyAsync(
             CovenantExclusiveOperation.CovenantReset,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);

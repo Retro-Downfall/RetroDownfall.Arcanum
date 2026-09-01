@@ -951,6 +951,7 @@ public sealed partial class DataRetentionServiceTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 disposition == RecoveryDisposition.KeepClosed
@@ -963,19 +964,20 @@ public sealed partial class DataRetentionServiceTests
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<CovenantVerifiedCandidateState>.Success(Candidate()));
 

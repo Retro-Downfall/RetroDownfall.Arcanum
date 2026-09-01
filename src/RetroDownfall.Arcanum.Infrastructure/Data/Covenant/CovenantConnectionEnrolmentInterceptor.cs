@@ -306,6 +306,22 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
                 connection,
                 new InterceptorRegistration(_lifecycle.BeginOpen(connection)));
 
+            connection.StateChange += OnPhysicalStateChanged;
+
+        }
+
+    }
+
+    private void OnPhysicalStateChanged(object? sender, StateChangeEventArgs change)
+    {
+
+        if (change.CurrentState == ConnectionState.Closed && sender is DbConnection connection)
+        {
+
+            _lifecycle.ReleaseAfterExternalClose(connection);
+
+            Release(connection, closePhysicalConnection: false);
+
         }
 
     }
@@ -593,6 +609,8 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
             if (_registrations.TryGetValue(connection, out InterceptorRegistration? current)
                 && ReferenceEquals(current, registration))
             {
+
+                connection.StateChange -= OnPhysicalStateChanged;
 
                 _ = _registrations.Remove(connection);
 

@@ -2824,12 +2824,10 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
         
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalErasureTransaction.cs", "CovenantCanonicalErasureTransaction", "ApplyAsync(2)", AcquisitionConstructKind.ProviderOpen, "_connections.OpenAsync", 1, "_connections.OpenAsync(cancellationToken)"),
+        V3(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalErasureTransaction.cs", "CovenantCanonicalErasureTransaction", "ApplyAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3CanonicalErasureAsync", 2, "_connections.OpenV3CanonicalErasureAsync(capability,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
+            "CovenantCanonicalErasureTransaction.ApplyAsync(3)"),
         
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ICovenantConnectionSource.cs", "CovenantConnectionSource", "GetOpenCoreConnectionAsync(1)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(connection,CovenantSqliteConnectionMode.ReadWrite,cancellationToken)"),
@@ -2845,13 +2843,46 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
             new(ExactNonServingProofKind.LegacyV3ExclusiveLease, "CovenantMaintenanceConnectionFactory.OpenCoreAsync(2)", 248)),
         
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "WithMaintenanceConnectionAsync(4)", AcquisitionConstructKind.ProviderOpen, "_connections.OpenAsync", 1, "_connections.OpenAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null)
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3CanonicalErasureAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3CanonicalErasureAsync", 2, "OpenV3CanonicalErasureAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3CanonicalErasureAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3WalTruncationAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3WalTruncationAsync", 2, "OpenV3WalTruncationAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3WalTruncationAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3VacuumAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3VacuumAsync", 2, "OpenV3VacuumAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3VacuumAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3ExportSourceAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3ExportSourceAsync", 2, "OpenV3ExportSourceAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3ExportSourceAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3ExportVerificationAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3ExportVerificationAsync", 2, "OpenV3ExportVerificationAsync(2)"), GrimoirePathAuthority.RestoreOrCompactionStaging, "CovenantV3MaintenanceConnectionFactory.OpenV3ExportVerificationAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3PostReplaceJournalRestoreAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3PostReplaceJournalRestoreAsync", 2, "OpenV3PostReplaceJournalRestoreAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3PostReplaceJournalRestoreAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3AcceleratorInitializationAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3AcceleratorInitializationAsync", 2, "OpenV3AcceleratorInitializationAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3AcceleratorInitializationAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3CandidateReopenVerificationAsync(2)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenV3CandidateReopenVerificationAsync", 2, "OpenV3CandidateReopenVerificationAsync(2)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3CandidateReopenVerificationAsync(2)"),
+
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3CanonicalErasureAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 5, "OpenAsync(capability,CovenantV3MaintenancePurpose.CanonicalErasure,DatabaseBuilder,CovenantSqliteConnectionMode.ExclusiveMaintenance,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3CanonicalErasureAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3WalTruncationAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 5, "OpenAsync(capability,CovenantV3MaintenancePurpose.WalTruncation,DatabaseBuilder,CovenantSqliteConnectionMode.ExclusiveMaintenance,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3WalTruncationAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3VacuumAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 5, "OpenAsync(capability,CovenantV3MaintenancePurpose.CompactionVacuum,DatabaseBuilder,CovenantSqliteConnectionMode.ExclusiveMaintenance,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3VacuumAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3ExportSourceAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 5, "OpenAsync(capability,CovenantV3MaintenancePurpose.CompactionExport,DatabaseBuilder,CovenantSqliteConnectionMode.ExclusiveMaintenance,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3ExportSourceAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3ExportVerificationAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 5, "OpenAsync(capability,CovenantV3MaintenancePurpose.CompactionExportVerification,StagingBuilder,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"), GrimoirePathAuthority.RestoreOrCompactionStaging, "CovenantV3MaintenanceConnectionFactory.OpenV3ExportVerificationAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3PostReplaceJournalRestoreAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 5, "OpenAsync(capability,CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore,DatabaseBuilder,CovenantSqliteConnectionMode.ReadWrite,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3PostReplaceJournalRestoreAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3AcceleratorInitializationAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 5, "OpenAsync(capability,CovenantV3MaintenancePurpose.AcceleratorInitialization,DatabaseBuilder,CovenantSqliteConnectionMode.ExclusiveMaintenance,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3AcceleratorInitializationAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenV3CandidateReopenVerificationAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 5, "OpenAsync(capability,CovenantV3MaintenancePurpose.CandidateReopenVerification,ImmutableReadOnlyBuilder,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenV3CandidateReopenVerificationAsync(2)"),
+
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenAsync(5)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenAsync(5)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantV3MaintenanceConnectionFactory.cs", "CovenantV3MaintenanceConnectionFactory", "OpenAsync(5)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "newSqliteConnection(builder().ToString())"), GrimoirePathAuthority.LiveGrimoire, "CovenantV3MaintenanceConnectionFactory.OpenAsync(5)"),
+
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "ExportAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3ExportSourceAsync", 2, "_connections.OpenV3ExportSourceAsync(capability,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.ExportAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "VerifyExportAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3ExportVerificationAsync", 2, "_connections.OpenV3ExportVerificationAsync(capability,cancellationToken)"), GrimoirePathAuthority.RestoreOrCompactionStaging, "CovenantLocalErasureStorageHealth.VerifyExportAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "ReadAndVerifyCandidateAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3CandidateReopenVerificationAsync", 2, "_connections.OpenV3CandidateReopenVerificationAsync(capability,cancellationToken)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.ReadAndVerifyCandidateAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "TruncateWalAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3WalTruncationAsync", 2, "_connections.OpenV3WalTruncationAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.TruncateWalAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "InitializeAcceleratorAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3AcceleratorInitializationAsync", 2, "_connections.OpenV3AcceleratorInitializationAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.InitializeAcceleratorAsync(2)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "ReplaceAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3PostReplaceJournalRestoreAsync", 2, "_connections.OpenV3PostReplaceJournalRestoreAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.ReplaceAsync(3)"),
+        V3(new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "VacuumAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenV3VacuumAsync", 2, "_connections.OpenV3VacuumAsync(proof,token)"), GrimoirePathAuthority.LiveGrimoire, "CovenantLocalErasureStorageHealth.VacuumAsync(2)")
     ];
+
+    private static GrimoireAcquisitionCatalogEntry V3(
+        AcquisitionIdentity identity,
+        GrimoirePathAuthority pathAuthority,
+        string evidenceMember) =>
+        new(
+            identity,
+            pathAuthority,
+            GrimoireAcquisitionKind.LegacyV3Maintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            new(ExactNonServingProofKind.LegacyV3ExclusiveLease, evidenceMember, 248));
     private static void ValidateMethodMarker(
         AcquisitionSource source,
         MethodDeclarationSyntax method,
@@ -3040,9 +3071,12 @@ internal static class GrimoireConnectionAcquisitionScanner
                 && HasProof(entry, ExactNonServingProofKind.TypedStagingOrSnapshot),
 
             GrimoirePathAuthority.RestoreOrCompactionStaging =>
-                entry.AcquisitionKind == GrimoireAcquisitionKind.StagingOrArchive
-                && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.ExactNonServingProof
-                && HasProof(entry, ExactNonServingProofKind.TypedStagingOrSnapshot),
+                (entry.AcquisitionKind == GrimoireAcquisitionKind.StagingOrArchive
+                    && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.ExactNonServingProof
+                    && HasProof(entry, ExactNonServingProofKind.TypedStagingOrSnapshot))
+                || (entry.AcquisitionKind == GrimoireAcquisitionKind.LegacyV3Maintenance
+                    && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory
+                    && HasProof(entry, ExactNonServingProofKind.LegacyV3ExclusiveLease, 248)),
 
             GrimoirePathAuthority.DesignTimeScratch =>
                 entry.AcquisitionKind == GrimoireAcquisitionKind.DesignTimeOrNativeValidation

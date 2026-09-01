@@ -87,7 +87,7 @@ internal sealed class CovenantV3MaintenanceCapability : IAsyncDisposable
         CovenantV3MaintenancePurpose expectedPurpose,
         CancellationToken cancellationToken)
     {
-        if (_purpose != expectedPurpose || Interlocked.CompareExchange(ref _consumed, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _consumed, 1, 0) != 0 || _purpose != expectedPurpose)
         {
             return RefusalResult();
         }

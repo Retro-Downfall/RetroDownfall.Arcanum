@@ -228,6 +228,12 @@ public sealed class CovenantArchitectureBoundaryTests
 
         AssertSingleRegistration<ICovenantMaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
 
+        AssertSingleRegistration<CovenantV3MaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantV3MaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantV3MaintenancePathAuthority>(services, ServiceLifetime.Singleton);
+
         AssertSingleRegistration<CovenantHealthyCatalogErasureGuard>(services, ServiceLifetime.Singleton);
 
         AssertSingleRegistration<CovenantManagedFileErasureRequestReader>(services, ServiceLifetime.Singleton);
@@ -527,6 +533,14 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.Same(
             provider.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
             firstScope.ServiceProvider.GetRequiredService<ICovenantMaintenanceConnectionFactory>());
+
+        Assert.Same(
+            provider.GetRequiredService<CovenantV3MaintenanceConnectionFactory>(),
+            provider.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>());
+
+        Assert.Same(
+            provider.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
+            firstScope.ServiceProvider.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>());
 
         Assert.Same(
             provider.GetRequiredService<ICovenantCanonicalErasure>(),

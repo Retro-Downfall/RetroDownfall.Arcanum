@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 341;
+    private const int ExpectedProductionAcquisitionCount = 365;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -555,8 +555,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
 
         Assert.Equal(ExpectedProductionAcquisitionCount, discoveries.Count);
 
-        Assert.Equal(discoveries.Count, catalog.Count);
-
         IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
             discoveries,
             catalog);
@@ -564,6 +562,8 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.True(
             failures.Count == 0,
             string.Join(System.Environment.NewLine, failures.Select(static failure => failure.ToString())));
+
+        Assert.Equal(discoveries.Count, catalog.Count);
 
     }
 

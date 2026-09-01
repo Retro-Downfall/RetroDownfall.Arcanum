@@ -2625,8 +2625,9 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
-            inner.ApplyCanonicalErasureAsync(operation, cancellationToken);
+            inner.ApplyCanonicalErasureAsync(operation, capability, cancellationToken);
 
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken)
         {
@@ -2637,21 +2638,22 @@ public sealed class CovenantErasureSameProcessTests
 
         }
 
-        public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) =>
-            inner.TruncateWalAsync(cancellationToken);
+        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.TruncateWalAsync(capability, cancellationToken);
 
-        public Task<Result> CompactAsync(CancellationToken cancellationToken) =>
-            inner.CompactAsync(cancellationToken);
+        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
+            inner.CompactAsync(capabilities, cancellationToken);
 
-        public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
-            inner.InitializeAcceleratorAsync(cancellationToken);
+        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.InitializeAcceleratorAsync(capability, cancellationToken);
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             inner.VerifySidecarAbsenceAsync(cancellationToken);
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
-            inner.VerifyReopenAsync(cancellationToken);
+            inner.VerifyReopenAsync(capability, cancellationToken);
 
         public Task<Result> PublishCommittedAsync(
             ICovenantExclusiveOperationLease lease,
@@ -2754,6 +2756,7 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<Guid>.Failure(
@@ -2764,19 +2767,20 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
@@ -2794,25 +2798,27 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<Guid>.Success(Guid.Parse("99999999-9999-4999-8999-999999999999")));
 
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken)
         {
 

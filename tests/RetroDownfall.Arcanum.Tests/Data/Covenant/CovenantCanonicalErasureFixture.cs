@@ -203,6 +203,9 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
         ?? _attachedConnections
         ?? throw new ObjectDisposedException(nameof(CovenantCanonicalErasureFixture));
 
+    internal CovenantV3MaintenanceTestConnectionFactory V3Connections() =>
+        new(Connections(), _attachedInitializer ?? CovenantSqliteConnectionInitializer.Instance);
+
     /// <summary>
     /// Seeds one of everything the erasure must remove, and one of everything it must not.
     /// </summary>

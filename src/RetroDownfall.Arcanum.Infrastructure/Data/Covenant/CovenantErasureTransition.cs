@@ -47,27 +47,35 @@ internal sealed class CovenantErasureTransition(
 
     public Task<Result<Guid>> ApplyCanonicalErasureAsync(
         CovenantExclusiveOperation operation,
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken) =>
-        _canonical.ApplyAsync(operation, cancellationToken);
+        _canonical.ApplyAsync(operation, capability, cancellationToken);
 
     public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
         _storage.CloseHandlesAsync(cancellationToken);
 
-    public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) =>
-        _storage.TruncateWalAsync(cancellationToken);
+    public Task<Result> TruncateWalAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken) =>
+        _storage.TruncateWalAsync(capability, cancellationToken);
 
-    public Task<Result> CompactAsync(CancellationToken cancellationToken) =>
-        _storage.CompactAsync(cancellationToken);
+    public Task<Result> CompactAsync(
+        CovenantV3CompactionCapabilities capabilities,
+        CancellationToken cancellationToken) =>
+        _storage.CompactAsync(capabilities, cancellationToken);
 
-    public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
-        _storage.InitializeAcceleratorAsync(cancellationToken);
+    public Task<Result> InitializeAcceleratorAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken) =>
+        _storage.InitializeAcceleratorAsync(capability, cancellationToken);
 
     public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
         _storage.VerifySidecarAbsenceAsync(cancellationToken);
 
     public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken) =>
-        _storage.VerifyReopenAsync(cancellationToken);
+        _storage.VerifyReopenAsync(capability, cancellationToken);
 
     public async Task<Result> PublishCommittedAsync(
         ICovenantExclusiveOperationLease lease,

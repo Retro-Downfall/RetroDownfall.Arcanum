@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
@@ -187,16 +188,22 @@ internal interface ICovenantLocalErasureStorageHealth
     Task<Result> CloseHandlesAsync(CancellationToken cancellationToken);
 
     /// <summary>Runs a checked <c>wal_checkpoint(TRUNCATE)</c>, refusing on busy or a leftover frame.</summary>
-    Task<Result> TruncateWalAsync(CancellationToken cancellationToken);
+    Task<Result> TruncateWalAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Inventories residual artifacts, then compacts, falling back to a verified SQLCipher
     /// export-and-atomic-replace when compaction alone cannot prove the freed pages are gone.
     /// </summary>
-    Task<Result> CompactAsync(CancellationToken cancellationToken);
+    Task<Result> CompactAsync(
+        CovenantV3CompactionCapabilities capabilities,
+        CancellationToken cancellationToken);
 
     /// <summary>Installs the empty accelerator's own configuration and runs rank-1 integrity over it.</summary>
-    Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken);
+    Task<Result> InitializeAcceleratorAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken);
 
     /// <summary>Drains again and proves every residual artifact class absent.</summary>
     Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken);
@@ -205,7 +212,9 @@ internal interface ICovenantLocalErasureStorageHealth
     /// Reopens the unpublished candidate read-only on a handle that cannot create a write-ahead log
     /// or a wal-index, verifies its dataset, master, authority, and capability state, and closes it.
     /// </summary>
-    Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(CancellationToken cancellationToken);
+    Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken);
 
 }
 
@@ -258,7 +267,9 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// <summary>The pause between two attempts at the same proof.</summary>
     private static readonly TimeSpan AbsenceProofRetryInterval = TimeSpan.FromMilliseconds(25);
 
-    private readonly ICovenantMaintenanceConnectionFactory _connections;
+    private readonly ICovenantV3MaintenanceConnectionFactory _connections;
+
+    private readonly ICovenantV3MaintenancePathAuthority _paths;
 
     private readonly ICovenantSqliteConnectionInitializer _initializer;
 
@@ -267,13 +278,16 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     private readonly TimeProvider _timeProvider;
 
     internal CovenantLocalErasureStorageHealth(
-        ICovenantMaintenanceConnectionFactory connections,
+        ICovenantV3MaintenanceConnectionFactory connections,
+        ICovenantV3MaintenancePathAuthority paths,
         ICovenantSqliteConnectionInitializer initializer,
         ICovenantConnectionDrain drain,
         TimeProvider timeProvider)
     {
 
         _connections = connections ?? throw new ArgumentNullException(nameof(connections));
+
+        _paths = paths ?? throw new ArgumentNullException(nameof(paths));
 
         _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
 
@@ -295,7 +309,9 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     }
 
-    public async Task<Result> TruncateWalAsync(CancellationToken cancellationToken)
+    public async Task<Result> TruncateWalAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken)
     {
 
         Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
@@ -309,6 +325,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         return await WithMaintenanceConnectionAsync(
             "truncate the write-ahead log",
+            capability,
+            (proof, token) => _connections.OpenV3WalTruncationAsync(proof, token),
             async (connection, token) =>
             {
 
@@ -322,8 +340,13 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     }
 
-    public async Task<Result> CompactAsync(CancellationToken cancellationToken)
+    public async Task<Result> CompactAsync(
+        CovenantV3CompactionCapabilities capabilities,
+        CancellationToken cancellationToken)
     {
+
+        await using (capabilities.ConfigureAwait(false))
+        {
 
         Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
 
@@ -338,7 +361,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         // it is this step's own litter rather than a reason to stop: a staging file is a complete
         // encrypted copy of a database the erasure is in the middle of replacing, so the one thing
         // that must not happen is for it to survive the proof.
-        Result cleared = CovenantResidualArtifacts.RemoveOwnStaging(_connections.DatabasePath);
+        Result cleared = CovenantResidualArtifacts.RemoveOwnStaging(_paths.CanonicalDatabasePath);
 
         if (cleared.IsFailure)
         {
@@ -362,7 +385,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         }
 
         Result<CovenantCompactionMeasurement?> compacted =
-            await VacuumAsync(cancellationToken).ConfigureAwait(false);
+            await VacuumAsync(capabilities.Vacuum, cancellationToken).ConfigureAwait(false);
 
         if (compacted.IsFailure)
         {
@@ -375,11 +398,15 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         // step taken for no reason, on a database an operator is already waiting on.
         return compacted.Value is { IsProven: true }
             ? Result.Success()
-            : await ExportAndReplaceAsync(cancellationToken).ConfigureAwait(false);
+            : await ExportAndReplaceAsync(capabilities, cancellationToken).ConfigureAwait(false);
+
+        }
 
     }
 
-    public async Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken)
+    public async Task<Result> InitializeAcceleratorAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken)
     {
 
         Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
@@ -393,6 +420,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         return await WithMaintenanceConnectionAsync(
             "initialize the empty Covenant accelerator",
+            capability,
+            (proof, token) => _connections.OpenV3AcceleratorInitializationAsync(proof, token),
             InitializeAcceleratorOnConnectionAsync,
             cancellationToken).ConfigureAwait(false);
 
@@ -413,6 +442,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     }
 
     public async Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken)
     {
 
@@ -439,7 +469,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         }
 
         Result<CovenantVerifiedCandidateState> verified =
-            await ReadAndVerifyCandidateAsync(cancellationToken).ConfigureAwait(false);
+            await ReadAndVerifyCandidateAsync(capability, cancellationToken).ConfigureAwait(false);
 
         if (verified.IsFailure)
         {
@@ -474,17 +504,19 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// completed and the recovery did not, so the destination may already hold the new file and
     /// nobody may claim otherwise.</para>
     /// </remarks>
-    internal async Task<Result> ExportAndReplaceAsync(CancellationToken cancellationToken)
+    internal async Task<Result> ExportAndReplaceAsync(
+        CovenantV3CompactionCapabilities capabilities,
+        CancellationToken cancellationToken)
     {
 
-        string databasePath = _connections.DatabasePath;
+        string databasePath = _paths.CanonicalDatabasePath;
 
         string stagingPath = CovenantResidualArtifacts.ExportStagingPath(databasePath);
 
         try
         {
 
-            Result exported = await ExportAsync(stagingPath, cancellationToken).ConfigureAwait(false);
+            Result exported = await ExportAsync(capabilities.Export, cancellationToken).ConfigureAwait(false);
 
             if (exported.IsFailure)
             {
@@ -494,11 +526,14 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             }
 
             Result<CovenantVerifiedExport> verified =
-                await VerifyExportAsync(stagingPath, cancellationToken).ConfigureAwait(false);
+                await VerifyExportAsync(capabilities.ExportVerification, cancellationToken).ConfigureAwait(false);
 
             return verified.IsFailure
                 ? Result.Failure(verified.Error)
-                : await ReplaceAsync(verified.Value, cancellationToken).ConfigureAwait(false);
+                : await ReplaceAsync(
+                    verified.Value,
+                    capabilities.PostReplaceJournalRestore,
+                    cancellationToken).ConfigureAwait(false);
 
         }
         finally
@@ -519,19 +554,39 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// staging file was written by this export, so there is no page in it that an erasure has to take
     /// somebody's word for.
     /// </remarks>
-    internal async Task<Result> ExportAsync(string stagingPath, CancellationToken cancellationToken)
+    internal async Task<Result> ExportAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken)
     {
 
-        ArgumentException.ThrowIfNullOrEmpty(stagingPath);
+        Result<ICovenantV3MaintenanceConnectionLease> opened = await _connections
+            .OpenV3ExportSourceAsync(capability, cancellationToken).ConfigureAwait(false);
 
-        return await WithMaintenanceConnectionAsync(
-            "export the Covenant database",
-            async (connection, token) =>
+        if (opened.IsFailure)
+        {
+
+            return opened.Error;
+
+        }
+
+        await using (opened.Value.ConfigureAwait(false))
+        {
+
+            SqliteConnection connection = opened.Value.Connection;
+
+            try
             {
 
-                await _connections
-                    .AttachSideFileAsync(connection, ExportAlias, stagingPath, token)
-                    .ConfigureAwait(false);
+                Result attached = await _connections.AttachV3ExportStagingAsync(
+                    opened.Value,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (attached.IsFailure)
+                {
+
+                    return attached;
+
+                }
 
                 try
                 {
@@ -540,7 +595,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
                     command.CommandText = $"SELECT sqlcipher_export('{ExportAlias}');";
 
-                    _ = await command.ExecuteScalarAsync(token).ConfigureAwait(false);
+                    _ = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
                 }
                 finally
@@ -550,14 +605,21 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
                     detach.CommandText = $"DETACH DATABASE {ExportAlias};";
 
-                    _ = await detach.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                    _ = await detach.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 }
 
                 return Result.Success();
 
-            },
-            cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception failed) when (failed is SqliteException or InvalidOperationException)
+            {
+
+                return Failure("export the Covenant database", failed.Message);
+
+            }
+
+        }
 
     }
 
@@ -566,11 +628,11 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// before anything replaces the database that is still working.
     /// </summary>
     internal async Task<Result<CovenantVerifiedExport>> VerifyExportAsync(
-        string stagingPath,
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken)
     {
 
-        ArgumentException.ThrowIfNullOrEmpty(stagingPath);
+        string stagingPath = _paths.ExportStagingDatabasePath;
 
         if (!File.Exists(stagingPath))
         {
@@ -579,31 +641,23 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         }
 
-        SqliteConnection connection;
+        Result<ICovenantV3MaintenanceConnectionLease> opened = await _connections
+            .OpenV3ExportVerificationAsync(capability, cancellationToken).ConfigureAwait(false);
 
-        try
+        if (opened.IsFailure)
         {
 
-            connection = await _connections.OpenSideFileAsync(stagingPath, cancellationToken)
-                .ConfigureAwait(false);
-
-        }
-        catch (SqliteException failed)
-        {
-
-            return Unverified(failed.Message);
+            return Unverified(opened.Error.Message);
 
         }
 
-        await using (connection.ConfigureAwait(false))
+        await using (opened.Value.ConfigureAwait(false))
         {
+
+            SqliteConnection connection = opened.Value.Connection;
 
             try
             {
-
-                await _initializer
-                    .InitializeAsync(connection, CovenantSqliteConnectionMode.ReadOnly, cancellationToken)
-                    .ConfigureAwait(false);
 
                 Result intact = await RequireCipherIntegrityAsync(connection, cancellationToken)
                     .ConfigureAwait(false);
@@ -687,6 +741,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// </remarks>
     internal async Task<Result> ReplaceAsync(
         CovenantVerifiedExport verified,
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken)
     {
 
@@ -694,7 +749,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         string stagingPath = verified.StagingPath;
 
-        string databasePath = _connections.DatabasePath;
+        string databasePath = _paths.CanonicalDatabasePath;
 
         AtomicReplaceStatus status;
 
@@ -756,9 +811,10 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         // an owner, and the read-back is the whole value of having one.
         return await WithMaintenanceConnectionAsync(
             "restore write-ahead logging on the replaced Covenant database",
+            capability,
+            (proof, token) => _connections.OpenV3PostReplaceJournalRestoreAsync(proof, token),
             static (_, _) => Task.FromResult(Result.Success()),
-            cancellationToken,
-            CovenantSqliteConnectionMode.ReadWrite).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -774,13 +830,17 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// database takes. The fresh-file arm produces a correct result either way, so a proof that only
     /// looked at the finished file would pass whether or not the cheaper arm ever ran.</para>
     /// </remarks>
-    internal async Task<Result<CovenantCompactionMeasurement?>> VacuumAsync(CancellationToken cancellationToken)
+    internal async Task<Result<CovenantCompactionMeasurement?>> VacuumAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken)
     {
 
         CovenantCompactionMeasurement? measurement = null;
 
         Result compacted = await WithMaintenanceConnectionAsync(
             "compact the Covenant database",
+            capability,
+            (proof, token) => _connections.OpenV3VacuumAsync(proof, token),
             async (connection, token) =>
             {
 
@@ -822,7 +882,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
                 }
 
-                measurement = await MeasureAsync(connection, _connections.DatabasePath, token)
+                measurement = await MeasureAsync(connection, _paths.CanonicalDatabasePath, token)
                     .ConfigureAwait(false);
 
                 return Result.Success();
@@ -917,37 +977,27 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// Opens the sidecar-free handle, reads the candidate's four states, and refuses any disagreement.
     /// </summary>
     private async Task<Result<CovenantVerifiedCandidateState>> ReadAndVerifyCandidateAsync(
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken)
     {
 
-        SqliteConnection connection;
+        Result<ICovenantV3MaintenanceConnectionLease> opened = await _connections
+            .OpenV3CandidateReopenVerificationAsync(capability, cancellationToken).ConfigureAwait(false);
 
-        try
+        if (opened.IsFailure)
         {
 
-            connection = await _connections.OpenSidecarFreeReadOnlyAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-        }
-        catch (SqliteException)
-        {
-
-            return Result<CovenantVerifiedCandidateState>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.ErasureIncomplete,
-                    "A Covenant erasure could not reopen its candidate database read-only."));
+            return Result<CovenantVerifiedCandidateState>.Failure(opened.Error);
 
         }
 
-        await using (connection.ConfigureAwait(false))
+        await using (opened.Value.ConfigureAwait(false))
         {
+
+            SqliteConnection connection = opened.Value.Connection;
 
             try
             {
-
-                await _initializer
-                    .InitializeAsync(connection, CovenantSqliteConnectionMode.ReadOnly, cancellationToken)
-                    .ConfigureAwait(false);
 
                 Result<CovenantVerifiedCandidateState> verified =
                     await VerifyCandidateAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -1661,7 +1711,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         List<CovenantResidualArtifactClass> survivors =
         [
-            .. CovenantResidualArtifacts.Survivors(_connections.DatabasePath).Where(classes.Contains),
+            .. CovenantResidualArtifacts.Survivors(_paths.CanonicalDatabasePath).Where(classes.Contains),
         ];
 
         if (survivors.Count == 0)
@@ -1704,37 +1754,29 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     private async Task<Result> WithMaintenanceConnectionAsync(
         string step,
+        CovenantV3MaintenanceCapability capability,
+        Func<CovenantV3MaintenanceCapability, CancellationToken, Task<Result<ICovenantV3MaintenanceConnectionLease>>> open,
         Func<SqliteConnection, CancellationToken, Task<Result>> work,
-        CancellationToken cancellationToken,
-        CovenantSqliteConnectionMode mode = CovenantSqliteConnectionMode.ExclusiveMaintenance)
+        CancellationToken cancellationToken)
     {
 
-        SqliteConnection connection;
+        Result<ICovenantV3MaintenanceConnectionLease> opened =
+            await open(capability, cancellationToken).ConfigureAwait(false);
 
-        try
+        if (opened.IsFailure)
         {
 
-            connection = await _connections.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (SqliteException failed)
-        {
-
-            return Failure(step, failed.Message);
+            return Failure(step, opened.Error.Message);
 
         }
 
-        await using (connection.ConfigureAwait(false))
+        await using (opened.Value.ConfigureAwait(false))
         {
 
             try
             {
 
-                await _initializer
-                    .InitializeAsync(connection, mode, cancellationToken)
-                    .ConfigureAwait(false);
-
-                return await work(connection, cancellationToken).ConfigureAwait(false);
+                return await work(opened.Value.Connection, cancellationToken).ConfigureAwait(false);
 
             }
             catch (Exception failed) when (failed is SqliteException or InvalidOperationException)

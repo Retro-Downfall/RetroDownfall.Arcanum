@@ -1011,6 +1011,10 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         }
 
+        public void ReleaseAfterExternalClose(DbConnection connection)
+        {
+        }
+
     }
 
     private sealed class RecordingRegistration(
