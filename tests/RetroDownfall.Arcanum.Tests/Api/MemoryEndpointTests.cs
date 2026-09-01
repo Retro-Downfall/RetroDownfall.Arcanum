@@ -379,6 +379,112 @@ public sealed class MemoryEndpointTests
             explain.Sources,
             source => string.Equals(source.Name, name, StringComparison.Ordinal)).Eligible;
 
+    /// <summary>
+    /// Session-scoped search matches an entry and a summary that belong to the session it was asked
+    /// for, not some other one.
+    /// </summary>
+    /// <remarks>
+    /// <c>SearchSessionAsync</c>'s two predicates bind the same canonical parameter the status counts
+    /// above do. Every other <c>MemorySearchRequest</c> in this file omits <c>SessionId</c>, so before
+    /// this test a regression in either predicate left the whole suite green while a caller-supplied
+    /// session scope silently returned nothing.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task Search_session_scope_binds_the_canonical_session_id()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId;
+
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            Session session = new()
+            {
+
+                Id = Guid.NewGuid(),
+
+                Status = "active",
+
+                CreatedAt = DateTimeOffset.UtcNow,
+
+                UpdatedAt = DateTimeOffset.UtcNow,
+
+                Summary = "gryphon roost morale notes",
+
+            };
+
+            db.Sessions.Add(session);
+
+            sessionId = session.Id;
+
+            db.Entries.Add(new Entry
+            {
+
+                Id = Guid.NewGuid(),
+
+                SessionId = sessionId,
+
+                Role = MessageRole.User,
+
+                Content = "lantern coordinates for the lost expedition",
+
+                ModelUsed = "gpt-oracle",
+
+                CreatedAt = DateTimeOffset.UtcNow,
+
+                Sequence = 1,
+
+            });
+
+            _ = await db.SaveChangesAsync();
+
+        }
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage entryResponse = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("lantern", MemorySearchScope.Session, sessionId),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, entryResponse.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? entryEnvelope = await ReadAsync(
+            entryResponse,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        MemorySearchResultDto entryMatch = Assert.Single(entryEnvelope!.Data!.Results);
+
+        Assert.Equal(MemorySearchScope.Session, entryMatch.Scope);
+
+        Assert.Contains("lantern coordinates", entryMatch.Content, StringComparison.Ordinal);
+
+        HttpResponseMessage summaryResponse = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("morale", MemorySearchScope.Session, sessionId),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, summaryResponse.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? summaryEnvelope = await ReadAsync(
+            summaryResponse,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        MemorySearchResultDto summaryMatch = Assert.Single(summaryEnvelope!.Data!.Results);
+
+        Assert.Equal("Campaign Summary", summaryMatch.Title);
+
+        Assert.Contains("morale notes", summaryMatch.Content, StringComparison.Ordinal);
+
+    }
+
     [SkippableFact]
 
     public async Task Search_requires_query_but_not_an_embedding_feature_gate()
