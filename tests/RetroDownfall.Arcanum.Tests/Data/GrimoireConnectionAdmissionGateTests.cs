@@ -681,6 +681,13 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireClosingOwner closing = Begin(gate, Owner(16));
 
+        Assert.False(work.MaintenanceRevocation.IsCancellationRequested);
+
+        Assert.False(work.TryBeginExternalEffectGroup(
+            out IGrimoireExternalEffectGroup? secondEffectGroup));
+
+        Assert.Null(secondEffectGroup);
+
         Task<Result> drain = gate
             .DrainRequestAndWorkAsync(closing, CancellationToken.None)
             .AsTask();

@@ -284,7 +284,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                         .Select(static request => request.Revocation));
 
                 revocations.AddRange(
-                    _workLeases.Select(static work => work.Revocation));
+                    _workLeases
+                        .Where(static work => work.ActiveEffectGroup is null)
+                        .Select(static work => work.Revocation));
 
             }
             else if (_closure is null || _closure.Owner != owner)
