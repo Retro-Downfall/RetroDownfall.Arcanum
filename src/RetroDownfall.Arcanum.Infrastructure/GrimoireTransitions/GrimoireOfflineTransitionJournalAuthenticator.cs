@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
 namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
 internal static class GrimoireOfflineTransitionJournalAuthenticator
@@ -172,7 +174,16 @@ internal static class GrimoireOfflineTransitionJournalAuthenticator
                 previousEnvelopeDigest,
                 journalLocationDigest);
 
-            if (!key.TryTakeKey(out byte[]? material))
+            BackupRestoreJournalAuthenticator.StableJournalAesOutcome outcome =
+                BackupRestoreJournalAuthenticator.EncryptGrimoireOfflineTransitionJournal(
+                    key,
+                    nonce,
+                    plaintext,
+                    ciphertext,
+                    tag,
+                    aad);
+
+            if (outcome is BackupRestoreJournalAuthenticator.StableJournalAesOutcome.LeaseSpent)
             {
 
                 return new Error(
@@ -181,24 +192,10 @@ internal static class GrimoireOfflineTransitionJournalAuthenticator
 
             }
 
-            try
-            {
-
-                using AesGcm aes = new(material, TagBytes);
-
-                aes.Encrypt(nonce, plaintext, ciphertext, tag, aad);
-
-            }
-            catch (CryptographicException)
+            if (outcome is not BackupRestoreJournalAuthenticator.StableJournalAesOutcome.Completed)
             {
 
                 return Invalid<GrimoireOfflineTransitionEnvelopeV1>();
-
-            }
-            finally
-            {
-
-                CryptographicOperations.ZeroMemory(material);
 
             }
 
@@ -254,7 +251,28 @@ internal static class GrimoireOfflineTransitionJournalAuthenticator
 
         byte[] plaintext = new byte[ciphertext.Length];
 
-        if (!key.TryTakeKey(out byte[]? material))
+        byte[] aad = AssociatedData(
+            envelope.Version,
+            envelope.ProfileNamespaceDigest,
+            envelope.InstallationId,
+            envelope.SlotEpoch,
+            envelope.OperationId,
+            envelope.Kind,
+            envelope.PayloadVersion,
+            envelope.Revision,
+            envelope.PreviousEnvelopeDigest,
+            envelope.JournalLocationDigest);
+
+        BackupRestoreJournalAuthenticator.StableJournalAesOutcome outcome =
+            BackupRestoreJournalAuthenticator.DecryptGrimoireOfflineTransitionJournal(
+                key,
+                nonce,
+                ciphertext,
+                tag,
+                plaintext,
+                aad);
+
+        if (outcome is BackupRestoreJournalAuthenticator.StableJournalAesOutcome.LeaseSpent)
         {
 
             CryptographicOperations.ZeroMemory(plaintext);
@@ -265,38 +283,12 @@ internal static class GrimoireOfflineTransitionJournalAuthenticator
 
         }
 
-        try
-        {
-
-            byte[] aad = AssociatedData(
-                envelope.Version,
-                envelope.ProfileNamespaceDigest,
-                envelope.InstallationId,
-                envelope.SlotEpoch,
-                envelope.OperationId,
-                envelope.Kind,
-                envelope.PayloadVersion,
-                envelope.Revision,
-                envelope.PreviousEnvelopeDigest,
-                envelope.JournalLocationDigest);
-
-            using AesGcm aes = new(material, TagBytes);
-
-            aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
-
-        }
-        catch (CryptographicException)
+        if (outcome is not BackupRestoreJournalAuthenticator.StableJournalAesOutcome.Completed)
         {
 
             CryptographicOperations.ZeroMemory(plaintext);
 
             return Invalid<byte[]>();
-
-        }
-        finally
-        {
-
-            CryptographicOperations.ZeroMemory(material);
 
         }
 

@@ -1,7 +1,5 @@
 using System.Buffers.Text;
 
-using System.Diagnostics.CodeAnalysis;
-
 using System.Security.Cryptography;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -12,12 +10,13 @@ using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
-internal sealed class GrimoireOfflineTransitionJournalKeyLease : IDisposable
+internal sealed class GrimoireOfflineTransitionJournalKeyLease : StableJournalKeyLease
 {
 
-    private byte[]? _key;
+    private GrimoireOfflineTransitionJournalKeyLease(byte[] key) : base(key)
+    {
 
-    private GrimoireOfflineTransitionJournalKeyLease(byte[] key) => _key = key;
+    }
 
     internal static GrimoireOfflineTransitionJournalKeyLease Mint(byte[] key)
     {
@@ -27,29 +26,6 @@ internal sealed class GrimoireOfflineTransitionJournalKeyLease : IDisposable
         return key.Length == GrimoireOfflineTransitionJournalAuthenticator.KeyBytes
             ? new GrimoireOfflineTransitionJournalKeyLease(key)
             : throw new ArgumentException("A transition journal key lease holds exactly 32 bytes.", nameof(key));
-
-    }
-
-    internal bool IsSpent => Volatile.Read(ref _key) is null;
-
-    internal bool TryTakeKey([NotNullWhen(true)] out byte[]? key)
-    {
-
-        key = Interlocked.Exchange(ref _key, null);
-
-        return key is not null;
-
-    }
-
-    public void Dispose()
-    {
-
-        if (Interlocked.Exchange(ref _key, null) is { } key)
-        {
-
-            CryptographicOperations.ZeroMemory(key);
-
-        }
 
     }
 

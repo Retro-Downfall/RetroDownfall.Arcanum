@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
+[Collection("ProcessEnvironment")]
 public sealed class GrimoireDbContextCompositionTests
 {
 

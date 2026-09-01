@@ -11,6 +11,47 @@ using RetroDownfall.Arcanum.Secrets.Security;
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 /// <summary>
+/// The shared one-shot memory ownership primitive for stable journal keys.
+/// </summary>
+/// <remarks>
+/// This shares only raw-buffer lifetime. Purpose-specific sealed leases, credential accounts, and
+/// authenticated formats remain separate.
+/// </remarks>
+internal abstract class StableJournalKeyLease : IDisposable
+{
+
+    private byte[]? _key;
+
+    protected StableJournalKeyLease(byte[] key) => _key = key;
+
+    /// <summary>Whether the single take has already been spent or disposed.</summary>
+    internal bool IsSpent => Volatile.Read(ref _key) is null;
+
+    /// <summary>Takes the key exactly once. The caller owns zeroing what it receives.</summary>
+    internal bool TryTakeKey([NotNullWhen(true)] out byte[]? key)
+    {
+
+        key = Interlocked.Exchange(ref _key, null);
+
+        return key is not null;
+
+    }
+
+    public void Dispose()
+    {
+
+        if (Interlocked.Exchange(ref _key, null) is { } key)
+        {
+
+            CryptographicOperations.ZeroMemory(key);
+
+        }
+
+    }
+
+}
+
+/// <summary>
 /// One take of one profile's restore-journal key, and nothing else.
 /// </summary>
 /// <remarks>
@@ -21,12 +62,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// one bounded AES-GCM operation and zeroes the buffer in a <c>finally</c>; a lease that is never spent
 /// zeroes on disposal instead.
 /// </remarks>
-internal sealed class BackupRestoreJournalKeyLease : IDisposable
+internal sealed class BackupRestoreJournalKeyLease : StableJournalKeyLease
 {
 
-    private byte[]? _key;
+    private BackupRestoreJournalKeyLease(byte[] key) : base(key)
+    {
 
-    private BackupRestoreJournalKeyLease(byte[] key) => _key = key;
+    }
 
     /// <summary>
     /// Wraps exactly <see cref="BackupRestoreJournalAuthenticator.KeyBytes"/> bytes, taking ownership.
@@ -47,38 +89,6 @@ internal sealed class BackupRestoreJournalKeyLease : IDisposable
                 + BackupRestoreJournalAuthenticator.KeyBytes
                 + " bytes.",
                 nameof(key));
-
-    }
-
-    /// <summary>Whether the single take has already been spent or disposed.</summary>
-    internal bool IsSpent => Volatile.Read(ref _key) is null;
-
-    /// <summary>
-    /// Takes the key exactly once. The caller owns zeroing what it receives.
-    /// </summary>
-    /// <remarks>
-    /// Its only permitted call sites are inside <c>BackupRestoreJournalAuthenticator</c>, pinned by
-    /// <c>BackupRestoreJournalKeyLeaseCallSiteTests</c>. A second caller would be a second place that
-    /// decides how long the key lives.
-    /// </remarks>
-    internal bool TryTakeKey([NotNullWhen(true)] out byte[]? key)
-    {
-
-        key = Interlocked.Exchange(ref _key, null);
-
-        return key is not null;
-
-    }
-
-    public void Dispose()
-    {
-
-        if (Interlocked.Exchange(ref _key, null) is { } key)
-        {
-
-            CryptographicOperations.ZeroMemory(key);
-
-        }
 
     }
 

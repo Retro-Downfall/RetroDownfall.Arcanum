@@ -594,6 +594,37 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
     }
 
     [Fact]
+    public void Seal_spends_and_zeroes_key_material_through_the_production_authenticator()
+    {
+
+        byte[] material = Enumerable.Repeat((byte)9, 32).ToArray();
+
+        using GrimoireOfflineTransitionJournalKeyLease lease =
+            GrimoireOfflineTransitionJournalKeyLease.Mint(material);
+
+        Result<GrimoireOfflineTransitionEnvelopeV1> sealedEnvelope =
+            GrimoireOfflineTransitionJournalAuthenticator.Seal(
+                lease,
+                Digest(1),
+                Installation,
+                1,
+                Operation,
+                GrimoireOfflineTransitionKind.CovenantReset,
+                7,
+                1,
+                Digest(2),
+                Digest(3),
+                [1, 2, 3]);
+
+        Assert.True(sealedEnvelope.IsSuccess);
+
+        Assert.True(lease.IsSpent);
+
+        Assert.All(material, value => Assert.Equal((byte)0, value));
+
+    }
+
+    [Fact]
     public void Recovery_key_open_never_creates_or_repairs_material()
     {
 
