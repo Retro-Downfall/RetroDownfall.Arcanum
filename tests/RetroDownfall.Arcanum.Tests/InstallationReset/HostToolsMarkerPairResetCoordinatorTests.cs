@@ -429,7 +429,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     }
 
     [Fact]
-    public async Task Begin_opens_and_retains_the_os_capability_before_opening_or_reading_the_database()
+    public async Task Begin_binds_isolated_guarded_database_path_before_opening_the_database()
     {
 
         await using CovenantSchemaScratchDatabase database =
@@ -464,6 +464,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     database.MaintenanceConnections(),
                     events);
 
+            string canonicalDatabasePath = Path.Combine(
+                guardedRoot,
+                "grimoire.db");
+
             HostToolsMarkerPairResetCoordinator subject = new(
                 new RecordingActiveStore(guardedRoot, current),
                 new HostToolsMarkerPairResetDatabase(
@@ -473,7 +477,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new HostProcessToolsMarkerPairJoiner(),
                 new RejectingVerifier(),
                 new FakeCampaignPathMarkerLifecycle(),
-                os);
+                os,
+                canonicalDatabasePath: canonicalDatabasePath);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,

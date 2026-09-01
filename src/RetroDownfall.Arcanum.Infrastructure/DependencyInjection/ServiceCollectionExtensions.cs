@@ -540,7 +540,8 @@ public static class ServiceCollectionExtensions
                     IFullInstallationResetRemediationAttestationVerifier>(),
                 provider.GetRequiredService<ICampaignPathMarkerLifecycle>(),
                 provider.GetRequiredService<IHostToolsMarkerPairResetOsPort>(),
-                provider.GetRequiredService<IFullInstallationResetManagedFileReconciler>()));
+                provider.GetRequiredService<IFullInstallationResetManagedFileReconciler>(),
+                canonicalDatabasePath: ArcanumPaths.GrimoireDatabaseFile));
 
         // Scoped for the same reason the coordinator is: the active store it authenticates against and
         // the erasure kernel it routes through are scoped, and a singleton would outlive the connection

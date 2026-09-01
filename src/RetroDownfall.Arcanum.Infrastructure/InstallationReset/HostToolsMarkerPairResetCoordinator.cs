@@ -17,6 +17,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
     private readonly IHostToolsMarkerPairResetDatabase _database;
 
+    private readonly string _canonicalDatabasePath;
+
     private readonly IFullInstallationResetCampaignSchemaReadiness _readiness;
 
     private readonly IHostProcessToolsMarkerPairJoiner _joiner;
@@ -46,12 +48,19 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         IFullInstallationResetRemediationAttestationVerifier verifier,
         ICampaignPathMarkerLifecycle lifecycle,
         IHostToolsMarkerPairResetOsPort os,
-        IFullInstallationResetManagedFileReconciler? managedFiles = null)
+        IFullInstallationResetManagedFileReconciler? managedFiles = null,
+        string? canonicalDatabasePath = null)
     {
 
         _managedFiles = managedFiles;
 
         _activeStore = activeStore ?? throw new ArgumentNullException(nameof(activeStore));
+
+        _canonicalDatabasePath = Path.GetFullPath(
+            canonicalDatabasePath
+            ?? Path.Combine(
+                _activeStore.GuardedRoot,
+                Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile)));
 
         _database = database ?? throw new ArgumentNullException(nameof(database));
 
@@ -1347,7 +1356,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         StoppedHostGrimoireAuthorityIssuer issuer = new(
             heldInstallationLock,
             _activeStore.GuardedRoot,
-            ArcanumPaths.GrimoireDatabaseFile);
+            _canonicalDatabasePath);
 
         Result<IStoppedHostGrimoireConnectionAuthority> issued = issuer
             .IssueStoppedHostMarkerPairResetAuthority();
