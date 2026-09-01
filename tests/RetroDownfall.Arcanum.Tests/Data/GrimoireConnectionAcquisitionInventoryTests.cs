@@ -1,5 +1,8 @@
 using System.Reflection;
 
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -10,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 336;
+    private const int ExpectedProductionAcquisitionCount = 338;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -23,6 +26,17 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ICovenantConnectionSource.cs", "GetOpenCoreConnectionAsync(1)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.TurnCommit.cs", "CommitWithinImmediateTransactionAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs", "PurgeLabeledKindAsync(2)"),
+    ];
+
+    private static readonly (string RelativePath, string EnclosingType, string EnclosingMember)[]
+        FreshMigrationMembers =
+    [
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "RenewLeaseAsync(5)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadProbeOnFreshConnectionAsync(2)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadReceiptOnFreshConnectionAsync(3)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(3)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOwnedSnapshotAsync(2)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs", "CovenantHealthyCatalogErasureGuard", "RequireHealthyAsync(1)"),
     ];
 
     [Fact]
@@ -356,6 +370,101 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 is AcquisitionConstructKind.ProviderOpen
                 && ScopedMigrationMembers.Contains(
                     (discovery.Identity.RelativePath, discovery.Identity.EnclosingMember)));
+
+    }
+
+    [Fact]
+    public void Fresh_serving_raw_members_use_only_the_marked_ordinary_factory_route()
+    {
+
+        IReadOnlyList<AcquisitionSource> sources = ProductionSources();
+
+        IReadOnlyList<AcquisitionIdentity> discoveries =
+            GrimoireConnectionAcquisitionScanner.Discover(sources);
+
+        foreach ((string relativePath, string enclosingType, string enclosingMember)
+            in FreshMigrationMembers)
+        {
+
+            AcquisitionIdentity route = Assert.Single(
+                discoveries,
+                discovery =>
+                    discovery.RelativePath == relativePath
+                    && discovery.EnclosingType == enclosingType
+                    && discovery.EnclosingMember == enclosingMember
+                    && discovery.ConstructKind == AcquisitionConstructKind.MarkedRouteInvocation);
+
+            Assert.Equal("OpenFreshAsync", route.CalleeOrConstructedType);
+
+            Assert.Equal(2, route.Arity);
+
+            Assert.DoesNotContain(
+                discoveries,
+                discovery =>
+                    discovery.RelativePath == relativePath
+                    && discovery.EnclosingType == enclosingType
+                    && discovery.EnclosingMember == enclosingMember
+                    && discovery.ConstructKind is
+                        AcquisitionConstructKind.ProviderOpen
+                        or AcquisitionConstructKind.ProviderObjectCreation);
+
+            AcquisitionSource source = Assert.Single(
+                sources,
+                candidate => candidate.RelativePath == relativePath);
+
+            CompilationUnitSyntax root = CSharpSyntaxTree.ParseText(source.Text)
+                .GetCompilationUnitRoot();
+
+            string methodName = enclosingMember[..enclosingMember.IndexOf('(')];
+
+            int parameterCount = int.Parse(
+                enclosingMember[(enclosingMember.IndexOf('(') + 1)..^1],
+                System.Globalization.CultureInfo.InvariantCulture);
+
+            MethodDeclarationSyntax[] methods =
+            [
+                .. root.DescendantNodes()
+                    .OfType<MethodDeclarationSyntax>()
+                    .Where(method =>
+                        method.Identifier.ValueText == methodName
+                        && method.ParameterList.Parameters.Count == parameterCount),
+            ];
+
+            Assert.NotEmpty(methods);
+
+            Assert.DoesNotContain(
+                methods.SelectMany(static method => method.DescendantNodes())
+                    .OfType<ImplicitObjectCreationExpressionSyntax>(),
+                static creation =>
+                    creation.Ancestors()
+                        .OfType<VariableDeclarationSyntax>()
+                        .FirstOrDefault()?.Type.ToString() == "SqliteConnection");
+
+            Assert.DoesNotContain(
+                methods.SelectMany(static method => method.DescendantNodes())
+                    .OfType<ObjectCreationExpressionSyntax>(),
+                static creation => creation.Type.ToString().EndsWith(
+                    "SqliteConnection",
+                    StringComparison.Ordinal));
+
+        }
+
+        foreach (string relativePath in FreshMigrationMembers
+            .Select(static member => member.RelativePath)
+            .Where(static path => path.Contains("/Data/Covenant/", StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal))
+        {
+
+            AcquisitionSource source = Assert.Single(
+                sources,
+                candidate => candidate.RelativePath == relativePath);
+
+            Assert.DoesNotContain(
+                "ICovenantMaintenanceConnectionFactory",
+                source.Text,
+                StringComparison.Ordinal);
+
+        }
 
     }
 

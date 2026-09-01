@@ -497,7 +497,10 @@ public sealed partial class DataRetentionServiceTests
 
         _ = await SeedAttachmentAsync(sessionId, entryId);
 
-        LeaseSurrenderFailingOperationStore operations = new(new LongRunningOperationStore(_db!));
+        LeaseSurrenderFailingOperationStore operations = new(
+            new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)));
 
         DataRetentionService service = CreateBoundaryService(
             new ArcanumSettings(),
@@ -538,7 +541,10 @@ public sealed partial class DataRetentionServiceTests
         ILongRunningOperationStore? operationStore = null)
     {
 
-        ILongRunningOperationStore operations = operationStore ?? new LongRunningOperationStore(_db!);
+        ILongRunningOperationStore operations = operationStore
+            ?? new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!));
 
         return new DataRetentionService(
             _db!,

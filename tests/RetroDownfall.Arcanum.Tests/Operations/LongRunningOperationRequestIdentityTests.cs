@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
@@ -75,7 +76,9 @@ public sealed class LongRunningOperationRequestIdentityTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperationRequestIdentity identity = Identity(Guid.NewGuid(), 1, 2);
 
@@ -96,7 +99,9 @@ public sealed class LongRunningOperationRequestIdentityTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperationRequestIdentity identity = Identity(Guid.NewGuid(), 1, 2);
 
@@ -118,7 +123,9 @@ public sealed class LongRunningOperationRequestIdentityTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         Guid requested = Guid.NewGuid();
 
@@ -148,7 +155,9 @@ public sealed class LongRunningOperationRequestIdentityTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         _ = await store.ResolveOrCreateAsync(Request(), Identity(Guid.NewGuid(), 1, 2));
 
@@ -167,7 +176,9 @@ public sealed class LongRunningOperationRequestIdentityTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         _ = await Assert.ThrowsAsync<ArgumentException>(
             () => store.ResolveOrCreateAsync(

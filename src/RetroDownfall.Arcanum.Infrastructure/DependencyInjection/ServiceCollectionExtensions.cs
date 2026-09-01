@@ -436,7 +436,8 @@ public static class ServiceCollectionExtensions
                 settings,
                 provider.GetService<TimeProvider>() ?? TimeProvider.System,
                 provider.GetService<ILoggerFactory>()
-                    ?? LoggerFactory.Create(static _ => { })));
+                    ?? LoggerFactory.Create(static _ => { }),
+                provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
         services.TryAddScoped<IInstallationResetDataService>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
@@ -1384,7 +1385,13 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IGrimoireDbReadiness>(),
             sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
 
-        services.AddScoped<ISessionRepository, SessionRepository>();
+        services.AddScoped<ISessionRepository>(
+            static sp => new SessionRepository(
+                sp.GetRequiredService<ArcanumDbContext>(),
+                sp.GetRequiredService<ISessionAttachmentStore>(),
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                sp.GetService<ISessionAttachmentIndexQueue>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
         services.AddSingleton<SessionEventHub>();
 
@@ -1764,9 +1771,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantHealthyCatalogErasureGuard(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<GrimoireSchemaManifestInspector>()));
 
         services.AddSingleton(static _ => new CovenantManagedFileErasureRequestReader());
@@ -1806,9 +1811,7 @@ public static class ServiceCollectionExtensions
         // writer it had quiesced was the only one.
         services.AddSingleton(
             static sp => new CovenantDisclosureWriter(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<ICovenantAvailability>(),
                 sp.GetRequiredService<ICovenantDisclosureTransactionWriter>()));
 
@@ -1943,9 +1946,7 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped(
             static sp => new CovenantErasureInventorySource(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<CovenantHealthyCatalogErasureGuard>(),
                 sp.GetRequiredService<CovenantManagedFileErasureRequestReader>(),
                 sp.GetRequiredService<CovenantDisclosureExposureReader>()));

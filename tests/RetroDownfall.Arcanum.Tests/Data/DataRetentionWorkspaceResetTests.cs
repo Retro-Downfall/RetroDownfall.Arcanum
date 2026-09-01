@@ -285,7 +285,9 @@ public sealed partial class DataRetentionServiceTests
         Assert.True(result.IsSuccess, result.Error.Message);
 
         LongRunningOperation operation = Assert.IsType<LongRunningOperation>(
-            await new LongRunningOperationStore(_db!).GetAsync(
+            await new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)).GetAsync(
                 result.Value.OperationId,
                 CancellationToken.None));
 

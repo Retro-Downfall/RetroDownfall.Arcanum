@@ -78,7 +78,9 @@ public sealed partial class DataRetentionServiceTests
         RecoveryTimeProvider clock = new(
             new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
             operations,
@@ -207,7 +209,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
             operations,
@@ -312,7 +316,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations, phase);
 
@@ -363,7 +369,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations, phase);
 
@@ -398,7 +406,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -442,7 +452,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -477,7 +489,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -513,7 +527,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -544,7 +560,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await operations.CreateAsync(
             new LongRunningOperationCreateRequest(
@@ -578,7 +596,9 @@ public sealed partial class DataRetentionServiceTests
 
         _ = await SeedSessionAsync(pinned: false);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -630,7 +650,9 @@ public sealed partial class DataRetentionServiceTests
 
         _ = await SeedSessionAsync(pinned: false);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -700,7 +722,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(
             operations,
@@ -728,7 +752,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,

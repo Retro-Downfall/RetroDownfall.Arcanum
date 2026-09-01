@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Data;
 
 using Microsoft.Data.Sqlite;
@@ -6,10 +5,12 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -52,9 +53,9 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.Equal(ErrorCodes.Covenant.Unavailable, acknowledged.Error.Code);
 
-        Assert.Empty(harness.Connections.Opened);
+        Assert.Empty(harness.FreshConnections.Opened);
 
-        Assert.Equal(0, harness.Drain.ActiveRegistrations);
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
     }
 
@@ -76,11 +77,11 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, acknowledged.Error.Code);
 
-        SqliteConnection candidate = Assert.Single(harness.Connections.Opened);
+        SqliteConnection candidate = Assert.Single(harness.FreshConnections.Opened);
 
         Assert.Equal(ConnectionState.Closed, candidate.State);
 
-        Assert.Equal(0, harness.Drain.ActiveRegistrations);
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
         Result<CovenantDisclosureReceipt> stillClosed = await harness.Subject.AcknowledgeAsync(
             Draft(2),
@@ -90,19 +91,15 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True(stillClosed.IsFailure);
 
-        Assert.Single(harness.Connections.Opened);
+        Assert.Single(harness.FreshConnections.Opened);
 
     }
 
     [Fact]
-    public async Task Candidate_is_enrolled_before_initialization_and_admitted_only_after_proof()
+    public async Task Candidate_is_admitted_as_one_warm_read_write_ordinary_lease_after_proof()
     {
 
-        await using WriterHarness harness = await WriterHarness.CreateAsync(
-            initializer: static drain => new EnrollmentObservingInitializer(drain));
-
-        EnrollmentObservingInitializer initializer =
-            Assert.IsType<EnrollmentObservingInitializer>(harness.Initializer);
+        await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Result<CovenantDisclosureReceipt> acknowledged = await harness.Subject.AcknowledgeAsync(
             Draft(1),
@@ -112,9 +109,11 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True(acknowledged.IsSuccess, acknowledged.IsFailure ? acknowledged.Error.Message : null);
 
-        Assert.True(initializer.SawEnrolledConnection);
+        Assert.Equal(
+            [GrimoireOrdinaryFreshConnectionKind.ReadWrite],
+            harness.FreshConnections.Kinds);
 
-        Assert.Equal(1, harness.Drain.ActiveRegistrations);
+        Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
 
     }
 
@@ -130,7 +129,7 @@ public sealed class CovenantDisclosureWriterTests
 
         await transaction.Entered;
 
-        SqliteConnection warm = Assert.Single(harness.Connections.Opened);
+        SqliteConnection warm = Assert.Single(harness.FreshConnections.Opened);
 
         Task<Result> quiesce = harness.Subject.QuiesceAsync(Token).AsTask();
 
@@ -154,7 +153,7 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.Equal(ConnectionState.Closed, warm.State);
 
-        Assert.Equal(0, harness.Drain.ActiveRegistrations);
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
     }
 
@@ -168,15 +167,15 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
 
-        SqliteConnection warm = Assert.Single(harness.Connections.Opened);
+        SqliteConnection warm = Assert.Single(harness.FreshConnections.Opened);
 
         Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
 
-        Assert.Same(warm, Assert.Single(harness.Connections.Opened));
+        Assert.Same(warm, Assert.Single(harness.FreshConnections.Opened));
 
         Assert.Equal(ConnectionState.Open, warm.State);
 
-        Assert.Equal(1, harness.Drain.ActiveRegistrations);
+        Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
 
     }
 
@@ -192,7 +191,7 @@ public sealed class CovenantDisclosureWriterTests
 
         await transaction.Entered;
 
-        SqliteConnection oldWarm = Assert.Single(harness.Connections.Opened);
+        SqliteConnection oldWarm = Assert.Single(harness.FreshConnections.Opened);
 
         using CancellationTokenSource interrupted = new();
 
@@ -213,14 +212,14 @@ public sealed class CovenantDisclosureWriterTests
         Assert.True((await reopen).IsSuccess);
 
         SqliteConnection fresh = Assert.Single(
-            harness.Connections.Opened,
+            harness.FreshConnections.Opened,
             connection => !ReferenceEquals(connection, oldWarm));
 
         Assert.Equal(ConnectionState.Closed, oldWarm.State);
 
         Assert.Equal(ConnectionState.Open, fresh.State);
 
-        Assert.Equal(1, harness.Drain.ActiveRegistrations);
+        Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
 
         Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
 
@@ -234,20 +233,20 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
 
-        harness.Drain.BlockNextRegistration();
+        harness.FreshConnections.BlockNextOpen();
 
         Task<Result> reopen = Task.Run(
             async () => await harness.Subject.ReopenAsync(Token).ConfigureAwait(false));
 
-        await harness.Drain.RegistrationBlocked;
+        await harness.FreshConnections.OpenBlocked;
 
-        SqliteConnection candidate = Assert.Single(harness.Connections.Opened);
+        SqliteConnection candidate = Assert.Single(harness.FreshConnections.Opened);
 
         Task<Result> quiesce = harness.Subject.QuiesceAsync(Token).AsTask();
 
         Assert.False(quiesce.IsCompleted);
 
-        harness.Drain.ReleaseRegistration();
+        harness.FreshConnections.AllowOpen();
 
         Result reopened = await reopen;
 
@@ -259,7 +258,7 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.Equal(ConnectionState.Closed, candidate.State);
 
-        Assert.Equal(0, harness.Drain.ActiveRegistrations);
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
         Assert.True((await harness.AcknowledgeAsync(1)).IsFailure);
 
@@ -273,20 +272,20 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
 
-        harness.Drain.BlockNextRegistration();
+        harness.FreshConnections.BlockNextOpen();
 
         Task<Result> reopen = Task.Run(
             async () => await harness.Subject.ReopenAsync(Token).ConfigureAwait(false));
 
-        await harness.Drain.RegistrationBlocked;
+        await harness.FreshConnections.OpenBlocked;
 
-        SqliteConnection candidate = Assert.Single(harness.Connections.Opened);
+        SqliteConnection candidate = Assert.Single(harness.FreshConnections.Opened);
 
         Task dispose = harness.Subject.DisposeAsync().AsTask();
 
         Assert.False(dispose.IsCompleted);
 
-        harness.Drain.ReleaseRegistration();
+        harness.FreshConnections.AllowOpen();
 
         Result reopened = await reopen;
 
@@ -298,7 +297,7 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.Equal(ConnectionState.Closed, candidate.State);
 
-        Assert.Equal(0, harness.Drain.ActiveRegistrations);
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
         Assert.True((await harness.AcknowledgeAsync(1)).IsFailure);
 
@@ -316,7 +315,7 @@ public sealed class CovenantDisclosureWriterTests
 
         await transaction.Entered;
 
-        SqliteConnection warm = Assert.Single(harness.Connections.Opened);
+        SqliteConnection warm = Assert.Single(harness.FreshConnections.Opened);
 
         Task first = harness.Subject.DisposeAsync().AsTask();
 
@@ -338,30 +337,87 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.Equal(ConnectionState.Closed, warm.State);
 
-        Assert.Equal(0, harness.Drain.ActiveRegistrations);
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
         await harness.Subject.DisposeAsync();
 
     }
 
     [Fact]
-    public async Task A_partial_open_failure_disposes_and_unregisters_the_candidate()
+    public async Task Warm_writer_owns_one_read_write_ordinary_lease_until_physical_close_precedes_release()
     {
 
-        await using WriterHarness harness = await WriterHarness.CreateAsync(
-            initializer: static _ => new FailingInitializer());
+        await using WriterHarness harness = await WriterHarness.CreateAsync();
+
+        Assert.DoesNotContain(
+            typeof(CovenantDisclosureWriter)
+                .GetConstructors(System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic)
+                .SelectMany(static constructor => constructor.GetParameters()),
+            static parameter =>
+                parameter.ParameterType == typeof(ICovenantMaintenanceConnectionFactory)
+                || parameter.ParameterType == typeof(ICovenantConnectionDrain));
+
+        Result<CovenantDisclosureReceipt> acknowledged = await harness.AcknowledgeAsync(1);
+
+        Assert.True(acknowledged.IsSuccess, acknowledged.IsFailure ? acknowledged.Error.Message : null);
+
+        Assert.Equal(
+            [GrimoireOrdinaryFreshConnectionKind.ReadWrite],
+            harness.FreshConnections.Kinds);
+
+        SqliteConnection warm = Assert.Single(harness.FreshConnections.Opened);
+
+        Assert.Equal(ConnectionState.Open, warm.State);
+
+        Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
+
+        harness.FreshConnections.BlockNextRelease();
+
+        Task<Result> quiesce = harness.Subject.QuiesceAsync(Token).AsTask();
+
+        await harness.FreshConnections.ReleaseEntered.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(quiesce.IsCompleted);
+
+        Assert.Equal(ConnectionState.Closed, warm.State);
+
+        Assert.Equal(ConnectionState.Closed, harness.FreshConnections.StateAtRelease);
+
+        Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
+
+        Result drained = await harness.FreshConnections.DrainAsync(Token);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
+
+        harness.FreshConnections.AllowRelease();
+
+        Assert.True((await quiesce.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
+
+    }
+
+    [Fact]
+    public async Task An_ordinary_open_failure_keeps_the_writer_closed_without_a_lease()
+    {
+
+        await using WriterHarness harness = await WriterHarness.CreateAsync();
+
+        harness.FreshConnections.RefuseNextOpen();
 
         Result<CovenantDisclosureReceipt> acknowledged = await harness.AcknowledgeAsync(1);
 
         Assert.True(acknowledged.IsFailure);
 
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, acknowledged.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, acknowledged.Error.Code);
 
-        SqliteConnection candidate = Assert.Single(harness.Connections.Opened);
+        Assert.Empty(harness.FreshConnections.Opened);
 
-        Assert.Equal(ConnectionState.Closed, candidate.State);
-
-        Assert.Equal(0, harness.Drain.ActiveRegistrations);
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
     }
 
@@ -375,14 +431,14 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.AcknowledgeAsync(1)).IsSuccess);
 
-        SqliteConnection oldWarm = Assert.Single(harness.Connections.Opened);
+        SqliteConnection oldWarm = Assert.Single(harness.FreshConnections.Opened);
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
 
         Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
 
         SqliteConnection fresh = Assert.Single(
-            harness.Connections.Opened,
+            harness.FreshConnections.Opened,
             connection => !ReferenceEquals(connection, oldWarm));
 
         Assert.Equal(ConnectionState.Closed, oldWarm.State);
@@ -430,7 +486,7 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
 
-        SqliteConnection fresh = harness.Connections.Opened[^1];
+        SqliteConnection fresh = harness.FreshConnections.Opened[^1];
 
         Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
 
@@ -571,9 +627,7 @@ public sealed class CovenantDisclosureWriterTests
         private WriterHarness(
             CovenantCanonicalErasureFixture fixture,
             Guid datasetGeneration,
-            RecordingMaintenanceConnectionFactory connections,
-            RecordingConnectionDrain drain,
-            ICovenantSqliteConnectionInitializer initializer,
+            RecordingFreshOrdinaryConnectionFactory freshConnections,
             MutableAvailability? availability,
             CovenantAvailability? publishedAvailability,
             CovenantDisclosureWriter subject)
@@ -583,11 +637,7 @@ public sealed class CovenantDisclosureWriterTests
 
             DatasetGeneration = datasetGeneration;
 
-            Connections = connections;
-
-            Drain = drain;
-
-            Initializer = initializer;
+            FreshConnections = freshConnections;
 
             Availability = availability;
 
@@ -601,11 +651,7 @@ public sealed class CovenantDisclosureWriterTests
 
         internal Guid DatasetGeneration { get; }
 
-        internal RecordingMaintenanceConnectionFactory Connections { get; }
-
-        internal RecordingConnectionDrain Drain { get; }
-
-        internal ICovenantSqliteConnectionInitializer Initializer { get; }
+        internal RecordingFreshOrdinaryConnectionFactory FreshConnections { get; }
 
         internal MutableAvailability? Availability { get; }
 
@@ -615,7 +661,6 @@ public sealed class CovenantDisclosureWriterTests
 
         internal static async Task<WriterHarness> CreateAsync(
             ICovenantDisclosureTransactionWriter? transaction = null,
-            Func<RecordingConnectionDrain, ICovenantSqliteConnectionInitializer>? initializer = null,
             bool productionAvailability = false)
         {
 
@@ -628,12 +673,15 @@ public sealed class CovenantDisclosureWriterTests
                 Guid datasetGeneration = Assert.IsType<Guid>(
                     await fixture.ReadDatasetGenerationAsync(Token));
 
-                RecordingMaintenanceConnectionFactory connections = new(fixture.Connections());
+                await using SqliteConnection freshTemplate = await fixture.Connections()
+                    .OpenAsync(Token);
 
-                RecordingConnectionDrain drain = new(fixture.Drain);
+                string freshConnectionString = freshTemplate.ConnectionString;
 
-                ICovenantSqliteConnectionInitializer resolvedInitializer =
-                    initializer?.Invoke(drain) ?? CovenantSqliteConnectionInitializer.Instance;
+                await freshTemplate.CloseAsync();
+
+                RecordingFreshOrdinaryConnectionFactory freshConnections = new(
+                    freshConnectionString);
 
                 MutableAvailability? mutable = productionAvailability
                     ? null
@@ -647,19 +695,18 @@ public sealed class CovenantDisclosureWriterTests
                     ? published
                     : mutable!;
 
+                ICovenantDisclosureTransactionWriter resolvedTransaction =
+                    transaction ?? new ImmediateTransactionWriter();
+
                 CovenantDisclosureWriter subject = new(
-                    connections,
-                    resolvedInitializer,
-                    drain,
+                    freshConnections,
                     writerAvailability,
-                    transaction ?? new ImmediateTransactionWriter());
+                    resolvedTransaction);
 
                 return new WriterHarness(
                     fixture,
                     datasetGeneration,
-                    connections,
-                    drain,
-                    resolvedInitializer,
+                    freshConnections,
                     mutable,
                     published,
                     subject);
@@ -794,189 +841,6 @@ public sealed class CovenantDisclosureWriterTests
                 new CovenantDisclosureReceipt(draft, allocatedSubjectOrdinal: 1));
 
         }
-
-    }
-
-    private sealed class RecordingMaintenanceConnectionFactory(
-        ICovenantMaintenanceConnectionFactory inner) : ICovenantMaintenanceConnectionFactory
-    {
-
-        private readonly ConcurrentQueue<SqliteConnection> _opened = [];
-
-        internal IReadOnlyList<SqliteConnection> Opened => [.. _opened];
-
-        public string DatabasePath => inner.DatabasePath;
-
-        public async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
-        {
-
-            SqliteConnection connection = await inner.OpenAsync(cancellationToken);
-
-            _opened.Enqueue(connection);
-
-            return connection;
-
-        }
-
-        public Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken) =>
-            inner.OpenReadOnlyAsync(cancellationToken);
-
-        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
-            inner.OpenSidecarFreeReadOnlyAsync(cancellationToken);
-
-        public Task<SqliteConnection> OpenSideFileAsync(
-            string path,
-            CancellationToken cancellationToken) =>
-            inner.OpenSideFileAsync(path, cancellationToken);
-
-        public Task AttachSideFileAsync(
-            SqliteConnection connection,
-            string alias,
-            string path,
-            CancellationToken cancellationToken) =>
-            inner.AttachSideFileAsync(connection, alias, path, cancellationToken);
-
-    }
-
-    private sealed class RecordingConnectionDrain(ICovenantConnectionDrain inner)
-        : ICovenantConnectionDrain
-    {
-
-        private TaskCompletionSource<bool>? _registrationBlocked;
-
-        private TaskCompletionSource<bool>? _releaseRegistration;
-
-        private int _activeRegistrations;
-
-        private int _blockNext;
-
-        internal int ActiveRegistrations => Volatile.Read(ref _activeRegistrations);
-
-        internal Task RegistrationBlocked =>
-            _registrationBlocked?.Task
-            ?? throw new InvalidOperationException("No registration block was prepared.");
-
-        internal void BlockNextRegistration()
-        {
-
-            _registrationBlocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            _releaseRegistration = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            Volatile.Write(ref _blockNext, 1);
-
-        }
-
-        internal void ReleaseRegistration() =>
-            _ = (_releaseRegistration
-                ?? throw new InvalidOperationException("No registration block was prepared."))
-                .TrySetResult(true);
-
-        public IDisposable Register(SqliteConnection connection)
-        {
-
-            IDisposable registration = inner.Register(connection);
-
-            _ = Interlocked.Increment(ref _activeRegistrations);
-
-            if (Interlocked.Exchange(ref _blockNext, 0) == 1)
-            {
-
-                _ = _registrationBlocked!.TrySetResult(true);
-
-                _releaseRegistration!.Task.GetAwaiter().GetResult();
-
-            }
-
-            return new Registration(this, registration);
-
-        }
-
-        public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
-            inner.DrainAsync(cancellationToken);
-
-        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
-            inner.ClearExactPoolAfterClose(connection);
-
-        private sealed class Registration(
-            RecordingConnectionDrain owner,
-            IDisposable inner) : IDisposable
-        {
-
-            private int _disposed;
-
-            public void Dispose()
-            {
-
-                if (Interlocked.Exchange(ref _disposed, 1) != 0)
-                {
-
-                    return;
-
-                }
-
-                inner.Dispose();
-
-                _ = Interlocked.Decrement(ref owner._activeRegistrations);
-
-            }
-
-        }
-
-    }
-
-    private sealed class EnrollmentObservingInitializer(RecordingConnectionDrain drain)
-        : ICovenantSqliteConnectionInitializer
-    {
-
-        internal bool SawEnrolledConnection { get; private set; }
-
-        public async ValueTask InitializeAsync(
-            SqliteConnection connection,
-            CovenantSqliteConnectionMode mode,
-            CancellationToken cancellationToken)
-        {
-
-            SawEnrolledConnection = drain.ActiveRegistrations == 1;
-
-            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
-                connection,
-                mode,
-                cancellationToken);
-
-        }
-
-        public CovenantSqliteAuthorizationScope Authorize(
-            SqliteConnection connection,
-            CovenantSqliteAuthorizationKind kind) =>
-            CovenantSqliteConnectionInitializer.Instance.Authorize(connection, kind);
-
-        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
-            RetroDownfall.Arcanum.Infrastructure.Backup.RestoreStagingManagedAuthoritySanitizationCapability authority,
-            RetroDownfall.Arcanum.Infrastructure.Backup.RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
-            CovenantSqliteConnectionInitializer.Instance
-                .AuthorizeRestoreStagingManagedAuthoritySanitization(authority, runIdentity);
-
-    }
-
-    private sealed class FailingInitializer : ICovenantSqliteConnectionInitializer
-    {
-
-        public ValueTask InitializeAsync(
-            SqliteConnection connection,
-            CovenantSqliteConnectionMode mode,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromException(new InvalidOperationException("private initialization detail"));
-
-        public CovenantSqliteAuthorizationScope Authorize(
-            SqliteConnection connection,
-            CovenantSqliteAuthorizationKind kind) =>
-            throw new NotSupportedException();
-
-        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
-            RetroDownfall.Arcanum.Infrastructure.Backup.RestoreStagingManagedAuthoritySanitizationCapability authority,
-            RetroDownfall.Arcanum.Infrastructure.Backup.RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
-            throw new NotSupportedException();
 
     }
 

@@ -34,7 +34,8 @@ internal sealed class InstallationResetExistingGrimoire(
     DataProtectionSecretStore secretStore,
     ArcanumSettings settings,
     TimeProvider timeProvider,
-    ILoggerFactory loggerFactory)
+    ILoggerFactory loggerFactory,
+    IGrimoireOrdinaryConnectionFactory ordinaryConnections)
     : IInstallationResetDataService,
       IInstallationResetWorkspaceResolver,
       IInstallationResetDatabaseIdentityReader,
@@ -308,7 +309,9 @@ internal sealed class InstallationResetExistingGrimoire(
 
             }
 
-            LongRunningOperationStore operations = new(context);
+            LongRunningOperationStore operations = new(
+                context,
+                ordinaryConnections);
 
             DataRetentionService retention = new(
                 context,

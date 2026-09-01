@@ -25,16 +25,16 @@ internal sealed class SessionEntryPersistence
 
     private readonly ArcanumDbContext _db;
 
-    private readonly IGrimoireOrdinaryConnectionFactory? _connections;
+    private readonly IGrimoireOrdinaryConnectionFactory _connections;
 
     public SessionEntryPersistence(
         ArcanumDbContext db,
-        IGrimoireOrdinaryConnectionFactory? connections = null)
+        IGrimoireOrdinaryConnectionFactory connections)
     {
 
         _db = db;
 
-        _connections = connections;
+        _connections = connections ?? throw new ArgumentNullException(nameof(connections));
 
     }
 
@@ -701,9 +701,13 @@ internal sealed class SessionEntryPersistence
             CancellationToken cancellationToken)
     {
 
-        string? connectionString = _db.Database.GetConnectionString();
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+            .OpenFreshAsync(
+                GrimoireOrdinaryFreshConnectionKind.ReadOnly,
+                cancellationToken)
+            .ConfigureAwait(false);
 
-        if (string.IsNullOrWhiteSpace(connectionString))
+        if (acquired.IsFailure)
         {
 
             return new MandatoryToolInteractionProbeResult(
@@ -712,15 +716,9 @@ internal sealed class SessionEntryPersistence
 
         }
 
-        await using SqliteConnection connection = new(connectionString);
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
 
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        // EF never opened this handle, so its pragma interceptor cannot fire; policy has to be
-        // applied here or the readback runs at raw SQLite defaults with no cipher verification.
-        await CovenantSqliteConnectionInitializer.Instance
-            .InitializeAsync(connection, CovenantSqliteConnectionMode.ReadOnly, cancellationToken)
-            .ConfigureAwait(false);
+        SqliteConnection connection = lease.Connection;
 
         await using SqliteCommand command = connection.CreateCommand();
 
@@ -752,6 +750,12 @@ internal sealed class SessionEntryPersistence
             rows.Add(ReadLogicalPayload(reader));
 
         }
+
+        await GrimoireScopedConsumerTestSeam.PauseAsync(
+            "SessionEntryPersistence.ReadProbeOnFreshConnectionAsync",
+            GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+            rows.Count,
+            cancellationToken).ConfigureAwait(false);
 
         EntryLogicalPayload? call = rows.SingleOrDefault(
             row => row.Id == probe.Receipt.CallEntryId);
@@ -830,24 +834,22 @@ internal sealed class SessionEntryPersistence
         CancellationToken cancellationToken)
     {
 
-        string? connectionString = _db.Database.GetConnectionString();
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+            .OpenFreshAsync(
+                GrimoireOrdinaryFreshConnectionKind.ReadOnly,
+                cancellationToken)
+            .ConfigureAwait(false);
 
-        if (string.IsNullOrWhiteSpace(connectionString))
+        if (acquired.IsFailure)
         {
 
             return new ReceiptReadback(ReceiptReadbackClassification.Unreadable);
 
         }
 
-        await using SqliteConnection connection = new(connectionString);
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
 
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        // EF never opened this handle, so its pragma interceptor cannot fire; policy has to be
-        // applied here or the readback runs at raw SQLite defaults with no cipher verification.
-        await CovenantSqliteConnectionInitializer.Instance
-            .InitializeAsync(connection, CovenantSqliteConnectionMode.ReadOnly, cancellationToken)
-            .ConfigureAwait(false);
+        SqliteConnection connection = lease.Connection;
 
         await using SqliteCommand command = connection.CreateCommand();
 
@@ -886,6 +888,12 @@ internal sealed class SessionEntryPersistence
                     IsPinned: reader.GetBoolean(9)));
 
         }
+
+        await GrimoireScopedConsumerTestSeam.PauseAsync(
+            "SessionEntryPersistence.ReadReceiptOnFreshConnectionAsync",
+            GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+            rows.Count,
+            cancellationToken).ConfigureAwait(false);
 
         EntryLogicalPayload? call = rows.SingleOrDefault(row => row.Id == expectedCall.Id);
 

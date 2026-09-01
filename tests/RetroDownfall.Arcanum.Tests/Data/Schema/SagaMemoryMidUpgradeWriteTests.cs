@@ -20,6 +20,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -399,7 +400,9 @@ public sealed class SagaMemoryMidUpgradeWriteTests
             DataRetentionService retention = new(
                 db,
                 new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
-                new LongRunningOperationStore(db),
+                new LongRunningOperationStore(
+                    db,
+                    TestOrdinaryConnectionFactory.For(db)),
                 TimeProvider.System,
                 NullLogger<DataRetentionService>.Instance,
                 root,

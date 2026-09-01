@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -123,7 +124,9 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         Assert.True(entry.IsRecorded);
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation? operation = await store.GetAsync(entry.OperationId);
 
@@ -209,7 +212,9 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         await ledger.MarkParkedAsync(entry, "ctx-8");
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation flagged = (await store.GetAsync(entry.OperationId))!;
 
@@ -252,7 +257,9 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         await ledger.MarkParkedAsync(entry, "ctx-9");
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation flagged = (await store.GetAsync(entry.OperationId))!;
 
@@ -304,7 +311,9 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         // outbound recovery handler sends tasks/cancel for the very task the dispatch is waiting on.
         clock.Advance(TimeSpan.FromMinutes(13));
 
-        IReadOnlyList<LongRunningOperation> expired = await new LongRunningOperationStore(_db!)
+        IReadOnlyList<LongRunningOperation> expired = await new LongRunningOperationStore(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!))
             .FindExpiredAsync(clock.GetUtcNow(), 100);
 
         Assert.DoesNotContain(expired, operation => operation.Id == entry.OperationId);
@@ -360,13 +369,17 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
     private IA2ASendingLedger CreateLedger() =>
         new A2ASendingLedger(
-            new LongRunningOperationStore(_db!),
+            new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)),
             TimeProvider.System,
             NullLogger<A2ASendingLedger>.Instance);
 
     private IA2ASendingLedger CreateLedger(TimeProvider clock, A2ASendingLeaseRenewer renewer) =>
         new A2ASendingLedger(
-            new LongRunningOperationStore(_db!),
+            new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)),
             clock,
             NullLogger<A2ASendingLedger>.Instance,
             renewer);
@@ -376,7 +389,10 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         ServiceCollection services = new();
 
-        services.AddScoped<ILongRunningOperationStore>(_ => new LongRunningOperationStore(_db!));
+        services.AddScoped<ILongRunningOperationStore>(
+            _ => new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)));
 
         return new A2ASendingLeaseRenewer(
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),

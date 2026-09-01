@@ -6,9 +6,11 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Operations;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -878,17 +880,14 @@ public sealed class CovenantResetCheckpointInitiatorTests
     private static CovenantHealthyCatalogErasureGuard CatalogGuard(
         CovenantSchemaScratchDatabase database) =>
         new(
-            database.MaintenanceConnections(),
-            CovenantSqliteConnectionInitializer.Instance,
-            new CovenantConnectionDrain(),
+            new RecordingFreshOrdinaryConnectionFactory(
+                database.Connection.ConnectionString),
             new GrimoireSchemaManifestInspector(
                 GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
 
     private static CovenantHealthyCatalogErasureGuard UnusedCatalogGuard() =>
         new(
-            new UnreachableMaintenanceConnectionFactory(),
-            CovenantSqliteConnectionInitializer.Instance,
-            new CovenantConnectionDrain(),
+            new UnreachableOrdinaryConnectionFactory(),
             new GrimoireSchemaManifestInspector(
                 GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
 
@@ -939,32 +938,21 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
     }
 
-    private sealed class UnreachableMaintenanceConnectionFactory : ICovenantMaintenanceConnectionFactory
+    private sealed class UnreachableOrdinaryConnectionFactory
+        : IGrimoireOrdinaryConnectionFactory
     {
 
-        public string DatabasePath => throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken) =>
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind kind,
+            CancellationToken cancellationToken) =>
             throw new NotSupportedException(
                 "Covenant memory-reset preparation must not inspect the factory catalog.");
-
-        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenSideFileAsync(
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task AttachSideFileAsync(
-            SqliteConnection connection,
-            string alias,
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
 
     }
 

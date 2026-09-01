@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -62,7 +64,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task FindRequestIdentityAsync_ReadsBackEachDigestIntoItsOwnProperty()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 8, 18, 12, 0, 0, TimeSpan.Zero);
 
         Guid requested = Guid.Parse("31313131-3131-4131-8131-313131313131");
@@ -97,7 +99,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task FindRequestIdentityAsync_ReturnsNullForAnOperationCreatedWithoutOne()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         LongRunningOperation operation = await CreateAsync(store, new(2026, 8, 18, 12, 0, 0, TimeSpan.Zero));
 
         Assert.Null(await store.FindRequestIdentityAsync(operation.Id));
@@ -112,7 +114,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task FindByRequestedOperationIdAsync_ReturnsTheServerOperationAndCompleteIdentity()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 8, 21, 12, 0, 0, TimeSpan.Zero);
         Guid requested = Guid.Parse("41414141-4141-4141-8141-414141414141");
         CovenantDigest apply = new([.. Enumerable.Repeat((byte)0x41, 32)]);
@@ -142,7 +144,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task FindByRequestedOperationIdAsync_ReturnsNullForAnUnknownName()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         Assert.Null(
             await store.FindByRequestedOperationIdAsync(
@@ -153,7 +155,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task FindByRequestedOperationIdAsync_RefusesTheEmptyName()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         await Assert.ThrowsAsync<ArgumentException>(
             () => store.FindByRequestedOperationIdAsync(Guid.Empty));
@@ -163,7 +165,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task TryAcquireLeaseAsync_OnlyOneWorkerWinsUntilLeaseExpires()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         LongRunningOperation operation = await CreateAsync(store, now);
 
@@ -200,9 +202,9 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         await using ArcanumDbContext competingDb = _fixture.CreateContext(_dbPath);
 
-        LongRunningOperationStore firstStore = new(_db!);
+        LongRunningOperationStore firstStore = Store(_db!);
 
-        LongRunningOperationStore secondStore = new(competingDb);
+        LongRunningOperationStore secondStore = Store(competingDb);
 
         DateTimeOffset now = new(2026, 8, 2, 12, 0, 0, TimeSpan.Zero);
 
@@ -261,7 +263,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         DateTimeOffset now = new(2026, 8, 2, 13, 0, 0, TimeSpan.Zero);
 
@@ -307,7 +309,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         DateTimeOffset startedAt = new(2026, 8, 2, 14, 0, 0, TimeSpan.Zero);
 
@@ -345,6 +347,71 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task RenewLeaseAsync_UsesAnUnpooledIsolatedHeartbeatOrdinaryLease()
+    {
+
+        RequireSqlCipher();
+
+        RecordingFreshOrdinaryConnectionFactory connections = new(
+            _db!.Database.GetConnectionString()!);
+
+        ConstructorInfo? constructor = typeof(LongRunningOperationStore)
+            .GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .SingleOrDefault(candidate =>
+                candidate.GetParameters() is
+                [
+                    { ParameterType: var dbType },
+                    { ParameterType: var factoryType, HasDefaultValue: false },
+                    _,
+                ]
+                && dbType == typeof(ArcanumDbContext)
+                && factoryType == typeof(IGrimoireOrdinaryConnectionFactory));
+
+        Assert.NotNull(constructor);
+
+        using LongRunningOperationStore store = (LongRunningOperationStore)constructor.Invoke(
+            [_db, connections, null]);
+
+        DateTimeOffset startedAt = new(2026, 9, 1, 14, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = Assert.IsType<LongRunningOperation>(
+            await store.TryStartSingleFlightAsync(
+                new LongRunningOperationCreateRequest(
+                    LongRunningOperationKinds.DataRetentionPrune,
+                    LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                    "Apply one bounded retention sweep.",
+                    startedAt),
+                "task-6-heartbeat",
+                startedAt,
+                startedAt.AddMinutes(5)));
+
+        bool renewed = await store.RenewLeaseAsync(
+            operation.Id,
+            "task-6-heartbeat",
+            startedAt.AddMinutes(1),
+            startedAt.AddMinutes(6));
+
+        Assert.True(renewed);
+
+        Assert.Equal(
+            [GrimoireOrdinaryFreshConnectionKind.IsolatedHeartbeat],
+            connections.Kinds);
+
+        SqliteConnection heartbeat = Assert.Single(connections.Opened);
+
+        SqliteConnectionStringBuilder connectionString = new(heartbeat.ConnectionString);
+
+        Assert.False(connectionString.Pooling);
+
+        Assert.Equal(SqliteOpenMode.ReadWriteCreate, connectionString.Mode);
+
+        Assert.Equal(System.Data.ConnectionState.Closed, heartbeat.State);
+
+        Assert.Equal(0, connections.LiveLeaseCount);
+
+    }
+
     /// <summary>
     /// The heartbeat's own connection is closed when the heartbeat returns, not parked in a pool.
     /// </summary>
@@ -372,7 +439,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         await using ArcanumDbContext pooledDb = _fixture.CreateContext(pooledPath, pooled: true);
 
-        LongRunningOperationStore store = new(pooledDb);
+        LongRunningOperationStore store = Store(pooledDb);
 
         DateTimeOffset startedAt = new(2026, 8, 2, 14, 0, 0, TimeSpan.Zero);
 
@@ -434,7 +501,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         DateTimeOffset startedAt = new(2026, 8, 2, 14, 0, 0, TimeSpan.Zero);
 
@@ -499,7 +566,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         CovenantConnectionDrain drain = new();
 
-        using LongRunningOperationStore store = new(_db!, drain);
+        using LongRunningOperationStore store = Store(_db!, drain);
 
         LongRunningOperation operation = await CreateAsync(
             store,
@@ -531,7 +598,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         DateTimeOffset startedAt = new(2026, 8, 2, 14, 0, 0, TimeSpan.Zero);
 
@@ -573,7 +640,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task SaveCheckpointAsync_IsMonotonicAndRejectsDuplicateVersion()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         LongRunningOperation operation = await CreateAsync(store, now);
         _ = await store.TryAcquireLeaseAsync(operation.Id, "worker", now, now.AddMinutes(1));
@@ -625,7 +692,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task RequestCancellationAsync_UsesCompareAndSwapAndIsIdempotent()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         LongRunningOperation operation = await CreateAsync(store, now);
         LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
@@ -659,7 +726,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task FindExpiredAsync_ReDrivesARetriedOperationButNotOneAwaitingItsFirstLease()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         LongRunningOperation retried = await CreateAsync(store, now);
         LongRunningOperation justCreated = await CreateAsync(store, now);
@@ -709,7 +776,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task AnUnobservedCancellationIsRecoverableOnceItsLeaseLapses()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         LongRunningOperation operation = await CreateAsync(store, now);
         LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
@@ -751,7 +818,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task ResetForRetryAsync_AcceptsALapsedCancellationAndRefusesALiveOne()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         LongRunningOperation operation = await CreateAsync(store, now);
         LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
@@ -789,7 +856,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task CreateAsync_PreservesRootParentAndRecoveryLinks()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         Guid sessionId = Guid.NewGuid();
         Guid runId = Guid.NewGuid();
@@ -825,7 +892,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task ReconcileAsync_ExpiredOperation_IsClaimedOnceAndCompleted()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         LongRunningOperation operation = await CreateAsync(store, now.AddMinutes(-5));
         _ = await store.TryAcquireLeaseAsync(
@@ -859,7 +926,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         DateTimeOffset now = new(2026, 8, 3, 12, 0, 0, TimeSpan.Zero);
 
@@ -906,7 +973,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task ReconcileAsync_UnsupportedOrCorruptCheckpoint_RequiresOperatorRepair()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
         LongRunningOperation unsupported = await CreateAsync(store, now.AddMinutes(-5));
         _ = await store.TryAcquireLeaseAsync(
@@ -976,7 +1043,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         DateTimeOffset now = new(2026, 8, 2, 12, 0, 0, TimeSpan.Zero);
 
@@ -1043,7 +1110,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
 
         DateTimeOffset now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
 
@@ -1134,7 +1201,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     public async Task BudgetReservationRecovery_ReleasesStrandedReservationIdempotently()
     {
         RequireSqlCipher();
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = Store(_db!);
         Guid reservationId = Guid.NewGuid();
         LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
             LongRunningOperationKinds.BudgetReservation,
@@ -1161,6 +1228,11 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             RecoveryPolicy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
             PublicSummary: "Indexing workspace.",
             CreatedAt: createdAt));
+
+    private static LongRunningOperationStore Store(
+        ArcanumDbContext db,
+        ICovenantConnectionDrain? drain = null) =>
+        new(db, TestOrdinaryConnectionFactory.For(db), drain);
 
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);

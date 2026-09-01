@@ -11,8 +11,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <remarks>
 /// A disclosure acknowledgement commits before its external effect, so this writer cannot borrow a
 /// scoped connection that an erasure has no way to name or stop. It owns one unpooled initialized
-/// connection, enrolls it in the central drain immediately after open, and admits one transaction at
-/// a time through the same serializer lifecycle transitions use (§10.20.4).
+/// ordinary lease and admits one transaction at a time through the same serializer lifecycle
+/// transitions use (§10.20.4).
 /// </remarks>
 internal sealed class CovenantDisclosureWriter :
     ICovenantDisclosureJournal,
@@ -20,11 +20,7 @@ internal sealed class CovenantDisclosureWriter :
     IAsyncDisposable
 {
 
-    private readonly ICovenantMaintenanceConnectionFactory _connections;
-
-    private readonly ICovenantSqliteConnectionInitializer _initializer;
-
-    private readonly ICovenantConnectionDrain _drain;
+    private readonly IGrimoireOrdinaryConnectionFactory _connections;
 
     private readonly ICovenantAvailability _availability;
 
@@ -34,9 +30,9 @@ internal sealed class CovenantDisclosureWriter :
 
     private readonly SemaphoreSlim _serializer = new(1, 1);
 
-    private SqliteConnection? _connection;
+    private IGrimoireOrdinaryConnectionLease? _connectionLease;
 
-    private IDisposable? _enrolment;
+    private SqliteConnection? CoreConnection => _connectionLease?.Connection;
 
     private bool _accepting = true;
 
@@ -49,18 +45,12 @@ internal sealed class CovenantDisclosureWriter :
     private TaskCompletionSource<bool>? _disposal;
 
     internal CovenantDisclosureWriter(
-        ICovenantMaintenanceConnectionFactory connections,
-        ICovenantSqliteConnectionInitializer initializer,
-        ICovenantConnectionDrain drain,
+        IGrimoireOrdinaryConnectionFactory connections,
         ICovenantAvailability availability,
         ICovenantDisclosureTransactionWriter transactions)
     {
 
         _connections = connections ?? throw new ArgumentNullException(nameof(connections));
-
-        _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
-
-        _drain = drain ?? throw new ArgumentNullException(nameof(drain));
 
         _availability = availability ?? throw new ArgumentNullException(nameof(availability));
 
@@ -108,7 +98,7 @@ internal sealed class CovenantDisclosureWriter :
 
             }
 
-            if (_connection is null)
+            if (CoreConnection is null)
             {
 
                 Result opened = await OpenVerifiedAsync(
@@ -128,7 +118,7 @@ internal sealed class CovenantDisclosureWriter :
             }
 
             return await _transactions.AcknowledgeAsync(
-                _connection!,
+                CoreConnection!,
                 draft,
                 category,
                 sensitivity,
@@ -213,7 +203,7 @@ internal sealed class CovenantDisclosureWriter :
 
             }
 
-            if (_accepting && !_pendingClose && _connection is not null)
+            if (_accepting && !_pendingClose && CoreConnection is not null)
             {
 
                 return Result.Success();
@@ -239,7 +229,7 @@ internal sealed class CovenantDisclosureWriter :
 
                 }
 
-                if (_accepting && !_pendingClose && _connection is not null)
+                if (_accepting && !_pendingClose && CoreConnection is not null)
                 {
 
                     return Result.Success();
@@ -350,26 +340,29 @@ internal sealed class CovenantDisclosureWriter :
 
         }
 
-        SqliteConnection? candidate = null;
-
-        IDisposable? enrolment = null;
+        IGrimoireOrdinaryConnectionLease? candidateLease = null;
 
         bool adopted = false;
 
         try
         {
 
-            candidate = await _connections.OpenAsync(cancellationToken).ConfigureAwait(false);
+            Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+                .OpenFreshAsync(
+                    GrimoireOrdinaryFreshConnectionKind.ReadWrite,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-            // Enrol immediately. Initialization and dataset proof both await, and a handle that was
-            // live through either wait without being named by the drain could survive an exclusive
-            // maintenance request.
-            enrolment = _drain.Register(candidate);
+            if (acquired.IsFailure)
+            {
 
-            await _initializer.InitializeAsync(
-                candidate,
-                CovenantSqliteConnectionMode.ReadWrite,
-                cancellationToken).ConfigureAwait(false);
+                return Result.Failure(acquired.Error);
+
+            }
+
+            candidateLease = acquired.Value;
+
+            SqliteConnection candidate = candidateLease.Connection;
 
             Result<Guid> observed = await ReadDatasetGenerationAsync(candidate, cancellationToken)
                 .ConfigureAwait(false);
@@ -418,9 +411,7 @@ internal sealed class CovenantDisclosureWriter :
 
                 }
 
-                _connection = candidate;
-
-                _enrolment = enrolment;
+                _connectionLease = candidateLease;
 
                 if (openAdmission)
                 {
@@ -456,7 +447,7 @@ internal sealed class CovenantDisclosureWriter :
             if (!adopted)
             {
 
-                _ = await CleanupAsync(candidate, enrolment).ConfigureAwait(false);
+                _ = await CleanupAsync(candidateLease).ConfigureAwait(false);
 
             }
 
@@ -467,63 +458,27 @@ internal sealed class CovenantDisclosureWriter :
     private async Task<Result> CloseCurrentAsync()
     {
 
-        SqliteConnection? connection = _connection;
+        IGrimoireOrdinaryConnectionLease? lease = _connectionLease;
 
-        IDisposable? enrolment = _enrolment;
+        _connectionLease = null;
 
-        _connection = null;
-
-        _enrolment = null;
-
-        return await CleanupAsync(connection, enrolment).ConfigureAwait(false);
+        return await CleanupAsync(lease).ConfigureAwait(false);
 
     }
 
     private static async Task<Result> CleanupAsync(
-        SqliteConnection? connection,
-        IDisposable? enrolment)
+        IGrimoireOrdinaryConnectionLease? lease)
     {
 
         bool failed = false;
 
-        if (connection is not null)
+        if (lease is not null)
         {
 
             try
             {
 
-                await connection.CloseAsync().ConfigureAwait(false);
-
-            }
-            catch (Exception)
-            {
-
-                failed = true;
-
-            }
-
-            try
-            {
-
-                await connection.DisposeAsync().ConfigureAwait(false);
-
-            }
-            catch (Exception)
-            {
-
-                failed = true;
-
-            }
-
-        }
-
-        if (enrolment is not null)
-        {
-
-            try
-            {
-
-                enrolment.Dispose();
+                await lease.DisposeAsync().ConfigureAwait(false);
 
             }
             catch (Exception)

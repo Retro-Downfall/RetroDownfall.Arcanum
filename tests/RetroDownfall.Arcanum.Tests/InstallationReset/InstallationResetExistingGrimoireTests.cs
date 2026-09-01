@@ -32,6 +32,8 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Tests.Data;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
@@ -853,7 +855,9 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
-        LongRunningOperationStore operations = new(context);
+        LongRunningOperationStore operations = new(
+            context,
+            TestOrdinaryConnectionFactory.For(context));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -915,7 +919,9 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
-        return await new LongRunningOperationStore(context).GetAsync(
+        return await new LongRunningOperationStore(
+            context,
+            TestOrdinaryConnectionFactory.For(context)).GetAsync(
             operationId,
             CancellationToken.None);
 

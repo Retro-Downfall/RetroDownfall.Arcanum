@@ -453,7 +453,9 @@ public sealed partial class DataRetentionServiceTests
             result.Value.Conflicts,
             static conflict => conflict.Code == ErrorCodes.Data.PlanChanged);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = Assert.Single(
             await operations.ListAsync(

@@ -13,9 +13,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// bounded keyset pages, owning and releasing one maintenance snapshot per call.
 /// </summary>
 internal sealed class CovenantErasureInventorySource(
-    ICovenantMaintenanceConnectionFactory connections,
-    ICovenantSqliteConnectionInitializer initializer,
-    ICovenantConnectionDrain drain,
+    IGrimoireOrdinaryConnectionFactory connections,
     CovenantHealthyCatalogErasureGuard healthyCatalog,
     CovenantManagedFileErasureRequestReader managedFiles,
     CovenantDisclosureExposureReader disclosures) : ICovenantErasureInventorySource
@@ -31,14 +29,8 @@ internal sealed class CovenantErasureInventorySource(
         ErrorCodes.Covenant.ManualArtifactErasureRequired,
         "A managed artifact does not have one exact adopted ownership record and requires manual erasure.");
 
-    private readonly ICovenantMaintenanceConnectionFactory _connections =
+    private readonly IGrimoireOrdinaryConnectionFactory _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
-
-    private readonly ICovenantSqliteConnectionInitializer _initializer =
-        initializer ?? throw new ArgumentNullException(nameof(initializer));
-
-    private readonly ICovenantConnectionDrain _drain =
-        drain ?? throw new ArgumentNullException(nameof(drain));
 
     private readonly CovenantHealthyCatalogErasureGuard _healthyCatalog =
         healthyCatalog ?? throw new ArgumentNullException(nameof(healthyCatalog));
@@ -501,11 +493,9 @@ internal sealed class CovenantErasureInventorySource(
         CancellationToken cancellationToken)
     {
 
-        SqliteConnection? connection = null;
+        IGrimoireOrdinaryConnectionLease? lease = null;
 
         SqliteTransaction? transaction = null;
-
-        IDisposable? enrollment = null;
 
         Result<T> result = Result<T>.Failure(UnsafeInventory);
 
@@ -514,20 +504,34 @@ internal sealed class CovenantErasureInventorySource(
         try
         {
 
-            connection = await _connections.OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+            Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+                .OpenFreshAsync(
+                    GrimoireOrdinaryFreshConnectionKind.ReadOnly,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-            enrollment = _drain.Register(connection);
+            if (acquired.IsFailure)
+            {
 
-            await _initializer.InitializeAsync(
-                connection,
-                CovenantSqliteConnectionMode.ReadOnly,
-                cancellationToken).ConfigureAwait(false);
+                return Result<T>.Failure(UnsafeInventory);
+
+            }
+
+            lease = acquired.Value;
+
+            SqliteConnection connection = lease.Connection;
 
             transaction = (SqliteTransaction)await connection
                 .BeginTransactionAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             result = await work(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+            await GrimoireScopedConsumerTestSeam.PauseAsync(
+                "CovenantErasureInventorySource.WithOwnedSnapshotAsync",
+                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+                result.IsSuccess ? 1 : 0,
+                cancellationToken).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -543,7 +547,7 @@ internal sealed class CovenantErasureInventorySource(
 
         }
 
-        bool cleaned = await CleanupAsync(transaction, connection, enrollment).ConfigureAwait(false);
+        bool cleaned = await CleanupAsync(transaction, lease).ConfigureAwait(false);
 
         if (callerCancelled)
         {
@@ -580,8 +584,7 @@ internal sealed class CovenantErasureInventorySource(
 
     private static async Task<bool> CleanupAsync(
         SqliteTransaction? transaction,
-        SqliteConnection? connection,
-        IDisposable? enrollment)
+        IGrimoireOrdinaryConnectionLease? lease)
     {
 
         bool cleaned = true;
@@ -604,20 +607,13 @@ internal sealed class CovenantErasureInventorySource(
 
         }
 
-        if (connection is not null)
+        if (lease is not null)
         {
 
             try
             {
 
-                if (connection.State != ConnectionState.Closed)
-                {
-
-                    await connection.CloseAsync().ConfigureAwait(false);
-
-                }
-
-                await connection.DisposeAsync().ConfigureAwait(false);
+                await lease.DisposeAsync().ConfigureAwait(false);
 
             }
             catch
@@ -626,19 +622,6 @@ internal sealed class CovenantErasureInventorySource(
                 cleaned = false;
 
             }
-
-        }
-
-        try
-        {
-
-            enrollment?.Dispose();
-
-        }
-        catch
-        {
-
-            cleaned = false;
 
         }
 

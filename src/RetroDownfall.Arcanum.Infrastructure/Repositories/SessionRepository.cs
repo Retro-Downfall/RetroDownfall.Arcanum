@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -12,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -36,7 +38,22 @@ public sealed class SessionRepository(
 
     private const int ForkEntryBatchSize = 256;
 
-    private readonly SessionEntryPersistence _entryPersistence = new(db);
+    private readonly SessionEntryPersistence _entryPersistence = new(
+        db,
+        UnavailableOrdinaryConnectionFactory.Instance);
+
+    internal SessionRepository(
+        ArcanumDbContext db,
+        ISessionAttachmentStore attachments,
+        IOptionsMonitor<ArcanumSettings> optionsMonitor,
+        ISessionAttachmentIndexQueue? attachmentIndexQueue,
+        IGrimoireOrdinaryConnectionFactory connections)
+        : this(db, attachments, optionsMonitor, attachmentIndexQueue)
+    {
+
+        _entryPersistence = new SessionEntryPersistence(db, connections);
+
+    }
 
     public async Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct)
     {
@@ -1094,5 +1111,30 @@ public sealed class SessionRepository(
         int AssistantEntries,
         int ToolEntries,
         int SystemEntries);
+
+    private sealed class UnavailableOrdinaryConnectionFactory
+        : IGrimoireOrdinaryConnectionFactory
+    {
+
+        internal static readonly UnavailableOrdinaryConnectionFactory Instance = new();
+
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken) =>
+            Unavailable();
+
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind kind,
+            CancellationToken cancellationToken) =>
+            Unavailable();
+
+        private static Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() =>
+            Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "Ordinary Grimoire connection admission is unavailable.")));
+
+    }
 
 }
