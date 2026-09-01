@@ -2538,13 +2538,16 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
 
-        TaskCompletionSource terminalCasCompleted = NewBarrier();
+        // A gate value rather than a barrier this test built, completed and then asserted against
+        // itself: admission really is Ordinary again, and it got there while the adoption interlock
+        // was still held by someone else.
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? readmitted));
 
-        terminalCasCompleted.TrySetResult();
+        await readmitted!.DisposeAsync();
 
         Assert.False(competingLane.IsCompleted);
-
-        Assert.True(terminalCasCompleted.Task.IsCompletedSuccessfully);
 
         await adoption.DisposeAsync();
 
