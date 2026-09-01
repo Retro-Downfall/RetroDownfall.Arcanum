@@ -448,4 +448,3 @@ git commit -m "docs: publish issue 245 admission contract"
 4. Verify the merged tree matches the reviewed feature tree; do not rerun identical gates on a byte-identical merge.
 5. Delete the local feature branch and any remote feature branch created by this plan.
 6. Push `grimoire-fixes`, verify `origin/grimoire-fixes` resolves to the delivered SHA, post the exact verification evidence to issue #245, close it as completed, and verify its Feature Tracker status is `Done`.
-
