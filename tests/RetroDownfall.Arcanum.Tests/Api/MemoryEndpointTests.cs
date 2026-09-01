@@ -229,8 +229,8 @@ public sealed class MemoryEndpointTests
     /// agrees with the counts it derives from.
     /// </summary>
     /// <remarks>
-    /// This endpoint binds one Session identity across six predicates, and the columns behind them do
-    /// not agree on one spelling: <c>SessionAttachments.SessionId</c>, <c>Entries.SessionId</c> and
+    /// This endpoint binds one Session identity across six columns, which do not agree on one
+    /// spelling: <c>SessionAttachments.SessionId</c>, <c>Entries.SessionId</c> and
     /// <c>Sessions.Id</c> hold the canonical form while <c>session_attachment_chunks.SessionId</c>,
     /// <c>saga_memories.SessionId</c> and <c>tapestry_generations.ScopeId</c> deliberately hold the
     /// minority one. A single parameter served both groups, so a predicate bound to the canonical group

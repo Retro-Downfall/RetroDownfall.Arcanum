@@ -1539,7 +1539,7 @@ internal static class MemoryEndpoints
     ///
     /// <para>Every predicate that reads a canonical column now binds <c>@canonicalSessionId</c>: the
     /// entry, pinned-entry and campaign-summary counts, and both session-scoped search predicates, join
-    /// the bound-attachment count in doing so. Only the three predicates named above stay bound to the
+    /// the bound-attachment count in doing so. Only the three columns named above stay bound to the
     /// deliberately-lowercase group.</para>
     ///
     /// <para>Both names are always added. A named parameter a statement never mentions is simply not
