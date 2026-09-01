@@ -7,6 +7,8 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
+    private const int ExpectedProductionAcquisitionCount = 331;
+
     [Fact]
     public void Injected_unlisted_acquisition_fails_independently()
     {
@@ -160,12 +162,127 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
+    public void Serving_route_requires_live_authority_and_its_matching_runtime_route()
+    {
+
+        AcquisitionIdentity identity = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover(
+        [
+            Source("""
+                using Microsoft.Data.Sqlite;
+                sealed class Fixture
+                {
+                    void Open() => _ = new SqliteConnection("Data Source=fixture.db");
+                }
+                """),
+        ]));
+
+        IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
+            [identity],
+            [Entry(
+                identity,
+                GrimoirePathAuthority.LiveGrimoire,
+                GrimoireAcquisitionKind.ServingRawOrdinary,
+                runtimeRoute: GrimoireRuntimeAdmissionRoute.ExactNonServingProof)]);
+
+        Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
+
+    }
+
+    [Fact]
+    public void Non_serving_authority_requires_its_matching_kind_route_and_proof()
+    {
+
+        AcquisitionIdentity identity = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover(
+        [
+            Source("""
+                using Microsoft.Data.Sqlite;
+                sealed class Fixture
+                {
+                    void Open() => _ = new SqliteConnection("Data Source=fixture.db");
+                }
+                """),
+        ]));
+
+        IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
+            [identity],
+            [Entry(
+                identity,
+                GrimoirePathAuthority.ShutdownGrimoire,
+                GrimoireAcquisitionKind.BootstrapOrShutdown,
+                new(ExactNonServingProofKind.PreReadinessHeldLock, "Fixture.Open()"),
+                GrimoireRuntimeAdmissionRoute.ExactNonServingProof)]);
+
+        Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
+
+    }
+
+    [Fact]
+    public void Legacy_v3_maintenance_requires_its_exact_lease_proof()
+    {
+
+        AcquisitionIdentity identity = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover(
+        [
+            Source("""
+                using Microsoft.Data.Sqlite;
+                sealed class Fixture
+                {
+                    void Open() => _ = new SqliteConnection("Data Source=fixture.db");
+                }
+                """),
+        ]));
+
+        IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
+            [identity],
+            [Entry(
+                identity,
+                GrimoirePathAuthority.LiveGrimoire,
+                GrimoireAcquisitionKind.LegacyV3Maintenance,
+                new(ExactNonServingProofKind.LegacyV3ExclusiveLease, "Fixture.Open()", 124),
+                GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory)]);
+
+        Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
+
+    }
+
+    [Fact]
+    public void Local_function_acquisition_uses_the_local_function_identity()
+    {
+
+        AcquisitionIdentity identity = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover(
+        [
+            Source("""
+                using Microsoft.Data.Sqlite;
+                sealed class Fixture
+                {
+                    void Outer()
+                    {
+                        void Local() => _ = new SqliteConnection("Data Source=fixture.db");
+                    }
+                }
+                """),
+        ]));
+
+        Assert.Equal("Local(0)", identity.EnclosingMember);
+
+    }
+
+    [Fact]
     public void Production_inventory_is_bijective()
     {
 
+        IReadOnlyList<AcquisitionIdentity> discoveries =
+            GrimoireConnectionAcquisitionScanner.Discover(ProductionSources());
+
+        IReadOnlyList<GrimoireAcquisitionCatalogEntry> catalog =
+            GrimoireConnectionAcquisitionScanner.Catalog();
+
+        Assert.Equal(ExpectedProductionAcquisitionCount, discoveries.Count);
+
+        Assert.Equal(discoveries.Count, catalog.Count);
+
         IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
-            GrimoireConnectionAcquisitionScanner.Discover(ProductionSources()),
-            GrimoireConnectionAcquisitionScanner.Catalog());
+            discoveries,
+            catalog);
 
         Assert.True(
             failures.Count == 0,
@@ -177,14 +294,15 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         AcquisitionIdentity identity,
         GrimoirePathAuthority pathAuthority = GrimoirePathAuthority.LiveGrimoire,
         GrimoireAcquisitionKind acquisitionKind = GrimoireAcquisitionKind.ServingRawOrdinary,
-        ExactNonServingProof? proof = null) =>
+        ExactNonServingProof? proof = null,
+        GrimoireRuntimeAdmissionRoute? runtimeRoute = null) =>
         new(
             identity,
             pathAuthority,
             acquisitionKind,
-            pathAuthority == GrimoirePathAuthority.LiveGrimoire
+            runtimeRoute ?? (pathAuthority == GrimoirePathAuthority.LiveGrimoire
                 ? GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory
-                : GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+                : GrimoireRuntimeAdmissionRoute.ExactNonServingProof),
             proof);
 
     private static AcquisitionSource Source(string text) => new("Fixtures/Fixture.cs", text);
