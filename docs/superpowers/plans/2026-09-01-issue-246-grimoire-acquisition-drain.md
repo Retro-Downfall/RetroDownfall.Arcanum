@@ -1454,7 +1454,6 @@ git commit -m "feat: plan installation reset under stopped-host authority"
 **Files:**
 - Modify: `tests/RetroDownfall.Arcanum.Tests/Support/GrimoireConnectionAcquisitionInventory.cs`
 - Modify: `tests/RetroDownfall.Arcanum.Tests/Data/GrimoireConnectionAcquisitionInventoryTests.cs`
-- Modify: `README.md`
 - Modify: `docs/Arcanum.DESIGN.md`
 - Modify: `docs/superpowers/specs/2026-08-31-issue-239-grimoire-admission-design.md`
 - Modify: `docs/superpowers/specs/2026-09-01-issue-246-grimoire-acquisition-drain-design.md`
@@ -1527,7 +1526,7 @@ Expected: all three focused groups PASS.
 - [ ] **Step 5: Commit inventory and docs**
 
 ```bash
-git add tests/RetroDownfall.Arcanum.Tests/Support/GrimoireConnectionAcquisitionInventory.cs tests/RetroDownfall.Arcanum.Tests/Data/GrimoireConnectionAcquisitionInventoryTests.cs README.md docs/Arcanum.DESIGN.md docs/superpowers/specs/2026-08-31-issue-239-grimoire-admission-design.md docs/superpowers/specs/2026-09-01-issue-246-grimoire-acquisition-drain-design.md
+git add tests/RetroDownfall.Arcanum.Tests/Support/GrimoireConnectionAcquisitionInventory.cs tests/RetroDownfall.Arcanum.Tests/Data/GrimoireConnectionAcquisitionInventoryTests.cs docs/Arcanum.DESIGN.md docs/superpowers/specs/2026-08-31-issue-239-grimoire-admission-design.md docs/superpowers/specs/2026-09-01-issue-246-grimoire-acquisition-drain-design.md
 git diff --cached --name-only
 git commit -m "docs: describe issue 246 acquisition guarantees"
 ```
