@@ -2721,9 +2721,9 @@ internal sealed partial class DataRetentionService(
         TryDeleteEmptySessionDirectory(sessionId);
 
         bool reconciled = snapshot.Attachments.All(
-            attachment => !OwnedFileExists(
+            attachment => !ProbeOwnedFile(
                 _attachmentsRoot,
-                attachment.RelativePath));
+                attachment.RelativePath).Exists);
 
         reconciled &= await CountTableAsync(
             "Sessions",
@@ -3024,7 +3024,7 @@ internal sealed partial class DataRetentionService(
 
         FinalizeOperationQuarantines(quarantinedFiles);
 
-        bool reconciled = !OwnedFileExists(_attachmentsRoot, snapshot.RelativePath);
+        bool reconciled = !ProbeOwnedFile(_attachmentsRoot, snapshot.RelativePath).Exists;
 
         reconciled &= await CountTableAsync(
             "SessionAttachments",
@@ -3459,10 +3459,9 @@ internal sealed partial class DataRetentionService(
             snapshot.Id,
             cancellationToken).ConfigureAwait(false);
 
-        bool fileExists = TryGetOwnedFileLength(
+        (bool fileExists, long fileBytes) = ProbeOwnedFile(
             _attachmentsRoot,
-            snapshot.RelativePath,
-            out long fileBytes);
+            snapshot.RelativePath);
 
         long state = await CountTableAsync(
             "session_attachment_index_state",
@@ -3748,10 +3747,9 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false);
 
-        bool fileExists = TryGetOwnedFileLength(
+        (bool fileExists, long fileBytes) = ProbeOwnedFile(
             _attachmentsRoot,
-            relativePath,
-            out long fileBytes);
+            relativePath);
 
         return new AttachmentPlanSnapshot(
             id,
@@ -6214,33 +6212,40 @@ internal sealed partial class DataRetentionService(
 
     }
 
-    private static bool TryGetOwnedFileLength(
+    /// <summary>
+    /// Resolves one managed file under a root, proves containment, and reports what it found.
+    /// </summary>
+    /// <remarks>
+    /// The single containment-check-then-stat helper both retention partials use. It replaced three
+    /// copies that differed in what they returned — and in one respect that was not cosmetic: one of
+    /// them handed the raw root to the containment check while resolving the candidate in full.
+    /// <c>WorkspacePathPolicy.IsPathUnderWorkspace</c> trims a trailing separator from the root and
+    /// normalises nothing else, so a root carrying a <c>.</c> or <c>..</c> segment stops being a
+    /// prefix of its own contents and a file plainly inside the tree reads as outside it — which for
+    /// a reconciliation probe means "already gone". Every root reaching retention is resolved at
+    /// construction today, so the three agreed; a caller passing an override would have found out
+    /// which copy it reached.
+    ///
+    /// <para>The root is resolved here rather than at the call sites, so a hardening change to the
+    /// containment rule has one place to land instead of three.</para>
+    /// </remarks>
+    private static (bool Exists, long Bytes) ProbeOwnedFile(
         string root,
-        string relativePath,
-        out long bytes)
+        string relativePath)
     {
-
-        bytes = 0;
 
         string fullRoot = Path.GetFullPath(root);
 
         string candidate = Path.GetFullPath(
             Path.Combine(fullRoot, relativePath));
 
-        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+        return WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
                 fullRoot,
                 candidate,
                 out _)
-            || !File.Exists(candidate))
-        {
-
-            return false;
-
-        }
-
-        bytes = new FileInfo(candidate).Length;
-
-        return true;
+            && File.Exists(candidate)
+            ? (true, new FileInfo(candidate).Length)
+            : (false, 0);
 
     }
 

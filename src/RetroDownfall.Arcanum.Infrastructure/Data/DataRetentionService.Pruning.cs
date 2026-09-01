@@ -897,9 +897,11 @@ internal sealed partial class DataRetentionService
 
             candidates.Add(FileCandidatePrefix + file.Id.ToString("D"));
 
-            (long physicalFiles, long physicalBytes) = MeasureOwnedFile(
+            (bool physicalFileExists, long physicalBytes) = ProbeOwnedFile(
                 _filesRoot,
                 file.Id.ToString("N"));
+
+            long physicalFiles = physicalFileExists ? 1 : 0;
 
             items.Add(
                 new DataRetentionPlanItem(
@@ -5416,18 +5418,18 @@ internal sealed partial class DataRetentionService
         if (HasBoundedValue(candidate, AuditLogCandidatePrefix))
         {
 
-            return OwnedFileExists(
+            return ProbeOwnedFile(
                 _logsRoot,
-                candidate[AuditLogCandidatePrefix.Length..]);
+                candidate[AuditLogCandidatePrefix.Length..]).Exists;
 
         }
 
         if (HasBoundedValue(candidate, GuardrailLogCandidatePrefix))
         {
 
-            return OwnedFileExists(
+            return ProbeOwnedFile(
                 _logsRoot,
-                candidate[GuardrailLogCandidatePrefix.Length..]);
+                candidate[GuardrailLogCandidatePrefix.Length..]).Exists;
 
         }
 
@@ -5698,7 +5700,7 @@ internal sealed partial class DataRetentionService
 
         string retainedRelativePath = fileId.ToString("N");
 
-        bool reconciled = !OwnedFileExists(_filesRoot, retainedRelativePath);
+        bool reconciled = !ProbeOwnedFile(_filesRoot, retainedRelativePath).Exists;
 
         reconciled &= await CountTableAsync(
             "UploadedFiles",
@@ -6809,7 +6811,7 @@ internal sealed partial class DataRetentionService
             1,
             bytes,
             0,
-            !OwnedFileExists(_logsRoot, fileName));
+            !ProbeOwnedFile(_logsRoot, fileName).Exists);
 
     }
 
@@ -7123,46 +7125,6 @@ internal sealed partial class DataRetentionService
             0,
             0,
             reconciled);
-
-    }
-
-    private bool OwnedFileExists(string root, string relativePath)
-    {
-
-        string candidate = Path.GetFullPath(Path.Combine(root, relativePath));
-
-        return WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                root,
-                candidate,
-                out _)
-            && File.Exists(candidate);
-
-    }
-
-    private static (long Files, long Bytes) MeasureOwnedFile(
-        string root,
-        string relativePath)
-    {
-
-        string fullRoot = Path.GetFullPath(root);
-
-        string candidate = Path.GetFullPath(
-            Path.Combine(fullRoot, relativePath));
-
-        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                fullRoot,
-                candidate,
-                out _)
-            || !File.Exists(candidate))
-        {
-
-            return (0, 0);
-
-        }
-
-        FileInfo file = new(candidate);
-
-        return (1, file.Length);
 
     }
 
