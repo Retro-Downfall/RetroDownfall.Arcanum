@@ -3144,17 +3144,261 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         int arity = invocation.ArgumentList.Arguments.Count;
 
+        string name = identifier.Identifier.ValueText;
+
+        if (HasCompetingUnqualifiedInvocationBinding(
+            invocation,
+            containingType,
+            name,
+            arity))
+        {
+
+            return false;
+
+        }
+
         MethodDeclarationSyntax[] candidates =
         [
             .. containingType.Members
             .OfType<MethodDeclarationSyntax>()
-            .Where(candidate => candidate.Identifier.ValueText == identifier.Identifier.ValueText
+            .Where(candidate => candidate.Identifier.ValueText == name
                 && candidate.ParameterList.Parameters.Count == arity
                 && IsConcrete(candidate)),
         ];
 
         return candidates.Length == 1
             && ContainsOnlyExactTypedFailureResult(candidates[0]);
+
+    }
+
+    private static bool HasCompetingUnqualifiedInvocationBinding(
+        InvocationExpressionSyntax invocation,
+        TypeDeclarationSyntax containingType,
+        string name,
+        int arity) =>
+        HasCompetingLocalFunctionBinding(invocation, containingType, name, arity)
+        || HasCompetingParameterBinding(invocation, containingType, name)
+        || HasCompetingDelegateBinding(invocation, containingType, name);
+
+    private static bool HasCompetingLocalFunctionBinding(
+        InvocationExpressionSyntax invocation,
+        TypeDeclarationSyntax containingType,
+        string name,
+        int arity)
+    {
+
+        foreach (SyntaxNode ancestor in invocation.Ancestors())
+        {
+
+            if (ancestor == containingType)
+            {
+
+                break;
+
+            }
+
+            IEnumerable<LocalFunctionStatementSyntax> localFunctions = ancestor switch
+            {
+                BlockSyntax block => block.Statements.OfType<LocalFunctionStatementSyntax>(),
+
+                SwitchSectionSyntax section => section.Statements.OfType<LocalFunctionStatementSyntax>(),
+
+                _ => [],
+            };
+
+            if (localFunctions.Any(localFunction =>
+                localFunction.Identifier.ValueText == name
+                && localFunction.ParameterList.Parameters.Count == arity))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
+
+    }
+
+    private static bool HasCompetingParameterBinding(
+        InvocationExpressionSyntax invocation,
+        TypeDeclarationSyntax containingType,
+        string name)
+    {
+
+        foreach (SyntaxNode ancestor in invocation.Ancestors())
+        {
+
+            if (ancestor == containingType)
+            {
+
+                break;
+
+            }
+
+            SeparatedSyntaxList<ParameterSyntax>? parameters = ancestor switch
+            {
+                MethodDeclarationSyntax method => method.ParameterList.Parameters,
+
+                ConstructorDeclarationSyntax constructor => constructor.ParameterList.Parameters,
+
+                LocalFunctionStatementSyntax localFunction => localFunction.ParameterList.Parameters,
+
+                ParenthesizedLambdaExpressionSyntax lambda => lambda.ParameterList.Parameters,
+
+                AnonymousMethodExpressionSyntax anonymous when anonymous.ParameterList is not null =>
+                    anonymous.ParameterList.Parameters,
+
+                _ => null,
+            };
+
+            if (parameters is { } parameterList
+                && parameterList.Any(parameter => parameter.Identifier.ValueText == name))
+            {
+
+                return true;
+
+            }
+
+            if (ancestor is SimpleLambdaExpressionSyntax simpleLambda
+                && simpleLambda.Parameter.Identifier.ValueText == name)
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
+
+    }
+
+    private static bool HasCompetingDelegateBinding(
+        InvocationExpressionSyntax invocation,
+        TypeDeclarationSyntax containingType,
+        string name)
+    {
+
+        if (containingType.Members.Any(member => member switch
+        {
+            FieldDeclarationSyntax field => field.Declaration.Variables.Any(
+                variable => variable.Identifier.ValueText == name),
+
+            EventFieldDeclarationSyntax eventField => eventField.Declaration.Variables.Any(
+                variable => variable.Identifier.ValueText == name),
+
+            PropertyDeclarationSyntax property => property.Identifier.ValueText == name,
+
+            EventDeclarationSyntax eventDeclaration => eventDeclaration.Identifier.ValueText == name,
+
+            _ => false,
+        }))
+        {
+
+            return true;
+
+        }
+
+        foreach (SyntaxNode ancestor in invocation.Ancestors())
+        {
+
+            if (ancestor == containingType)
+            {
+
+                break;
+
+            }
+
+            if (ancestor is BlockSyntax block
+                && HasPrecedingLocalBinding(invocation, block, name))
+            {
+
+                return true;
+
+            }
+
+            if (ancestor is ForStatementSyntax forStatement
+                && forStatement.Declaration?.Variables.Any(
+                    variable => variable.Identifier.ValueText == name) is true)
+            {
+
+                return true;
+
+            }
+
+            if (ancestor is ForEachStatementSyntax forEach
+                && forEach.Identifier.ValueText == name)
+            {
+
+                return true;
+
+            }
+
+            if (ancestor is UsingStatementSyntax usingStatement
+                && usingStatement.Declaration?.Variables.Any(
+                    variable => variable.Identifier.ValueText == name) is true)
+            {
+
+                return true;
+
+            }
+
+            if (ancestor is FixedStatementSyntax fixedStatement
+                && fixedStatement.Declaration.Variables.Any(
+                    variable => variable.Identifier.ValueText == name))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
+
+    }
+
+    private static bool HasPrecedingLocalBinding(
+        InvocationExpressionSyntax invocation,
+        BlockSyntax block,
+        string name)
+    {
+
+        StatementSyntax? containingStatement = invocation.AncestorsAndSelf()
+            .OfType<StatementSyntax>()
+            .FirstOrDefault(statement => statement.Parent == block);
+
+        if (containingStatement is null)
+        {
+
+            return false;
+
+        }
+
+        foreach (StatementSyntax statement in block.Statements)
+        {
+
+            if (statement == containingStatement)
+            {
+
+                break;
+
+            }
+
+            if (statement is LocalDeclarationStatementSyntax declaration
+                && declaration.Declaration.Variables.Any(
+                    variable => variable.Identifier.ValueText == name))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
 
     }
 

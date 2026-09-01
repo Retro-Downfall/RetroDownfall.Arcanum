@@ -393,6 +393,40 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
+    public void Successful_local_helper_shadowing_failure_only_member_requires_a_marker()
+    {
+
+        AcquisitionSource source = Source("""
+            using System;
+            using System.Threading.Tasks;
+            sealed class GrimoireConnectionAcquisitionRouteAttribute : Attribute { }
+            sealed class Fixture
+            {
+                Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireAsync()
+                {
+                    [GrimoireConnectionAcquisitionRoute]
+                    Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() =>
+                        Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Success(default!));
+
+                    return Unavailable();
+                }
+
+                Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() =>
+                    Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(default));
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
+                && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
+
+    }
+
+    [Fact]
     public void Same_named_Open_returning_domain_result_stays_unmarked()
     {
 
