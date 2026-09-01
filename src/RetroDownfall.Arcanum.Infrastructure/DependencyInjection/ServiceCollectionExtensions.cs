@@ -1671,6 +1671,12 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IGrimoireOrdinaryConnectionFactory, GrimoireOrdinaryConnectionFactory>();
 
+        services.AddSingleton<IGrimoireMaintenanceConnectionFactory>(static sp =>
+            new GrimoireMaintenanceConnectionFactory(
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ISqliteNativeRuntime>()));
+
         services.AddSingleton<ICovenantCampaignScopeProbe>(
             static sp => new CovenantCampaignScopeProbe(sp.GetRequiredService<IServiceScopeFactory>()));
 

@@ -30,6 +30,23 @@ internal interface IGrimoireOrdinaryConnectionLease : IDisposable, IAsyncDisposa
 
 }
 
+internal interface IGrimoireMaintenanceConnectionFactory
+{
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+}
+
+internal interface IGrimoireMaintenanceConnectionLease : IAsyncDisposable
+{
+
+    SqliteConnection Connection { get; }
+
+}
+
 internal static class GrimoireScopedConsumerTestSeam
 {
 

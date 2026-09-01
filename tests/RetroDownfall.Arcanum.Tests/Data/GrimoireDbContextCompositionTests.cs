@@ -59,6 +59,15 @@ public sealed class GrimoireDbContextCompositionTests
         IGrimoireOrdinaryConnectionFactory ordinaryFactory = provider
             .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
+        IGrimoireMaintenanceConnectionFactory maintenanceFactory = provider
+            .GetRequiredService<IGrimoireMaintenanceConnectionFactory>();
+
+        IGrimoireDbPassphraseSource passphraseSource = provider
+            .GetRequiredService<IGrimoireDbPassphraseSource>();
+
+        ICovenantSqliteConnectionInitializer initializer = provider
+            .GetRequiredService<ICovenantSqliteConnectionInitializer>();
+
         await using AsyncServiceScope firstScope = provider.CreateAsyncScope();
 
         await using AsyncServiceScope secondScope = provider.CreateAsyncScope();
@@ -79,6 +88,14 @@ public sealed class GrimoireDbContextCompositionTests
             ordinaryFactory,
             secondScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>());
 
+        Assert.Same(
+            maintenanceFactory,
+            firstScope.ServiceProvider.GetRequiredService<IGrimoireMaintenanceConnectionFactory>());
+
+        Assert.Same(
+            maintenanceFactory,
+            secondScope.ServiceProvider.GetRequiredService<IGrimoireMaintenanceConnectionFactory>());
+
         DbContextOptions<ArcanumDbContext> options = firstScope.ServiceProvider
             .GetRequiredService<DbContextOptions<ArcanumDbContext>>();
 
@@ -95,6 +112,22 @@ public sealed class GrimoireDbContextCompositionTests
         Assert.Same(lifecycle, GetLifecycle(ordinaryFactory));
 
         Assert.Same(drain, GetDrain(ordinaryFactory));
+
+        Assert.Same(
+            passphraseSource,
+            GetDependency<IGrimoireDbPassphraseSource>(
+                maintenanceFactory,
+                "_passphraseSource"));
+
+        Assert.Same(
+            initializer,
+            GetDependency<ICovenantSqliteConnectionInitializer>(
+                maintenanceFactory,
+                "_initializer"));
+
+        Assert.Same(
+            SqliteNativeRuntime.Instance,
+            GetDependency<ISqliteNativeRuntime>(maintenanceFactory, "_nativeRuntime"));
 
         Assert.Same(SqliteNativeRuntime.Instance, provider.GetRequiredService<ISqliteNativeRuntime>());
 
@@ -130,6 +163,15 @@ public sealed class GrimoireDbContextCompositionTests
         IGrimoireOrdinaryConnectionFactory ordinaryFactory = provider
             .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
+        IGrimoireMaintenanceConnectionFactory maintenanceFactory = provider
+            .GetRequiredService<IGrimoireMaintenanceConnectionFactory>();
+
+        IGrimoireDbPassphraseSource passphraseSource = provider
+            .GetRequiredService<IGrimoireDbPassphraseSource>();
+
+        ICovenantSqliteConnectionInitializer initializer = provider
+            .GetRequiredService<ICovenantSqliteConnectionInitializer>();
+
         Assert.Same(lifecycle, GetLifecycle(interceptor));
 
         Assert.Same(drain, GetDrain(interceptor));
@@ -141,6 +183,22 @@ public sealed class GrimoireDbContextCompositionTests
         Assert.Same(lifecycle, GetLifecycle(ordinaryFactory));
 
         Assert.Same(drain, GetDrain(ordinaryFactory));
+
+        Assert.Same(
+            passphraseSource,
+            GetDependency<IGrimoireDbPassphraseSource>(
+                maintenanceFactory,
+                "_passphraseSource"));
+
+        Assert.Same(
+            initializer,
+            GetDependency<ICovenantSqliteConnectionInitializer>(
+                maintenanceFactory,
+                "_initializer"));
+
+        Assert.Same(
+            SqliteNativeRuntime.Instance,
+            GetDependency<ISqliteNativeRuntime>(maintenanceFactory, "_nativeRuntime"));
 
         Assert.Same(SqliteNativeRuntime.Instance, provider.GetRequiredService<ISqliteNativeRuntime>());
 
@@ -288,6 +346,19 @@ public sealed class GrimoireDbContextCompositionTests
             ?? throw new InvalidOperationException("The lifecycle drain field is missing.");
 
         return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(lifecycle));
+
+    }
+
+    private static T GetDependency<T>(object instance, string fieldName)
+    {
+
+        FieldInfo field = instance.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                $"The {instance.GetType().Name} field '{fieldName}' is missing.");
+
+        return Assert.IsAssignableFrom<T>(field.GetValue(instance));
 
     }
 

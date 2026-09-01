@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 338;
+    private const int ExpectedProductionAcquisitionCount = 341;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -357,6 +357,81 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ];
 
         Assert.All(routeSurface, identity => Assert.Contains(identity, catalog));
+
+    }
+
+    [Fact]
+    public void Journal_maintenance_factory_contract_marker_and_inert_route_inventory_are_exact()
+    {
+
+        MethodInfo contract = Assert.Single(
+            typeof(IGrimoireMaintenanceConnectionFactory).GetMethods(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly));
+
+        Assert.Equal("OpenJournalCanonicalErasureAsync", contract.Name);
+
+        Assert.Equal(
+            [
+                typeof(IGrimoireMaintenanceConnectionCapability),
+                typeof(IGrimoireMaintenanceIoLane),
+                typeof(CancellationToken),
+            ],
+            contract.GetParameters().Select(static parameter => parameter.ParameterType));
+
+        Assert.Empty(contract.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>());
+
+        PropertyInfo leaseProperty = Assert.Single(
+            typeof(IGrimoireMaintenanceConnectionLease).GetProperties(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly));
+
+        Assert.Equal("Connection", leaseProperty.Name);
+
+        Assert.Equal(typeof(Microsoft.Data.Sqlite.SqliteConnection), leaseProperty.PropertyType);
+
+        MethodInfo implementation = typeof(GrimoireMaintenanceConnectionFactory).GetMethod(
+            "OpenJournalCanonicalErasureAsync",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+            ?? throw new InvalidOperationException("The journal maintenance acquisition route is missing.");
+
+        _ = Assert.Single(
+            implementation.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>());
+
+        IReadOnlyList<AcquisitionSource> sources = ProductionSources();
+
+        IReadOnlyList<AcquisitionIdentity> discoveries =
+            GrimoireConnectionAcquisitionScanner.Discover(sources);
+
+        AcquisitionIdentity declaration = Assert.Single(
+            discoveries,
+            static identity =>
+                identity.RelativePath.EndsWith(
+                    "/GrimoireMaintenanceConnectionFactory.cs",
+                    StringComparison.Ordinal)
+                && identity.ConstructKind == AcquisitionConstructKind.MarkedRouteDeclaration
+                && identity.CalleeOrConstructedType == "OpenJournalCanonicalErasureAsync"
+                && identity.Arity == 3);
+
+        Assert.Contains(
+            GrimoireConnectionAcquisitionScanner.Catalog(),
+            entry => entry.Identity == declaration
+                && entry.PathAuthority == GrimoirePathAuthority.LiveGrimoire
+                && entry.AcquisitionKind == GrimoireAcquisitionKind.JournalMaintenance
+                && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory
+                && entry.NonServingProof is null);
+
+        Assert.DoesNotContain(
+            discoveries,
+            static identity =>
+                identity.ConstructKind == AcquisitionConstructKind.MarkedRouteInvocation
+                && identity.CalleeOrConstructedType == "OpenJournalCanonicalErasureAsync");
+
+        IReadOnlyList<InventoryFailure> markerFailures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage(
+                sources.Where(static source => source.RelativePath.EndsWith(
+                    "/GrimoireMaintenanceConnectionFactory.cs",
+                    StringComparison.Ordinal)));
+
+        Assert.Empty(markerFailures);
 
     }
 

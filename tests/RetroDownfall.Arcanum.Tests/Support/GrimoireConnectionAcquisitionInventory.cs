@@ -2781,6 +2781,27 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCanonicalErasureAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalCanonicalErasureAsync", 3, "OpenJournalCanonicalErasureAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCanonicalErasureAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "newSqliteConnection(builder.ToString())"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCanonicalErasureAsync(3)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
         
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "_connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite,cancellationToken)"),

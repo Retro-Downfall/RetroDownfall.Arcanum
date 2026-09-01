@@ -1721,6 +1721,25 @@ public sealed class GrimoireConnectionAdmissionGateTests
             checked(closed.Generation + 1),
             CanonicalPath);
 
+        IGrimoireMaintenanceConnectionCapability disposedCapability =
+            closed.IssueMaintenanceConnectionCapability(
+                CanonicalPath,
+                CovenantMaintenanceConnectionMode.ReadOnly,
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
+
+        await disposedCapability.DisposeAsync();
+
+        Result<IGrimoireTrackedMaintenanceHandle> disposed = disposedCapability.Consume(
+            owner,
+            closed.Generation,
+            CanonicalPath,
+            CovenantMaintenanceConnectionMode.ReadOnly,
+            CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+            lane);
+
+        Assert.True(disposed.IsFailure);
+
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
                 CanonicalPath,
