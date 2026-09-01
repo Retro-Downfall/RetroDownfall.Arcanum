@@ -212,12 +212,30 @@ public sealed class GrimoireDbContextCompositionTests
 
         ProductionSource[] sources = [.. ProductionSourceInventory.Sources()];
 
+        ProductionSource[] optionsPaths =
+        [
+            .. sources.Where(static source => BuildsArcanumDbContextOptions(source)),
+        ];
+
+        // The filter has to see the call sites this inventory is written about before its emptiness
+        // assertion means anything. Both serving registrations break the configurator call across
+        // lines and spell the argument `options`, and two of the three named exemptions build the
+        // builder with a target-typed `new`, so a filter keyed to one exact spelling of each
+        // statement selects none of them and the check below compares an empty list against itself.
+        Assert.Contains(optionsPaths, static source => source.Is("ServiceCollectionExtensions.cs"));
+
+        Assert.Contains(optionsPaths, static source => source.Is("ArcanumDbContextFactory.cs"));
+
+        Assert.Contains(optionsPaths, static source => source.Is("ArcanumDbContext.cs"));
+
+        Assert.Contains(
+            optionsPaths,
+            static source => source.Is("InstallationResetExistingGrimoire.cs"));
+
         List<string> unnamed =
         [
-            .. sources
-                .Where(static source =>
-                    source.Names("new DbContextOptionsBuilder<ArcanumDbContext>")
-                    || source.Names("ArcanumDbContextOptionsConfigurator.Configure(optionsBuilder"))
+            .. optionsPaths
+                .Where(static source => !InstallsTheServingConfigurator(source))
                 .Where(static source => !IsNamedNonServingOptionsPath(source))
                 .Select(static source => source.RelativePath),
         ];
@@ -233,6 +251,27 @@ public sealed class GrimoireDbContextCompositionTests
                 && source.Names("SqliteConnection connection = new("));
 
     }
+
+    /// <summary>
+    /// Every shape that builds <c>DbContextOptions&lt;ArcanumDbContext&gt;</c> in this repository.
+    /// </summary>
+    /// <remarks>
+    /// Construct-level tokens rather than one exact spelling of a statement. The builder is written
+    /// both as <c>new DbContextOptionsBuilder&lt;ArcanumDbContext&gt;()</c> and as a target-typed
+    /// <c>= new()</c>, and both configurator call sites break the argument onto its own line - so a
+    /// filter that matches a whole statement selects whichever site happened to be formatted that
+    /// way when it was written, and goes quiet the first time one of them is reflowed.
+    /// </remarks>
+    private static bool BuildsArcanumDbContextOptions(ProductionSource source) =>
+        source.Names("DbContextOptionsBuilder<ArcanumDbContext>")
+        || InstallsTheServingConfigurator(source)
+        || source.Names("ArcanumDbContextOptionsConfigurator.ConfigureNonServingFallback(");
+
+    /// <summary>
+    /// The serving composition: options built by the configurator that installs the interceptor.
+    /// </summary>
+    private static bool InstallsTheServingConfigurator(ProductionSource source) =>
+        source.Names("ArcanumDbContextOptionsConfigurator.Configure(");
 
     private static bool IsNamedNonServingOptionsPath(ProductionSource source) =>
 
