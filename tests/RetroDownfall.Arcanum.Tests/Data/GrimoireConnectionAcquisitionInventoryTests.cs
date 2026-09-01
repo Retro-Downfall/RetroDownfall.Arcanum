@@ -393,6 +393,76 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
+    public void Any_failure_only_helper_delegation_requires_a_marker()
+    {
+
+        AcquisitionSource source = Source("""
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireAsync() => Unavailable();
+
+                Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() =>
+                    Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(default));
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
+                && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
+
+    }
+
+    [Fact]
+    public void Pattern_and_out_var_shadowed_failure_delegations_require_markers()
+    {
+
+        AcquisitionSource source = Source("""
+            using System;
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireFromPatternAsync(object candidate)
+                {
+                    if (candidate is Func<Task<Result<IGrimoireOrdinaryConnectionLease>>> Unavailable)
+                    {
+                        return Unavailable();
+                    }
+
+                    return Result<IGrimoireOrdinaryConnectionLease>.Failure(default);
+                }
+
+                Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireFromOutAsync()
+                {
+                    if (TryResolve(out var Unavailable))
+                    {
+                        return Unavailable();
+                    }
+
+                    return Result<IGrimoireOrdinaryConnectionLease>.Failure(default);
+                }
+
+                Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() =>
+                    Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(default));
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Equal(
+            2,
+            failures.Count(failure => failure.Identity?.EnclosingMember
+                    is "AcquireFromPatternAsync(1)" or "AcquireFromOutAsync(0)"
+                && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker));
+
+    }
+
+    [Fact]
     public void Successful_local_helper_shadowing_failure_only_member_requires_a_marker()
     {
 

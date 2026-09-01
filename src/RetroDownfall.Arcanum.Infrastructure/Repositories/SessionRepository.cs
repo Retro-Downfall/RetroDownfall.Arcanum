@@ -1122,14 +1122,14 @@ public sealed class SessionRepository(
             SqliteConnection connection,
             CovenantSqliteConnectionMode mode,
             CancellationToken cancellationToken) =>
-            Unavailable();
+            Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "Ordinary Grimoire connection admission is unavailable.")));
 
         public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
             GrimoireOrdinaryFreshConnectionKind kind,
             CancellationToken cancellationToken) =>
-            Unavailable();
-
-        private static Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() =>
             Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
                 new Error(
                     ErrorCodes.Covenant.Unavailable,
