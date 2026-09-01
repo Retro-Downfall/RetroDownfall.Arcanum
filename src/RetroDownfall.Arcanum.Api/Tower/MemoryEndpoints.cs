@@ -1493,6 +1493,7 @@ internal static class MemoryEndpoints
 
     }
 
+    [GrimoireConnectionAcquisitionRoute]
     private static async Task<IGrimoireOrdinaryConnectionLease> OpenConnectionAsync(
         ArcanumDbContext db,
         IGrimoireOrdinaryConnectionFactory connections,

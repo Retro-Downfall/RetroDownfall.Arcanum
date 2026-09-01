@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
@@ -87,6 +89,7 @@ internal sealed class HostToolsMarkerPairResetDatabase
 
     }
 
+    [GrimoireConnectionAcquisitionRoute]
     public async Task<Result<HostToolsMarkerPairResetDatabaseSession>>
         OpenHostToolsMarkerPairResetDatabaseSessionAsync(
         IStoppedHostGrimoireConnectionAuthority authority,
@@ -163,6 +166,7 @@ internal sealed class HostToolsMarkerPairResetDatabase
 
     }
 
+    [GrimoireConnectionAcquisitionRoute]
     private HostToolsMarkerPairResetDatabaseSession CreateSession(
         IStoppedHostGrimoireConnectionLease lease)
     {

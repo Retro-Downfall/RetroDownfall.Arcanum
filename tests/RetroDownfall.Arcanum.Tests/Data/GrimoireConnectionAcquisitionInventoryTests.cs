@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 378;
+    private const int ExpectedProductionAcquisitionCount = 392;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -218,19 +218,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         AcquisitionSource source = Source("""
             using System;
             using System.Threading.Tasks;
-            using Microsoft.Data.Sqlite;
             sealed class GrimoireConnectionAcquisitionRouteAttribute : Attribute { }
             sealed class Fixture
             {
-                public Task<Result<IGrimoireOrdinaryConnectionLease>> Unmarked()
-                {
-                    _ = new SqliteConnection("Data Source=fixture.db");
-                    throw null!;
-                }
-            }
+                Task<Result<IGrimoireOrdinaryConnectionLease>> Unmarked() => throw null!;
 
-            sealed class MarkedFixture
-            {
                 [GrimoireConnectionAcquisitionRoute]
                 ValueTask<Result<IStoppedHostGrimoireConnectionLease>> Marked() => throw null!;
             }
@@ -242,6 +234,104 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.Equal(
             1,
             failures.Count(failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker));
+
+    }
+
+    [Fact]
+    public void Unmarked_private_opaque_helper_called_by_marked_sibling_requires_a_marker()
+    {
+
+        AcquisitionSource source = Source("""
+            using System;
+            using System.Threading.Tasks;
+            sealed class GrimoireConnectionAcquisitionRouteAttribute : Attribute { }
+            sealed class Fixture
+            {
+                [GrimoireConnectionAcquisitionRoute]
+                Task<Result<IGrimoireOrdinaryConnectionLease>> OpenAsync() => OpenCoreAsync();
+
+                private Task<Result<IGrimoireOrdinaryConnectionLease>> OpenCoreAsync() => throw null!;
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Equal(
+            1,
+            failures.Count(failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker));
+
+    }
+
+    [Fact]
+    public void Unmarked_marker_pair_session_return_requires_a_marker()
+    {
+
+        AcquisitionSource source = Source("""
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                Task<Result<HostToolsMarkerPairResetDatabaseSession>> OpenSessionAsync() => throw null!;
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Equal(
+            1,
+            failures.Count(failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker));
+
+    }
+
+    [Fact]
+    public void Direct_connection_routes_and_failure_only_opaque_helpers_do_not_require_markers()
+    {
+
+        AcquisitionSource source = Source("""
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                async Task<Result<DomainResult>> OpenDirectAsync()
+                {
+                    var connection = new SqliteConnection("Data Source=fixture.db");
+                    await connection.OpenAsync();
+                    return default;
+                }
+
+                Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() =>
+                    Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(default));
+
+                SqliteConnection BorrowCoreConnection() => throw null!;
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.DoesNotContain(
+            failures,
+            failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
+
+    }
+
+    [Fact]
+    public void Same_named_Open_returning_domain_result_stays_unmarked()
+    {
+
+        AcquisitionSource source = Source("""
+            sealed class Fixture
+            {
+                Result<DomainResult> Open() => default;
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.DoesNotContain(
+            failures,
+            failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
 
     }
 
@@ -418,8 +508,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.False(usage.Inherited);
 
         IReadOnlyList<AcquisitionSource> sources = ProductionSources();
-
-        Assert.Empty(GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage(sources));
 
         IReadOnlyList<AcquisitionIdentity> discoveries =
             GrimoireConnectionAcquisitionScanner.Discover(sources);
@@ -692,6 +780,13 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
 
         IReadOnlyList<AcquisitionSource> sources = ProductionSources();
 
+        IReadOnlyList<InventoryFailure> markerFailures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage(sources);
+
+        Assert.True(
+            markerFailures.Count == 0,
+            string.Join(System.Environment.NewLine, markerFailures.Select(static failure => failure.ToString())));
+
         IReadOnlyList<AcquisitionIdentity> discoveries =
             GrimoireConnectionAcquisitionScanner.Discover(sources);
 
@@ -766,7 +861,12 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 is GrimoireAcquisitionKind.NonGrimoireCandidate),
         ];
 
-        Assert.Empty(GrimoireConnectionAcquisitionScanner.Validate(discoveries, catalog));
+        IReadOnlyList<InventoryFailure> inventoryFailures =
+            GrimoireConnectionAcquisitionScanner.Validate(discoveries, catalog);
+
+        Assert.True(
+            inventoryFailures.Count == 0,
+            string.Join(System.Environment.NewLine, inventoryFailures.Select(static failure => failure.ToString())));
 
         Assert.NotEmpty(servingEf);
 

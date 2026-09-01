@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -60,35 +61,35 @@ internal sealed class CovenantV3MaintenanceConnectionFactory(
 
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3CanonicalErasureAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-        OpenAsync(capability, CovenantV3MaintenancePurpose.CanonicalErasure, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
+        OpenV3LeaseAsync(capability, CovenantV3MaintenancePurpose.CanonicalErasure, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
 
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3WalTruncationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-        OpenAsync(capability, CovenantV3MaintenancePurpose.WalTruncation, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
+        OpenV3LeaseAsync(capability, CovenantV3MaintenancePurpose.WalTruncation, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
 
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3VacuumAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-        OpenAsync(capability, CovenantV3MaintenancePurpose.CompactionVacuum, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
+        OpenV3LeaseAsync(capability, CovenantV3MaintenancePurpose.CompactionVacuum, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
 
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3ExportSourceAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-        OpenAsync(capability, CovenantV3MaintenancePurpose.CompactionExport, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
+        OpenV3LeaseAsync(capability, CovenantV3MaintenancePurpose.CompactionExport, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
 
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3ExportVerificationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-        OpenAsync(capability, CovenantV3MaintenancePurpose.CompactionExportVerification, StagingBuilder, CovenantSqliteConnectionMode.ReadOnly, cancellationToken);
+        OpenV3LeaseAsync(capability, CovenantV3MaintenancePurpose.CompactionExportVerification, StagingBuilder, CovenantSqliteConnectionMode.ReadOnly, cancellationToken);
 
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3PostReplaceJournalRestoreAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-        OpenAsync(capability, CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore, DatabaseBuilder, CovenantSqliteConnectionMode.ReadWrite, cancellationToken);
+        OpenV3LeaseAsync(capability, CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore, DatabaseBuilder, CovenantSqliteConnectionMode.ReadWrite, cancellationToken);
 
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3AcceleratorInitializationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-        OpenAsync(capability, CovenantV3MaintenancePurpose.AcceleratorInitialization, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
+        OpenV3LeaseAsync(capability, CovenantV3MaintenancePurpose.AcceleratorInitialization, DatabaseBuilder, CovenantSqliteConnectionMode.ExclusiveMaintenance, cancellationToken);
 
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3CandidateReopenVerificationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-        OpenAsync(capability, CovenantV3MaintenancePurpose.CandidateReopenVerification, ImmutableReadOnlyBuilder, CovenantSqliteConnectionMode.ReadOnly, cancellationToken);
+        OpenV3LeaseAsync(capability, CovenantV3MaintenancePurpose.CandidateReopenVerification, ImmutableReadOnlyBuilder, CovenantSqliteConnectionMode.ReadOnly, cancellationToken);
 
     public async Task<Result> AttachV3ExportStagingAsync(
         ICovenantV3MaintenanceConnectionLease exportLease,
@@ -107,7 +108,8 @@ internal sealed class CovenantV3MaintenanceConnectionFactory(
         return Result.Success();
     }
 
-    private async Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenAsync(
+    [GrimoireConnectionAcquisitionRoute]
+    private async Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3LeaseAsync(
         CovenantV3MaintenanceCapability capability,
         CovenantV3MaintenancePurpose purpose,
         Func<SqliteConnectionStringBuilder> builder,

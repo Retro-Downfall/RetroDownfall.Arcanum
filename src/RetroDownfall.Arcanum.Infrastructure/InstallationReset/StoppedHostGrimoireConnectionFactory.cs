@@ -88,7 +88,7 @@ internal sealed class StoppedHostGrimoireConnectionFactory
         OpenStoppedHostInstallationResetPlanReadAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
-        OpenAsync(
+        OpenStoppedHostLeaseAsync(
             authority,
             StoppedHostGrimoireOperation.InstallationResetPlanRead,
             CovenantSqliteConnectionMode.ReadOnly,
@@ -99,7 +99,7 @@ internal sealed class StoppedHostGrimoireConnectionFactory
         OpenStoppedHostInstallationResetWorkspaceResolutionAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
-        OpenAsync(
+        OpenStoppedHostLeaseAsync(
             authority,
             StoppedHostGrimoireOperation.InstallationResetWorkspaceResolution,
             CovenantSqliteConnectionMode.ReadOnly,
@@ -110,7 +110,7 @@ internal sealed class StoppedHostGrimoireConnectionFactory
         OpenStoppedHostInstallationResetIdentityReadAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
-        OpenAsync(
+        OpenStoppedHostLeaseAsync(
             authority,
             StoppedHostGrimoireOperation.InstallationResetIdentityRead,
             CovenantSqliteConnectionMode.ReadOnly,
@@ -121,7 +121,7 @@ internal sealed class StoppedHostGrimoireConnectionFactory
         OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
-        OpenAsync(
+        OpenStoppedHostLeaseAsync(
             authority,
             StoppedHostGrimoireOperation.InstallationResetHostToolsEvidenceRead,
             CovenantSqliteConnectionMode.ReadOnly,
@@ -132,7 +132,7 @@ internal sealed class StoppedHostGrimoireConnectionFactory
         OpenStoppedHostInstallationResetApplyAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
-        OpenAsync(
+        OpenStoppedHostLeaseAsync(
             authority,
             StoppedHostGrimoireOperation.InstallationResetApply,
             CovenantSqliteConnectionMode.ReadWrite,
@@ -143,13 +143,14 @@ internal sealed class StoppedHostGrimoireConnectionFactory
         OpenStoppedHostMarkerPairResetAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
-        OpenAsync(
+        OpenStoppedHostLeaseAsync(
             authority,
             StoppedHostGrimoireOperation.MarkerPairReset,
             CovenantSqliteConnectionMode.ReadWrite,
             cancellationToken);
 
-    private async Task<Result<IStoppedHostGrimoireConnectionLease>> OpenAsync(
+    [GrimoireConnectionAcquisitionRoute]
+    private async Task<Result<IStoppedHostGrimoireConnectionLease>> OpenStoppedHostLeaseAsync(
         IStoppedHostGrimoireConnectionAuthority authority,
         StoppedHostGrimoireOperation operation,
         CovenantSqliteConnectionMode mode,

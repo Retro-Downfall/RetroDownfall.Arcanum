@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
@@ -1347,6 +1348,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
     /// the terminal receipt is durable would drop the only authority that can finish the vector while
     /// finishing it is still possible.</para>
     /// </remarks>
+    [GrimoireConnectionAcquisitionRoute]
     private async Task<Result<HostToolsMarkerPairResetDatabaseSession>>
         OpenDatabaseAsync(
             ArcanumMaintenanceLock heldInstallationLock,
