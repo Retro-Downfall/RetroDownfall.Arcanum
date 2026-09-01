@@ -229,6 +229,88 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     }
 
+    /// <summary>
+    /// The prune's Saga and Lexicon candidates reach the guard the way its entry candidates do.
+    /// </summary>
+    /// <remarks>
+    /// Both stores name their candidates by the stored identity string rather than by a
+    /// <see cref="Guid"/>, so "the guard is wired" and "the guard is asked about the identity the
+    /// label is keyed on" are two different claims. This asserts the second one, through the route.
+    /// </remarks>
+    [SkippableTheory]
+
+    [InlineData("saga")]
+
+    [InlineData("lexicon")]
+
+    public async Task A_labeled_memory_survives_the_retention_prune_route(string store)
+    {
+
+        RequireSqlCipher();
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid artifactId = Guid.NewGuid();
+
+        bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+
+            SqliteConnection connection = await OpenAsync(scope);
+
+            if (saga)
+            {
+
+                await SeedSagaMemoryAsync(connection, artifactId);
+
+            }
+            else
+            {
+
+                await SeedLexiconEntryAsync(connection, artifactId);
+
+            }
+
+            await LabelAsync(
+                scope,
+                saga ? SensitiveArtifactKind.Saga : SensitiveArtifactKind.Lexicon,
+                artifactId,
+                sessionId: null);
+
+        }
+
+        HttpResponseMessage enabled = await client.PutAsync(
+            "/api/data/retention",
+            Json(
+                new RetentionRuleUpdateRequest(saga ? "saga-memories" : "lexicon-entries", true, 1),
+                ArcanumJsonContext.Default.RetentionRuleUpdateRequest));
+
+        Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+
+        HttpResponseMessage pruned = await client.PostAsync(
+            "/api/data/prune",
+            Json(
+                new DataRetentionApplyRequest(
+                    new DataRetentionRequest(DataRetentionOperation.Prune)),
+                ArcanumJsonContext.Default.DataRetentionApplyRequest));
+
+        Assert.Equal(HttpStatusCode.OK, pruned.StatusCode);
+
+        await using AsyncServiceScope after = factory.Services.CreateAsyncScope();
+
+        SqliteConnection verify = await OpenAsync(after);
+
+        Assert.Equal(
+            1,
+            await CountAsync(verify, saga ? "saga_memories" : "lexicon_entries", "Id", artifactId));
+
+        Assert.Equal(1, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", artifactId));
+
+    }
+
     private static async Task<SqliteConnection> OpenAsync(AsyncServiceScope scope)
     {
 
@@ -302,6 +384,24 @@ public sealed class CovenantLabeledRetentionRouteTests
         _ = command.Parameters.AddWithValue("$id", Canonical(memoryId));
 
         _ = command.Parameters.AddWithValue("$created", Backdated);
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private static async Task SeedLexiconEntryAsync(SqliteConnection connection, Guid entryId)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
+            VALUES ($id, 'Labelled Term', 'labelled term', 'concept', '[]', '', $updated);
+            """;
+
+        _ = command.Parameters.AddWithValue("$id", Canonical(entryId));
+
+        _ = command.Parameters.AddWithValue("$updated", Backdated);
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
 
