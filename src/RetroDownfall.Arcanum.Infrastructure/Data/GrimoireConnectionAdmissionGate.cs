@@ -32,6 +32,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private readonly TimeSpan _openingAttemptTimeout;
 
+    private readonly Func<CancellationToken, ValueTask> _afterSuccessfulDrainTestSeam;
+
     private readonly HashSet<OpenTicket> _unresolvedOpens = [];
 
     private readonly HashSet<RequestLease> _requestLeases = [];
@@ -54,21 +56,30 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         : this(
             timeProvider,
             new CovenantConnectionDrain(),
-            ProductionOpeningAttemptTimeout)
+            ProductionOpeningAttemptTimeout,
+            AfterSuccessfulDrainNoOpAsync)
     {
     }
 
     internal GrimoireConnectionAdmissionGate(
         TimeProvider timeProvider,
         ICovenantConnectionDrain drain)
-        : this(timeProvider, drain, ProductionOpeningAttemptTimeout)
+        : this(
+            timeProvider,
+            drain,
+            ProductionOpeningAttemptTimeout,
+            AfterSuccessfulDrainNoOpAsync)
     {
     }
 
     internal GrimoireConnectionAdmissionGate(
         TimeProvider timeProvider,
         TimeSpan openingAttemptTimeout)
-        : this(timeProvider, new CovenantConnectionDrain(), openingAttemptTimeout)
+        : this(
+            timeProvider,
+            new CovenantConnectionDrain(),
+            openingAttemptTimeout,
+            AfterSuccessfulDrainNoOpAsync)
     {
     }
 
@@ -76,11 +87,26 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         TimeProvider timeProvider,
         ICovenantConnectionDrain drain,
         TimeSpan openingAttemptTimeout)
+        : this(
+            timeProvider,
+            drain,
+            openingAttemptTimeout,
+            AfterSuccessfulDrainNoOpAsync)
+    {
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        TimeSpan openingAttemptTimeout,
+        Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam)
     {
 
         ArgumentNullException.ThrowIfNull(timeProvider);
 
         ArgumentNullException.ThrowIfNull(drain);
+
+        ArgumentNullException.ThrowIfNull(afterSuccessfulDrainTestSeam);
 
         if (openingAttemptTimeout <= TimeSpan.Zero)
         {
@@ -94,6 +120,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         _drain = drain;
 
         _openingAttemptTimeout = openingAttemptTimeout;
+
+        _afterSuccessfulDrainTestSeam = afterSuccessfulDrainTestSeam;
 
     }
 
@@ -606,6 +634,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
+            await _afterSuccessfulDrainTestSeam(cancellationToken).ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
             lock (_sync)
             {
 
@@ -857,6 +889,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private static TaskCompletionSource<long> NewOpenGenerationSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static ValueTask AfterSuccessfulDrainNoOpAsync(
+        CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
     private static Error LifecycleConflict(string message) =>
         new(LifecycleConflictCode, message);

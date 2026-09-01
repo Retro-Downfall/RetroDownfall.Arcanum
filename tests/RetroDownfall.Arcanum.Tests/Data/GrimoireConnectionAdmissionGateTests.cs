@@ -352,6 +352,67 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.Same(closing, resumed.Value);
 
+        drain.Result = Result.Success();
+
+        Result<IGrimoireExclusiveClosedLease> retried = await gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(retried.IsSuccess, retried.IsFailure ? retried.Error.Message : null);
+
+        Assert.Equal(2, drain.CallCount);
+
+        await using IGrimoireExclusiveClosedLease lease = retried.Value;
+
+    }
+
+    [Fact]
+    public async Task Drain_exception_issues_no_closed_lease_and_allows_the_exact_owner_to_retry()
+    {
+
+        RecordingStageTwoDrain drain = new(block: false)
+        {
+            ThrownException = new InvalidOperationException("physical drain threw")
+        };
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(41);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, owner);
+
+        Result stageOne = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(stageOne.IsSuccess, stageOne.IsFailure ? stageOne.Error.Message : null);
+
+        long closingGeneration = checked(gate.CurrentGeneration + 1);
+
+        InvalidOperationException thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => gate
+                .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+                .AsTask());
+
+        Assert.Equal("physical drain threw", thrown.Message);
+
+        Assert.Equal(1, drain.CallCount);
+
+        AssertClosedOwnerRetained(gate, owner, closing, closingGeneration);
+
+        drain.ThrownException = null;
+
+        Result<IGrimoireExclusiveClosedLease> retried = await gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(retried.IsSuccess, retried.IsFailure ? retried.Error.Message : null);
+
+        Assert.Equal(2, drain.CallCount);
+
+        await using IGrimoireExclusiveClosedLease lease = retried.Value;
+
     }
 
     [Fact]
@@ -406,18 +467,82 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.Same(closing, resumed.Value);
 
+        drain.Release();
+
+        Result<IGrimoireExclusiveClosedLease> retried = await gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(retried.IsSuccess, retried.IsFailure ? retried.Error.Message : null);
+
+        Assert.Equal(2, drain.CallCount);
+
+        await using IGrimoireExclusiveClosedLease lease = retried.Value;
+
+    }
+
+    [Fact]
+    public async Task Cancellation_after_noncooperative_drain_success_keeps_owner_closed_and_allows_retry()
+    {
+
+        using CancellationTokenSource cancelled = new();
+
+        RecordingStageTwoDrain drain = new(block: false)
+        {
+            BeforeReturn = cancelled.Cancel
+        };
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(42);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, owner);
+
+        Result stageOne = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(stageOne.IsSuccess, stageOne.IsFailure ? stageOne.Error.Message : null);
+
+        long closingGeneration = checked(gate.CurrentGeneration + 1);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => gate
+                .CloseConnectionAdmissionAsync(closing, cancelled.Token)
+                .AsTask());
+
+        Assert.Equal(1, drain.CallCount);
+
+        AssertClosedOwnerRetained(gate, owner, closing, closingGeneration);
+
+        drain.BeforeReturn = null;
+
+        Result<IGrimoireExclusiveClosedLease> retried = await gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(retried.IsSuccess, retried.IsFailure ? retried.Error.Message : null);
+
+        Assert.Equal(2, drain.CallCount);
+
+        await using IGrimoireExclusiveClosedLease lease = retried.Value;
+
     }
 
     [Fact]
     public async Task Adoption_interlock_cannot_enter_between_drain_and_closed_lease_reservation()
     {
 
-        RecordingStageTwoDrain drain = new(block: true);
+        RecordingStageTwoDrain drain = new(block: false);
 
-        await using ServiceProvider provider = CreateProvider(drain);
+        PostDrainReservationBarrier reservationBoundary = new();
 
-        GrimoireConnectionAdmissionGate gate = provider
-            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+        GrimoireConnectionAdmissionGate gate = new(
+            TimeProvider.System,
+            drain,
+            OpeningTimeout,
+            reservationBoundary.WaitAsync);
 
         CovenantExclusiveRecoveryOwner owner = Owner(40);
 
@@ -433,9 +558,13 @@ public sealed class GrimoireConnectionAdmissionGateTests
             .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
             .AsTask();
 
-        Task first = await Task.WhenAny(drain.Entered, closingAdmission);
+        Task first = await Task.WhenAny(reservationBoundary.Entered, closingAdmission);
 
-        Assert.Same(drain.Entered, first);
+        Assert.Same(reservationBoundary.Entered, first);
+
+        Assert.Equal(1, drain.CallCount);
+
+        Assert.False(closingAdmission.IsCompleted);
 
         Task<Result<IGrimoireExpiredLeaseAdoptionInterlock>> adoption = gate
             .AcquireExpiredLeaseAdoptionInterlockAsync(
@@ -448,7 +577,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.True(refusedAdoption.IsFailure);
 
-        drain.Release();
+        reservationBoundary.Release();
 
         Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
 
@@ -2350,6 +2479,28 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    private static void AssertClosedOwnerRetained(
+        GrimoireConnectionAdmissionGate gate,
+        CovenantExclusiveRecoveryOwner owner,
+        IGrimoireClosingOwner closing,
+        long closingGeneration)
+    {
+
+        Assert.Equal(closingGeneration, gate.CurrentGeneration);
+
+        using SqliteConnection refused = new();
+
+        _ = Assert.Throws<GrimoireMaintenanceUnavailableException>(
+            () => gate.AcquireOrdinaryOpen(refused));
+
+        Result<IGrimoireClosingOwner> resumed = gate.BeginOrResumeExclusive(owner);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        Assert.Same(closing, resumed.Value);
+
+    }
+
     private static CovenantExclusiveRecoveryOwner Owner(byte seed) =>
         new(
             Guid.Parse($"00000000-0000-0000-0000-{seed:D12}"),
@@ -2359,20 +2510,35 @@ public sealed class GrimoireConnectionAdmissionGateTests
     private static TaskCompletionSource NewBarrier() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private sealed class RecordingStageTwoDrain(
-        bool block,
-        Result? result = null) : ICovenantConnectionDrain
+    private sealed class RecordingStageTwoDrain : ICovenantConnectionDrain
     {
 
         private readonly TaskCompletionSource _entered = NewBarrier();
 
         private readonly TaskCompletionSource _released = NewBarrier();
 
+        private readonly bool _block;
+
         private int _callCount;
+
+        internal RecordingStageTwoDrain(bool block, Result? result = null)
+        {
+
+            _block = block;
+
+            Result = result ?? Result.Success();
+
+        }
 
         internal int CallCount => Volatile.Read(ref _callCount);
 
         internal Task Entered => _entered.Task;
+
+        internal Action? BeforeReturn { get; set; }
+
+        internal Result Result { get; set; }
+
+        internal Exception? ThrownException { get; set; }
 
         internal void Release() => _released.TrySetResult();
 
@@ -2387,14 +2553,23 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
             _entered.TrySetResult();
 
-            if (block)
+            if (_block)
             {
 
                 await _released.Task.WaitAsync(cancellationToken);
 
             }
 
-            return result ?? Result.Success();
+            if (ThrownException is not null)
+            {
+
+                throw ThrownException;
+
+            }
+
+            BeforeReturn?.Invoke();
+
+            return Result;
 
         }
 
@@ -2404,6 +2579,28 @@ public sealed class GrimoireConnectionAdmissionGateTests
             public void Dispose()
             {
             }
+
+        }
+
+    }
+
+    private sealed class PostDrainReservationBarrier
+    {
+
+        private readonly TaskCompletionSource _entered = NewBarrier();
+
+        private readonly TaskCompletionSource _released = NewBarrier();
+
+        internal Task Entered => _entered.Task;
+
+        internal void Release() => _released.TrySetResult();
+
+        internal async ValueTask WaitAsync(CancellationToken cancellationToken)
+        {
+
+            _entered.TrySetResult();
+
+            await _released.Task.WaitAsync(cancellationToken);
 
         }
 
