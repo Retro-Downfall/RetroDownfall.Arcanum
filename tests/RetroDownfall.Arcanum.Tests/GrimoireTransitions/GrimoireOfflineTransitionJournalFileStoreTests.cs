@@ -684,7 +684,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             File.Delete(location.JournalPath);
 
         }
-
         else
         {
 
@@ -1142,6 +1141,122 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             }
 
         }
+
+    }
+
+    [Fact]
+    public async Task Cancellation_requested_after_first_publication_lands_does_not_convert_success_to_recovery_required()
+    {
+
+        using CancellationTokenSource cts = new();
+
+        GrimoireOfflineTransitionJournalFileStore cancelling = new(
+            afterStep: step =>
+            {
+
+                if (step == "file:atomic-replace")
+                {
+
+                    cts.Cancel();
+
+                }
+
+            });
+
+        GrimoireOfflineTransitionJournalLocation location = Location(cancelling);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("cancel-after-first-publish").ToArray();
+
+        Result result = await cancelling.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            cts.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await cancelling.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Equal(bytes, evidence.Canonical?.Bytes.ToArray());
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
+
+    }
+
+    [Fact]
+    public async Task Cancellation_requested_after_the_exchange_lands_does_not_convert_success_to_recovery_required()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] firstBytes = Bytes("cancel-after-exchange-first").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            firstBytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleIdentity firstIdentity;
+
+        using (GrimoireOfflineTransitionJournalFileRead first = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            firstIdentity = first.Metadata.Identity;
+
+        }
+
+        using CancellationTokenSource cts = new();
+
+        GrimoireOfflineTransitionJournalFileStore cancelling = new(
+            afterStep: step =>
+            {
+
+                if (step == "file:atomic-replace")
+                {
+
+                    cts.Cancel();
+
+                }
+
+            });
+
+        byte[] secondBytes = Bytes("cancel-after-exchange-second").ToArray();
+
+        Result result = await cancelling.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            cts.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Equal(secondBytes, evidence.Canonical?.Bytes.ToArray());
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
 
     }
 

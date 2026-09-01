@@ -666,7 +666,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 await InspectEvidenceAsync(
                         primitives,
                         location,
-                        cancellationToken)
+                        CancellationToken.None)
                     .ConfigureAwait(false);
 
             if (landedResult.IsFailure)
@@ -726,7 +726,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 await ReadCanonicalRelativeAsync(
                         primitives,
                         location,
-                        cancellationToken)
+                        CancellationToken.None)
                     .ConfigureAwait(false);
 
             if (rereadResult.IsFailure)
@@ -760,7 +760,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                         location.PreviousLeaf,
                         initial.Canonical.Metadata,
                         initial.Canonical.Bytes,
-                        cancellationToken)
+                        CancellationToken.None)
                     .ConfigureAwait(false);
 
                 if (retired.IsFailure)
@@ -776,7 +776,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     primitives,
                     location,
                     requireCanonical: true,
-                    cancellationToken).ConfigureAwait(false))
+                    CancellationToken.None).ConfigureAwait(false))
             {
 
                 return RecoveryRequired();
