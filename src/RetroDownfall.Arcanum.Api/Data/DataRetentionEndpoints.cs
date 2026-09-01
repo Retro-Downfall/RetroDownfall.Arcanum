@@ -733,10 +733,12 @@ internal static class DataRetentionEndpoints
 
             ErrorCodes.Data.PlanChanged
                 or ErrorCodes.Data.Blocked
-                or ErrorCodes.Data.Conflict =>
+                or ErrorCodes.Data.Conflict
+                or ErrorCodes.Data.OperationNotFinalized =>
                 StatusCodes.Status409Conflict,
 
-            ErrorCodes.Data.ReconciliationFailed =>
+            ErrorCodes.Data.ReconciliationFailed
+                or ErrorCodes.Data.QuarantineRecoveryRequired =>
                 StatusCodes.Status500InternalServerError,
 
             _ => ArcanumErrorMapper.ResolveStatusCode(errorCode),

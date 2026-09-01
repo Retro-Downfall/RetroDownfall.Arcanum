@@ -1005,9 +1005,12 @@ internal sealed partial class DataRetentionService(
             if (!completed)
             {
 
+                // Its own code, not the catch-all. Nothing is wrong with the data and nothing is
+                // left on disk - only the bookkeeping is open - so this is the one retention ending
+                // a client may retry unconditionally, and it has to be able to tell.
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(
-                        ErrorCodes.Data.ReconciliationFailed,
+                        ErrorCodes.Data.OperationNotFinalized,
                         "Data was pruned, but the durable operation could not be finalized; retry is safe."));
 
             }
@@ -1122,18 +1125,21 @@ internal sealed partial class DataRetentionService(
                 CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
+            // The opposite instruction to the one above, and it used to share its code: the mutation
+            // is durable and bytes an operator owns are still on disk, so a client must not read this
+            // as "nothing happened" and must not retry it blind.
             bool terminalized = await operations.TryTransitionAsync(
                 operation.Id,
                 latest.Revision,
                 ownerId,
                 LongRunningOperationState.ReconciliationRequired,
                 timeProvider.GetUtcNow(),
-                ErrorCodes.Data.ReconciliationFailed,
+                ErrorCodes.Data.QuarantineRecoveryRequired,
                 CancellationToken.None).ConfigureAwait(false);
 
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
-                    ErrorCodes.Data.ReconciliationFailed,
+                    ErrorCodes.Data.QuarantineRecoveryRequired,
                     terminalized
                         ? "The database mutation committed; quarantined bytes will be finalized by durable recovery."
                         : "The database mutation committed, but its quarantine recovery marker could not be finalized."));

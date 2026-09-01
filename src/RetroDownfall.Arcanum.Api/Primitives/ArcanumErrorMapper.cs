@@ -47,6 +47,18 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Hub.ContextBudgetExceeded =>
                 StatusCodes.Status429TooManyRequests,
 
+            // 409 rather than 500: the data change applied and nothing is left on disk, so the only
+            // thing still open is the durable operation row and asking again is safe. Reporting it
+            // as a server fault told a client to stop when it should have retried.
+            ErrorCodes.Data.OperationNotFinalized =>
+                StatusCodes.Status409Conflict,
+
+            // 500 and deliberately not retryable: the mutation committed and quarantined bytes are
+            // still on disk. It shares a status with Data.ReconciliationFailed and differs in the
+            // one thing a client acts on - whether the data change already happened.
+            ErrorCodes.Data.QuarantineRecoveryRequired =>
+                StatusCodes.Status500InternalServerError,
+
             // The Covenant contract (§10.16). Every arm below is deliberate: an unmapped Covenant
             // code reaches the operator as a 500, which says "Arcanum broke" about a decision the
             // installation made on purpose and the caller can act on.
