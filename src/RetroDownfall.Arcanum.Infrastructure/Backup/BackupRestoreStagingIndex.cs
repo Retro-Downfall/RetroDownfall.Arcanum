@@ -239,6 +239,13 @@ internal static class BackupRestoreStagingIndex
     }
 
     /// <summary>Replaces the recorded set, deleting the index once nothing is left to point at.</summary>
+    /// <remarks>
+    /// The set is bounded here to the same <see cref="MaximumRoots"/> the reader enforces. A writer
+    /// with no bound and a reader that refuses anything over one is a file this installation can
+    /// produce and then be unable to read — and that refusal is fail-closed all the way out to the
+    /// client mutation boundary, so it would not degrade one restore but refuse every mutation on the
+    /// installation.
+    /// </remarks>
     public static void Write(string grimoireDirectory, IReadOnlyList<string> stagingRoots)
     {
 
@@ -246,7 +253,9 @@ internal static class BackupRestoreStagingIndex
 
         string path = PathFor(grimoireDirectory);
 
-        if (stagingRoots.Count == 0)
+        IReadOnlyList<string> bounded = WithinBound(stagingRoots);
+
+        if (bounded.Count == 0)
         {
 
             Delete(grimoireDirectory);
@@ -258,7 +267,7 @@ internal static class BackupRestoreStagingIndex
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(Path.GetDirectoryName(path)!);
 
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
-            new BackupRestoreStagingIndexRecord(CurrentVersion, [.. stagingRoots]),
+            new BackupRestoreStagingIndexRecord(CurrentVersion, [.. bounded]),
             BackupJsonContext.Default.BackupRestoreStagingIndexRecord);
 
         string temporaryPath = path + ".tmp." + Guid.NewGuid().ToString("N");
@@ -292,6 +301,60 @@ internal static class BackupRestoreStagingIndex
         {
 
         }
+
+    }
+
+    /// <summary>
+    /// The recorded set trimmed to the bound the reader accepts, newest entries kept.
+    /// </summary>
+    /// <remarks>
+    /// Entries are appended, so the front of the list is the least recent and the back is the root the
+    /// caller is about to create — the one entry that must survive, because it is the only pointer to
+    /// a tree that does not exist yet.
+    ///
+    /// <para>Roots whose directory is gone are dropped first, since they are the ones a prune would
+    /// have taken anyway. Absence alone is not enough to drop one, though: <c>Add</c> runs before the
+    /// staging root is created, so a rule that dropped every absent entry would drop the live one.
+    /// Only the excess is taken.</para>
+    /// </remarks>
+    private static List<string> WithinBound(IReadOnlyList<string> stagingRoots)
+    {
+
+        if (stagingRoots.Count <= MaximumRoots)
+        {
+
+            return [.. stagingRoots];
+
+        }
+
+        int excess = stagingRoots.Count - MaximumRoots;
+
+        List<string> kept = [];
+
+        foreach (string root in stagingRoots)
+        {
+
+            if (excess > 0 && !Directory.Exists(root))
+            {
+
+                excess--;
+
+                continue;
+
+            }
+
+            kept.Add(root);
+
+        }
+
+        if (kept.Count > MaximumRoots)
+        {
+
+            kept.RemoveRange(0, kept.Count - MaximumRoots);
+
+        }
+
+        return kept;
 
     }
 
