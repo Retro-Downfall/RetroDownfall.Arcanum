@@ -934,7 +934,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             BackupVerifyIssue[] placement = ComposeStagedTree(
                 extraction.Manifest,
                 extractRoot,
-                stagedRoot);
+                stagedRoot,
+                cancellationToken);
 
             if (placement.Length > 0)
             {
@@ -1771,16 +1772,31 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     /// Lays every archive entry down under the staged root using the closed layout table. An entry
     /// the table does not recognize aborts staging rather than being dropped.
     /// </summary>
-    private static BackupVerifyIssue[] ComposeStagedTree(
+    /// <remarks>
+    /// This is the second full-size write of the restored generation — everything the extraction
+    /// already wrote, copied again — so for a large Grimoire it is minutes of blocking work inside one
+    /// phase. The token is observed between entries because nothing else in that window can be: with
+    /// no check here the operator's cancellation is not seen until the whole tree has been copied.
+    ///
+    /// <para>Copied rather than moved, deliberately. The extraction root is read after this returns —
+    /// the portable recovery material for the staged secret and the file-encryption key merge both
+    /// come out of it — so moving the tree away would take those reads' inputs with it.</para>
+    /// </remarks>
+    private BackupVerifyIssue[] ComposeStagedTree(
         BackupManifest manifest,
         string extractRoot,
-        string stagedRoot)
+        string stagedRoot,
+        CancellationToken cancellationToken)
     {
 
         List<BackupVerifyIssue> issues = [];
 
         foreach (BackupManifestEntry entry in manifest.Entries)
         {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _options.BeforeStagedEntryComposeForTests?.Invoke(entry.Path);
 
             if (!BackupRestoreLayout.TryResolve(entry.Path, out BackupRestorePlacementDecision? decision))
             {

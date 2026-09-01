@@ -173,6 +173,58 @@ public sealed class BackupRestoreServiceTests : IDisposable
     }
 
     /// <summary>
+    /// A restore cancelled while it is composing the staged generation stops there rather than
+    /// finishing the copy first.
+    /// </summary>
+    /// <remarks>
+    /// Composition is the second full-size write of everything the extraction already wrote — for a
+    /// multi-gigabyte Grimoire, minutes of blocking copying inside a single phase. Entered at
+    /// <see cref="BackupRestoreService.RestoreAsync"/> with the operator's own token, because what is
+    /// under test is whether pressing Ctrl-C during that window is observed at all.
+    ///
+    /// <para>Asserted on how many entries were composed rather than on what survives on disk: the
+    /// staging root is removed as the cancellation unwinds, which is correct and also erases the
+    /// evidence, so the count is taken as the copy runs.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_cancelled_restore_stops_composing_the_staged_tree()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("compose-cancel.arcbackup");
+
+        WipeInstallation();
+
+        using CancellationTokenSource cancellation = new();
+
+        List<string> composed = [];
+
+        BackupRestoreServiceOptions options = new()
+        {
+
+            BeforeStagedEntryComposeForTests = entry =>
+            {
+
+                composed.Add(entry);
+
+                cancellation.Cancel();
+
+            },
+
+        };
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Restore(new RecordingSecretStore(), options).RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                cancellation.Token));
+
+        Assert.Single(composed);
+
+    }
+
+    /// <summary>
     /// An archive holding two entries whose paths differ only in case is refused rather than restored
     /// with one file standing in for both.
     /// </summary>
