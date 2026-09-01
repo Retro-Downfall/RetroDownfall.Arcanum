@@ -129,7 +129,7 @@ public sealed class KeyCommands(
 
         }
 
-        await RunMutationAsync(
+        int mutationExitCode = await RunMutationAsync(
                 token =>
                 {
 
@@ -140,6 +140,13 @@ public sealed class KeyCommands(
                 },
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (mutationExitCode != (int)CliExitCode.Success)
+        {
+
+            return mutationExitCode;
+
+        }
 
         console.WritePayload(
             $"Master API key stored ({ArcanumCredentialIdentity.Service}/"
@@ -279,11 +286,18 @@ public sealed class KeyCommands(
         if (webResearch)
         {
 
-            await RunMutationAsync(
+            int webMutationExitCode = await RunMutationAsync(
                     token => webResearchCredentialStore
                         .SavePerplexityApiKeyAsync(key.Trim(), token),
                     cancellationToken)
                 .ConfigureAwait(false);
+
+            if (webMutationExitCode != (int)CliExitCode.Success)
+            {
+
+                return webMutationExitCode;
+
+            }
 
             console.WritePayload(
                 $"Perplexity API key stored ({ArcanumCredentialIdentity.Service}/"
@@ -293,11 +307,18 @@ public sealed class KeyCommands(
 
         }
 
-        await RunMutationAsync(
+        int mutationExitCode = await RunMutationAsync(
                 token => providerCredentialStore
                     .SaveApiKeyAsync(provider.Trim(), key.Trim(), token),
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (mutationExitCode != (int)CliExitCode.Success)
+        {
+
+            return mutationExitCode;
+
+        }
 
         console.WritePayload(
             $"Provider API key stored ({ArcanumCredentialIdentity.Service}/"
@@ -398,10 +419,17 @@ public sealed class KeyCommands(
         if (webResearch)
         {
 
-            await RunMutationAsync(
+            int webMutationExitCode = await RunMutationAsync(
                     webResearchCredentialStore.DeletePerplexityApiKeyAsync,
                     cancellationToken)
                 .ConfigureAwait(false);
+
+            if (webMutationExitCode != (int)CliExitCode.Success)
+            {
+
+                return webMutationExitCode;
+
+            }
 
             console.WritePayload("Perplexity API key deleted.");
 
@@ -409,11 +437,18 @@ public sealed class KeyCommands(
 
         }
 
-        await RunMutationAsync(
+        int mutationExitCode = await RunMutationAsync(
                 token => providerCredentialStore
                     .DeleteApiKeyAsync(provider.Trim(), token),
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (mutationExitCode != (int)CliExitCode.Success)
+        {
+
+            return mutationExitCode;
+
+        }
 
         console.WritePayload($"Provider API key deleted for '{provider.Trim()}'.");
 
@@ -446,23 +481,49 @@ public sealed class KeyCommands(
 
     }
 
-    private async Task RunMutationAsync(
+    /// <summary>
+    /// Runs a credential-store mutation under exclusive installation ownership. Returns
+    /// <see cref="CliExitCode.Success"/> on completion; on a bare <see cref="InvalidOperationException"/>
+    /// (the credential store's own actionable remedy, or the initialization layer's maintenance-lock
+    /// and installation-reset refusals — W10-7), returns <see cref="CliExitCode.GenericError"/> after
+    /// printing that exception's own message, rather than letting it reach the top-level
+    /// CliFailureMapper default arm and flatten to "An unexpected CLI error occurred.". Matched by
+    /// exact type, not <c>is InvalidOperationException</c>, so a typed subclass this file does not
+    /// own an arm for (starting with <see cref="NonInteractiveConfirmationException"/>) still reaches
+    /// the mapper's own classification.
+    /// </summary>
+    private async Task<int> RunMutationAsync(
         Func<CancellationToken, Task> mutation,
         CancellationToken cancellationToken)
     {
 
-        _ = await initialization
-            .RunExclusiveAsync(
-                async (_, token) =>
-                {
+        try
+        {
 
-                    await mutation(token).ConfigureAwait(false);
+            _ = await initialization
+                .RunExclusiveAsync(
+                    async (_, token) =>
+                    {
 
-                    return true;
+                        await mutation(token).ConfigureAwait(false);
 
-                },
-                cancellationToken)
-            .ConfigureAwait(false);
+                        return true;
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return (int)CliExitCode.Success;
+
+        }
+        catch (InvalidOperationException ex) when (ex.GetType() == typeof(InvalidOperationException))
+        {
+
+            console.WriteDiagnostic(ex.Message);
+
+            return (int)CliExitCode.GenericError;
+
+        }
 
     }
 

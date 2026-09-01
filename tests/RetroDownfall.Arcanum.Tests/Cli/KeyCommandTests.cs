@@ -282,6 +282,39 @@ public sealed class KeyCommandTests
 
     }
 
+    /// <summary>
+    /// W10-7: ProviderCredentialStore.DeleteApiKeyAsync deletes the encrypted mirror, then throws
+    /// InvalidOperationException naming the account that survives in the OS credential store when
+    /// the OS delete failed. That message matched no CliFailureMapper arm, so the operator was told
+    /// only "An unexpected CLI error occurred." and never learned the keychain entry survived.
+    /// </summary>
+    [Fact]
+    public async Task Provider_delete_surfaces_the_surviving_keychain_account_on_os_store_failure()
+    {
+
+        const string SurvivingAccountMessage =
+            "The encrypted mirror was deleted, but the OS credential store could not delete the "
+            + "credential for provider account arcanum/inference-key-alpha.";
+
+        FakeProviderCredentialStore providers = new()
+        {
+            DeleteFailure = new InvalidOperationException(SurvivingAccountMessage),
+        };
+
+        providers.Stored["alpha"] = ProviderSecret;
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(providers),
+            ["--yes", "key", "provider", "delete", "alpha"]);
+
+        Assert.NotEqual((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Contains(SurvivingAccountMessage, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     [Fact]
     public async Task Perplexity_still_routes_to_the_web_research_credential_by_default()
     {
@@ -389,7 +422,13 @@ public sealed class KeyCommandTests
 
             Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
 
-            Assert.Contains("unexpected CLI error", result.Error, StringComparison.OrdinalIgnoreCase);
+            // W10-7: the refusal's own remedy text must reach the operator, not the generic
+            // "An unexpected CLI error occurred." that RunMutationAsync used to let every
+            // InvalidOperationException — including these initialization-layer lock and reset
+            // refusals — flatten into.
+            Assert.Contains(refusal, result.Error, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.OrdinalIgnoreCase);
 
             Assert.Equal(1, initialization.ExclusiveCalls);
 
@@ -557,6 +596,13 @@ public sealed class KeyCommandTests
 
         public Func<Task>? SaveGate { get; init; }
 
+        /// <summary>
+        /// Reproduces ProviderCredentialStore.DeleteApiKeyAsync's OsCredentialStoreStatus.Failed
+        /// arm: the encrypted mirror is deleted first (below), then this throws naming the account
+        /// that survives in the OS store — W10-7.
+        /// </summary>
+        public Exception? DeleteFailure { get; init; }
+
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync(
             string providerName,
             CancellationToken cancellationToken = default)
@@ -606,6 +652,13 @@ public sealed class KeyCommandTests
             WriteCount++;
 
             _ = Stored.Remove(providerName);
+
+            if (DeleteFailure is not null)
+            {
+
+                throw DeleteFailure;
+
+            }
 
             return Task.CompletedTask;
 
