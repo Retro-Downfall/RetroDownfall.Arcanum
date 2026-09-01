@@ -703,6 +703,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireClosingOwner closing = Begin(gate, Owner(9));
 
+        long observedGeneration = gate.CurrentGeneration;
+
         using CancellationTokenSource cancelled = new();
 
         cancelled.Cancel();
@@ -710,10 +712,17 @@ public sealed class GrimoireConnectionAdmissionGateTests
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => gate.CloseConnectionAdmissionAsync(closing, cancelled.Token).AsTask());
 
+        // Not issuing a lease is the weaker half of the promise. Without this, the test cannot tell
+        // a call that refused before the transition from one that committed the whole transition
+        // and then reported cancellation - and the resumed close below succeeds either way.
+        Assert.Equal(observedGeneration, gate.CurrentGeneration);
+
         Result<IGrimoireExclusiveClosedLease> resumed =
             await gate.CloseConnectionAdmissionAsync(closing, CancellationToken.None);
 
         Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        Assert.Equal(observedGeneration + 1, gate.CurrentGeneration);
 
         await using IGrimoireExclusiveClosedLease lease = resumed.Value;
 
