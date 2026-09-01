@@ -337,7 +337,9 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                     new NoOpSessionAttachmentStore(),
                     NullLogger<GrimoireRepository>.Instance,
                     new TestOptionsSnapshot<ArcanumSettings>(settings),
-                    serviceProvider: sp));
+                    attachmentIndex: null,
+                    covenantKernel: null,
+                    sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
             await using ServiceProvider provider = services.BuildServiceProvider();
 

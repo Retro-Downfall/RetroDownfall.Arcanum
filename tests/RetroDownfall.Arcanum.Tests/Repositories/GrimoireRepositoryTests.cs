@@ -75,7 +75,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        RecordingScopedOrdinaryConnectionFactory connections = new();
+        FixtureOrdinaryConnectionFactory connections = new();
 
         GrimoireRepository repository = CreateRepository(connections: connections);
 
@@ -1575,19 +1575,18 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     private GrimoireRepository CreateRepository(
         ArcanumDbContext? db = null,
         ILogger<GrimoireRepository>? logger = null,
-        RecordingScopedOrdinaryConnectionFactory? connections = null)
+        FixtureOrdinaryConnectionFactory? connections = null)
     {
-        ServiceCollection services = new();
-
-        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
-            connections ?? new RecordingScopedOrdinaryConnectionFactory());
+        ArcanumDbContext context = db ?? _db!;
 
         return new GrimoireRepository(
-            db ?? _db!,
+            context,
             new NoOpSessionAttachmentStore(),
             logger ?? NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
-            serviceProvider: services.BuildServiceProvider());
+            attachmentIndex: null,
+            covenantKernel: null,
+            connections ?? FixtureOrdinaryConnectionFactory.For(context));
 
     }
 

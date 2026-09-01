@@ -84,6 +84,7 @@ public sealed partial class WizardIntelligenceProvider(
     BudgetMonitor budgetMonitor,
     ISessionAttachmentStore sessionAttachmentStore,
     IHumanPromptRegistry humanPromptRegistry,
+    IServiceProvider serviceProvider,
     IProviderHealthTracker? healthTracker = null,
     GuardrailsPipeline? guardrailsPipeline = null,
     IModelCallExecutor? modelCallExecutor = null,
@@ -98,8 +99,7 @@ public sealed partial class WizardIntelligenceProvider(
     IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null,
     ITapestryStore? tapestryStore = null,
     CovenantDispatchGate? covenantDispatch = null,
-    CovenantToolCapabilityRegistry? covenantToolCapabilities = null,
-    IServiceProvider? serviceProvider = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
+    CovenantToolCapabilityRegistry? covenantToolCapabilities = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
 {
     /// <summary>
     /// The token allowance charged for one emitted Covenant section's headings, notice, and fences.
@@ -124,8 +124,19 @@ public sealed partial class WizardIntelligenceProvider(
 
     private readonly Lazy<ITurnExecutionFacade>? _turnCoordinator = turnCoordinator;
 
-    private readonly IGrimoireOrdinaryConnectionFactory? _ordinaryConnections =
-        serviceProvider?.GetService<IGrimoireOrdinaryConnectionFactory>();
+    /// <summary>
+    /// Ordinary connection admission, resolved as a required service of the container that composed
+    /// this provider.
+    /// </summary>
+    /// <remarks>
+    /// Required, and resolved here rather than on use. Both halves used to be optional — a nullable
+    /// <see cref="IServiceProvider" /> parameter defaulting to <c>null</c> and a <c>GetService</c>
+    /// lookup — so a provider composed without connection admission was built happily and failed six
+    /// thousand lines later, on a live turn, at the first workspace-chunk join. Omitting the
+    /// container is now a compile error and omitting the registration is a composition-time throw.
+    /// </remarks>
+    private readonly IGrimoireOrdinaryConnectionFactory _ordinaryConnections =
+        serviceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
     private const string PublicInferenceFailureMessage =
         PublicInferenceErrorMessages.NativeGenericFailure;

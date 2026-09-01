@@ -38,9 +38,20 @@ public sealed class SessionRepository(
 
     private const int ForkEntryBatchSize = 256;
 
+    /// <summary>
+    /// Entry persistence for a repository composed without connection admission.
+    /// </summary>
+    /// <remarks>
+    /// Nothing this repository calls on the shared persistence helper reaches the ordinary-connection
+    /// factory — the two members that do, the mandatory-interaction fresh readbacks, have no caller
+    /// here — so the public constructor genuinely has no factory to pass. The placeholder therefore
+    /// throws rather than refusing with a <see cref="Result" />: a silent refusal would let a future
+    /// caller of those readbacks take the unavailable branch and report a missing composition as a
+    /// storage outcome.
+    /// </remarks>
     private readonly SessionEntryPersistence _entryPersistence = new(
         db,
-        UnavailableOrdinaryConnectionFactory.Instance);
+        UncomposedOrdinaryConnectionAdmission.Instance);
 
     internal SessionRepository(
         ArcanumDbContext db,
@@ -1112,28 +1123,47 @@ public sealed class SessionRepository(
         int ToolEntries,
         int SystemEntries);
 
-    private sealed class UnavailableOrdinaryConnectionFactory
+    /// <summary>
+    /// The placeholder a repository composed without connection admission carries.
+    /// </summary>
+    /// <remarks>
+    /// It refuses by throwing. The version it replaces answered both members with a failed
+    /// <see cref="Result" />, which is the shape that made an unconfigured repository look like a
+    /// failing write instead of a missing dependency.
+    ///
+    /// <para>Exactly one composition passes the real factory: the <c>AddScoped&lt;ISessionRepository&gt;</c>
+    /// registration in <c>ServiceCollectionExtensions.AddArcanumInfrastructure</c>, which resolves the
+    /// singleton <c>IGrimoireOrdinaryConnectionFactory</c> into the internal constructor above. Every
+    /// serving path therefore reaches admission; nothing that reaches this placeholder is serving.</para>
+    ///
+    /// <para>It is dormant rather than merely unused: the only two members that consult the factory
+    /// are <c>SessionEntryPersistence.ReadProbeFreshAsync</c> and
+    /// <c>ReadReceiptOnFreshConnectionAsync</c>, the mandatory-interaction fresh readbacks, and this
+    /// type calls neither. A future caller of either from a repository built through the primary
+    /// constructor throws at first use rather than at construction — deliberately loud, since the
+    /// alternative is reporting a missing dependency as a storage outcome. Deleting the placeholder
+    /// outright needs either a <c>SessionEntryPersistence</c> that can be built without a factory, or
+    /// the factory as a required parameter of this type's primary constructor, which would make the
+    /// type internal and change every hand-construction site.</para>
+    /// </remarks>
+    private sealed class UncomposedOrdinaryConnectionAdmission
         : IGrimoireOrdinaryConnectionFactory
     {
 
-        internal static readonly UnavailableOrdinaryConnectionFactory Instance = new();
+        internal static readonly UncomposedOrdinaryConnectionAdmission Instance = new();
 
         public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
             SqliteConnection connection,
             CovenantSqliteConnectionMode mode,
             CancellationToken cancellationToken) =>
-            Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.Unavailable,
-                    "Ordinary Grimoire connection admission is unavailable.")));
+            throw new InvalidOperationException(
+                "This session repository was composed without ordinary Grimoire connection admission.");
 
         public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
             GrimoireOrdinaryFreshConnectionKind kind,
             CancellationToken cancellationToken) =>
-            Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.Unavailable,
-                    "Ordinary Grimoire connection admission is unavailable.")));
+            throw new InvalidOperationException(
+                "This session repository was composed without ordinary Grimoire connection admission.");
 
     }
 

@@ -361,7 +361,8 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
-            new CovenantMutationKernel());
+            new CovenantMutationKernel(),
+            FixtureOrdinaryConnectionFactory.For(_db!));
 
     private SqliteConnection Connection()
     {

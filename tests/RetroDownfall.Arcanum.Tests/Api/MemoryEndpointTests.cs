@@ -69,15 +69,15 @@ public sealed class MemoryEndpointTests
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
-        RecordingScopedOrdinaryConnectionFactory connections = new();
+        FixtureOrdinaryConnectionFactory connections = new();
 
         await using ArcanumWebApplicationFactory admitted = new()
         {
             ServiceOverrides = services =>
             {
 
-                services.RemoveAll<IGrimoireOrdinaryConnectionFactory>();
-
+                // Appended rather than substituted: the last registration is what
+                // GetRequiredService returns, so the production descriptor stays composed.
                 services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
 
             },
@@ -129,15 +129,15 @@ public sealed class MemoryEndpointTests
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
-        RecordingScopedOrdinaryConnectionFactory connections = new();
+        FixtureOrdinaryConnectionFactory connections = new();
 
         await using ArcanumWebApplicationFactory admitted = new()
         {
             ServiceOverrides = services =>
             {
 
-                services.RemoveAll<IGrimoireOrdinaryConnectionFactory>();
-
+                // Appended rather than substituted: the last registration is what
+                // GetRequiredService returns, so the production descriptor stays composed.
                 services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
 
             },

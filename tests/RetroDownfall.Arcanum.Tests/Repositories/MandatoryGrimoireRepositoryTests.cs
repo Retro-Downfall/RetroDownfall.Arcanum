@@ -1798,15 +1798,35 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Task<bool> pending =
             subscription.MoveNextAsync().AsTask();
 
-        T result = await action();
+        try
+        {
+            T result = await action();
 
-        Assert.False(
-            pending.IsCompleted,
-            "A failed or ambiguous mandatory receipt published a session event.");
-        cancellation.Cancel();
-        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            async () => _ = await pending);
-        return result;
+            Assert.False(
+                pending.IsCompleted,
+                "A failed or ambiguous mandatory receipt published a session event.");
+            cancellation.Cancel();
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => _ = await pending);
+            return result;
+        }
+        finally
+        {
+            // Retire the subscription before the enumerator's asynchronous disposal runs. Disposing
+            // an async iterator whose MoveNextAsync is still outstanding throws
+            // NotSupportedException, and that replaces whatever the action actually failed with —
+            // so a real regression here used to be reported as an iterator complaint.
+            await cancellation.CancelAsync();
+
+            try
+            {
+                _ = await pending;
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected: the subscription was retired rather than completed.
+            }
+        }
     }
 
     private static ApplyPatchParams ModifyRequest(
@@ -1932,7 +1952,10 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             db,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            attachmentIndex: null,
+            covenantKernel: null,
+            FixtureOrdinaryConnectionFactory.For(db));
 
     }
 

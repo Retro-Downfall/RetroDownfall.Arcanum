@@ -843,7 +843,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     public async Task StreamPromptAsync_does_not_fallback_after_visible_or_protected_reasoning_commit(
         bool protectedOnly)
     {
-        
+
         ProviderSettings providerA = MakeProvider("provider-a");
         providerA.Models = [ReasoningModelEntry()];
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -961,7 +961,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     public async Task ExecutePromptAsync_does_not_fallback_after_buffered_reasoning_commit(
         bool protectedOnly)
     {
-        
+
         ProviderSettings providerA = MakeProvider("provider-a");
         providerA.Models = [ReasoningModelEntry()];
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -1175,6 +1175,13 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         ConfigurableSanctumGuard sanctumGuard = new();
 
+        ServiceCollection ordinaryServices = new();
+
+        ordinaryServices.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+            new FixtureOrdinaryConnectionFactory());
+
+        ServiceProvider ordinaryProvider = ordinaryServices.BuildServiceProvider();
+
         return new WizardIntelligenceProvider(
             factory,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
@@ -1223,6 +1230,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<BudgetMonitor>.Instance),
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
+            ordinaryProvider,
             withHealthTracker ? healthTracker : null,
             covenantDispatch: covenantDispatch,
             covenantToolCapabilities: covenantToolCapabilities);
@@ -1962,7 +1970,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>
