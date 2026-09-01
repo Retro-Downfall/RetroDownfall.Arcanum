@@ -1,7 +1,6 @@
 # Issue #239: Host-wide Grimoire Admission and Offline Transitions
 
-**Status:** Approved umbrella; #243/#244 integrated; #245 delivered; #246 in progress — final child
-qualification pending; #247–#257 pending.
+**Status:** Approved umbrella; #243/#244 integrated; #245/#246 delivered; #247–#257 pending.
 
 **Branch:** `codex/issue-239-grimoire-admission`, cut from `origin/main` at
 `988a469c765346132e5a2ea1bf3906519f6bdf00`.
@@ -780,8 +779,9 @@ Ordinary non-Covenant long-running-operation checkpoints are unchanged.
 raw-connection factory, stage-two open-ticket/handle/pool closure ordering, capability-and-lane-bound
 journal maintenance acquisition, exact stopped-host installation-reset opens, and the bidirectional
 source inventory. Its temporary V3 adapter remains per call site, requires the existing #124 exclusive
-lease, and identifies #248 as its removal owner. #246 is still **in progress — final child
-qualification pending**; this boundary does not qualify the parent or activate a journal handler.
+lease, and identifies #248 as its removal owner. #246 is **delivered** after focused RED/GREEN proof,
+bounded final review, a warning-free Release solution build, changed-file style verification, and a
+clean branch diff. This boundary does not qualify the parent or activate a journal handler.
 
 #247 remains responsible for V4/V2 immutable launch binding and terminal database reconciliation.
 #248 remains responsible for the typed Covenant reset/factory effect handler, canonical target binding,

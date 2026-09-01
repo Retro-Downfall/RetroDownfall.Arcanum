@@ -1,6 +1,6 @@
 # Issue #246 Grimoire Acquisition and Physical-Drain Design
 
-**Status:** In progress — final child qualification pending.
+**Status:** Delivered.
 
 **Parent:** GitHub issue #239.
 
@@ -586,9 +586,12 @@ duplicated here because the approved umbrella assigns them to #257's unchanged f
 #246 failure may justify one diagnostic command but does not turn that diagnostic into parent-wide
 qualification evidence.
 
-Task 12 owns final child review and the Release build gate. Until those gates complete, #246 remains
-**in progress — final child qualification pending** and no delivered/Done claim, issue closure, project
-transition, merge, push, or branch deletion follows from this implementation task. #247 retains V4/V2
-launch binding and terminal database reconciliation; #248 retains typed Covenant handler activation,
-compaction and sidecar recovery, effect publication, and V3-adapter removal; and #257 retains the
-final umbrella qualification. Issue #239 remains open and in progress. Issue #242 remains unchanged.
+Task 12 completed the final child review and qualification gates. Focused groups passed, including
+the 35/35 exact acquisition inventory, 167/167 admission/factory/drain group, 156/156 maintenance
+factory group, 337/337 gate regression group, and 352/352 stopped-host/reset group; the focused
+Covenant command also exited successfully. The final reviewed tree built in Release with zero
+warnings and zero errors, the changed-file C# blank-line check reported zero changes, and
+`git diff --check` passed. #247 retains V4/V2 launch binding and terminal database reconciliation;
+#248 retains typed Covenant handler activation, compaction and sidecar recovery, effect publication,
+and V3-adapter removal; and #257 retains the final umbrella qualification. Issue #239 remains open
+and in progress. Issue #242 remains unchanged.
