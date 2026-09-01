@@ -245,14 +245,14 @@ public sealed class SpellCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrWhiteSpace(workspace))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         string resolvedBody = string.Empty;
@@ -314,7 +314,7 @@ public sealed class SpellCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         UpdateSpellRequest request = new(
@@ -354,7 +354,7 @@ public sealed class SpellCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!await confirmationPrompt
@@ -523,7 +523,7 @@ public sealed class SpellCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(input, out string resolvedInput, out string? inputError))
@@ -662,7 +662,7 @@ public sealed class SpellCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         string json;
@@ -695,7 +695,7 @@ public sealed class SpellCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Spell export JSON parsed to an empty payload.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         SpellImportRequest request = new(payload, workspace, null);
@@ -740,7 +740,7 @@ public sealed class SpellCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             sessionId = parsedSessionId;
@@ -756,7 +756,7 @@ public sealed class SpellCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             campaignId = parsedCampaignId;
@@ -879,7 +879,7 @@ public sealed class SpellCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         CloneSpellRequest request = new(newName.Trim(), workspace);
@@ -929,14 +929,14 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrEmpty(body))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--body is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(body, out string resolvedBody, out string? bodyError))
@@ -983,14 +983,14 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrEmpty(body))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--body is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(body, out string resolvedBody, out string? bodyError))
@@ -1037,7 +1037,7 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         ActivateSpellVersionRequest request = new(workspace);

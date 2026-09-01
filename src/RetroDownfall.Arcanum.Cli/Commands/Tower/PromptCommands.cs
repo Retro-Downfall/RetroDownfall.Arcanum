@@ -41,7 +41,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -202,7 +202,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -264,21 +264,21 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrWhiteSpace(version))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrEmpty(template))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--template is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(template, out string resolvedTemplate, out string? templateError))
@@ -297,7 +297,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -522,7 +522,7 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(input, out string resolvedInput, out string? inputError))
@@ -548,7 +548,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--sessionId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedSessionId = parsed;
@@ -597,7 +597,7 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name and --new-version are required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Guid? parsedCampaignId = null;
@@ -609,7 +609,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsedCampaignId2;
@@ -768,7 +768,7 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         string json;
@@ -801,7 +801,7 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Prompt export JSON parsed to an empty payload.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Guid? parsedCampaignId = null;
@@ -813,7 +813,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;

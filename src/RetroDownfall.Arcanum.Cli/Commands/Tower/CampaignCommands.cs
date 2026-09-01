@@ -266,14 +266,14 @@ public sealed class CampaignCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrWhiteSpace(path))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--path is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         string typeText = string.IsNullOrWhiteSpace(type) ? "campaign" : type;
@@ -433,7 +433,7 @@ public sealed class CampaignCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         string json;
@@ -468,7 +468,7 @@ public sealed class CampaignCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Campaign export JSON parsed to an empty payload.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         CampaignImportRequest request = new("merge", payload);
@@ -633,7 +633,7 @@ public sealed class CampaignCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--before-updated-at must be a valid timestamp.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             beforeUpdatedAtParsed = parsed;
@@ -792,7 +792,7 @@ public sealed class CampaignCodexCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile($"@{file}", out string content, out string? readError))

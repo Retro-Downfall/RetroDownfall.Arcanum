@@ -98,7 +98,7 @@ public sealed class SpellVersionCommandTests
 
         CliTestResult result = RunCommand(handler, ["spell", "version", "create", "greet", "--version", "2.0"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 

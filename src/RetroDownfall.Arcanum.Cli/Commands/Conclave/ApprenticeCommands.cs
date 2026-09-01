@@ -134,7 +134,7 @@ public sealed class ApprenticeCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -257,7 +257,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(goal, out string resolvedGoal, out string? goalError))
@@ -271,7 +271,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal must not be empty.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Guid? parsedCampaignId = null;
@@ -283,7 +283,7 @@ public sealed class ApprenticeCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -448,7 +448,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(plan, out string planJson, out string? planError))
@@ -475,7 +475,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan must contain at least one step.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Result<ApprenticeDetailDto> result = await apiClient.ReweaveApprenticeAsync(apprenticeId, steps, cancellationToken).ConfigureAwait(false);
@@ -511,7 +511,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--guidance is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Result<string> result = await apiClient.IntervereApprenticeAsync(apprenticeId, guidance.Trim(), cancellationToken).ConfigureAwait(false);
@@ -549,7 +549,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Result<ApprenticeDetailDto> result = await apiClient

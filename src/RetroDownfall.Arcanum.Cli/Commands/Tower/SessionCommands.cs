@@ -51,7 +51,7 @@ public sealed class SessionCommands(
             || !TryParseOptionalDate(to, "--to", out DateTimeOffset? toDate))
         {
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
@@ -265,7 +265,7 @@ public sealed class SessionCommands(
             || !TryParseOptionalGuid(campaign, "--campaign", out Guid? campaignId))
         {
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
@@ -311,7 +311,7 @@ public sealed class SessionCommands(
 
             WriteArgumentError("--title is required.");
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
@@ -423,7 +423,7 @@ public sealed class SessionCommands(
 
             WriteArgumentError("--format must be 'json' or 'markdown'.");
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
@@ -641,14 +641,14 @@ public sealed class SessionCommands(
 
             WriteArgumentError("<QUERY> is required.");
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
         if (!TryParseOptionalGuid(campaign, "--campaign", out Guid? campaignId))
         {
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 

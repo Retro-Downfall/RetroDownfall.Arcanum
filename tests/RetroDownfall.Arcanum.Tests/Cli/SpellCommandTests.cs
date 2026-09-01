@@ -252,7 +252,7 @@ public sealed class SpellCommandTests
 
         CliTestResult result = RunCommand(handler, ["spell", "delete", "greet"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 
