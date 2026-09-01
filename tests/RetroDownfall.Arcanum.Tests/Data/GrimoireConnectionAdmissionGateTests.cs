@@ -16,6 +16,16 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     private static readonly TimeSpan OpeningTimeout = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// Real-time ceiling for a step that a manual clock has already made ready to complete.
+    /// </summary>
+    /// <remarks>
+    /// These tests drive the gate's own waits from <see cref="ManualTimeProvider"/>, so anything
+    /// still pending after the clock has been advanced is a defect rather than a slow machine. The
+    /// ceiling exists only so such a defect fails the test instead of hanging the suite.
+    /// </remarks>
+    private static readonly TimeSpan BoundedWait = TimeSpan.FromSeconds(10);
+
     [Fact]
     public void Ordinary_open_ticket_is_available_before_closing()
     {
@@ -1718,6 +1728,140 @@ public sealed class GrimoireConnectionAdmissionGateTests
         await permit.DisposeAsync();
 
         await lane.DisposeAsync();
+
+        Result keptClosed = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None);
+
+        Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    /// <summary>
+    /// A maintenance handle that never reports a terminal state cannot hold the process hostage.
+    /// </summary>
+    /// <remarks>
+    /// A phase that throws between consuming a capability and reporting the physical outcome leaves
+    /// its handle live. Releasing the lane waited on those handles with no deadline, and the wait
+    /// sits in front of the only code that gives the shared adoption interlock back, so one leaked
+    /// handle stalled the lane's disposal and every later adoption attempt behind it. The drain is
+    /// now bounded, and the interlock is surrendered whether or not the handles reported.
+    /// </remarks>
+    [Fact]
+    public async Task Leaked_maintenance_handle_cannot_stall_lane_release_or_later_adoption()
+    {
+
+        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        CovenantExclusiveRecoveryOwner owner = Owner(43);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceConnectionCapability capability =
+            closed.IssueMaintenanceConnectionCapability(
+                CanonicalPath,
+                CovenantMaintenanceConnectionMode.ReadOnly,
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
+
+        Result<IGrimoireTrackedMaintenanceHandle> leaked = capability.Consume(
+            owner,
+            closed.Generation,
+            CanonicalPath,
+            CovenantMaintenanceConnectionMode.ReadOnly,
+            CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+            lane);
+
+        Assert.True(leaked.IsSuccess, leaked.IsFailure ? leaked.Error.Message : null);
+
+        Task release = lane.DisposeAsync().AsTask();
+
+        Assert.False(release.IsCompleted);
+
+        await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(BoundedWait);
+
+        clock.Advance(OpeningTimeout);
+
+        await release.WaitAsync(BoundedWait);
+
+        Result<IGrimoireExpiredLeaseAdoptionInterlock> adoption =
+            await gate.AcquireExpiredLeaseAdoptionInterlockAsync(
+                    owner,
+                    static (_, _) => ValueTask.FromResult(true),
+                    CancellationToken.None)
+                .AsTask()
+                .WaitAsync(BoundedWait);
+
+        Assert.True(adoption.IsSuccess, adoption.IsFailure ? adoption.Error.Message : null);
+
+        await adoption.Value.DisposeAsync();
+
+    }
+
+    /// <summary>
+    /// Disposing a tracked maintenance handle reports the terminal state its caller never reached.
+    /// </summary>
+    /// <remarks>
+    /// Every other capability the closed lease issues is <c>IAsyncDisposable</c>, so a phase can
+    /// guard it with <c>await using</c>. The tracked handle was the one that was not, which left a
+    /// caller no way to write the guard at all: a throw between consuming the capability and
+    /// reporting the outcome leaked the handle by construction rather than by mistake.
+    /// </remarks>
+    [Fact]
+    public async Task Disposing_a_tracked_maintenance_handle_completes_its_physical_open_lifetime()
+    {
+
+        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        CovenantExclusiveRecoveryOwner owner = Owner(44);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceConnectionCapability capability =
+            closed.IssueMaintenanceConnectionCapability(
+                CanonicalPath,
+                CovenantMaintenanceConnectionMode.ReadOnly,
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
+
+        IGrimoireTrackedMaintenanceHandle handle = capability.Consume(
+            owner,
+            closed.Generation,
+            CanonicalPath,
+            CovenantMaintenanceConnectionMode.ReadOnly,
+            CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+            lane).Value;
+
+        IAsyncDisposable guard = Assert.IsAssignableFrom<IAsyncDisposable>(handle);
+
+        Assert.True(handle.ReportOpenStarted().IsSuccess);
+
+        await guard.DisposeAsync();
+
+        Assert.True(handle.ReportPhysicallyClosed().IsFailure);
+
+        // The clock is never advanced: the lane's drain has to be already satisfied, which is only
+        // true if disposal genuinely completed the handle's physical-open lifetime rather than the
+        // bounded wait quietly giving up on it.
+        await lane.DisposeAsync().AsTask().WaitAsync(BoundedWait);
 
         Result keptClosed = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,

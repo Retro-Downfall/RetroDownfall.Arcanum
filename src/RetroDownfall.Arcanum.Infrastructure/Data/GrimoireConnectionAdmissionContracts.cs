@@ -380,7 +380,18 @@ internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 /// <summary>
 /// One maintenance physical-open lifetime that ends only after open failure or physical closure.
 /// </summary>
-internal interface IGrimoireTrackedMaintenanceHandle
+/// <remarks>
+/// The lifetime is disposable so that a phase can hold it under <c>await using</c> like every other
+/// authority the closed lease issues. Without that, a phase that throws between consuming its
+/// capability and reporting the outcome leaks the lifetime by construction rather than by mistake,
+/// and a leaked lifetime blocks both the closed lease's disposition and its lane's release.
+///
+/// Disposal is the guard, not a second way to report: the gate's own handle ends an unreported
+/// lifetime in the terminal state its progress implies and leaves a reported one alone. The default
+/// implementation here does nothing, so that a recording double is not forced to invent a physical
+/// outcome it never had; any implementation that actually owns a physical open must override it.
+/// </remarks>
+internal interface IGrimoireTrackedMaintenanceHandle : IAsyncDisposable
 {
 
     Result ReportOpenStarted();
@@ -388,6 +399,8 @@ internal interface IGrimoireTrackedMaintenanceHandle
     Result ReportNotOpened();
 
     Result ReportPhysicallyClosed();
+
+    ValueTask IAsyncDisposable.DisposeAsync() => ValueTask.CompletedTask;
 
 }
 

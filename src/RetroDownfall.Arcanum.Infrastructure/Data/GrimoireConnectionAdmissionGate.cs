@@ -1765,6 +1765,38 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     }
 
+    /// <summary>
+    /// Ends a tracked physical-open lifetime whose phase never reported an outcome.
+    /// </summary>
+    /// <remarks>
+    /// Disposal is the caller's guard, not a second way to report: a handle that already reported is
+    /// left exactly as it is. One that did not is completed in the terminal state its own progress
+    /// implies - a native open that never started did not open, and one that started is over once
+    /// the phase holding it has unwound.
+    /// </remarks>
+    private void CompleteMaintenanceHandleOnDispose(TrackedMaintenanceHandle handle)
+    {
+
+        lock (_sync)
+        {
+
+            if (!handle.Closure.LiveMaintenanceHandles.Contains(handle))
+            {
+
+                return;
+
+            }
+
+            _ = CompleteMaintenanceHandleWhileLocked(
+                handle,
+                handle.State is MaintenanceHandleState.NotStarted
+                    ? MaintenanceHandleState.NotOpened
+                    : MaintenanceHandleState.PhysicallyClosed);
+
+        }
+
+    }
+
     private void ReleaseScopedConnectionPermit(ScopedConnectionPermit permit)
     {
 
@@ -1832,7 +1864,25 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        await lane.HandlesDrained.ConfigureAwait(false);
+        try
+        {
+
+            await lane.HandlesDrained
+                .WaitAsync(_openingAttemptTimeout, _timeProvider)
+                .ConfigureAwait(false);
+
+        }
+        catch (TimeoutException)
+        {
+
+            // A phase that threw between consuming a capability and reporting its handle's terminal
+            // physical-open state leaves that handle live for good, and this wait sits in front of
+            // the only code that gives the process-wide adoption interlock back. Waiting forever
+            // turns one leaked handle into a wedged process, so the wait is bounded and the release
+            // below runs either way. The handles stay live, so the closed lease still refuses to
+            // disposition - the leak is reported, not forgiven.
+
+        }
 
         lock (_sync)
         {
@@ -2536,6 +2586,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         ScopedConnectionPermit? scopedPermit) : IGrimoireTrackedMaintenanceHandle
     {
 
+        private int _disposed;
+
         internal Closure Closure { get; } = closure;
 
         internal MaintenanceIoLane Lane { get; } = lane;
@@ -2551,6 +2603,22 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         public Result ReportPhysicallyClosed() =>
             gate.ReportMaintenancePhysicallyClosed(this);
+
+        public ValueTask DisposeAsync()
+        {
+
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+
+                gate.CompleteMaintenanceHandleOnDispose(this);
+
+            }
+
+            GC.SuppressFinalize(this);
+
+            return ValueTask.CompletedTask;
+
+        }
 
     }
 
