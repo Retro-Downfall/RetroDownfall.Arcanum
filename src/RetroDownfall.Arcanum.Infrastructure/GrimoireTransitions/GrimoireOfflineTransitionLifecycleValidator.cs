@@ -487,7 +487,8 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
             {
 
                 return (byte)begun == (byte)current.LastCompletedPhase + 1
-                    && next.InFlightBeforeState is not null;
+                    && next.InFlightBeforeState is not null
+                    && current.ReplacementEvidence == next.ReplacementEvidence;
 
             }
 
@@ -617,6 +618,8 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
         current.Lifecycle.State is not GrimoireOfflineTransitionState.Prepared
             and not GrimoireOfflineTransitionState.KeepClosed
             and not GrimoireOfflineTransitionState.RetirementPending
+        && (current.Lifecycle.State is not GrimoireOfflineTransitionState.Closing
+            || current.Lifecycle.ClosingEvidence.IsComplete)
         && next.Lifecycle.Blocker is { } blocker
         && blocker.ResumeState == current.Lifecycle.State
         && SameEvidenceExceptBlocker(current, next);

@@ -294,6 +294,103 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task In_flight_begin_cannot_introduce_replacement_evidence_or_publish_raw_revision()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        GrimoireOfflineTransitionTypedPublication current =
+            await BeginApplyingAsync(lifecycle);
+
+        CovenantResetOfflineTransitionPayloadV1 applying =
+            Assert.IsType<CovenantResetOfflineTransitionPayloadV1>(current.Payload);
+
+        CovenantResetOfflineTransitionPayloadV1 invalid = applying with
+        {
+            InFlightPhase = CovenantResetPhase.CanonicalApplied,
+            InFlightBeforeState = new(Digest(0x61), Digest(0x62)),
+            ReplacementEvidence = Replacement(),
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            invalid,
+            CancellationToken.None)).IsFailure);
+
+        await AssertRawUnchangedAsync(current);
+
+    }
+
+    [Fact]
+    public async Task In_flight_begin_cannot_advance_replacement_evidence_or_publish_raw_revision()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        GrimoireOfflineTransitionTypedPublication current =
+            await BeginApplyingAsync(lifecycle);
+
+        CovenantResetOfflineTransitionPayloadV1 applying =
+            Assert.IsType<CovenantResetOfflineTransitionPayloadV1>(current.Payload);
+
+        CovenantResetOfflineTransitionPayloadV1 inFlight = applying with
+        {
+            InFlightPhase = CovenantResetPhase.CanonicalApplied,
+            InFlightBeforeState = new(Digest(0x61), Digest(0x62)),
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            inFlight,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 replacementPublished = inFlight with
+        {
+            ReplacementEvidence = Replacement(),
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            replacementPublished,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 completed = replacementPublished with
+        {
+            LastCompletedPhase = CovenantResetPhase.CanonicalApplied,
+            InFlightPhase = null,
+            InFlightBeforeState = null,
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            completed,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 invalid = completed with
+        {
+            InFlightPhase = CovenantResetPhase.ManagedArtifactsProcessed,
+            InFlightBeforeState = new(Digest(0x63), Digest(0x64)),
+            ReplacementEvidence = completed.ReplacementEvidence! with
+            {
+                StagingPhysicalIdentityDigest = Digest(0x85),
+            },
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            invalid,
+            CancellationToken.None)).IsFailure);
+
+        await AssertRawUnchangedAsync(current);
+
+    }
+
     private IEnumerable<CovenantResetOfflineTransitionPayloadV1> TerminalSequence(
         CovenantResetOfflineTransitionPayloadV1 prepared)
     {
@@ -473,6 +570,93 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         };
 
     }
+
+    private async Task<GrimoireOfflineTransitionTypedPublication> BeginApplyingAsync(
+        GrimoireOfflineTransitionLifecycleStore lifecycle)
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 prepared = PreparedPayload();
+
+        GrimoireOfflineTransitionTypedPublication current = Value(await lifecycle.BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            prepared,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 closing = prepared with
+        {
+            Lifecycle = prepared.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.Closing,
+            },
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            closing,
+            CancellationToken.None));
+
+        closing = closing with
+        {
+            Lifecycle = closing.Lifecycle with
+            {
+                ClosingEvidence = new(
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    prepared.Binding.SourceDatasetGeneration),
+            },
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            closing,
+            CancellationToken.None));
+
+        CovenantResetOfflineTransitionPayloadV1 applying = closing with
+        {
+            Lifecycle = closing.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.Applying,
+            },
+        };
+
+        return Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            applying,
+            CancellationToken.None));
+
+    }
+
+    private async Task AssertRawUnchangedAsync(
+        GrimoireOfflineTransitionTypedPublication current)
+    {
+
+        GrimoireOfflineTransitionJournalPublication raw = Value(
+            await RawStore().RecoverAsync(
+                _lock,
+                _guarded,
+                CancellationToken.None)).Publication!;
+
+        Assert.Equal(current.Raw.Envelope.Revision, raw.Envelope.Revision);
+
+        Assert.Equal(current.Raw.PayloadBytes, raw.PayloadBytes);
+
+    }
+
+    private static GrimoireOfflineTransitionReplacementEvidence Replacement() => new(
+        "staging.db",
+        Digest(0x81),
+        StagingPhysicalIdentityDigest: null,
+        Digest(0x82),
+        Digest(0x83),
+        StagedContentDigest: null);
 
     private CovenantResetOfflineTransitionPayloadV1 PreparedPayload() => new(
         new(

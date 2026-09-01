@@ -181,6 +181,62 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
     }
 
     [Fact]
+    public void Closing_enters_keep_closed_only_after_complete_closed_proof()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 partial = Payload(
+            GrimoireOfflineTransitionState.Closing) with
+        {
+            Lifecycle = Lifecycle(GrimoireOfflineTransitionState.Closing) with
+            {
+                ClosingEvidence = new(true, true, false, false, false, null),
+            },
+        };
+
+        GrimoireOfflineTransitionBlocker blocker = new(
+            "Covenant.ManualRecoveryRequired",
+            GrimoireOfflineTransitionState.Closing,
+            Digest(0x75));
+
+        CovenantResetOfflineTransitionPayloadV1 partialKept = partial with
+        {
+            Lifecycle = partial.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = blocker,
+            },
+        };
+
+        Assert.True(Handler().ValidateAdvance(partial, partialKept).IsFailure);
+
+        CovenantResetOfflineTransitionPayloadV1 complete = partial with
+        {
+            Lifecycle = partial.Lifecycle with
+            {
+                ClosingEvidence = new(
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    partial.Binding.SourceDatasetGeneration),
+            },
+        };
+
+        CovenantResetOfflineTransitionPayloadV1 completeKept = complete with
+        {
+            Lifecycle = complete.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = blocker,
+            },
+        };
+
+        Assert.True(Handler().ValidateAdvance(complete, completeKept).IsSuccess);
+
+    }
+
+    [Fact]
     public void Edges_preserve_every_unowned_evidence_family_and_recovered_shapes_are_coherent()
     {
 
