@@ -185,7 +185,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         {
 
             if (_state == GateState.Closed
-                || (_state == GateState.Closing && !HasLiveFinisherLifetimeWhileLocked()))
+                || (_state == GateState.Closing
+                    && !HasLiveFinisherLifetimeWhileLocked(connection)))
             {
 
                 throw new GrimoireMaintenanceUnavailableException();
@@ -265,6 +266,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 {
 
                     promoted.IsPromoted = true;
+
+                    promoted.Lifetime.PromotedConnection = scopedConnection;
 
                     _ = _requestLeases.Remove(promoted);
 
@@ -783,7 +786,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private static Error LifecycleConflict(string message) =>
         new(LifecycleConflictCode, message);
 
-    private bool HasLiveFinisherLifetimeWhileLocked()
+    private bool HasLiveFinisherLifetimeWhileLocked(DbConnection connection)
     {
 
         for (OrdinaryLifetime? lifetime = CurrentOrdinaryLifetime.Value;
@@ -793,7 +796,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             if (ReferenceEquals(lifetime.Gate, this)
                 && !lifetime.IsReleased
-                && lifetime.Generation <= _generation)
+                && lifetime.Generation == _generation
+                && (lifetime.PromotedConnection is null
+                    || ReferenceEquals(lifetime.PromotedConnection, connection)))
             {
 
                 return true;
@@ -1905,6 +1910,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         internal long Generation { get; } = generation;
 
         internal OrdinaryLifetime? Previous { get; } = previous;
+
+        internal DbConnection? PromotedConnection { get; set; }
 
         internal bool IsReleased { get; set; }
 
