@@ -580,7 +580,7 @@ public sealed class DataRetentionCommandTests
         int count = result.Error.IndexOf(expectedCount, StringComparison.Ordinal);
 
         int help = result.Error.IndexOf(
-            "Retention guidance: README.md#covenant-provider-retention-and-deletion",
+            "Retention guidance: docs/Arcanum.Engineering.md#covenant-provider-retention-and-deletion",
             StringComparison.Ordinal);
 
         int cancelled = result.Error.IndexOf("Memory reset cancelled.", StringComparison.Ordinal);
@@ -732,7 +732,7 @@ public sealed class DataRetentionCommandTests
                 "This installation's own receipts record exactly 1 physical attempt that could have carried protected content out of it. Nothing this reset does can revoke any of them.",
                 "  Retention guidance (Claude Code): https://privacy.claude.com/en/collections/10672565-data-handling-retention",
                 "  Retention guidance (House gateway): compendium:providers",
-                "  Retention guidance: README.md#covenant-provider-retention-and-deletion",
+                "  Retention guidance: docs/Arcanum.Engineering.md#covenant-provider-retention-and-deletion",
                 "<prompt>",
                 "POST /api/data/memory/reset",
             ],

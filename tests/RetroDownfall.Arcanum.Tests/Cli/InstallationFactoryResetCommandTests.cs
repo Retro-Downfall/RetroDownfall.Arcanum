@@ -674,7 +674,7 @@ public sealed class InstallationFactoryResetCommandTests
         int count = result.Error.IndexOf("at least 2 physical attempts", StringComparison.Ordinal);
 
         int guide = result.Error.IndexOf(
-            "Retention guidance: README.md#covenant-provider-retention-and-deletion",
+            "Retention guidance: docs/Arcanum.Engineering.md#covenant-provider-retention-and-deletion",
             StringComparison.Ordinal);
 
         Assert.True(disclosure >= 0);
@@ -731,7 +731,7 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Contains("at least 2 physical attempts", result.Error, StringComparison.Ordinal);
 
         Assert.Contains(
-            "Retention guidance: README.md#covenant-provider-retention-and-deletion",
+            "Retention guidance: docs/Arcanum.Engineering.md#covenant-provider-retention-and-deletion",
             result.Error,
             StringComparison.Ordinal);
 
@@ -786,7 +786,7 @@ public sealed class InstallationFactoryResetCommandTests
         int count = result.Error.IndexOf("exactly 1 physical attempt", StringComparison.Ordinal);
 
         int guide = result.Error.IndexOf(
-            "Retention guidance: README.md#covenant-provider-retention-and-deletion",
+            "Retention guidance: docs/Arcanum.Engineering.md#covenant-provider-retention-and-deletion",
             StringComparison.Ordinal);
 
         int prompt = result.Error.IndexOf("Type RESET", StringComparison.Ordinal);
@@ -844,7 +844,7 @@ public sealed class InstallationFactoryResetCommandTests
         int count = result.Error.IndexOf("exactly 1 physical attempt", StringComparison.Ordinal);
 
         int guide = result.Error.IndexOf(
-            "Retention guidance: README.md#covenant-provider-retention-and-deletion",
+            "Retention guidance: docs/Arcanum.Engineering.md#covenant-provider-retention-and-deletion",
             StringComparison.Ordinal);
 
         int prompt = result.Error.IndexOf("Type RESET", StringComparison.Ordinal);

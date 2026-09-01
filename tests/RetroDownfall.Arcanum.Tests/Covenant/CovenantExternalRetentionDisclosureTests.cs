@@ -117,7 +117,7 @@ public sealed class CovenantExternalRetentionDisclosureTests
 
         Assert.Equal(CovenantExternalRetentionDisclosure.OperatorGuideTarget, guide.Uri);
 
-        Assert.Equal("README.md#covenant-provider-retention-and-deletion", guide.Uri);
+        Assert.Equal("docs/Arcanum.Engineering.md#covenant-provider-retention-and-deletion", guide.Uri);
 
     }
 

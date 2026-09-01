@@ -1188,6 +1188,7 @@ Watch terminal output uses UTC timestamps and source-specific colors. The shared
 ## Related documentation
 
 - [`README.md`](../README.md) — installation and quick-start workflows.
+- [`Arcanum.Engineering.md`](Arcanum.Engineering.md) — contributor and agent orientation.
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) — architecture, ownership, security, and implementation rationale.
 - [`Arcanum.API.md`](Arcanum.API.md) — HTTP routes, wire shapes, status mapping, and public error codes.
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — operator troubleshooting.

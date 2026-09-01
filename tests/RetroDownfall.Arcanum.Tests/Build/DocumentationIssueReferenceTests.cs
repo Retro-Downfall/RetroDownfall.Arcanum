@@ -5,7 +5,9 @@ using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 namespace RetroDownfall.Arcanum.Tests.Build;
 
 /// <summary>
-/// Only <c>README.md</c> and <c>docs/Arcanum.OATH.md</c> may name a tracker issue. Every other
+/// Only <c>README.md</c>, <c>docs/Arcanum.Engineering.md</c>, and <c>docs/Arcanum.OATH.md</c> may
+/// name a tracker issue -- the first two carry the running Covenant status, which is a record of
+/// tracker work by construction. Every other
 /// reference document has to describe the constraint itself, because a reader outside the tracker
 /// cannot resolve <c>#55</c> into anything.
 /// </summary>

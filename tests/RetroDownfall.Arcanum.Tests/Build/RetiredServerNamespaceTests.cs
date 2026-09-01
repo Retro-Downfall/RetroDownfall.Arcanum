@@ -35,6 +35,8 @@ public sealed class RetiredServerNamespaceTests
     [
         "README.md",
 
+        "docs/Arcanum.Engineering.md",
+
         "docs/Arcanum.DESIGN.md",
 
         "docs/Arcanum.API.md",

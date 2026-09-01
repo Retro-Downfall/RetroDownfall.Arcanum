@@ -15,6 +15,17 @@ on:
         required: false
         type: string
 
+      # A draft is invisible to everyone without push access and never creates the tag, so a run that
+      # stops at a draft has shipped nothing to anybody. Publishing stays a separate, deliberate
+      # answer rather than a property of the build: the default is still a draft, which is what a
+      # signed and notarized macOS binary deserves before the world can download it, and turning it
+      # public is a flag an operator sets on the way in instead of a click to remember afterwards.
+      publish:
+        description: "Publish the release publicly. Leave off to assemble a draft and decide later."
+        required: false
+        default: false
+        type: boolean
+
   # Called by CI after every gate on a push to main has passed, with no version, so the number comes
   # from Directory.Build.props the same way it would for a blank dispatch. One derivation, two ways
   # in, rather than a second idea of what version this build is.
@@ -24,6 +35,14 @@ on:
         description: "SemVer (e.g. 0.1.0-beta.1). Blank uses Directory.Build.props and picks the next beta number."
         required: false
         type: string
+
+      # Defaulted off and deliberately absent from CI's call site: a push to main assembles a draft,
+      # and no automatic path turns one public. Shipping stays a thing a person asks for.
+      publish:
+        description: "Publish the release publicly. CI leaves it a draft."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -235,7 +254,7 @@ jobs:
       version: ${{ needs.prepare.outputs.version }}
 
   publish:
-    name: Assemble the draft release
+    name: Assemble the release, and publish it if asked
     needs:
       - prepare
       - macos-arm64
@@ -334,15 +353,48 @@ jobs:
               echo
               echo "\`SHA256SUMS.txt\` covers every file above."
               echo
-              echo "Distributed from GitHub only — not the Mac App Store and not the Microsoft Store. Publish this draft when ready."
+              echo "Distributed from GitHub only — not the Mac App Store and not the Microsoft Store."
             } >"$NOTES_FILE"
             # bash treats "${PRE_ARGS[@]}" as an unbound variable under `set -u` when the array is
             # empty, which is exactly the case for a non-prerelease version. Use the same guard the
             # shell scripts use.
             gh release create "$TAG" "${ASSETS[@]}" \
               --draft \
+              --target "$GITHUB_SHA" \
               ${PRE_ARGS[@]+"${PRE_ARGS[@]}"} \
               --title "$TAG" \
               --notes-file "$NOTES_FILE"
           fi
-          echo "Draft release ready: $(gh release view "$TAG" --json url --jq .url)"
+          echo "Release assembled: $(gh release view "$TAG" --json url --jq .url)"
+
+      # Publishing is also what creates the tag: a draft holds a tag name and a target commit and
+      # writes neither into the repository until this runs. So this step is the difference between a
+      # release that exists and a release that happened.
+      - name: Promote the draft to a public release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false
+          URL="$(gh release view "$TAG" --json url --jq .url)"
+          echo "Published $TAG: $URL"
+          echo "Published [\`$TAG\`]($URL) — public, and the tag now exists." >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Say that the release is still a draft
+        if: ${{ !inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          URL="$(gh release view "$TAG" --json url --jq .url)"
+          {
+            echo "Draft \`$TAG\` assembled but **not published**: $URL"
+            echo
+            echo "Nobody without push access can see it, and the tag does not exist yet."
+            echo "Re-run this workflow with \`publish\` checked, or publish the draft by hand."
+          } >>"$GITHUB_STEP_SUMMARY"

@@ -1322,7 +1322,7 @@ The following documents own or explain the detailed contracts summarized here. T
   - §10.23 What an installation holds, and what a turn had to drop
   - §10.24 The release benchmark
   - §10.25–§10.25.1 Evolving an installed tier through a declared version chain
-- [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
+- [`docs/Arcanum.Engineering.md`](Arcanum.Engineering.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
 - [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md): the shared model/tool-loop and attachment continuation ordering that the OATH runtime integration extends.
 - GitHub issues [#73](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/73) through [#115](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/115): the delivery units. Issue bodies are authoritative for acceptance criteria; the implementation-plan checklists remain the mechanical source of truth.

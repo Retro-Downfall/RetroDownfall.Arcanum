@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// It is deliberately <b>not</b> enforced at startup. Every schema object installs with
 /// <c>IF NOT EXISTS</c>, so opening an older local database still works; an incompatible one is
 /// recreated under the pre-user-data reinstall policy at the operator's discretion, not refused by
-/// the host (<c>README.md</c>, "Local Grimoire reinstall").
+/// the host (<c>docs/Arcanum.Engineering.md</c>, "Local Grimoire reinstall").
 /// </summary>
 internal static class GrimoireSchemaIdentity
 {

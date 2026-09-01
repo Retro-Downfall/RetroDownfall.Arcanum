@@ -80,7 +80,7 @@ public static class CovenantExternalRetentionDisclosure
             + "complete any external deletion separately.";
 
     /// <summary>The operator guide's Covenant retention section. Repository-relative, never a URI.</summary>
-    public const string OperatorGuideTarget = "README.md#covenant-provider-retention-and-deletion";
+    public const string OperatorGuideTarget = "docs/Arcanum.Engineering.md#covenant-provider-retention-and-deletion";
 
     /// <summary>Compendium's configured Providers page. An internal route, never a URI.</summary>
     public const string ConfiguredProvidersPageTarget = "compendium:providers";

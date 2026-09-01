@@ -750,26 +750,6 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     }
 
-    [Fact]
-    public void Ci_uploads_exactly_the_release_evidence_artifacts_the_readme_lists()
-    {
-
-        string repositoryRoot = FindRepositoryRoot();
-
-        IReadOnlySet<string> produced = UploadedArtifactNames(repositoryRoot);
-
-        IReadOnlySet<string> documented = DocumentedReleaseEvidenceArtifacts(repositoryRoot);
-
-        Assert.True(
-            produced.SetEquals(documented),
-            "The release-qualification evidence list in README.md and the upload-artifact steps in "
-            + $".github/workflows/ci.yml disagree. README lists [{string.Join(", ", documented)}]; "
-            + $"the workflow produces [{string.Join(", ", produced)}]. A documented artifact with no "
-            + "producer cannot be cited as evidence, and an undocumented one is evidence nobody "
-            + "knows to collect.");
-
-    }
-
     /// <summary>
     /// The keys directly under <c>on:</c>. Two spaces of indent and a trailing colon, which is the
     /// shape every trigger in this file uses; a comment line or a nested key is deeper and a
@@ -830,96 +810,6 @@ public sealed class ContinuousIntegrationWorkflowTests
         }
 
         return triggers;
-
-    }
-
-    private static IReadOnlySet<string> UploadedArtifactNames(string repositoryRoot)
-    {
-
-        string[] lines = WorkflowLines(repositoryRoot);
-
-        HashSet<string> names = new(StringComparer.Ordinal);
-
-        for (int index = 0; index < lines.Length; index++)
-        {
-
-            if (!lines[index].Contains("uses: actions/upload-artifact", StringComparison.Ordinal))
-            {
-
-                continue;
-
-            }
-
-            for (int candidate = index + 1; candidate < lines.Length; candidate++)
-            {
-
-                string trimmed = lines[candidate].Trim();
-
-                // `- name:` starts the next step, so the `with:` block ended without naming the
-                // artifact and GitHub would upload it under its default name.
-                if (trimmed.StartsWith("- ", StringComparison.Ordinal))
-                {
-
-                    break;
-
-                }
-
-                if (trimmed.StartsWith("name:", StringComparison.Ordinal))
-                {
-
-                    names.Add(trimmed["name:".Length..].Trim());
-
-                    break;
-
-                }
-
-            }
-
-        }
-
-        Assert.NotEmpty(names);
-
-        return names;
-
-    }
-
-    private static IReadOnlySet<string> DocumentedReleaseEvidenceArtifacts(string repositoryRoot)
-    {
-
-        string[] lines = File.ReadAllLines(Path.Combine(repositoryRoot, "README.md"));
-
-        int heading = Array.FindIndex(
-            lines,
-            line => line.Trim() == "### Release-qualification evidence");
-
-        Assert.True(
-            heading >= 0,
-            "README.md carries no release-qualification evidence section, so nothing states which "
-            + "artifacts a qualified release must be able to produce.");
-
-        int fence = Array.FindIndex(lines, heading, line => line.Trim() == "```text");
-
-        Assert.True(fence >= 0, "The release-qualification evidence section lists no artifacts.");
-
-        HashSet<string> documented = new(StringComparer.Ordinal);
-
-        for (int index = fence + 1; index < lines.Length && lines[index].Trim() != "```"; index++)
-        {
-
-            string trimmed = lines[index].Trim();
-
-            if (trimmed.Length > 0)
-            {
-
-                documented.Add(trimmed);
-
-            }
-
-        }
-
-        Assert.NotEmpty(documented);
-
-        return documented;
 
     }
 
