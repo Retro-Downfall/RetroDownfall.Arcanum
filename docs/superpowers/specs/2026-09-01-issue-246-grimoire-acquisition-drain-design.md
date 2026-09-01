@@ -453,18 +453,26 @@ Approved indirect acquisition routes use an internal, compile-time-only
 `GrimoireConnectionAcquisitionRouteAttribute` on the exact factory/source method declaration. The
 syntax scanner derives the marked method name and arity, discovers every matching invocation, and
 requires each marked route method name to be repository-unique and an exact catalog entry for the
-declaration and each call. It also requires the marker on
-every production method whose declared return type is `DbConnection`, `SqliteConnection`,
-`IGrimoireOrdinaryConnectionLease`, `IGrimoireMaintenanceConnectionLease`, or the stopped-host lease,
-including those types recursively wrapped by `Task<T>`, `ValueTask<T>`, or `Result<T>`, and on every
-method containing a direct provider open that returns an open-owning wrapper. The
-attribute is never inspected by production runtime code and creates no reflection or AOT dependency.
+declaration and each call. Direct `DbConnection`/`SqliteConnection` construction and provider-open
+identities remain direct-catalog-covered and do not receive route markers. A marker instead binds each
+concrete opaque lease/session boundary—`IGrimoireOrdinaryConnectionLease`,
+`IGrimoireMaintenanceConnectionLease`, `IStoppedHostGrimoireConnectionLease`,
+`ICovenantV3MaintenanceConnectionLease`, or `HostToolsMarkerPairResetDatabaseSession`—including those
+types recursively wrapped by `Task<T>`, `ValueTask<T>`, or `Result<T>`. A helper that can only return a
+failure is not an acquisition boundary; an already-owned `BorrowCoreConnection` is likewise not one.
+The attribute is never inspected by production runtime code and creates no reflection or AOT dependency.
 
 Marker coverage applies only to concrete method or local-function acquisition implementations that
 have a body. Declaration-only interface, abstract, and partial contracts are excluded because they
 contain no executable acquisition route for the syntax scanner to resolve. This is the syntax-only
 resolution of the approved text's duplicate-name contradiction: it does not exempt an executable
 route, broad directory/type grouping, or a concrete call site from its exact catalog identity.
+
+### 8.1 Ledger ruling
+
+**Ruling:** direct bare-connection routes are direct-catalog-covered; markers are only opaque
+lease/session boundaries. The cost of a mistaken rule is a missed indirect route, bounded by the
+bidirectional direct/marker equality proof.
 
 Discovery identities use normalized file, syntax-derived enclosing type/member declaration, syntax
 kind, normalized callee or constructed-type text, arity, and a normalized construct fingerprint rather
