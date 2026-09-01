@@ -3116,6 +3116,53 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The shutdown checkpoint opens its own connection, so it installs the provider itself.
+    /// </summary>
+    /// <remarks>
+    /// An inventory assertion over the source, because the failure it prevents cannot be staged in a
+    /// test process: <c>raw.SetProvider</c> is process-global and every other test here has already
+    /// installed it, so the missing-provider case only exists in a host that reaches shutdown
+    /// checkpointing without ever having opened the Grimoire. The checkpoint swallows everything it
+    /// throws, so what changes is what the operator is told — the typed unavailability the runtime
+    /// raises, or a raw <c>DllNotFoundException</c> from the provider shim.
+    /// </remarks>
+    [Fact]
+    public void CheckpointOnShutdownAsync_initializes_the_native_runtime_before_it_opens_a_connection()
+    {
+
+        ProductionSource bootstrapper = ProductionSourceInventory.Sources().Single(
+            static source => source.IsExactOwner(
+                "src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs"));
+
+        // The opener is target-typed and its variable name is unique in the file, so it identifies
+        // the shutdown checkpoint's own connection without pinning a signature's line breaks.
+        Assert.Equal(1, bootstrapper.Occurrences("SqliteConnection connection = new("));
+
+        int opener = bootstrapper.Text.IndexOf(
+            "SqliteConnection connection = new(",
+            StringComparison.Ordinal);
+
+        int method = bootstrapper.Text.LastIndexOf(
+            "CheckpointOnShutdownAsync(",
+            opener,
+            StringComparison.Ordinal);
+
+        Assert.True(method >= 0, "The shutdown checkpoint overload that opens a connection moved.");
+
+        int initialize = bootstrapper.Text.IndexOf(
+            "SqliteNativeRuntime.Instance.Initialize()",
+            method,
+            StringComparison.Ordinal);
+
+        Assert.True(
+            initialize >= 0 && initialize < opener,
+            "CheckpointOnShutdownAsync opens a SQLCipher connection on a path that never installs "
+            + "the provider, so a host that shuts down without having opened the Grimoire fails with "
+            + "a raw provider error instead of the typed one.");
+
+    }
+
     private static ActiveInstallationReset CreateHostRecoveryActive(
         InstallationResetScope scope) =>
         new(

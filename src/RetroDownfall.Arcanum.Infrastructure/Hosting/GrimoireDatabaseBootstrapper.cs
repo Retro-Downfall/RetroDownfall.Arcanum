@@ -97,6 +97,13 @@ public static class GrimoireDatabaseBootstrapper
         try
         {
 
+            // This connection is opened on its own path: a host that shut down without ever opening
+            // the Grimoire has installed no provider, and the checkpoint would fail on the raw
+            // SQLitePCLRaw error rather than the typed unavailability. Inside the try on purpose —
+            // the method is best-effort by contract, and a runtime that will not load belongs in the
+            // same swallowed warning as every other failure here rather than thrown out of shutdown.
+            SqliteNativeRuntime.Instance.Initialize();
+
             string passphrase = passphraseSource.Passphrase;
 
             // Unpooled, or this checkpoint defeats its own purpose. A pooled handle is not closed by
