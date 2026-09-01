@@ -3082,6 +3082,11 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken)
     {
 
+        await RefuseLabeledUntargetedResetAsync(
+            scope,
+            campaignId,
+            cancellationToken).ConfigureAwait(false);
+
         List<MemoryResetSelection> selections = [];
 
         foreach (MemoryResetSelection selection in BuildMemoryResetSelections(scope, campaignId))
@@ -5878,6 +5883,65 @@ internal sealed partial class DataRetentionService(
                 .EnsureNoneLabeledAsync(kind, cancellationToken)
                 .ConfigureAwait(false)
             : Result.Success();
+
+    /// <summary>
+    /// Refuses an untargeted memory reset over a store that still holds a labelled member.
+    /// </summary>
+    /// <remarks>
+    /// An untargeted reset hands one bare <c>DELETE FROM</c> the whole table, which is the exact
+    /// shape the guard's bulk arm exists for: the statement examines no identity, so no per-artifact
+    /// check can see the rows it never enumerated and the only safe answer for a labelled member is
+    /// to refuse. A Campaign-targeted reset takes the predicate arm instead and is left alone.
+    ///
+    /// <para>Saga and Lexicon are the two stores asked about, because they are the two kinds the
+    /// label table names for a store's own rows. The embedding scopes truncate derived rows whose
+    /// labels are all one kind, and <see cref="SensitiveArtifactKind.Embedding"/> does not
+    /// distinguish an Entry embedding from an attachment one — asking it here would refuse an
+    /// attachment reset for a labelled Entry embedding it never touches.</para>
+    /// </remarks>
+    private async Task RefuseLabeledUntargetedResetAsync(
+        MemoryResetScope scope,
+        Guid? campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        if (campaignId is not null)
+        {
+
+            return;
+
+        }
+
+        SensitiveArtifactKind? kind = scope switch
+        {
+
+            MemoryResetScope.Saga => SensitiveArtifactKind.Saga,
+
+            MemoryResetScope.Lexicon => SensitiveArtifactKind.Lexicon,
+
+            _ => null,
+
+        };
+
+        if (kind is not { } protectedKind)
+        {
+
+            return;
+
+        }
+
+        Result unlabeled = await EnsureKindUnlabeledAsync(
+            protectedKind,
+            cancellationToken).ConfigureAwait(false);
+
+        if (unlabeled.IsFailure)
+        {
+
+            throw new RetentionCovenantLabelException(unlabeled.Error);
+
+        }
+
+    }
 
     /// <summary>
     /// Refuses a Session deletion that would take a labelled assistant Entry with it.

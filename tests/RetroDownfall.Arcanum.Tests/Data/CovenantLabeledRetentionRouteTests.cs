@@ -30,9 +30,9 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// <remarks>
 /// A test that constructs <c>ICovenantLabeledArtifactGuard</c> and calls it proves the guard's own
 /// logic and nothing about whether a production delete route reaches it. These enter through
-/// <c>POST /api/data/prune</c> and <c>DELETE /api/data/sessions/{id}</c>, seed the label through the
-/// production <see cref="IArtifactSensitivityLedger"/>, and assert the artifact is still there
-/// afterwards.
+/// <c>POST /api/data/prune</c>, <c>DELETE /api/data/sessions/{id}</c> and
+/// <c>POST /api/data/memory/reset</c>, seed the label through the production
+/// <see cref="IArtifactSensitivityLedger"/>, and assert the artifact is still there afterwards.
 ///
 /// <para>§10.20.2 fixes what "afterwards" has to mean: <c>Blocked</c> means the artifact is still
 /// there and must stay, and the route refuses rather than reporting a deletion that did not happen.
@@ -172,6 +172,63 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     }
 
+    /// <summary>
+    /// One labelled Saga memory refuses the untargeted whole-store reset.
+    /// </summary>
+    /// <remarks>
+    /// The bulk arm exists for exactly this statement: a bare <c>DELETE FROM saga_memories</c>
+    /// examines no identity, so no per-artifact check can see the rows it never enumerated.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_labeled_saga_memory_refuses_the_untargeted_memory_reset_route()
+    {
+
+        RequireSqlCipher();
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid memoryId = Guid.NewGuid();
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+
+            SqliteConnection connection = await OpenAsync(scope);
+
+            await SeedSagaMemoryAsync(connection, memoryId);
+
+            await LabelAsync(
+                scope,
+                SensitiveArtifactKind.Saga,
+                memoryId,
+                sessionId: null);
+
+        }
+
+        HttpResponseMessage reset = await client.PostAsync(
+            "/api/data/memory/reset",
+            Json(
+                new MemoryResetRequest(MemoryResetScope.Saga),
+                ArcanumJsonContext.Default.MemoryResetRequest));
+
+        ApiResponse<DataRetentionApplyResult> body = await ReadAsync(reset);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, body.Error?.Code);
+
+        await using AsyncServiceScope after = factory.Services.CreateAsyncScope();
+
+        SqliteConnection verify = await OpenAsync(after);
+
+        Assert.Equal(1, await CountAsync(verify, "saga_memories", "Id", memoryId));
+
+        Assert.Equal(1, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", memoryId));
+
+    }
+
     private static async Task<SqliteConnection> OpenAsync(AsyncServiceScope scope)
     {
 
@@ -225,6 +282,24 @@ public sealed class CovenantLabeledRetentionRouteTests
         _ = command.Parameters.AddWithValue("$id", Canonical(entryId));
 
         _ = command.Parameters.AddWithValue("$session", Canonical(sessionId));
+
+        _ = command.Parameters.AddWithValue("$created", Backdated);
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private static async Task SeedSagaMemoryAsync(SqliteConnection connection, Guid memoryId)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode)
+            VALUES ($id, 'labelled saga fact', $created, 1);
+            """;
+
+        _ = command.Parameters.AddWithValue("$id", Canonical(memoryId));
 
         _ = command.Parameters.AddWithValue("$created", Backdated);
 
