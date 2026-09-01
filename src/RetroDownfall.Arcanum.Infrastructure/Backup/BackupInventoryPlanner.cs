@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -474,6 +476,13 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
     {
 
         string connectionString = BuildConnectionString(databasePath, databasePassphrase);
+
+        // The planner opens its own connection rather than going through BackupRestoreDatabaseWorker,
+        // so the provider installation it would have inherited has to be made here: the SQLCipher
+        // provider this project references carries no bundle and no auto-initialization, and an
+        // inventory reached before anything else opened the Grimoire would otherwise fail on a missing
+        // symbol rather than as the typed unavailability.
+        SqliteNativeRuntime.Instance.Initialize();
 
         await using SqliteConnection connection = new(connectionString);
 
