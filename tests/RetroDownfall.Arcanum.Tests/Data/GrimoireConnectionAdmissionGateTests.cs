@@ -715,6 +715,52 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    /// <summary>
+    /// A cancelled stage-two close is a refusal, not a half-committed transition.
+    /// </summary>
+    /// <remarks>
+    /// The generation bump, the move to Closed and the refusal stamped on every unresolved open are
+    /// one commitment. A caller that is told its call was cancelled has been told nothing happened,
+    /// so nothing may have happened: the generation must be untouched, the gate must still be
+    /// Closing, and an open that was in flight must still be able to revalidate and complete.
+    /// </remarks>
+    [Fact]
+    public async Task Precancelled_connection_close_leaves_the_transition_and_its_unresolved_open_intact()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        using SqliteConnection connection = new();
+
+        IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(connection);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(41));
+
+        long observedGeneration = gate.CurrentGeneration;
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => gate.CloseConnectionAdmissionAsync(closing, cancelled.Token).AsTask());
+
+        Assert.Equal(observedGeneration, gate.CurrentGeneration);
+
+        Result revalidated = ticket.RevalidateAfterNativeOpen();
+
+        Assert.True(
+            revalidated.IsSuccess,
+            revalidated.IsFailure ? revalidated.Error.Message : null);
+
+        Result opened = ticket.MarkOpened();
+
+        Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
+
+        ticket.Dispose();
+
+    }
+
     [Fact]
     public async Task Owner_generation_and_double_disposition_mismatches_are_rejected()
     {

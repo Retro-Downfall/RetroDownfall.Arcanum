@@ -539,6 +539,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         long closedGeneration;
 
+        // The lock block below commits stage two in one step - the generation bump, the move to
+        // Closed, and the refusal stamped on every unresolved open. Reporting cancellation after
+        // that commitment tells the caller nothing happened while the gate is permanently Closed on
+        // a burned generation, so the token is honoured here, before the transition, where refusing
+        // is a pure no-op that leaves the closing owner and its abort path intact.
+        cancellationToken.ThrowIfCancellationRequested();
+
         lock (_sync)
         {
 
@@ -600,8 +607,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         try
         {
-
-            cancellationToken.ThrowIfCancellationRequested();
 
             try
             {
