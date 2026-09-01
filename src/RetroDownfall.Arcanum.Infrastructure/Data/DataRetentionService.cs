@@ -2523,6 +2523,10 @@ internal sealed partial class DataRetentionService(
             snapshot,
             cancellationToken).ConfigureAwait(false);
 
+        bool ftsTableExists = await TableExistsAsync(
+            "Entries_fts",
+            cancellationToken).ConfigureAwait(false);
+
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -2624,13 +2628,6 @@ internal sealed partial class DataRetentionService(
                 cancellationToken,
                 ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
-            derivedDeleted += await ExecuteAsync(
-                connection,
-                transaction,
-                "DELETE FROM Entries_fts WHERE lower(replace(SessionId, '-', '')) = @id",
-                cancellationToken,
-                ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
-
             _ = await ExecuteAsync(
                 connection,
                 transaction,
@@ -2645,12 +2642,21 @@ internal sealed partial class DataRetentionService(
                 cancellationToken,
                 ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
-            rowsDeleted += await ExecuteAsync(
+            long entriesDeleted = await ExecuteAsync(
                 connection,
                 transaction,
                 "DELETE FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id",
                 cancellationToken,
                 ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
+
+            rowsDeleted += entriesDeleted;
+
+            // Entries_ad removes each search row by rowid as its entry goes, so a statement here
+            // would delete a second time — and it could only find its rows by walking the whole
+            // FTS content index on an UNINDEXED column, which is the quadratic shape that trigger
+            // was keyed by rowid to avoid. The count still has to be reported, so it comes from the
+            // entries themselves: Entries_ai mirrors one search row per entry.
+            derivedDeleted += ftsTableExists ? entriesDeleted : 0;
 
             rowsDeleted += await DeleteSessionRowInTransactionAsync(
                 connection,
@@ -2749,11 +2755,9 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
-        reconciled &= await CountTableAsync(
-            "Entries_fts",
-            "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
-            ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
+        reconciled &= await CountEntryFtsRowsAsync(
+            snapshot.EntryRowIds,
+            cancellationToken).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "attachment_memory_consultations",
@@ -3241,11 +3245,13 @@ internal sealed partial class DataRetentionService(
 
         List<Guid> pinnedEntryIds = [];
 
+        List<long> entryRowIds = [];
+
         await using (DbCommand entries = connection.CreateCommand())
         {
 
             entries.CommandText =
-                "SELECT Id, IsPinned FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id";
+                "SELECT Id, IsPinned, rowid FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id";
 
             Add(entries, "@id", sessionId.ToString("N"));
 
@@ -3258,6 +3264,8 @@ internal sealed partial class DataRetentionService(
                 Guid entryId = Guid.Parse(reader.GetString(0));
 
                 entryIds.Add(entryId);
+
+                entryRowIds.Add(reader.GetInt64(2));
 
                 if (Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture) != 0)
                 {
@@ -3325,8 +3333,11 @@ internal sealed partial class DataRetentionService(
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
+        // Counted from the entries rather than from the index: Entries_ai mirrors one search row per
+        // entry, and Entries_fts.SessionId is UNINDEXED, so asking the index this question walks the
+        // whole content index once per snapshot.
         long entryFts = await CountTableAsync(
-            "Entries_fts",
+            "Entries",
             "lower(replace(SessionId, '-', '')) = @id",
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
@@ -3347,6 +3358,7 @@ internal sealed partial class DataRetentionService(
             status,
             [.. entryIds],
             [.. pinnedEntryIds],
+            [.. entryRowIds],
             [.. attachments],
             entryEmbeddings,
             entryVectorEmbeddings,
@@ -3496,13 +3508,15 @@ internal sealed partial class DataRetentionService(
 
         List<Guid> pinnedEntryIds = [];
 
+        List<long> entryRowIds = [];
+
         await using (DbCommand entries = connection.CreateCommand())
         {
 
             entries.Transaction = transaction;
 
             entries.CommandText =
-                "SELECT Id, IsPinned FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id ORDER BY Id";
+                "SELECT Id, IsPinned, rowid FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id ORDER BY Id";
 
             Add(entries, "@id", sessionId.ToString("N"));
 
@@ -3515,6 +3529,8 @@ internal sealed partial class DataRetentionService(
                 Guid entryId = Guid.Parse(reader.GetString(0));
 
                 entryIds.Add(entryId);
+
+                entryRowIds.Add(reader.GetInt64(2));
 
                 if (Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture) != 0)
                 {
@@ -3590,10 +3606,12 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
+        // Counted from the entries for the reason the out-of-transaction twin gives: one search row
+        // per entry, and an UNINDEXED column is the only identity Entries_fts could answer by.
         long entryFts = await CountInTransactionAsync(
             connection,
             transaction,
-            "Entries_fts",
+            "Entries",
             "lower(replace(SessionId, '-', '')) = @id",
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
@@ -3618,6 +3636,7 @@ internal sealed partial class DataRetentionService(
             status,
             [.. entryIds],
             [.. pinnedEntryIds],
+            [.. entryRowIds],
             [.. attachmentSnapshots],
             entryEmbeddings,
             entryVectorEmbeddings,
@@ -5885,6 +5904,49 @@ internal sealed partial class DataRetentionService(
             : Result.Success();
 
     /// <summary>
+    /// Counts the search rows still standing for a known set of entry rowids.
+    /// </summary>
+    /// <remarks>
+    /// The post-delete proof that <c>Entries_ad</c> ran. It cannot ask <c>Entries_fts</c> for the
+    /// Session, because <c>SessionId</c> there is UNINDEXED and the question would walk the whole
+    /// content index once per purge; and it cannot re-derive the rowids from <c>Entries</c>, because
+    /// those rows are exactly what has just gone. So the rowids are carried from the snapshot taken
+    /// before the delete and asked for by the one key FTS5 can resolve.
+    ///
+    /// <para>Batched because the answer is one bound parameter per rowid, and a Session with more
+    /// entries than SQLite's variable limit would otherwise turn a reconciliation into a
+    /// failure.</para>
+    /// </remarks>
+    private async Task<long> CountEntryFtsRowsAsync(
+        long[] entryRowIds,
+        CancellationToken cancellationToken)
+    {
+
+        const int batchSize = 256;
+
+        long standing = 0;
+
+        for (int offset = 0; offset < entryRowIds.Length; offset += batchSize)
+        {
+
+            long[] batch = entryRowIds[offset..Math.Min(offset + batchSize, entryRowIds.Length)];
+
+            (string Name, object Value)[] parameters =
+                [.. batch.Select(static (rowId, index) => ("@rowid" + index.ToString(CultureInfo.InvariantCulture), (object)rowId))];
+
+            standing += await CountTableAsync(
+                "Entries_fts",
+                "rowid IN (" + string.Join(", ", parameters.Select(static parameter => parameter.Name)) + ")",
+                cancellationToken,
+                parameters).ConfigureAwait(false);
+
+        }
+
+        return standing;
+
+    }
+
+    /// <summary>
     /// Refuses an untargeted memory reset over a store that still holds a labelled member.
     /// </summary>
     /// <remarks>
@@ -7686,6 +7748,7 @@ internal sealed partial class DataRetentionService(
         string Status,
         Guid[] EntryIds,
         Guid[] PinnedEntryIds,
+        long[] EntryRowIds,
         AttachmentPlanSnapshot[] Attachments,
         long EntryEmbeddingCount,
         long EntryVectorEmbeddingCount,

@@ -42,6 +42,16 @@ internal sealed partial class DataRetentionService
         _prunePlanningTimestamp.Value
         ?? timeProvider.GetUtcNow();
 
+    /// <summary>
+    /// The predicate every retention probe of <c>Entries_fts</c> is issued under.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so the query-plan gate explains the string this service actually executes. A plan test
+    /// that assembled equivalent SQL of its own would keep passing after the real probe quietly went
+    /// back to scanning the whole index, which is the failure it exists to catch.
+    /// </remarks>
+    internal const string EntryFtsProbePredicate = "rowid = @rowid";
+
     private const string BatchCandidatePrefix = "batch:";
 
     private const string FileCandidatePrefix = "file:";
@@ -1718,8 +1728,11 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", id.ToString("N"))).ConfigureAwait(false);
 
+            // Counted from the entry rather than from the index: Entries_ai mirrors one search row
+            // per entry, and the only predicate Entries_fts could answer by identity is an UNINDEXED
+            // column, which walks the whole content index once per planned candidate.
             long entryDerived = await CountTableAsync(
-                "Entries_fts",
+                "Entries",
                 "lower(replace(Id, '-', '')) = @id",
                 cancellationToken,
                 ("@id", id.ToString("N"))).ConfigureAwait(false);
@@ -5714,11 +5727,13 @@ internal sealed partial class DataRetentionService
         await using DbCommand read = connection.CreateCommand();
 
         read.CommandText =
-            "SELECT SessionId, IsPinned FROM Entries WHERE lower(replace(Id, '-', '')) = @id";
+            "SELECT SessionId, IsPinned, rowid FROM Entries WHERE lower(replace(Id, '-', '')) = @id";
 
         Add(read, "@id", entryId.ToString("N"));
 
         Guid sessionId;
+
+        long entryRowId;
 
         await using (DbDataReader reader = await read
                          .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -5732,6 +5747,8 @@ internal sealed partial class DataRetentionService
             }
 
             sessionId = Guid.Parse(reader.GetString(0));
+
+            entryRowId = reader.GetInt64(2);
 
             if (Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture) != 0)
             {
@@ -5897,18 +5914,6 @@ internal sealed partial class DataRetentionService
 
             }
 
-            if (ftsTableExists)
-            {
-
-                derived += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    "DELETE FROM Entries_fts WHERE lower(replace(Id, '-', '')) = @id",
-                    cancellationToken,
-                    ("@id", entryId.ToString("N"))).ConfigureAwait(false);
-
-            }
-
             _ = await ExecuteAsync(
                 connection,
                 transaction,
@@ -5965,6 +5970,13 @@ internal sealed partial class DataRetentionService
 
             }
 
+            // Entries_ad has just removed this entry's search row by rowid. Deleting it here as well
+            // would remove it a second time, and the only predicate this statement could offer is an
+            // UNINDEXED column, so it would walk the whole FTS content index once per candidate to
+            // do it. The count is still owed to the operator, so it comes from the entry itself:
+            // Entries_ai mirrors exactly one search row per entry.
+            derived += ftsTableExists ? rows : 0;
+
             _ = await ExecuteAsync(
                 connection,
                 transaction,
@@ -6013,9 +6025,10 @@ internal sealed partial class DataRetentionService
 
         reconciled &= await CountTableAsync(
             "Entries_fts",
-            "lower(replace(Id, '-', '')) = @id",
+            EntryFtsProbePredicate,
             cancellationToken,
-            ("@id", entryId.ToString("N"))).ConfigureAwait(false) == 0;
+            ("@id", entryId.ToString("N")),
+            ("@rowid", entryRowId)).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "attachment_memory_consultations",
