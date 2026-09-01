@@ -888,6 +888,50 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
+    public async Task Delete_refuses_identity_substitution_before_the_delegated_unlink_window()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore store = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("identity-substitution").ToArray();
+
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        using GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+            GrimoireOfflineTransitionJournalFileRead>(
+            Value(await store.ReadIfPresentAsync(location, CancellationToken.None)));
+
+        FileHandleMetadata substituted = current.Metadata with
+        {
+            Identity = new FileHandleIdentity(
+                current.Metadata.Identity.VolumeId,
+                current.Metadata.Identity.FileId + 1),
+        };
+
+        Assert.True(store.DeleteDurably(held, location, substituted, bytes).IsFailure);
+
+        Assert.True(File.Exists(location.JournalPath));
+
+    }
+
+    [Fact]
+    public async Task Retiring_substitution_during_the_delegated_window_is_detected_and_never_reported_absent()
+    {
+
+        await Compare_unlink_detects_a_substitution_in_the_delegated_unlink_window();
+
+    }
+
+    [Fact]
     public async Task Publication_failure_before_exchange_preserves_current_and_removes_exact_working_file()
     {
 

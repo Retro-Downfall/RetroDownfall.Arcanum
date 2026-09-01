@@ -18,6 +18,20 @@ internal sealed record GrimoireOfflineTransitionJournalPublication(
     GrimoireOfflineTransitionAnchorV1 Anchor,
     FileHandleMetadata FileMetadata);
 
+internal enum GrimoireOfflineTransitionJournalRecoveryOutcome : byte
+{
+
+    NoActiveJournal = 1,
+
+    Authenticated = 2,
+
+}
+
+internal sealed record GrimoireOfflineTransitionJournalRecoveryState(
+    GrimoireOfflineTransitionJournalRecoveryOutcome Outcome,
+    GrimoireOfflineTransitionJournalPublication? Publication,
+    Guid? OperationId = null);
+
 internal delegate Task<Result> GrimoireOfflineTransitionJournalReplaceDurably(
     ArcanumMaintenanceLock heldInstallationLock,
     GrimoireOfflineTransitionJournalLocation location,
@@ -42,6 +56,16 @@ internal interface IGrimoireOfflineTransitionJournalStore
         ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionJournalPublication current,
         ReadOnlyMemory<byte> payloadBytes,
+        CancellationToken cancellationToken);
+
+    Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        CancellationToken cancellationToken);
+
+    Task<Result> RetireAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        GrimoireOfflineTransitionJournalPublication terminal,
         CancellationToken cancellationToken);
 
 }
@@ -667,6 +691,673 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
     }
 
+    public async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        Result<GrimoireOfflineTransitionJournalLocation> resolved =
+            _files.ResolveLocation(guardedDirectory);
+
+        if (resolved.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(resolved.Error);
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = resolved.Value;
+
+        Result<GrimoireOfflineTransitionAnchorV1?> anchorResult = _anchors.Read(location);
+
+        if (anchorResult.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(anchorResult.Error);
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalEvidence> inspected =
+            await _files.InspectEvidenceAsync(location, cancellationToken).ConfigureAwait(false);
+
+        if (inspected.IsFailure)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
+
+        if (anchorResult.Value is null)
+        {
+
+            return AllAbsent(evidence)
+                ? new GrimoireOfflineTransitionJournalRecoveryState(
+                    GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+                    Publication: null)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        GrimoireOfflineTransitionAnchorV1 anchor = anchorResult.Value;
+
+        Result identity = _identities.RequireMatchesDatabase(
+            location.ProfileNamespace,
+            anchor.InstallationId);
+
+        if (identity.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(identity.Error);
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalKeyLease> key = _keys.OpenExisting(
+            location.ProfileNamespace);
+
+        if (key.IsFailure)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        using (key.Value)
+        {
+
+        }
+
+        if (anchor.State is GrimoireOfflineTransitionAnchorState.Closed)
+        {
+
+            return await RecoverClosedAsync(
+                    heldInstallationLock,
+                    location,
+                    anchor,
+                    evidence,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        if (anchor.Revision == 0 && evidence.Canonical is null)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        if (evidence.Canonical is null)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        if (evidence.Working is not null)
+        {
+
+            Result<GrimoireOfflineTransitionJournalPublication> current =
+                AuthenticateEvidence(location, evidence.Canonical, anchor);
+
+            Result<GrimoireOfflineTransitionJournalPublication> next =
+                AuthenticateOneAhead(location, evidence.Working, anchor);
+
+            if (current.IsFailure || next.IsFailure
+                || evidence.Previous is not null || evidence.Retiring is not null)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result resumed = await _files.ResumeWorkingPublicationAsync(
+                    heldInstallationLock,
+                    location,
+                    current.Value.FileMetadata,
+                    evidence.Canonical.Bytes,
+                    next.Value.FileMetadata,
+                    evidence.Working.Bytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return resumed.IsSuccess
+                ? await RecoverAsync(heldInstallationLock, guardedDirectory, cancellationToken)
+                    .ConfigureAwait(false)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalPublication> canonical =
+            AuthenticateEvidence(location, evidence.Canonical, anchor);
+
+        if (canonical.IsSuccess && evidence.Previous is null && evidence.Retiring is null)
+        {
+
+            return Authenticated(canonical.Value);
+
+        }
+
+        if (canonical.IsSuccess && (evidence.Previous is not null || evidence.Retiring is not null))
+        {
+
+            GrimoireOfflineTransitionJournalFileRead predecessor = evidence.Previous ?? evidence.Retiring!;
+
+            GrimoireOfflineTransitionJournalRetirementSource source = evidence.Previous is not null
+                ? GrimoireOfflineTransitionJournalRetirementSource.Previous
+                : GrimoireOfflineTransitionJournalRetirementSource.Retiring;
+
+            if (!IsExactPredecessor(location, predecessor, canonical.Value))
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result completed = await _files.CompleteRetirementAsync(
+                    heldInstallationLock,
+                    location,
+                    source,
+                    predecessor.Metadata,
+                    predecessor.Bytes,
+                    requireCanonicalAfter: true,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return completed.IsSuccess
+                ? Authenticated(canonical.Value)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalPublication> oneAhead =
+            AuthenticateOneAhead(location, evidence.Canonical, anchor);
+
+        if (oneAhead.IsFailure)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        if (evidence.Previous is not null || evidence.Retiring is not null)
+        {
+
+            GrimoireOfflineTransitionJournalFileRead predecessor = evidence.Previous ?? evidence.Retiring!;
+
+            GrimoireOfflineTransitionJournalRetirementSource source = evidence.Previous is not null
+                ? GrimoireOfflineTransitionJournalRetirementSource.Previous
+                : GrimoireOfflineTransitionJournalRetirementSource.Retiring;
+
+            Result<GrimoireOfflineTransitionJournalPublication> anchoredPredecessor =
+                AuthenticateEvidence(location, predecessor, anchor);
+
+            if (anchoredPredecessor.IsFailure)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result completed = await _files.CompleteRetirementAsync(
+                    heldInstallationLock,
+                    location,
+                    source,
+                    predecessor.Metadata,
+                    predecessor.Bytes,
+                    requireCanonicalAfter: true,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (completed.IsFailure)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+        }
+
+        GrimoireOfflineTransitionAnchorV1 advanced = oneAhead.Value.Anchor;
+
+        Result written = _anchors.CompareWriteAndVerify(
+            heldInstallationLock,
+            location,
+            anchor,
+            advanced,
+            GrimoireOfflineTransitionAnchorWriteStage.Advance);
+
+        return written.IsSuccess
+            ? Authenticated(oneAhead.Value)
+            : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+    }
+
+    public async Task<Result> RetireAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        GrimoireOfflineTransitionJournalPublication terminal,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        ArgumentNullException.ThrowIfNull(terminal);
+
+        heldInstallationLock.AssertHeldFor(terminal.Location.GuardedDirectory);
+
+        if (!CurrentBindingsMatch(terminal))
+        {
+
+            return RecoveryRequired();
+
+        }
+
+        Result identity = _identities.RequireMatchesDatabase(
+            terminal.Location.ProfileNamespace,
+            terminal.Envelope.InstallationId);
+
+        if (identity.IsFailure)
+        {
+
+            return Result.Failure(identity.Error);
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalKeyLease> key = _keys.OpenExisting(
+            terminal.Location.ProfileNamespace);
+
+        if (key.IsFailure)
+        {
+
+            return RecoveryRequired();
+
+        }
+
+        using (key.Value)
+        {
+
+        }
+
+        Result<GrimoireOfflineTransitionAnchorV1?> currentResult = _anchors.Read(
+            terminal.Location);
+
+        if (currentResult.IsFailure || currentResult.Value is null)
+        {
+
+            return RecoveryRequired();
+
+        }
+
+        GrimoireOfflineTransitionAnchorV1 closed = terminal.Anchor with
+        {
+            State = GrimoireOfflineTransitionAnchorState.Closed,
+        };
+
+        GrimoireOfflineTransitionAnchorV1 current = currentResult.Value;
+
+        if (current != terminal.Anchor && current != closed)
+        {
+
+            return RecoveryRequired();
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalEvidence> inspected =
+            await _files.InspectEvidenceAsync(terminal.Location, cancellationToken).ConfigureAwait(false);
+
+        if (inspected.IsFailure)
+        {
+
+            return RecoveryRequired();
+
+        }
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
+
+        if (current.State is GrimoireOfflineTransitionAnchorState.Active)
+        {
+
+            if (evidence.Canonical is null
+                || evidence.Working is not null
+                || evidence.Previous is not null
+                || evidence.Retiring is not null
+                || !PublicationMatches(terminal, evidence.Canonical))
+            {
+
+                return RecoveryRequired();
+
+            }
+
+            Result closedWritten = _anchors.CompareWriteAndVerify(
+                heldInstallationLock,
+                terminal.Location,
+                current,
+                closed,
+                GrimoireOfflineTransitionAnchorWriteStage.Closed);
+
+            if (closedWritten.IsFailure)
+            {
+
+                return RecoveryRequired();
+
+            }
+
+        }
+
+        if (evidence.Canonical is not null
+            && evidence.Working is null
+            && evidence.Previous is null
+            && evidence.Retiring is null
+            && PublicationMatches(terminal with { Anchor = closed }, evidence.Canonical))
+        {
+
+            return await _files.CompleteRetirementAsync(
+                    heldInstallationLock,
+                    terminal.Location,
+                    GrimoireOfflineTransitionJournalRetirementSource.Canonical,
+                    evidence.Canonical.Metadata,
+                    evidence.Canonical.Bytes,
+                    requireCanonicalAfter: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        if (evidence.Canonical is null
+            && evidence.Working is null
+            && evidence.Previous is null
+            && evidence.Retiring is not null
+            && PublicationMatches(terminal with { Anchor = closed }, evidence.Retiring))
+        {
+
+            return await _files.CompleteRetirementAsync(
+                    heldInstallationLock,
+                    terminal.Location,
+                    GrimoireOfflineTransitionJournalRetirementSource.Retiring,
+                    evidence.Retiring.Metadata,
+                    evidence.Retiring.Bytes,
+                    requireCanonicalAfter: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        return AllAbsent(evidence)
+            ? _files.ProveAbsentDurably(heldInstallationLock, terminal.Location)
+            : RecoveryRequired();
+
+    }
+
+    private async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverClosedAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionAnchorV1 anchor,
+        GrimoireOfflineTransitionJournalEvidence evidence,
+        CancellationToken cancellationToken)
+    {
+
+        if (AllAbsent(evidence))
+        {
+
+            return new GrimoireOfflineTransitionJournalRecoveryState(
+                GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+                Publication: null,
+                anchor.OperationId);
+
+        }
+
+        if (evidence.Canonical is not null
+            && evidence.Working is null
+            && evidence.Previous is null
+            && evidence.Retiring is null)
+        {
+
+            Result<GrimoireOfflineTransitionJournalPublication> canonical =
+                AuthenticateEvidence(location, evidence.Canonical, anchor);
+
+            if (canonical.IsFailure)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result completed = await _files.CompleteRetirementAsync(
+                    heldInstallationLock,
+                    location,
+                    GrimoireOfflineTransitionJournalRetirementSource.Canonical,
+                    evidence.Canonical.Metadata,
+                    evidence.Canonical.Bytes,
+                    requireCanonicalAfter: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return completed.IsSuccess
+                ? new GrimoireOfflineTransitionJournalRecoveryState(
+                    GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+                    Publication: null,
+                    anchor.OperationId)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        if (evidence.Canonical is null
+            && evidence.Working is null
+            && evidence.Previous is null
+            && evidence.Retiring is not null)
+        {
+
+            Result<GrimoireOfflineTransitionJournalPublication> retiring =
+                AuthenticateEvidence(location, evidence.Retiring, anchor);
+
+            if (retiring.IsFailure)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result completed = await _files.CompleteRetirementAsync(
+                    heldInstallationLock,
+                    location,
+                    GrimoireOfflineTransitionJournalRetirementSource.Retiring,
+                    evidence.Retiring.Metadata,
+                    evidence.Retiring.Bytes,
+                    requireCanonicalAfter: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return completed.IsSuccess
+                ? new GrimoireOfflineTransitionJournalRecoveryState(
+                    GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+                    Publication: null,
+                    anchor.OperationId)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+        }
+
+        return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+    }
+
+    private Result<GrimoireOfflineTransitionJournalPublication> AuthenticateEvidence(
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionJournalFileRead file,
+        GrimoireOfflineTransitionAnchorV1 anchor)
+    {
+
+        Result<GrimoireOfflineTransitionEnvelopeV1> decoded =
+            GrimoireOfflineTransitionJournalAuthenticator.DecodeEnvelope(file.Bytes.Span);
+
+        Result<CovenantDigest> digest = decoded.IsSuccess
+            ? GrimoireOfflineTransitionJournalAuthenticator.EnvelopeDigest(decoded.Value)
+            : Result<CovenantDigest>.Failure(decoded.Error);
+
+        if (decoded.IsFailure
+            || digest.IsFailure
+            || !EnvelopeMatchesAnchor(location, decoded.Value, digest.Value, anchor))
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+        }
+
+        Result<byte[]> payload = Open(location, decoded.Value);
+
+        return payload.IsSuccess
+            ? new GrimoireOfflineTransitionJournalPublication(
+                location,
+                decoded.Value,
+                digest.Value,
+                payload.Value,
+                anchor,
+                file.Metadata)
+            : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+    }
+
+    private Result<GrimoireOfflineTransitionJournalPublication> AuthenticateOneAhead(
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionJournalFileRead file,
+        GrimoireOfflineTransitionAnchorV1 anchor)
+    {
+
+        Result<GrimoireOfflineTransitionEnvelopeV1> decoded =
+            GrimoireOfflineTransitionJournalAuthenticator.DecodeEnvelope(file.Bytes.Span);
+
+        Result<CovenantDigest> digest = decoded.IsSuccess
+            ? GrimoireOfflineTransitionJournalAuthenticator.EnvelopeDigest(decoded.Value)
+            : Result<CovenantDigest>.Failure(decoded.Error);
+
+        if (decoded.IsFailure || digest.IsFailure || anchor.Revision == GrimoireOfflineTransitionJournalAuthenticator.MaxRevision)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+        }
+
+        CovenantDigest previous = anchor.Revision == 0
+            ? ZeroDigest
+            : anchor.EnvelopeDigest ?? ZeroDigest;
+
+        if (anchor.Revision > 0 && anchor.EnvelopeDigest is null
+            || decoded.Value.Revision != anchor.Revision + 1
+            || decoded.Value.PreviousEnvelopeDigest != previous
+            || decoded.Value.ProfileNamespaceDigest != anchor.ProfileNamespaceDigest
+            || decoded.Value.InstallationId != anchor.InstallationId
+            || decoded.Value.SlotEpoch != anchor.SlotEpoch
+            || decoded.Value.OperationId != anchor.OperationId
+            || decoded.Value.Kind != anchor.Kind
+            || decoded.Value.PayloadVersion != anchor.PayloadVersion
+            || decoded.Value.JournalLocationDigest != anchor.JournalLocationDigest)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+        }
+
+        GrimoireOfflineTransitionAnchorV1 advanced = anchor with
+        {
+            Revision = decoded.Value.Revision,
+            EnvelopeDigest = digest.Value,
+        };
+
+        return AuthenticateEvidence(location, file, advanced);
+
+    }
+
+    private bool IsExactPredecessor(
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionJournalFileRead file,
+        GrimoireOfflineTransitionJournalPublication current)
+    {
+
+        if (current.Envelope.Revision <= 1)
+        {
+
+            return false;
+
+        }
+
+        Result<GrimoireOfflineTransitionEnvelopeV1> decoded =
+            GrimoireOfflineTransitionJournalAuthenticator.DecodeEnvelope(file.Bytes.Span);
+
+        Result<CovenantDigest> digest = decoded.IsSuccess
+            ? GrimoireOfflineTransitionJournalAuthenticator.EnvelopeDigest(decoded.Value)
+            : Result<CovenantDigest>.Failure(decoded.Error);
+
+        if (decoded.IsFailure
+            || digest.IsFailure
+            || digest.Value != current.Envelope.PreviousEnvelopeDigest
+            || decoded.Value.Revision != current.Envelope.Revision - 1
+            || decoded.Value.ProfileNamespaceDigest != current.Envelope.ProfileNamespaceDigest
+            || decoded.Value.InstallationId != current.Envelope.InstallationId
+            || decoded.Value.SlotEpoch != current.Envelope.SlotEpoch
+            || decoded.Value.OperationId != current.Envelope.OperationId
+            || decoded.Value.Kind != current.Envelope.Kind
+            || decoded.Value.PayloadVersion != current.Envelope.PayloadVersion
+            || decoded.Value.JournalLocationDigest != current.Envelope.JournalLocationDigest)
+        {
+
+            return false;
+
+        }
+
+        Result<byte[]> opened = Open(location, decoded.Value);
+
+        return opened.IsSuccess;
+
+    }
+
+    private bool PublicationMatches(
+        GrimoireOfflineTransitionJournalPublication terminal,
+        GrimoireOfflineTransitionJournalFileRead file)
+    {
+
+        Result<GrimoireOfflineTransitionJournalPublication> authenticated =
+            AuthenticateEvidence(terminal.Location, file, terminal.Anchor);
+
+        return authenticated.IsSuccess
+            && authenticated.Value.Envelope == terminal.Envelope
+            && authenticated.Value.EnvelopeDigest == terminal.EnvelopeDigest
+            && authenticated.Value.PayloadBytes.AsSpan().SequenceEqual(terminal.PayloadBytes)
+            && FileHandleIdentity.IdentitiesMatch(
+                authenticated.Value.FileMetadata.Identity,
+                terminal.FileMetadata.Identity);
+
+    }
+
+    private static bool EnvelopeMatchesAnchor(
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionEnvelopeV1 envelope,
+        CovenantDigest digest,
+        GrimoireOfflineTransitionAnchorV1 anchor) =>
+        anchor.Revision > 0
+        && anchor.EnvelopeDigest == digest
+        && envelope.ProfileNamespaceDigest == location.ProfileNamespace.Digest
+        && envelope.ProfileNamespaceDigest == anchor.ProfileNamespaceDigest
+        && envelope.InstallationId == anchor.InstallationId
+        && envelope.SlotEpoch == anchor.SlotEpoch
+        && envelope.OperationId == anchor.OperationId
+        && envelope.Kind == anchor.Kind
+        && envelope.PayloadVersion == anchor.PayloadVersion
+        && envelope.Revision == anchor.Revision
+        && envelope.JournalLocationDigest == location.JournalLocationDigest
+        && envelope.JournalLocationDigest == anchor.JournalLocationDigest;
+
+    private static Result<GrimoireOfflineTransitionJournalRecoveryState> Authenticated(
+        GrimoireOfflineTransitionJournalPublication publication) =>
+        new GrimoireOfflineTransitionJournalRecoveryState(
+            GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated,
+            publication,
+            publication.Envelope.OperationId);
+
     private async Task<Result<GrimoireOfflineTransitionJournalPublication>> ResumeExactCurrentAsync(
         GrimoireOfflineTransitionJournalLocation location,
         GrimoireOfflineTransitionAnchorV1 anchor,
@@ -1012,5 +1703,9 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
     private static Result<T> RecoveryRequired<T>() => Result<T>.Failure(new Error(
         ErrorCodes.Covenant.ManualRecoveryRequired,
         "The transition journal has durable evidence that requires exact recovery."));
+
+    private static Result RecoveryRequired() => new Error(
+        ErrorCodes.Covenant.ManualRecoveryRequired,
+        "The transition journal has durable evidence that requires exact recovery.");
 
 }

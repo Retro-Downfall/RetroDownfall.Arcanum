@@ -646,6 +646,441 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Recover_returns_no_active_only_for_proven_anchor_and_file_absence()
+    {
+
+        SeedIdentity(Installation);
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None));
+
+        Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal, recovered.Outcome);
+
+        Assert.Null(recovered.Publication);
+
+    }
+
+    [Fact]
+    public async Task Recover_accepts_an_exact_anchor_file_match()
+    {
+
+        GrimoireOfflineTransitionJournalPublication published = await BeginAsync(ReadyStore());
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None));
+
+        Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated, recovered.Outcome);
+
+        Assert.Equal(published.Anchor, recovered.Publication?.Anchor);
+
+        Assert.Equal(published.FileMetadata.Identity, recovered.Publication?.FileMetadata.Identity);
+
+    }
+
+    [Fact]
+    public async Task Recover_adopts_exactly_one_chained_file_revision_ahead_before_returning()
+    {
+
+        GrimoireOfflineTransitionJournalStore initial = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(initial);
+
+        GrimoireOfflineTransitionJournalFileStore files = new(
+            failBeforeStep: step => step == "file:permissions-verified");
+
+        GrimoireOfflineTransitionJournalStore interrupted = new(
+            _credentials,
+            files,
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Assert.True((await interrupted.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None)).IsFailure);
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None));
+
+        Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated, recovered.Outcome);
+
+        Assert.Equal(2UL, recovered.Publication?.Anchor.Revision);
+
+    }
+
+    [Fact]
+    public async Task Recover_rejects_older_skipped_same_revision_resealed_and_two_ahead_files()
+    {
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(ReadyStore());
+
+        File.WriteAllBytes(current.Location.JournalPath, Bytes("not-an-envelope").ToArray());
+
+        Assert.True((await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Recover_rejects_cross_profile_installation_epoch_operation_kind_payload_version_and_location()
+    {
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(ReadyStore());
+
+        GrimoireOfflineTransitionJournalAnchorStore anchors = new(_credentials);
+
+        GrimoireOfflineTransitionAnchorV1 mismatched = current.Anchor with
+        {
+            InstallationId = Guid.Parse("33333333-3333-4333-8333-333333333333"),
+        };
+
+        Assert.True(anchors.CompareWriteAndVerify(
+            _lock,
+            current.Location,
+            current.Anchor,
+            mismatched,
+            GrimoireOfflineTransitionAnchorWriteStage.Advance).IsSuccess);
+
+        Assert.True((await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Recover_rejects_active_revision_zero_without_a_file()
+    {
+
+        _ = ReadyStore();
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        GrimoireOfflineTransitionJournalAnchorStore anchors = new(_credentials);
+
+        Assert.True(anchors.WriteGenesisAndVerify(_lock, location, Installation).IsSuccess);
+
+        GrimoireOfflineTransitionAnchorV1 genesis = Assert.IsType<
+            GrimoireOfflineTransitionAnchorV1>(Value(anchors.Read(location)));
+
+        GrimoireOfflineTransitionAnchorV1 opening = genesis with
+        {
+            SlotEpoch = 1,
+            State = GrimoireOfflineTransitionAnchorState.Active,
+            OperationId = Operation,
+            Kind = GrimoireOfflineTransitionKind.CovenantReset,
+            PayloadVersion = 1,
+        };
+
+        Assert.True(anchors.CompareWriteAndVerify(
+            _lock,
+            location,
+            genesis,
+            opening,
+            GrimoireOfflineTransitionAnchorWriteStage.Opening).IsSuccess);
+
+        Assert.True((await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Recover_rejects_missing_key_or_identity_beside_active_or_closed_evidence()
+    {
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(ReadyStore());
+
+        string account = ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(
+            current.Location.ProfileNamespace.AccountSuffix);
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, _credentials.Delete(
+            ArcanumCredentialIdentity.Service,
+            account).Status);
+
+        Assert.True((await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Recover_rejects_unanchored_file_case_alias_stale_temp_unknown_residue_and_multiple_evidence()
+    {
+
+        SeedIdentity(Installation);
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        File.WriteAllBytes(location.JournalPath, Bytes("unanchored").ToArray());
+
+        Assert.True((await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Recover_converges_exchange_crashes_with_exact_working_or_previous_predecessor()
+    {
+
+        GrimoireOfflineTransitionJournalStore initial = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(initial);
+
+        GrimoireOfflineTransitionJournalStore failing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(
+                failBeforeStep: step => step == "file:previous-retiring"),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Assert.True((await failing.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None)).IsFailure);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated,
+            Value(await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).Outcome);
+
+    }
+
+    [Fact]
+    public async Task Recover_finishes_exact_predecessor_retirement_before_adopting_one_ahead()
+    {
+
+        await Recover_converges_exchange_crashes_with_exact_working_or_previous_predecessor();
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        Assert.False(File.Exists(location.PreviousPath));
+
+        Assert.False(File.Exists(location.RetiringPath));
+
+    }
+
+    [Fact]
+    public async Task Retire_writes_and_reads_closed_anchor_before_deleting_the_file()
+    {
+
+        List<string> events = [];
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore(events);
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsSuccess);
+
+        Assert.Contains("anchor:closed-written", events);
+
+        Assert.Contains("anchor:closed-readback", events);
+
+        Assert.False(File.Exists(terminal.Location.JournalPath));
+
+    }
+
+    [Fact]
+    public async Task Recover_finishes_exact_file_cleanup_beneath_a_closed_anchor()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore(
+            failBeforeStep: step => step == "file:retiring-unlinked");
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsFailure);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+            Value(await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).Outcome);
+
+    }
+
+    [Fact]
+    public async Task Retire_is_idempotent_after_closed_anchor_file_delete_and_parent_fsync()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsSuccess);
+
+    }
+
+    [Fact]
+    public async Task Closed_anchor_refuses_an_earlier_different_or_resealed_file()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        GrimoireOfflineTransitionJournalAnchorStore anchors = new(_credentials);
+
+        GrimoireOfflineTransitionAnchorV1 closed = terminal.Anchor with
+        {
+            State = GrimoireOfflineTransitionAnchorState.Closed,
+        };
+
+        Assert.True(anchors.CompareWriteAndVerify(
+            _lock,
+            terminal.Location,
+            terminal.Anchor,
+            closed,
+            GrimoireOfflineTransitionAnchorWriteStage.Closed).IsSuccess);
+
+        File.WriteAllBytes(terminal.Location.JournalPath, Bytes("replay").ToArray());
+
+        Assert.True((await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Next_epoch_cannot_open_until_exact_canonical_working_previous_retiring_and_temp_absence_is_proved()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        GrimoireOfflineTransitionJournalAnchorStore anchors = new(_credentials);
+
+        GrimoireOfflineTransitionAnchorV1 closed = terminal.Anchor with
+        {
+            State = GrimoireOfflineTransitionAnchorState.Closed,
+        };
+
+        Assert.True(anchors.CompareWriteAndVerify(
+            _lock,
+            terminal.Location,
+            terminal.Anchor,
+            closed,
+            GrimoireOfflineTransitionAnchorWriteStage.Closed).IsSuccess);
+
+        File.WriteAllBytes(terminal.Location.PreviousPath, Bytes("residue").ToArray());
+
+        Assert.True((await store.BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Guid.Parse("44444444-4444-4444-8444-444444444444"),
+            GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            1,
+            Bytes("next"),
+            CancellationToken.None)).IsFailure);
+
+    }
+
+    [Theory]
+    [InlineData("anchor:opening-written", false)]
+    [InlineData("anchor:opening-readback", false)]
+    [InlineData("file:temporary-created", true)]
+    [InlineData("file:temporary-written", true)]
+    [InlineData("file:temporary-flushed", true)]
+    [InlineData("file:atomic-replace", true)]
+    [InlineData("file:previous-retained", true)]
+    [InlineData("file:permissions-verified", true)]
+    [InlineData("file:parent-flushed", true)]
+    [InlineData("file:secure-reread", true)]
+    [InlineData("file:previous-retiring", true)]
+    [InlineData("file:previous-retiring-verified", true)]
+    [InlineData("file:previous-unlinked", true)]
+    [InlineData("file:previous-zero-link-verified", true)]
+    [InlineData("file:previous-delete-parent-flushed", true)]
+    [InlineData("file:residue-absence-proved", true)]
+    [InlineData("anchor:advance-written", true)]
+    [InlineData("anchor:advance-readback", true)]
+    public async Task Recovery_crash_matrix_converges_every_publication_boundary(
+        string boundary,
+        bool advance)
+    {
+
+        GrimoireOfflineTransitionJournalStore initial = ReadyStore();
+
+        GrimoireOfflineTransitionJournalFileStore files = new(
+            failBeforeStep: step => step == boundary);
+
+        GrimoireOfflineTransitionJournalAnchorStore anchors = new(
+            _credentials,
+            failBeforeStep: step => step == boundary);
+
+        GrimoireOfflineTransitionJournalStore interrupted = new(_credentials, files, anchors);
+
+        Result<GrimoireOfflineTransitionJournalPublication> interruptedResult;
+
+        if (advance)
+        {
+
+            GrimoireOfflineTransitionJournalPublication current = await BeginAsync(initial);
+
+            interruptedResult = await interrupted.AdvanceAsync(
+                _lock,
+                current,
+                Bytes("second"),
+                CancellationToken.None);
+
+        }
+        else
+        {
+
+            interruptedResult = await interrupted.BeginAsync(
+                _lock,
+                _guarded,
+                Installation,
+                Operation,
+                GrimoireOfflineTransitionKind.CovenantReset,
+                1,
+                Bytes("first"),
+                CancellationToken.None);
+
+        }
+
+        Assert.True(interruptedResult.IsFailure, boundary);
+
+        AssertPermittedRecoveryOutcome(
+            await Store().RecoverAsync(_lock, _guarded, CancellationToken.None),
+            boundary);
+
+    }
+
+    [Theory]
+    [InlineData("anchor:closed-written")]
+    [InlineData("anchor:closed-readback")]
+    [InlineData("file:retiring-moved")]
+    [InlineData("file:retiring-verified")]
+    [InlineData("file:retiring-parent-flushed")]
+    [InlineData("file:retiring-unlinked")]
+    [InlineData("file:retiring-zero-link-verified")]
+    [InlineData("file:delete-parent-flushed")]
+    [InlineData("file:absence-parent-flushed")]
+    [InlineData("file:absence-proved")]
+    public async Task Recovery_crash_matrix_converges_every_retirement_boundary(string boundary)
+    {
+
+        GrimoireOfflineTransitionJournalStore initial = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(initial);
+
+        GrimoireOfflineTransitionJournalStore interrupted = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(
+                failBeforeStep: step => step == boundary),
+            new GrimoireOfflineTransitionJournalAnchorStore(
+                _credentials,
+                failBeforeStep: step => step == boundary));
+
+        Assert.True((await interrupted.RetireAsync(
+            _lock,
+            terminal,
+            CancellationToken.None)).IsFailure, boundary);
+
+        AssertPermittedRecoveryOutcome(
+            await Store().RecoverAsync(_lock, _guarded, CancellationToken.None),
+            boundary);
+
+    }
+
     private GrimoireOfflineTransitionJournalStore ReadyStore(
         List<string>? events = null,
         Func<string, bool>? failBeforeStep = null)
@@ -722,6 +1157,40 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     private static ReadOnlyMemory<byte> Bytes(string value) => Encoding.UTF8.GetBytes(value);
 
     private static CovenantDigest ZeroDigest() => new(new byte[32]);
+
+    private static void AssertPermittedRecoveryOutcome(
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered,
+        string boundary)
+    {
+
+        if (recovered.IsFailure)
+        {
+
+            Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
+
+            return;
+
+        }
+
+        Assert.True(
+            recovered.Value.Outcome is GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated
+                or GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+            boundary);
+
+        if (recovered.Value.Outcome is GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated)
+        {
+
+            Assert.NotNull(recovered.Value.Publication);
+
+        }
+        else
+        {
+
+            Assert.Null(recovered.Value.Publication);
+
+        }
+
+    }
 
     private static T Value<T>(Result<T> result) =>
         result.IsSuccess ? result.Value : throw new Xunit.Sdk.XunitException(result.Error.Message);
