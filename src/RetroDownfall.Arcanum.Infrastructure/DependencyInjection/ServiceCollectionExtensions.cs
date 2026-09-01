@@ -1775,6 +1775,11 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ICovenantMaintenanceConnectionFactory, CovenantMaintenanceConnectionFactory>();
 
+        services.AddSingleton<ICovenantV3MaintenanceConnectionFactory>(
+            static sp => new CovenantV3MaintenanceConnectionFactory(
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ISqliteNativeRuntime>()));
+
         services.AddSingleton(
             static sp => new CovenantHealthyCatalogErasureGuard(
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
