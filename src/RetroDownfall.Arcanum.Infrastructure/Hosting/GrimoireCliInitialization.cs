@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -14,7 +15,9 @@ public sealed class GrimoireCliInitialization(
     IGrimoireDbPassphraseSource passphraseSource,
     IServiceScopeFactory scopeFactory,
     IInstallationStartupProbe startupProbe,
-    IArcanumClientMutationBoundary clientMutationBoundary) : IGrimoireCliInitialization
+    IArcanumClientMutationBoundary clientMutationBoundary) :
+    IGrimoireCliInitialization,
+    IGrimoireCliStoppedHostInitialization
 {
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
@@ -31,7 +34,7 @@ public sealed class GrimoireCliInitialization(
         Func<IServiceProvider, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken) =>
         RunExclusiveCoreAsync(
-            operation,
+            (provider, _, token) => operation(provider, token),
             bootstrapGrimoire: false,
             cancellationToken);
 
@@ -43,12 +46,40 @@ public sealed class GrimoireCliInitialization(
         Func<IServiceProvider, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken) =>
         RunExclusiveCoreAsync(
-            operation,
+            (provider, _, token) => operation(provider, token),
             bootstrapGrimoire: true,
             cancellationToken);
 
+    Task<T> IGrimoireCliStoppedHostInitialization.RunAsync<T>(
+        Func<IServiceProvider,
+            IStoppedHostGrimoireAuthorityIssuer,
+            CancellationToken,
+            Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(operation);
+
+        return RunExclusiveCoreAsync(
+            (provider, heldInstallationLock, token) =>
+            {
+
+                StoppedHostGrimoireAuthorityIssuer issuer = new(
+                    heldInstallationLock,
+                    ArcanumPaths.GrimoireDirectory,
+                    ArcanumPaths.GrimoireDatabaseFile);
+
+                return operation(provider, issuer, token);
+
+            },
+            bootstrapGrimoire: false,
+            cancellationToken);
+
+    }
+
     private async Task<T> RunExclusiveCoreAsync<T>(
-        Func<IServiceProvider, CancellationToken, Task<T>> operation,
+        Func<IServiceProvider, ArcanumMaintenanceLock, CancellationToken, Task<T>>
+            operation,
         bool bootstrapGrimoire,
         CancellationToken cancellationToken)
     {
@@ -113,7 +144,8 @@ public sealed class GrimoireCliInitialization(
     }
 
     private async Task<T> RunUnderBothLocksAsync<T>(
-        Func<IServiceProvider, CancellationToken, Task<T>> operation,
+        Func<IServiceProvider, ArcanumMaintenanceLock, CancellationToken, Task<T>>
+            operation,
         bool bootstrapGrimoire,
         ArcanumMaintenanceLockAcquisitionResult acquisition,
         ArcanumMaintenanceLock cliLock,
@@ -185,7 +217,7 @@ public sealed class GrimoireCliInitialization(
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
-        return await operation(scope.ServiceProvider, cancellationToken)
+        return await operation(scope.ServiceProvider, cliLock, cancellationToken)
             .ConfigureAwait(false);
 
     }

@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -177,6 +178,108 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile + ".kdf"));
 
         Assert.False(provider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
+
+    }
+
+    [Fact]
+    public async Task Stopped_host_run_refuses_contention_before_scope_or_callback()
+    {
+
+        await using ServiceProvider provider = CreateServices();
+
+        CountingScopeFactory scopeFactory = new(
+            provider.GetRequiredService<IServiceScopeFactory>());
+
+        IGrimoireCliStoppedHostInitialization initialization =
+            new GrimoireCliInitialization(
+                new GatedSecretStore("test-master-key", gateApiKeyRead: false),
+                new GrimoireDbPassphraseSource(),
+                scopeFactory,
+                new FakeStartupProbe(),
+                ClearClientMutationBoundary());
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        using ArcanumMaintenanceLock held = ArcanumMaintenanceLock
+            .AcquireDetailed(ArcanumPaths.GrimoireDirectory)
+            .BorrowAcquiredLock();
+
+        int callbackCount = 0;
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            initialization.RunAsync(
+                (_, _, _) =>
+                {
+
+                    callbackCount++;
+
+                    return Task.FromResult(0);
+
+                },
+                CancellationToken.None));
+
+        Assert.Equal(0, callbackCount);
+
+        Assert.Equal(0, scopeFactory.CreateCount);
+
+    }
+
+    [Fact]
+    public async Task Stopped_host_run_scopes_exact_lock_authority_and_both_locks_to_callback()
+    {
+
+        await using ServiceProvider provider = CreateServices();
+
+        IGrimoireCliStoppedHostInitialization initialization =
+            new GrimoireCliInitialization(
+                new GatedSecretStore("test-master-key", gateApiKeyRead: false),
+                new GrimoireDbPassphraseSource(),
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                new FakeStartupProbe(),
+                ClearClientMutationBoundary());
+
+        IStoppedHostGrimoireAuthorityIssuer? capturedIssuer = null;
+
+        int value = await initialization.RunAsync(
+            async (_, issuer, _) =>
+            {
+
+                capturedIssuer = issuer;
+
+                using ArcanumMaintenanceLock? competingMaintenance =
+                    ArcanumMaintenanceLock.TryAcquire(
+                        ArcanumPaths.GrimoireDirectory);
+
+                using ArcanumClientMutationLock? competingClient =
+                    ArcanumClientMutationLock.AcquireDetailed(
+                        ArcanumPaths.GrimoireDirectory).Lock;
+
+                Assert.Null(competingMaintenance);
+
+                Assert.Null(competingClient);
+
+                Result<IStoppedHostGrimoireConnectionAuthority> issued = issuer
+                    .IssueStoppedHostInstallationResetPlanReadAuthority();
+
+                Assert.True(issued.IsSuccess, issued.Error.Message);
+
+                await issued.Value.DisposeAsync();
+
+                return 73;
+
+            },
+            CancellationToken.None);
+
+        Assert.Equal(73, value);
+
+        Assert.NotNull(capturedIssuer);
+
+        Result<IStoppedHostGrimoireConnectionAuthority> after = capturedIssuer
+            .IssueStoppedHostInstallationResetPlanReadAuthority();
+
+        Assert.True(after.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.InvalidScope, after.Error.Code);
 
     }
 
@@ -948,6 +1051,25 @@ public sealed class GrimoireCliInitializationTests : IDisposable
                 mutate();
 
             }
+
+        }
+
+    }
+
+    private sealed class CountingScopeFactory(
+        IServiceScopeFactory inner) : IServiceScopeFactory
+    {
+
+        private int _createCount;
+
+        public int CreateCount => Volatile.Read(ref _createCount);
+
+        public IServiceScope CreateScope()
+        {
+
+            Interlocked.Increment(ref _createCount);
+
+            return inner.CreateScope();
 
         }
 

@@ -348,7 +348,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGrimoireTurnCommitter>(
             static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
 
-        services.AddSingleton<IGrimoireCliInitialization, GrimoireCliInitialization>();
+        services.AddSingleton<GrimoireCliInitialization>();
+        services.AddSingleton<IGrimoireCliInitialization>(static provider =>
+            provider.GetRequiredService<GrimoireCliInitialization>());
+        services.AddSingleton<IGrimoireCliStoppedHostInitialization>(static provider =>
+            provider.GetRequiredService<GrimoireCliInitialization>());
         services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
@@ -591,6 +595,9 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<InstallationResetService>());
 
         services.TryAddScoped<IInstallationResetLockedService>(provider =>
+            provider.GetRequiredService<InstallationResetService>());
+
+        services.TryAddScoped<IInstallationResetStoppedHostPlanner>(provider =>
             provider.GetRequiredService<InstallationResetService>());
 
         return services;
