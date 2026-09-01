@@ -172,6 +172,53 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A restore onto an installation configured for another embedding width takes the vector mirror
+    /// with the row it mirrors.
+    /// </summary>
+    /// <remarks>
+    /// Entered at <see cref="BackupRestoreService.RestoreAsync"/> over a real archive, because the
+    /// width the drop compares against is the restore service's own option and the staged database it
+    /// runs on only exists inside a restore.
+    ///
+    /// <para>The dropped base-table count is asserted as well as the mirror, and both matter: without
+    /// the count, a mirror that is empty because nothing ran at all would satisfy the case; without the
+    /// mirror, this is a restore that hands the operator two tables disagreeing about which entries
+    /// have vectors, which is the state a semantic search then answers from.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_restore_under_a_different_embedding_width_takes_the_vector_mirror_with_it()
+    {
+
+        Fixture fixture = await CreateFixtureAsync(mirroredEmbeddings: true);
+
+        string archive = await fixture.CreateBackupAsync("embedding-width.arcbackup");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        // The archive's vectors are 768-wide and this installation is configured for 1536, so the drop
+        // is what this restore actually did — pinned before the mirror is looked at.
+        Assert.Equal(1, result.Reconciliation?.EmbeddingsRebuilt);
+
+        await using SqliteConnection connection = await OpenRestoredAsync(fixture.GrimoireSecret);
+
+        Assert.Equal(
+            "0",
+            await ScalarAsync(connection, "SELECT COUNT(*) FROM entry_embeddings;"));
+
+        Assert.Equal(
+            "0",
+            await ScalarAsync(connection, "SELECT COUNT(*) FROM entry_embeddings_vec;"));
+
+    }
+
     [Fact]
     public async Task Restored_attachment_snapshots_survive_a_workspace_that_no_longer_exists_and_stay_unrefreshable()
     {
@@ -1983,12 +2030,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     private async Task<Fixture> CreateFixtureAsync(
         bool listenAny = false,
-        bool refusableSessionTrio = false)
+        bool refusableSessionTrio = false,
+        bool mirroredEmbeddings = false)
     {
 
         Fixture fixture = new(_installation, _archives, Paths(), Codec());
 
-        await fixture.BuildAsync(listenAny, refusableSessionTrio);
+        await fixture.BuildAsync(listenAny, refusableSessionTrio, mirroredEmbeddings);
 
         return fixture;
 
@@ -2066,7 +2114,10 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public IBackupService BackupService { get; private set; } = null!;
 
-        public async Task BuildAsync(bool listenAny, bool refusableSessionTrio = false)
+        public async Task BuildAsync(
+            bool listenAny,
+            bool refusableSessionTrio = false,
+            bool mirroredEmbeddings = false)
         {
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(installation);
@@ -2098,6 +2149,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
             {
 
                 await SeedRefusableSessionTrioAsync();
+
+            }
+
+            if (mirroredEmbeddings)
+            {
+
+                await SeedMirroredEmbeddingAsync();
 
             }
 
@@ -2298,6 +2356,51 @@ public sealed class BackupRestoreServiceTests : IDisposable
             _ = await seed.ExecuteNonQueryAsync();
 
         }
+
+        /// <summary>
+        /// A derived vector at a width this installation is not configured for, and its mirror row.
+        /// </summary>
+        /// <remarks>
+        /// The mirror is an ordinary table here rather than a <c>vec0</c> virtual one, because the
+        /// accelerator is not loadable in this suite — the same stand-in the retention suites use. What
+        /// is under test is which tables a restore reconciles, and that is decided by name and key
+        /// column rather than by whether the accelerator is present: production guards every mirror
+        /// statement with an existence check for exactly that reason.
+        ///
+        /// <para>Seeded into the installation the archive is taken from, so the width mismatch arrives
+        /// through a real archive: the database snapshot is a page copy of the whole encrypted file, so
+        /// a table joins a backup by existing.</para>
+        /// </remarks>
+        private async Task SeedMirroredEmbeddingAsync()
+        {
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+                DatabasePath,
+                GrimoireSecret,
+                readOnly: false,
+                CancellationToken.None);
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = $"""
+                INSERT INTO entry_embeddings ("EntryId", "Embedding", "Dim")
+                VALUES ('{Upper(MirroredEntryId)}', X'0000803F', 768);
+
+                CREATE TABLE IF NOT EXISTS entry_embeddings_vec (
+                    EntryId TEXT PRIMARY KEY,
+                    Embedding BLOB NOT NULL
+                );
+
+                INSERT INTO entry_embeddings_vec ("EntryId", "Embedding")
+                VALUES ('{Upper(MirroredEntryId)}', X'0000803F');
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync();
+
+        }
+
+        public static readonly Guid MirroredEntryId =
+            Guid.Parse("5e5e5e5e-6f6f-4070-8181-9292a3a3b4b4");
 
         public static readonly Guid EntryOfA = Guid.Parse("a1a1a1a1-b2b2-4c3c-8d4d-5e5e6f6f7071");
 
