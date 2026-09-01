@@ -337,6 +337,18 @@ public sealed class MemoryEndpointTests
 
         Assert.Equal(1, entriesStore.Count);
 
+        MemoryStoreStatusDto pinnedStore = Assert.Single(
+            envelope.Data.Stores,
+            static store => string.Equals(store.Name, "Pinned Entries", StringComparison.Ordinal));
+
+        Assert.Equal(1, pinnedStore.Count);
+
+        MemoryStoreStatusDto summaryStore = Assert.Single(
+            envelope.Data.Stores,
+            static store => string.Equals(store.Name, "Campaign Summary", StringComparison.Ordinal));
+
+        Assert.Equal(1, summaryStore.Count);
+
         MemoryStoreStatusDto attachmentStore = Assert.Single(
             envelope.Data.Stores,
             static store => string.Equals(store.Name, "Attachments", StringComparison.Ordinal));
