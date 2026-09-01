@@ -424,15 +424,21 @@ internal static class BackupRestoreDatabaseWorker
     /// Removes every mirror row whose key no longer has a row in the table it mirrors.
     /// </summary>
     /// <remarks>
-    /// Keyed one row at a time rather than as a single set-based delete, because a mirror is a
-    /// <c>vec0</c> virtual table on builds that have the accelerator and its delete surface is the
-    /// keyed one — the same shape the live erasure kernel and the retention service use. Guarded by an
-    /// existence check, so a build without the accelerator is untouched.
+    /// One pass over each table and the comparison in memory, rather than one statement that asks the
+    /// question per mirror row. The two families spell an identity differently — a mirror's key column
+    /// is deliberately outside the canonicalisation family — so the comparison has to be normalised;
+    /// doing that normalisation <em>inside</em> the statement puts a function on the base table's key
+    /// column, which makes its primary key unusable and turns the sweep into one full scan of the base
+    /// table per mirror row, under the maintenance lock, over tables as large as the Grimoire is.
+    ///
+    /// <para>The deletes stay keyed and one at a time: a mirror is a <c>vec0</c> virtual table on
+    /// builds that have the accelerator, and the keyed delete is its surface — the same shape the live
+    /// erasure kernel and the retention service use. Guarded by an existence check, so a build without
+    /// the accelerator is untouched.</para>
     ///
     /// <para>Written against "has no base row" rather than "was in the batch just deleted", so a
-    /// snapshot that already arrived inconsistent converges too. The identity comparison is normalised
-    /// because a mirror's key column is deliberately outside the canonicalisation family and an archive
-    /// is somebody else's database.</para>
+    /// snapshot that already arrived inconsistent converges too. The base pass runs after the
+    /// mismatched rows are gone, so what it collects is what survived.</para>
     /// </remarks>
     private static async Task DropOrphanedVectorMirrorRowsAsync(
         SqliteConnection connection,
@@ -449,18 +455,12 @@ internal static class BackupRestoreDatabaseWorker
 
         }
 
-        List<string> orphaned = [];
+        HashSet<string> retained = new(StringComparer.Ordinal);
 
         await using (SqliteCommand read = connection.CreateCommand())
         {
 
-            read.CommandText = $"""
-                SELECT mirror."{key}" FROM "{mirror}" mirror
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM "{table}" base
-                    WHERE lower(replace(base."{key}", '-', ''))
-                        = lower(replace(mirror."{key}", '-', '')));
-                """;
+            read.CommandText = $"SELECT \"{key}\" FROM \"{table}\";";
 
             await using SqliteDataReader reader = await read
                 .ExecuteReaderAsync(cancellationToken)
@@ -472,7 +472,43 @@ internal static class BackupRestoreDatabaseWorker
                 if (!reader.IsDBNull(0))
                 {
 
-                    orphaned.Add(reader.GetString(0));
+                    _ = retained.Add(CovenantIdentitySql.Key(reader.GetString(0)));
+
+                }
+
+            }
+
+        }
+
+        List<string> orphaned = [];
+
+        await using (SqliteCommand read = connection.CreateCommand())
+        {
+
+            read.CommandText = $"SELECT \"{key}\" FROM \"{mirror}\";";
+
+            await using SqliteDataReader reader = await read
+                .ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                if (reader.IsDBNull(0))
+                {
+
+                    continue;
+
+                }
+
+                string stored = reader.GetString(0);
+
+                if (!retained.Contains(CovenantIdentitySql.Key(stored)))
+                {
+
+                    // The stored spelling, not the normalised one: the delete below matches the column
+                    // exactly, which is what keeps it a keyed delete.
+                    orphaned.Add(stored);
 
                 }
 
