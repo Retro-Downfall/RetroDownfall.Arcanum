@@ -324,6 +324,46 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Replacement_base_is_refused_away_from_wal_boundary_without_raw_publication()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        GrimoireOfflineTransitionTypedPublication current =
+            await BeginApplyingAsync(lifecycle);
+
+        current = await AdvanceApplyingThroughAsync(
+            lifecycle,
+            current,
+            CovenantResetPhase.CanonicalApplied);
+
+        CovenantResetOfflineTransitionPayloadV1 applying =
+            Assert.IsType<CovenantResetOfflineTransitionPayloadV1>(current.Payload);
+
+        Assert.Equal(CovenantResetPhase.CanonicalApplied, applying.LastCompletedPhase);
+
+        Assert.Null(applying.InFlightPhase);
+
+        Assert.Null(applying.InFlightBeforeState);
+
+        Assert.Null(applying.ReplacementEvidence);
+
+        CovenantResetOfflineTransitionPayloadV1 invalid = applying with
+        {
+            ReplacementEvidence = ReplacementBase(),
+        };
+
+        Assert.True((await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            invalid,
+            CancellationToken.None)).IsFailure);
+
+        await AssertRawUnchangedAsync(current);
+
+    }
+
+    [Fact]
     public async Task In_flight_begin_cannot_advance_replacement_evidence_or_publish_raw_revision()
     {
 

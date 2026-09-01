@@ -643,6 +643,62 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
     }
 
     [Fact]
+    public void Factory_continuation_is_true_in_valid_later_blocked_and_commit_path_shapes()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 verifyingReset = Payload(
+            GrimoireOfflineTransitionState.Verifying,
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen) with
+        {
+            LastCompletedPhase = CovenantResetPhase.SidecarsVerified,
+        };
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 verifying = Factory(
+            verifyingReset,
+            continuationCompleted: true);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 kept = Factory(
+            verifyingReset with
+            {
+                Lifecycle = verifyingReset.Lifecycle with
+                {
+                    State = GrimoireOfflineTransitionState.KeepClosed,
+                    Blocker = new(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        GrimoireOfflineTransitionState.Verifying,
+                        Digest(0x76)),
+                },
+            },
+            continuationCompleted: true);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 reconciling = Factory(
+            Payload(
+                GrimoireOfflineTransitionState.DatabaseReconciliationPending,
+                GrimoireOfflineTransitionTerminalIntent.CommitAndReopen) with
+            {
+                LastCompletedPhase = CovenantResetPhase.SidecarsVerified,
+            },
+            continuationCompleted: true);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1[] validControls =
+        [
+            kept,
+            verifying,
+            reconciling,
+        ];
+
+        Assert.All(validControls, static control => Assert.True(
+            GrimoireOfflineTransitionLifecycleValidator.ValidPayload(control)));
+
+        Assert.All(validControls, static control => Assert.False(
+            GrimoireOfflineTransitionLifecycleValidator.ValidPayload(control with
+            {
+                OrdinaryFactoryContinuationCompleted = false,
+            })));
+
+    }
+
+    [Fact]
     public void Complete_closing_proof_is_bound_to_the_immutable_source_generation()
     {
 
