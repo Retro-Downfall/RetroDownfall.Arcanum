@@ -112,8 +112,7 @@ public sealed class CovenantConnectionDrainTests
                 .UseSqlite(database.Connection, contextOwnsConnection: false)
                 .AddInterceptors(
                     new CovenantConnectionEnrolmentInterceptor(
-                        admission,
-                        drain,
+                        new GrimoireOrdinaryConnectionLifecycle(admission, drain),
                         CovenantSqliteConnectionInitializer.Instance))
                 .Options;
 

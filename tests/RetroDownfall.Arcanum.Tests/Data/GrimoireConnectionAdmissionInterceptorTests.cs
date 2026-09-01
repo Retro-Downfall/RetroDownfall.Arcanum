@@ -466,8 +466,7 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
             .UseSqlite(connection, contextOwnsConnection: true)
             .AddInterceptors(
                 new CovenantConnectionEnrolmentInterceptor(
-                    gate,
-                    drain,
+                    new GrimoireOrdinaryConnectionLifecycle(gate, drain),
                     initializer ?? NoOpConnectionInitializer.Instance))
             .Options;
 

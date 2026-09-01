@@ -10,47 +10,29 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
-/// Owns ordinary Grimoire admission and Covenant-drain enrolment for every physical connection
-/// Entity Framework opens.
+/// Adapts Entity Framework connection callbacks to the process-wide ordinary Grimoire lifecycle.
 /// </summary>
-/// <remarks>
-/// Admission is acquired before provider I/O and revalidated immediately after it. The post-open
-/// ordering is deliberate: a handle that already lost its generation is physically closed before
-/// initializer I/O, drain enrolment, or ticket refusal. A revalidated handle remains unresolved
-/// through initialization and drain enrolment, then completes only after a final generation check.
-///
-/// <para>One weak lifecycle state follows each physical connection across pooled reopen cycles. Its
-/// drain registration is only this interceptor's registration; the drain itself remains reference
-/// counted, so releasing it cannot unregister a second logical holder of the same handle.</para>
-/// </remarks>
 internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInterceptor
 {
 
-    private readonly IGrimoireConnectionAdmissionGate _admissionGate;
-
-    private readonly ICovenantConnectionDrain _drain;
+    private readonly IGrimoireOrdinaryConnectionLifecycle _lifecycle;
 
     private readonly ICovenantSqliteConnectionInitializer _initializer;
 
     private readonly Lock _gate = new();
 
-    private readonly ConditionalWeakTable<DbConnection, ConnectionLifecycleState> _lifecycles = [];
+    private readonly ConditionalWeakTable<DbConnection, InterceptorRegistration> _registrations = [];
 
     internal CovenantConnectionEnrolmentInterceptor(
-        IGrimoireConnectionAdmissionGate admissionGate,
-        ICovenantConnectionDrain drain,
+        IGrimoireOrdinaryConnectionLifecycle lifecycle,
         ICovenantSqliteConnectionInitializer initializer)
     {
 
-        ArgumentNullException.ThrowIfNull(admissionGate);
-
-        ArgumentNullException.ThrowIfNull(drain);
+        ArgumentNullException.ThrowIfNull(lifecycle);
 
         ArgumentNullException.ThrowIfNull(initializer);
 
-        _admissionGate = admissionGate;
-
-        _drain = drain;
+        _lifecycle = lifecycle;
 
         _initializer = initializer;
 
@@ -77,29 +59,27 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
         BeginOpen(connection);
 
-        return base.ConnectionOpeningAsync(
-            connection,
-            eventData,
-            result,
-            cancellationToken);
+        return base.ConnectionOpeningAsync(connection, eventData, result, cancellationToken);
 
     }
 
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        if (!RevalidateAfterNativeOpen(connection))
+        InterceptorRegistration registration = RequireRegistration(connection);
+
+        Result revalidated = registration.Registration.RevalidateAfterNativeOpen();
+
+        registration.NativeOpenRevalidated = true;
+
+        if (revalidated.IsFailure)
         {
 
-            connection.Close();
-
-            CompleteRefusalAfterPhysicalClose(connection);
+            RefuseAfterPhysicalClose(connection);
 
             throw new GrimoireMaintenanceUnavailableException();
 
         }
-
-        bool admitted;
 
         try
         {
@@ -117,26 +97,31 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             }
 
-            admitted = CompleteOpen(connection);
+            Result opened = registration.Registration.MarkOpened();
+
+            if (opened.IsFailure)
+            {
+
+                RefuseAfterPhysicalClose(connection);
+
+                throw new GrimoireMaintenanceUnavailableException();
+
+            }
+
+            registration.Opened = true;
 
         }
         catch
         {
 
-            Release(connection);
+            if (!registration.Opened && HasRegistration(connection))
+            {
+
+                RefuseAfterPhysicalClose(connection);
+
+            }
 
             throw;
-
-        }
-
-        if (!admitted)
-        {
-
-            connection.Close();
-
-            CompleteRefusalAfterPhysicalClose(connection);
-
-            throw new GrimoireMaintenanceUnavailableException();
 
         }
 
@@ -150,18 +135,20 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         CancellationToken cancellationToken = default)
     {
 
-        if (!RevalidateAfterNativeOpen(connection))
+        InterceptorRegistration registration = RequireRegistration(connection);
+
+        Result revalidated = registration.Registration.RevalidateAfterNativeOpen();
+
+        registration.NativeOpenRevalidated = true;
+
+        if (revalidated.IsFailure)
         {
 
-            await connection.CloseAsync().ConfigureAwait(false);
-
-            CompleteRefusalAfterPhysicalClose(connection);
+            await RefuseAfterPhysicalCloseAsync(connection).ConfigureAwait(false);
 
             throw new GrimoireMaintenanceUnavailableException();
 
         }
-
-        bool admitted;
 
         try
         {
@@ -177,26 +164,31 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             }
 
-            admitted = CompleteOpen(connection);
+            Result opened = registration.Registration.MarkOpened();
+
+            if (opened.IsFailure)
+            {
+
+                await RefuseAfterPhysicalCloseAsync(connection).ConfigureAwait(false);
+
+                throw new GrimoireMaintenanceUnavailableException();
+
+            }
+
+            registration.Opened = true;
 
         }
         catch
         {
 
-            await ReleaseAsync(connection).ConfigureAwait(false);
+            if (!registration.Opened && HasRegistration(connection))
+            {
+
+                await RefuseAfterPhysicalCloseAsync(connection).ConfigureAwait(false);
+
+            }
 
             throw;
-
-        }
-
-        if (!admitted)
-        {
-
-            await connection.CloseAsync().ConfigureAwait(false);
-
-            CompleteRefusalAfterPhysicalClose(connection);
-
-            throw new GrimoireMaintenanceUnavailableException();
 
         }
 
@@ -210,19 +202,22 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         ConnectionErrorEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: true);
 
         base.ConnectionFailed(connection, eventData);
 
     }
 
-    public override Task ConnectionFailedAsync(
+    public override async Task ConnectionFailedAsync(
         DbConnection connection,
         ConnectionErrorEventData eventData,
         CancellationToken cancellationToken = default)
     {
 
-        return ReleaseAfterFailureAsync(connection, eventData, cancellationToken);
+        await ReleaseAsync(connection, closePhysicalConnection: true).ConfigureAwait(false);
+
+        await base.ConnectionFailedAsync(connection, eventData, cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
@@ -231,42 +226,19 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: true);
 
         base.ConnectionCanceled(connection, eventData);
 
     }
 
-    public override Task ConnectionCanceledAsync(
+    public override async Task ConnectionCanceledAsync(
         DbConnection connection,
         ConnectionEndEventData eventData,
         CancellationToken cancellationToken = default)
     {
 
-        return ReleaseAfterCancellationAsync(connection, eventData, cancellationToken);
-
-    }
-
-    private async Task ReleaseAfterFailureAsync(
-        DbConnection connection,
-        ConnectionErrorEventData eventData,
-        CancellationToken cancellationToken)
-    {
-
-        await ReleaseAsync(connection).ConfigureAwait(false);
-
-        await base.ConnectionFailedAsync(connection, eventData, cancellationToken)
-            .ConfigureAwait(false);
-
-    }
-
-    private async Task ReleaseAfterCancellationAsync(
-        DbConnection connection,
-        ConnectionEndEventData eventData,
-        CancellationToken cancellationToken)
-    {
-
-        await ReleaseAsync(connection).ConfigureAwait(false);
+        await ReleaseAsync(connection, closePhysicalConnection: true).ConfigureAwait(false);
 
         await base.ConnectionCanceledAsync(connection, eventData, cancellationToken)
             .ConfigureAwait(false);
@@ -276,7 +248,7 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override void ConnectionClosed(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: false);
 
         base.ConnectionClosed(connection, eventData);
 
@@ -285,7 +257,7 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override Task ConnectionClosedAsync(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: false);
 
         return base.ConnectionClosedAsync(connection, eventData);
 
@@ -294,7 +266,7 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override void ConnectionDisposed(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: false);
 
         base.ConnectionDisposed(connection, eventData);
 
@@ -303,7 +275,7 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override Task ConnectionDisposedAsync(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: false);
 
         return base.ConnectionDisposedAsync(connection, eventData);
 
@@ -315,150 +287,55 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         lock (_gate)
         {
 
-            ConnectionLifecycleState lifecycle = _lifecycles.GetOrCreateValue(connection);
-
-            if (lifecycle.OpenTicket is not null)
+            if (_registrations.TryGetValue(connection, out _))
             {
 
                 throw new InvalidOperationException(
-                    "This physical Grimoire connection already has an unresolved open attempt.");
+                    "This physical Grimoire connection already has an interceptor registration.");
 
             }
 
-            lifecycle.OpenTicket = _admissionGate.AcquireOrdinaryOpen(connection);
-
-            lifecycle.RefusalAfterOpenRequired = false;
-
-            lifecycle.NativeOpenObserved = false;
+            _registrations.Add(
+                connection,
+                new InterceptorRegistration(_lifecycle.BeginOpen(connection)));
 
         }
 
     }
 
-    private bool RevalidateAfterNativeOpen(DbConnection connection)
+    private InterceptorRegistration RequireRegistration(DbConnection connection)
     {
 
         lock (_gate)
         {
 
-            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle)
-                || lifecycle.OpenTicket is null)
-            {
-
-                throw new InvalidOperationException(
-                    "This physical Grimoire connection has no matching open ticket.");
-
-            }
-
-            lifecycle.NativeOpenObserved = true;
-
-            Result admitted = lifecycle.OpenTicket.RevalidateAfterNativeOpen();
-
-            if (admitted.IsFailure)
-            {
-
-                lifecycle.RefusalAfterOpenRequired = true;
-
-                return false;
-
-            }
-
-            return true;
+            return _registrations.TryGetValue(connection, out InterceptorRegistration? registration)
+                ? registration
+                : throw new InvalidOperationException(
+                    "This physical Grimoire connection has no interceptor registration.");
 
         }
 
     }
 
-    private bool CompleteOpen(DbConnection connection)
+    private bool HasRegistration(DbConnection connection)
     {
 
         lock (_gate)
         {
 
-            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle)
-                || lifecycle.OpenTicket is null)
-            {
-
-                throw new InvalidOperationException(
-                    "This physical Grimoire connection has no matching open ticket.");
-
-            }
-
-            if (connection is SqliteConnection sqlite && lifecycle.Enrolment is null)
-            {
-
-                lifecycle.Enrolment = _drain.Register(sqlite);
-
-            }
-
-            Result admitted = lifecycle.OpenTicket.MarkOpened();
-
-            if (admitted.IsFailure)
-            {
-
-                lifecycle.RefusalAfterOpenRequired = true;
-
-                return false;
-
-            }
-
-            lifecycle.OpenTicket.Dispose();
-
-            lifecycle.OpenTicket = null;
-
-            return true;
+            return _registrations.TryGetValue(connection, out _);
 
         }
 
     }
 
-    private void CompleteRefusalAfterPhysicalClose(DbConnection connection)
+    private void RefuseAfterPhysicalClose(DbConnection connection)
     {
 
-        lock (_gate)
-        {
+        InterceptorRegistration? registration = TryBeginRelease(connection);
 
-            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle)
-                || lifecycle.OpenTicket is null
-                || !lifecycle.RefusalAfterOpenRequired)
-            {
-
-                return;
-
-            }
-
-            if (connection.State != ConnectionState.Closed)
-            {
-
-                throw new InvalidOperationException(
-                    "A refused Grimoire open must be physically closed before its admission ticket completes.");
-
-            }
-
-            lifecycle.OpenTicket.MarkRefusedAfterOpen();
-
-            lifecycle.OpenTicket.Dispose();
-
-            lifecycle.OpenTicket = null;
-
-            lifecycle.RefusalAfterOpenRequired = false;
-
-            lifecycle.Enrolment?.Dispose();
-
-            lifecycle.Enrolment = null;
-
-            lifecycle.NativeOpenObserved = false;
-
-        }
-
-    }
-
-    private void Release(DbConnection connection)
-    {
-
-        ConnectionLifecycleState? lifecycle = TryBeginRelease(connection);
-
-        if (lifecycle is null)
+        if (registration is null)
         {
 
             return;
@@ -475,13 +352,17 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             }
 
-            CompleteRelease(connection, lifecycle);
+            registration.Registration.MarkRefusedAfterOpen();
+
+            registration.Registration.Dispose();
+
+            CompleteRelease(connection, registration);
 
         }
         catch
         {
 
-            CancelRelease(connection, lifecycle);
+            CancelRelease(connection, registration);
 
             throw;
 
@@ -489,12 +370,12 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     }
 
-    private async Task ReleaseAsync(DbConnection connection)
+    private async Task RefuseAfterPhysicalCloseAsync(DbConnection connection)
     {
 
-        ConnectionLifecycleState? lifecycle = TryBeginRelease(connection);
+        InterceptorRegistration? registration = TryBeginRelease(connection);
 
-        if (lifecycle is null)
+        if (registration is null)
         {
 
             return;
@@ -511,13 +392,17 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
             }
 
-            CompleteRelease(connection, lifecycle);
+            registration.Registration.MarkRefusedAfterOpen();
+
+            registration.Registration.Dispose();
+
+            CompleteRelease(connection, registration);
 
         }
         catch
         {
 
-            CancelRelease(connection, lifecycle);
+            CancelRelease(connection, registration);
 
             throw;
 
@@ -525,32 +410,124 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     }
 
-    private ConnectionLifecycleState? TryBeginRelease(DbConnection connection)
+    private void Release(DbConnection connection, bool closePhysicalConnection)
+    {
+
+        InterceptorRegistration? registration = TryBeginRelease(connection);
+
+        if (registration is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            if (closePhysicalConnection && !IsPhysicallyClosed(connection))
+            {
+
+                connection.Close();
+
+            }
+
+            CompleteRegistration(registration);
+
+            CompleteRelease(connection, registration);
+
+        }
+        catch
+        {
+
+            CancelRelease(connection, registration);
+
+            throw;
+
+        }
+
+    }
+
+    private async Task ReleaseAsync(DbConnection connection, bool closePhysicalConnection)
+    {
+
+        InterceptorRegistration? registration = TryBeginRelease(connection);
+
+        if (registration is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            if (closePhysicalConnection && !IsPhysicallyClosed(connection))
+            {
+
+                await connection.CloseAsync().ConfigureAwait(false);
+
+            }
+
+            CompleteRegistration(registration);
+
+            CompleteRelease(connection, registration);
+
+        }
+        catch
+        {
+
+            CancelRelease(connection, registration);
+
+            throw;
+
+        }
+
+    }
+
+    private static void CompleteRegistration(InterceptorRegistration registration)
+    {
+
+        if (!registration.Opened)
+        {
+
+            if (registration.NativeOpenRevalidated)
+            {
+
+                registration.Registration.MarkRefusedAfterOpen();
+
+            }
+            else
+            {
+
+                registration.Registration.MarkFailed();
+
+            }
+
+        }
+
+        registration.Registration.Dispose();
+
+    }
+
+    private InterceptorRegistration? TryBeginRelease(DbConnection connection)
     {
 
         lock (_gate)
         {
 
-            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle))
+            if (!_registrations.TryGetValue(connection, out InterceptorRegistration? registration)
+                || registration.ReleaseInProgress)
             {
 
                 return null;
 
             }
 
-            if (lifecycle.ReleaseInProgress
-                || (lifecycle.OpenTicket is null
-                    && lifecycle.Enrolment is null
-                    && !lifecycle.NativeOpenObserved))
-            {
+            registration.ReleaseInProgress = true;
 
-                return null;
-
-            }
-
-            lifecycle.ReleaseInProgress = true;
-
-            return lifecycle;
+            return registration;
 
         }
 
@@ -558,59 +535,19 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     private void CompleteRelease(
         DbConnection connection,
-        ConnectionLifecycleState lifecycle)
+        InterceptorRegistration registration)
     {
 
         lock (_gate)
         {
 
-            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? current)
-                || !ReferenceEquals(current, lifecycle)
-                || !lifecycle.ReleaseInProgress)
+            if (_registrations.TryGetValue(connection, out InterceptorRegistration? current)
+                && ReferenceEquals(current, registration))
             {
 
-                return;
+                _ = _registrations.Remove(connection);
 
             }
-
-            if (lifecycle.OpenTicket is not null)
-            {
-
-                if (lifecycle.RefusalAfterOpenRequired)
-                {
-
-                    if (connection.State != ConnectionState.Closed)
-                    {
-
-                        return;
-
-                    }
-
-                    lifecycle.OpenTicket.MarkRefusedAfterOpen();
-
-                }
-                else
-                {
-
-                    lifecycle.OpenTicket.MarkFailed();
-
-                }
-
-                lifecycle.OpenTicket.Dispose();
-
-                lifecycle.OpenTicket = null;
-
-                lifecycle.RefusalAfterOpenRequired = false;
-
-            }
-
-            lifecycle.Enrolment?.Dispose();
-
-            lifecycle.Enrolment = null;
-
-            lifecycle.NativeOpenObserved = false;
-
-            lifecycle.ReleaseInProgress = false;
 
         }
 
@@ -618,17 +555,17 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     private void CancelRelease(
         DbConnection connection,
-        ConnectionLifecycleState lifecycle)
+        InterceptorRegistration registration)
     {
 
         lock (_gate)
         {
 
-            if (_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? current)
-                && ReferenceEquals(current, lifecycle))
+            if (_registrations.TryGetValue(connection, out InterceptorRegistration? current)
+                && ReferenceEquals(current, registration))
             {
 
-                lifecycle.ReleaseInProgress = false;
+                registration.ReleaseInProgress = false;
 
             }
 
@@ -654,16 +591,15 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     }
 
-    private sealed class ConnectionLifecycleState
+    private sealed class InterceptorRegistration(
+        IGrimoireOrdinaryConnectionRegistration registration)
     {
 
-        internal IGrimoireConnectionOpenTicket? OpenTicket { get; set; }
+        internal IGrimoireOrdinaryConnectionRegistration Registration { get; } = registration;
 
-        internal IDisposable? Enrolment { get; set; }
+        internal bool NativeOpenRevalidated { get; set; }
 
-        internal bool RefusalAfterOpenRequired { get; set; }
-
-        internal bool NativeOpenObserved { get; set; }
+        internal bool Opened { get; set; }
 
         internal bool ReleaseInProgress { get; set; }
 

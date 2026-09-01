@@ -22,14 +22,11 @@ internal static class ArcanumDbContextOptionsConfigurator
     public static void Configure(
         DbContextOptionsBuilder optionsBuilder,
         IGrimoireDbPassphraseSource passphraseSource,
-        IGrimoireConnectionAdmissionGate admissionGate,
-        ICovenantConnectionDrain drain,
+        IGrimoireOrdinaryConnectionLifecycle lifecycle,
         ICovenantSqliteConnectionInitializer initializer)
     {
 
-        ArgumentNullException.ThrowIfNull(admissionGate);
-
-        ArgumentNullException.ThrowIfNull(drain);
+        ArgumentNullException.ThrowIfNull(lifecycle);
 
         ArgumentNullException.ThrowIfNull(initializer);
 
@@ -37,8 +34,7 @@ internal static class ArcanumDbContextOptionsConfigurator
 
         _ = optionsBuilder.AddInterceptors(
             new CovenantConnectionEnrolmentInterceptor(
-                admissionGate,
-                drain,
+                lifecycle,
                 initializer));
 
     }

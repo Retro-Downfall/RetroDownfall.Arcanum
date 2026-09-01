@@ -23,7 +23,7 @@ public sealed class GrimoireDbContextCompositionTests
     [Theory]
     [InlineData(ProductComposition.NonPooledCli)]
     [InlineData(ProductComposition.PooledHost)]
-    public async Task Product_DbContext_options_use_the_singleton_admission_gate_and_drain(
+    public async Task Product_DbContext_options_use_the_singleton_ordinary_lifecycle(
         ProductComposition composition)
     {
 
@@ -48,47 +48,38 @@ public sealed class GrimoireDbContextCompositionTests
                 provider.GetRequiredService<IGrimoireDbPassphraseSource>())
             .SetPassphrase("task-4-composition-passphrase");
 
-        IGrimoireConnectionAdmissionGate admission = provider
-            .GetRequiredService<IGrimoireConnectionAdmissionGate>();
-
-        ICovenantConnectionDrain drain = provider
-            .GetRequiredService<ICovenantConnectionDrain>();
+        IGrimoireOrdinaryConnectionLifecycle lifecycle = provider
+            .GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>();
 
         await using AsyncServiceScope firstScope = provider.CreateAsyncScope();
 
         await using AsyncServiceScope secondScope = provider.CreateAsyncScope();
 
         Assert.Same(
-            admission,
-            firstScope.ServiceProvider.GetRequiredService<IGrimoireConnectionAdmissionGate>());
+            lifecycle,
+            firstScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>());
 
         Assert.Same(
-            admission,
-            secondScope.ServiceProvider.GetRequiredService<IGrimoireConnectionAdmissionGate>());
-
-        Assert.Same(
-            drain,
-            firstScope.ServiceProvider.GetRequiredService<ICovenantConnectionDrain>());
-
-        Assert.Same(
-            drain,
-            secondScope.ServiceProvider.GetRequiredService<ICovenantConnectionDrain>());
+            lifecycle,
+            secondScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>());
 
         DbContextOptions<ArcanumDbContext> options = firstScope.ServiceProvider
             .GetRequiredService<DbContextOptions<ArcanumDbContext>>();
 
         CovenantConnectionEnrolmentInterceptor interceptor = Assert.Single(Interceptors(options));
 
-        Assert.Same(admission, Dependency<IGrimoireConnectionAdmissionGate>(interceptor, "_admissionGate"));
+        Assert.Same(lifecycle, GetLifecycle(interceptor));
 
-        Assert.Same(drain, Dependency<ICovenantConnectionDrain>(interceptor, "_drain"));
+        Assert.Same(
+            provider.GetRequiredService<ICovenantConnectionDrain>(),
+            GetDrain(lifecycle));
 
         AssertSingleServingConnectionInterceptor(options);
 
     }
 
     [SkippableFact]
-    public async Task Api_test_host_replacement_uses_the_host_singleton_admission_gate_and_drain()
+    public async Task Api_test_host_replacement_uses_the_host_singleton_ordinary_lifecycle()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -104,13 +95,12 @@ public sealed class GrimoireDbContextCompositionTests
 
         CovenantConnectionEnrolmentInterceptor interceptor = Assert.Single(Interceptors(options));
 
-        Assert.Same(
-            provider.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
-            Dependency<IGrimoireConnectionAdmissionGate>(interceptor, "_admissionGate"));
+        IGrimoireOrdinaryConnectionLifecycle lifecycle = provider
+            .GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>();
 
-        Assert.Same(
-            provider.GetRequiredService<ICovenantConnectionDrain>(),
-            Dependency<ICovenantConnectionDrain>(interceptor, "_drain"));
+        Assert.Same(lifecycle, GetLifecycle(interceptor));
+
+        Assert.Same(provider.GetRequiredService<ICovenantConnectionDrain>(), GetDrain(lifecycle));
 
         AssertSingleServingConnectionInterceptor(options);
 
@@ -181,18 +171,29 @@ public sealed class GrimoireDbContextCompositionTests
 
     }
 
-    private static T Dependency<T>(
-        CovenantConnectionEnrolmentInterceptor interceptor,
-        string fieldName)
-        where T : class
+    private static IGrimoireOrdinaryConnectionLifecycle GetLifecycle(
+        CovenantConnectionEnrolmentInterceptor interceptor)
     {
 
         FieldInfo field = typeof(CovenantConnectionEnrolmentInterceptor).GetField(
-            fieldName,
+            "_lifecycle",
             BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException($"The interceptor field {fieldName} is missing.");
+            ?? throw new InvalidOperationException("The interceptor lifecycle field is missing.");
 
-        return Assert.IsAssignableFrom<T>(field.GetValue(interceptor));
+        return Assert.IsAssignableFrom<IGrimoireOrdinaryConnectionLifecycle>(field.GetValue(interceptor));
+
+    }
+
+    private static ICovenantConnectionDrain GetDrain(
+        IGrimoireOrdinaryConnectionLifecycle lifecycle)
+    {
+
+        FieldInfo field = typeof(GrimoireOrdinaryConnectionLifecycle).GetField(
+            "_drain",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The lifecycle drain field is missing.");
+
+        return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(lifecycle));
 
     }
 
