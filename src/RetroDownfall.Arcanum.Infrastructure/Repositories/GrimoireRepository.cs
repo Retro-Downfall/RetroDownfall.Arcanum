@@ -48,7 +48,17 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     /// </remarks>
     private readonly CovenantMutationKernel? _covenantKernel;
 
-    private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard;
+    /// <summary>
+    /// The labelled-artifact check every raw delete on this repository passes first.
+    /// </summary>
+    /// <remarks>
+    /// Required, unlike the Covenant kernel above it. It was optional once, and both factory
+    /// registrations then simply stopped short of supplying it, so the refusal in
+    /// <see cref="DeleteEntryAsync" /> was unreachable in every composed host while the design
+    /// documented it as live. A guard whose absence is representable is a guard some composition will
+    /// eventually be missing, and nothing about that composition will look wrong.
+    /// </remarks>
+    private readonly ICovenantLabeledArtifactGuard _labeledArtifactGuard;
 
     /// <summary>
     /// The durable finalization-guard capacity ledger.
@@ -71,8 +81,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     /// public surface.
     /// </summary>
     /// <remarks>
-    /// There is deliberately no constructor that omits <paramref name="connections" />, and none that
-    /// resolves it from an <see cref="IServiceProvider" />. The pair that did — a public one with an
+    /// There is deliberately no constructor that omits <paramref name="connections" /> or
+    /// <paramref name="labeledArtifactGuard" />, and none that resolves either from an
+    /// <see cref="IServiceProvider" />. The pair that did — a public one with an
     /// optional provider, and an internal one that hard-coded a refusing stand-in — meant a caller
     /// that named neither received a factory that refused every acquisition, so once the turn-commit
     /// path began acquiring, every such construction became a run-time refusal at the commit instead
@@ -86,7 +97,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         ISessionAttachmentIndexMaintenance? attachmentIndex,
         CovenantMutationKernel? covenantKernel,
         IGrimoireOrdinaryConnectionFactory connections,
-        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
+        ICovenantLabeledArtifactGuard labeledArtifactGuard)
     {
         _db = db;
 
@@ -793,19 +804,14 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         // that skipped the sensitivity purge boundary would remove a labelled Entry without appending
         // its erasure receipt — leaving a finalization guard pointing at nothing, which is the one
         // integrity state that cannot be told apart from data loss (§10.20.2).
-        if (_labeledArtifactGuard is { } guard)
+        Result unlabeled = await _labeledArtifactGuard
+            .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (unlabeled.IsFailure)
         {
 
-            Result unlabeled = await guard
-                .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (unlabeled.IsFailure)
-            {
-
-                throw new InvalidOperationException(unlabeled.Error.Message);
-
-            }
+            throw new InvalidOperationException(unlabeled.Error.Message);
 
         }
 

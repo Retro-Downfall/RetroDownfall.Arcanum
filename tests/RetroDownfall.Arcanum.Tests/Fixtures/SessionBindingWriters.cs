@@ -53,7 +53,8 @@ internal static class SessionBindingWriters
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             covenantKernel: null,
-            FixtureOrdinaryConnectionFactory.For(db));
+            FixtureOrdinaryConnectionFactory.For(db),
+            FixtureLabeledArtifactGuard.For(db));
 
         Result<Guid> created = await repository.CreateBoundSessionAsync(
             CanonicalCampaignContext.Create(

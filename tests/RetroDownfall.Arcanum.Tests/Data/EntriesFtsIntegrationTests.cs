@@ -102,7 +102,8 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             covenantKernel: null,
-            FixtureOrdinaryConnectionFactory.For(_db));
+            FixtureOrdinaryConnectionFactory.For(_db),
+            FixtureLabeledArtifactGuard.For(_db));
 
         string results = await repository.SearchArchivesAsync("moonstone", maxResults: 10, CancellationToken.None);
 

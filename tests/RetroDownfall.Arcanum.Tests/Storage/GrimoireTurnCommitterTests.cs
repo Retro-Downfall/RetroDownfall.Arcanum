@@ -439,7 +439,8 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
             new TestOptionsSnapshot(new ArcanumSettings()),
             attachmentIndex: null,
             covenantKernel: null,
-            FixtureOrdinaryConnectionFactory.For(_db!));
+            FixtureOrdinaryConnectionFactory.For(_db!),
+            FixtureLabeledArtifactGuard.For(_db!));
 
     private async Task<(Guid SessionId, Guid AssistantEntryId)> SeedTurnAsync()
     {

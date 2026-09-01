@@ -339,7 +339,8 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                     new TestOptionsSnapshot<ArcanumSettings>(settings),
                     attachmentIndex: null,
                     covenantKernel: null,
-                    sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
+                    sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                    FixtureLabeledArtifactGuard.For(_db)));
 
             await using ServiceProvider provider = services.BuildServiceProvider();
 

@@ -1144,7 +1144,8 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             new CovenantMutationKernel(),
-            FixtureOrdinaryConnectionFactory.For(_db!));
+            FixtureOrdinaryConnectionFactory.For(_db!),
+            FixtureLabeledArtifactGuard.For(_db!));
 
     private SqliteConnection Connection()
     {
