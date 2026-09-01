@@ -3124,40 +3124,47 @@ internal static class GrimoireConnectionAcquisitionScanner
         TypeDeclarationSyntax? containingType)
     {
 
-        if (ContainsFailureResult(expression))
+        if (IsExactTypedResultFailure(expression))
         {
 
             return true;
 
         }
 
-        if (containingType is null || expression is not InvocationExpressionSyntax invocation)
+        if (containingType is null
+            || expression is not InvocationExpressionSyntax
+            {
+                Expression: IdentifierNameSyntax identifier,
+            } invocation)
         {
 
             return false;
 
         }
 
-        string name = TerminalName(invocation.Expression);
-
         int arity = invocation.ArgumentList.Arguments.Count;
 
-        return containingType.Members
+        MethodDeclarationSyntax[] candidates =
+        [
+            .. containingType.Members
             .OfType<MethodDeclarationSyntax>()
-            .Any(candidate => candidate.Identifier.ValueText == name
+            .Where(candidate => candidate.Identifier.ValueText == identifier.Identifier.ValueText
                 && candidate.ParameterList.Parameters.Count == arity
-                && IsConcrete(candidate)
-                && ContainsOnlyDirectFailureResult(candidate));
+                && IsConcrete(candidate)),
+        ];
+
+        return candidates.Length == 1
+            && ContainsOnlyExactTypedFailureResult(candidates[0]);
 
     }
 
-    private static bool ContainsOnlyDirectFailureResult(MethodDeclarationSyntax method)
+    private static bool ContainsOnlyExactTypedFailureResult(MethodDeclarationSyntax method)
     {
 
         if (method.ExpressionBody is not null)
         {
 
-            return ContainsFailureResult(method.ExpressionBody.Expression);
+            return IsExactTypedResultFailure(method.ExpressionBody.Expression);
 
         }
 
@@ -3166,13 +3173,46 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         return returns.Count != 0
             && returns.All(static statement => statement.Expression is { } expression
-                && ContainsFailureResult(expression));
+                && IsExactTypedResultFailure(expression));
 
     }
 
-    private static bool ContainsFailureResult(ExpressionSyntax expression) =>
-        expression.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().Any(invocation =>
-            TerminalName(invocation.Expression) == "Failure");
+    private static bool IsExactTypedResultFailure(ExpressionSyntax expression)
+    {
+
+        if (expression is not InvocationExpressionSyntax invocation)
+        {
+
+            return false;
+
+        }
+
+        if (invocation.Expression is MemberAccessExpressionSyntax
+            {
+                Expression: GenericNameSyntax
+                {
+                    Identifier.ValueText: "Result",
+                },
+                Name.Identifier.ValueText: "Failure",
+            })
+        {
+
+            return true;
+
+        }
+
+        return invocation.Expression is MemberAccessExpressionSyntax
+            {
+                Expression: IdentifierNameSyntax
+                {
+                    Identifier.ValueText: "Task",
+                },
+                Name.Identifier.ValueText: "FromResult",
+            }
+            && invocation.ArgumentList.Arguments.Count == 1
+            && IsExactTypedResultFailure(invocation.ArgumentList.Arguments[0].Expression);
+
+    }
 
     private static bool IsConcrete(MethodDeclarationSyntax method) =>
         method.Body is not null || method.ExpressionBody is not null;

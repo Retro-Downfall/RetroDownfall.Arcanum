@@ -316,6 +316,83 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
+    public void Mixed_success_and_failure_opaque_route_requires_a_marker()
+    {
+
+        AcquisitionSource source = Source("""
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireAsync(bool failure) =>
+                    failure
+                        ? Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(default))
+                        : OpenAsync();
+
+                Task<Result<IGrimoireOrdinaryConnectionLease>> OpenAsync() => throw null!;
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Identity?.EnclosingMember == "AcquireAsync(1)"
+                && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
+
+    }
+
+    [Fact]
+    public void Qualified_unrelated_failure_call_does_not_exempt_an_opaque_route()
+    {
+
+        AcquisitionSource source = Source("""
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireAsync() =>
+                    Task.FromResult(Other.Failure());
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
+                && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
+
+    }
+
+    [Fact]
+    public void Ambiguous_same_name_failure_helper_does_not_exempt_an_opaque_route()
+    {
+
+        AcquisitionSource source = Source("""
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireAsync() => Unavailable();
+
+                Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() =>
+                    Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(default));
+
+                Task<Result<IGrimoireOrdinaryConnectionLease>> Unavailable() => throw null!;
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
+                && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
+
+    }
+
+    [Fact]
     public void Same_named_Open_returning_domain_result_stays_unmarked()
     {
 
