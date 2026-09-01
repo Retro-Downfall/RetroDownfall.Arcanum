@@ -48,6 +48,12 @@ public sealed class BackupArchiveCodecOptions
 
     internal Action<string>? BeforeTemporaryExtractionCleanupForTests { get; init; }
 
+    /// <summary>
+    /// Invoked with each entry's archive path once that entry has been written beneath the extraction
+    /// root; throwing simulates a failure mid-extraction, with plaintext already on disk.
+    /// </summary>
+    internal Action<string>? AfterExtractedEntryForTests { get; init; }
+
     internal Action<int>? InspectPlaintextBufferSizeForTests { get; init; }
 
     internal Action<long>? InspectAuthenticatedPlaintextProgressForTests { get; init; }

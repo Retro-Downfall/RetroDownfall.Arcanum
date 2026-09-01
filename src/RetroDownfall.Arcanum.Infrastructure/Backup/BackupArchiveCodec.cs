@@ -639,6 +639,11 @@ public sealed class BackupArchiveCodec
 
         bool extracted = false;
 
+        // Cleared exactly once, on the one exit that hands the caller a materialized tree. Everything
+        // else - every refusal, every exception, enumerated or not - leaves this false and the finally
+        // empties the destination, which is what the summary above promises without qualification.
+        bool materialized = false;
+
         try
         {
 
@@ -708,8 +713,6 @@ public sealed class BackupArchiveCodec
             if (issues.Length > 0)
             {
 
-                ClearDirectoryContents(fullDestination);
-
                 return new BackupArchiveExtraction(
                     Manifest: null,
                     formatVersion,
@@ -720,6 +723,8 @@ public sealed class BackupArchiveCodec
 
             }
 
+            materialized = true;
+
             return new BackupArchiveExtraction(
                 contents.Manifest,
                 formatVersion,
@@ -729,23 +734,8 @@ public sealed class BackupArchiveCodec
                 Issues: []);
 
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-
-            if (extracted)
-            {
-
-                ClearDirectoryContents(fullDestination);
-
-            }
-
-            throw;
-
-        }
         catch (CryptographicException)
         {
-
-            ClearDirectoryContents(fullDestination);
 
             return BackupArchiveExtraction.Failed(
                 formatVersion,
@@ -763,8 +753,6 @@ public sealed class BackupArchiveCodec
                 or UnauthorizedAccessException)
         {
 
-            ClearDirectoryContents(fullDestination);
-
             return BackupArchiveExtraction.Failed(
                 formatVersion,
                 new BackupVerifyIssue(
@@ -774,6 +762,16 @@ public sealed class BackupArchiveCodec
         }
         finally
         {
+
+            // The destination cleanup used to be duplicated across the enumerated catches, so it held
+            // for a list of exception types rather than for every exit - and what an unenumerated exit
+            // left behind was decrypted plaintext under a root the caller had been told was empty.
+            if (extracted && !materialized)
+            {
+
+                ClearDirectoryContents(fullDestination);
+
+            }
 
             if (payload is not null)
             {
@@ -2022,7 +2020,7 @@ public sealed class BackupArchiveCodec
 
     }
 
-    private static async Task<ExtractedPayload> ExtractPayloadAsync(
+    private async Task<ExtractedPayload> ExtractPayloadAsync(
         string payloadPath,
         string extractionRoot,
         CancellationToken cancellationToken)
@@ -2148,6 +2146,8 @@ public sealed class BackupArchiveCodec
                     new ObservedEntry(
                         record.Length,
                         Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()));
+
+                _options.AfterExtractedEntryForTests?.Invoke(record.Path);
 
             }
 

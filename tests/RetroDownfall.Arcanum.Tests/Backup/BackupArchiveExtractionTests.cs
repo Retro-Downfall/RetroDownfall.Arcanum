@@ -165,6 +165,62 @@ public sealed class BackupArchiveExtractionTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A failure mid-extraction whose type the catch chain does not enumerate still leaves the
+    /// destination as empty as it was found.
+    /// </summary>
+    /// <remarks>
+    /// The method's own contract is absolute — "Any failure leaves the destination and scratch roots
+    /// as empty as they were found" — but the destination cleanup was duplicated across three
+    /// enumerated catches, so it held for a list of exception types rather than for every exit. What
+    /// is left behind on the exit nobody enumerated is decrypted plaintext: entries already written
+    /// under a root the caller was told is empty.
+    ///
+    /// <para>The failure is injected after an entry has been written, because before that there is
+    /// nothing to clean up and the promise holds by accident. The type is deliberately one no catch
+    /// names, which is the whole class the enumerated list cannot cover.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_unenumerated_failure_after_the_first_entry_still_empties_the_destination()
+    {
+
+        string archive = await WriteArchiveAsync(
+            "unenumerated.arcbackup",
+            [("configuration/arcanum.json", "{\"a\":1}"), ("authored/CODEX.md", "# codex")]);
+
+        string destination = Path.Combine(_root, "unenumerated-destination");
+
+        string scratch = Path.Combine(_root, "unenumerated-scratch");
+
+        Directory.CreateDirectory(destination);
+
+        Directory.CreateDirectory(scratch);
+
+        BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
+        {
+
+            KdfIterations = 10_000,
+
+            ChunkSize = 64 * 1024,
+
+            AfterExtractedEntryForTests = static _ =>
+                throw new InvalidOperationException("The extraction failed in an unenumerated way."),
+
+        });
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => codec.ExtractAsync(
+                archive,
+                "extract passphrase".AsMemory(),
+                destination,
+                scratch,
+                CancellationToken.None));
+
+        Assert.Empty(
+            Directory.GetFileSystemEntries(destination, "*", SearchOption.AllDirectories));
+
+    }
+
     private static BackupArchiveCodec Codec() =>
         new(new BackupArchiveCodecOptions
         {
