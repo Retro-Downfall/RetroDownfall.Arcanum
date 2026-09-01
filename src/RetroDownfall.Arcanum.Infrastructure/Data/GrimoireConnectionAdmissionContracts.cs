@@ -33,12 +33,14 @@ internal interface IGrimoireOrdinaryConnectionLease : IDisposable, IAsyncDisposa
 internal static class GrimoireScopedConsumerTestSeam
 {
 
-    private static readonly ConcurrentDictionary<string, Func<CancellationToken, ValueTask>> Checkpoints =
+    private static readonly ConcurrentDictionary<
+        string,
+        Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask>> Checkpoints =
         new(StringComparer.Ordinal);
 
     internal static IDisposable Override(
         string checkpoint,
-        Func<CancellationToken, ValueTask> callback)
+        Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask> callback)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(checkpoint);
@@ -58,14 +60,20 @@ internal static class GrimoireScopedConsumerTestSeam
 
     internal static ValueTask PauseAsync(
         string checkpoint,
+        GrimoireScopedConsumerFinalUseKind kind,
+        int observation,
         CancellationToken cancellationToken) =>
-        Checkpoints.TryGetValue(checkpoint, out Func<CancellationToken, ValueTask>? callback)
-            ? callback(cancellationToken)
+        Checkpoints.TryGetValue(
+            checkpoint,
+            out Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask>? callback)
+            ? callback(
+                new GrimoireScopedConsumerFinalUse(checkpoint, kind, observation),
+                cancellationToken)
             : ValueTask.CompletedTask;
 
     private sealed class OverrideScope(
         string checkpoint,
-        Func<CancellationToken, ValueTask> callback) : IDisposable
+        Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask> callback) : IDisposable
     {
 
         private int _disposed;
@@ -76,7 +84,9 @@ internal static class GrimoireScopedConsumerTestSeam
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
 
-                if (Checkpoints.TryGetValue(checkpoint, out Func<CancellationToken, ValueTask>? registered)
+                if (Checkpoints.TryGetValue(
+                        checkpoint,
+                        out Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask>? registered)
                     && ReferenceEquals(registered, callback))
                 {
 
@@ -91,6 +101,24 @@ internal static class GrimoireScopedConsumerTestSeam
     }
 
 }
+
+internal enum GrimoireScopedConsumerFinalUseKind : byte
+{
+
+    ScalarConverted = 1,
+
+    ReaderMaterialized = 2,
+
+    TransactionCommitted = 3,
+
+    TransactionRolledBack = 4,
+
+}
+
+internal readonly record struct GrimoireScopedConsumerFinalUse(
+    string Checkpoint,
+    GrimoireScopedConsumerFinalUseKind Kind,
+    int Observation);
 
 internal enum GrimoireOrdinaryFreshConnectionKind : byte
 {

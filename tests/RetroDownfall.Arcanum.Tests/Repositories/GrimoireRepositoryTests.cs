@@ -85,28 +85,94 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             model: "test-model",
             cancellationToken: CancellationToken.None);
 
-        using ScopedConsumerPause pause = new("GrimoireRepository.CommitWithinImmediateTransactionAsync");
+        TurnCommitRequest request = new(
+            assistantEntryId,
+            sessionId,
+            AssistantFinalizationOutcome.Committed,
+            "The sigil is cobalt.",
+            CovenantTask6Fixture.D(31),
+            ContentSensitivity.None,
+            GenerationProvenance.CreateExact([]));
 
-        Task<Result<TurnCommitReceipt>> committing = repository.CommitTurnAsync(
-            new TurnCommitRequest(
-                assistantEntryId,
-                sessionId,
-                AssistantFinalizationOutcome.Committed,
-                "The sigil is cobalt.",
-                CovenantTask6Fixture.D(31),
-                ContentSensitivity.None,
-                GenerationProvenance.CreateExact([])),
+        {
+
+            using ScopedConsumerPause pause = new("GrimoireRepository.CommitWithinImmediateTransactionAsync");
+
+            Task<Result<TurnCommitReceipt>> committing = repository.CommitTurnAsync(
+                request,
+                CancellationToken.None);
+
+            try
+            {
+
+                await pause.WaitUntilEnteredAsync();
+
+                Assert.Equal(GrimoireScopedConsumerFinalUseKind.TransactionCommitted, pause.FinalUse.Kind);
+
+                Assert.Equal((int)AssistantFinalizationOutcome.Committed, pause.FinalUse.Observation);
+
+                Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+
+                await using ArcanumDbContext observer = _fixture.CreateContext(_dbPath);
+
+                string persisted = await observer.Entries
+                    .AsNoTracking()
+                    .Where(entry => entry.Id == assistantEntryId)
+                    .Select(static entry => entry.Content)
+                    .SingleAsync(CancellationToken.None);
+
+                Assert.Equal("The sigil is cobalt.", persisted);
+
+            }
+            finally
+            {
+
+                pause.Release();
+
+                _ = await committing.WaitAsync(TimeSpan.FromSeconds(10));
+
+            }
+
+            Result<TurnCommitReceipt> committed = await committing;
+
+            Assert.True(committed.IsSuccess, committed.Error.Message);
+
+            Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+
+        }
+
+        using ScopedConsumerPause replayPause = new("GrimoireRepository.CommitWithinImmediateTransactionAsync");
+
+        Task<Result<TurnCommitReceipt>> replaying = repository.CommitTurnAsync(
+            request,
             CancellationToken.None);
 
-        await pause.WaitUntilEnteredAsync();
+        try
+        {
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+            await replayPause.WaitUntilEnteredAsync();
 
-        pause.Release();
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.TransactionRolledBack, replayPause.FinalUse.Kind);
 
-        Result<TurnCommitReceipt> committed = await committing;
+            Assert.Equal((int)AssistantFinalizationOutcome.Committed, replayPause.FinalUse.Observation);
 
-        Assert.True(committed.IsSuccess, committed.Error.Message);
+            Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+
+        }
+        finally
+        {
+
+            replayPause.Release();
+
+            _ = await replaying.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
+
+        Result<TurnCommitReceipt> replayed = await replaying;
+
+        Assert.True(replayed.IsSuccess, replayed.Error.Message);
+
+        Assert.True(replayed.Value.Replayed);
 
         Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
 

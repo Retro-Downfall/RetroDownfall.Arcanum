@@ -197,11 +197,26 @@ public sealed class WorkspaceDivinationEndpointTests
             targetWorkspace.Id,
             new WorkspaceSemanticSearchRequest("how does Foo work?"));
 
-        await pause.WaitUntilEnteredAsync();
+        try
+        {
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+            await pause.WaitUntilEnteredAsync();
 
-        pause.Release();
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
+
+            Assert.Equal(1, pause.FinalUse.Observation);
+
+            Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await searching.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
 
         HttpResponseMessage response = await searching;
 

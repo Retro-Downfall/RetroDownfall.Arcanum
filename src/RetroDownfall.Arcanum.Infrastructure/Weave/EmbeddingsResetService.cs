@@ -246,10 +246,6 @@ public sealed class EmbeddingsResetService(
                             .ExecuteReaderAsync(cancellationToken)
                             .ConfigureAwait(false);
 
-                        await GrimoireScopedConsumerTestSeam
-                            .PauseAsync("EmbeddingsResetService.PurgeLabeledKindAsync", cancellationToken)
-                            .ConfigureAwait(false);
-
                         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                         {
 
@@ -261,6 +257,14 @@ public sealed class EmbeddingsResetService(
                             }
 
                         }
+
+                        await GrimoireScopedConsumerTestSeam
+                            .PauseAsync(
+                                "EmbeddingsResetService.PurgeLabeledKindAsync",
+                                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+                                page.Count,
+                                cancellationToken)
+                            .ConfigureAwait(false);
 
                     }
                     catch (SqliteException)

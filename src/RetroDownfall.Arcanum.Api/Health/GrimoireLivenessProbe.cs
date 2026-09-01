@@ -117,12 +117,19 @@ public sealed class GrimoireLivenessProbe(IServiceScopeFactory scopeFactory) : I
             command.CommandText = "SELECT 1;";
             command.CommandTimeout = Math.Max(1, (int)Math.Ceiling(_probeTimeout.TotalSeconds));
 
+            object? scalar = await command.ExecuteScalarAsync(timeoutCts.Token).ConfigureAwait(false);
+
+            int scalarValue = scalar is null ? 0 : Convert.ToInt32(scalar);
+
             await GrimoireScopedConsumerTestSeam
-                .PauseAsync("GrimoireLivenessProbe.ExecuteProbeAsync", timeoutCts.Token)
+                .PauseAsync(
+                    "GrimoireLivenessProbe.ExecuteProbeAsync",
+                    GrimoireScopedConsumerFinalUseKind.ScalarConverted,
+                    scalarValue,
+                    timeoutCts.Token)
                 .ConfigureAwait(false);
 
-            object? scalar = await command.ExecuteScalarAsync(timeoutCts.Token).ConfigureAwait(false);
-            if (scalar is null || Convert.ToInt32(scalar) != 1)
+            if (scalar is null || scalarValue != 1)
             {
                 return (false, "Grimoire live probe did not return 1.");
             }

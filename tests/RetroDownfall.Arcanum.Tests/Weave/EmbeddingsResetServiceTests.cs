@@ -100,7 +100,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Purge_releases_page_owner_before_dispatching_a_borrowing_purger()
+    public async Task Purge_releases_page_owner_before_dispatching_the_scoped_purger()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -117,7 +117,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         TaskCompletionSource allowPurge = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        BorrowingPurger borrowingPurger = new(
+        ScopedConnectionPurger scopedPurger = new(
             _db,
             connections,
             purgeEntered,
@@ -131,33 +131,52 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             _db,
             new WeaveIndexAvailability(),
             services.BuildServiceProvider(),
-            borrowingPurger);
+            scopedPurger);
 
         using ScopedConsumerPause pause = new("EmbeddingsResetService.PurgeLabeledKindAsync");
 
+        using CancellationTokenSource resetCts = new(TimeSpan.FromSeconds(20));
+
         Task<EmbeddingsResetResult> resetting = service.ResetAsync(
             EmbeddingsResetScope.Saga,
-            CancellationToken.None);
+            resetCts.Token);
 
-        await pause.WaitUntilEnteredAsync();
+        try
+        {
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+            await pause.WaitUntilEnteredAsync();
 
-        Assert.Equal(1, connections.LiveOwnerLeaseCount);
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
 
-        pause.Release();
+            Assert.Equal(1, pause.FinalUse.Observation);
 
-        await purgeEntered.Task;
+            Assert.Equal(1, connections.LiveOwnerLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
-        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+            Assert.Equal(0, connections.LiveBorrowLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+            pause.Release();
 
-        Assert.Equal(1, connections.LiveLeaseCount);
+            await purgeEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        allowPurge.SetResult();
+            Assert.Equal(0, connections.LiveOwnerLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
-        _ = await resetting;
+            Assert.Equal(0, connections.LiveBorrowLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+            Assert.Equal(1, connections.LiveOwnerLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+
+            Assert.Equal(0, connections.LiveBorrowLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            allowPurge.TrySetResult();
+
+            _ = await resetting.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
 
         Assert.Equal(0, connections.LiveLeaseCount);
 
@@ -205,7 +224,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
     }
 
-    private sealed class BorrowingPurger(
+    private sealed class ScopedConnectionPurger(
         ArcanumDbContext db,
         RecordingScopedOrdinaryConnectionFactory connections,
         TaskCompletionSource entered,

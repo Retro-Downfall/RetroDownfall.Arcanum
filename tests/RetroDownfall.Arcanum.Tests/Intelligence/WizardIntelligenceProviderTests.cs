@@ -5206,11 +5206,26 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
-        await pause.WaitUntilEnteredAsync();
+        try
+        {
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+            await pause.WaitUntilEnteredAsync();
 
-        pause.Release();
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
+
+            Assert.Equal(1, pause.FinalUse.Observation);
+
+            Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await executing.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
 
         Result<PromptTurnResult> result = await executing;
 

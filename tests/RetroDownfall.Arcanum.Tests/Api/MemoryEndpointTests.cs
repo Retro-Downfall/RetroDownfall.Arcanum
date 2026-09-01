@@ -89,11 +89,26 @@ public sealed class MemoryEndpointTests
 
         Task<HttpResponseMessage> loading = client.GetAsync("/api/memory/status");
 
-        await pause.WaitUntilEnteredAsync();
+        try
+        {
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+            await pause.WaitUntilEnteredAsync();
 
-        pause.Release();
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ScalarConverted, pause.FinalUse.Kind);
+
+            Assert.Equal(0, pause.FinalUse.Observation);
+
+            Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await loading.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
 
         HttpResponseMessage response = await loading;
 
@@ -137,11 +152,26 @@ public sealed class MemoryEndpointTests
             new MemorySearchRequest("not-present", MemorySearchScope.Session),
             ArcanumJsonContext.Default.MemorySearchRequest);
 
-        await pause.WaitUntilEnteredAsync();
+        try
+        {
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+            await pause.WaitUntilEnteredAsync();
 
-        pause.Release();
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
+
+            Assert.Equal(0, pause.FinalUse.Observation);
+
+            Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await searching.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
 
         HttpResponseMessage response = await searching;
 

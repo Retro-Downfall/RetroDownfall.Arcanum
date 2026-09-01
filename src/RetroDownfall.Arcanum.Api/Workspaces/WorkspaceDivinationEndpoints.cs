@@ -445,16 +445,20 @@ internal static class WorkspaceDivinationEndpoints
 
         await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-        await GrimoireScopedConsumerTestSeam
-            .PauseAsync("WorkspaceDivinationEndpoints.GetTotalChunksByPathAsync", cancellationToken)
-            .ConfigureAwait(false);
-
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
 
             result[reader.GetString(0)] = reader.GetInt32(1);
 
         }
+
+        await GrimoireScopedConsumerTestSeam
+            .PauseAsync(
+                "WorkspaceDivinationEndpoints.GetTotalChunksByPathAsync",
+                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+                result.Count,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         return result;
 

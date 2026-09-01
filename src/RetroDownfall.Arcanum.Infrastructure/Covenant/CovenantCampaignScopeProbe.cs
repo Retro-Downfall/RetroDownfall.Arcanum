@@ -114,13 +114,19 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
 
         AddParameter(command, "$owner", campaignId.ToString("D"));
 
-        await GrimoireScopedConsumerTestSeam
-            .PauseAsync("CovenantCampaignScopeProbe.HasDeletionEventAsync", cancellationToken)
-            .ConfigureAwait(false);
-
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
-        return result is not null and not DBNull;
+        bool deleted = result is not null and not DBNull;
+
+        await GrimoireScopedConsumerTestSeam
+            .PauseAsync(
+                "CovenantCampaignScopeProbe.HasDeletionEventAsync",
+                GrimoireScopedConsumerFinalUseKind.ScalarConverted,
+                deleted ? 1 : 0,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return deleted;
 
     }
 

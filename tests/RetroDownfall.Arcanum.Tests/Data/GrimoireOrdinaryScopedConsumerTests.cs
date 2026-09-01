@@ -44,11 +44,26 @@ public sealed class GrimoireLivenessProbeTests(GrimoireFixture fixture)
 
         Task<(bool Ok, string Detail)> probing = probe.ProbeAsync(CancellationToken.None);
 
-        await pause.WaitUntilEnteredAsync();
+        try
+        {
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+            await pause.WaitUntilEnteredAsync();
 
-        pause.Release();
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ScalarConverted, pause.FinalUse.Kind);
+
+            Assert.Equal(1, pause.FinalUse.Observation);
+
+            Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await probing.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
 
         (bool ok, _) = await probing;
 
@@ -94,11 +109,26 @@ public sealed class CovenantCampaignScopeProbeTests(GrimoireFixture fixture)
             Guid.NewGuid(),
             CancellationToken.None).AsTask();
 
-        await pause.WaitUntilEnteredAsync();
+        try
+        {
 
-        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+            await pause.WaitUntilEnteredAsync();
 
-        pause.Release();
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ScalarConverted, pause.FinalUse.Kind);
+
+            Assert.Equal(0, pause.FinalUse.Observation);
+
+            Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await resolving.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
 
         Result<CovenantCampaignScopeState> result = await resolving;
 
@@ -188,6 +218,14 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
 
     private int _liveReadWriteLeaseCount;
 
+    private int _liveReadOnlyOwnerLeaseCount;
+
+    private int _liveReadWriteOwnerLeaseCount;
+
+    private int _liveReadOnlyBorrowLeaseCount;
+
+    private int _liveReadWriteBorrowLeaseCount;
+
     internal List<CovenantSqliteConnectionMode> Modes { get; } = [];
 
     internal int LiveLeaseCount => Volatile.Read(ref _liveLeaseCount);
@@ -200,6 +238,20 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
     {
         CovenantSqliteConnectionMode.ReadOnly => Volatile.Read(ref _liveReadOnlyLeaseCount),
         CovenantSqliteConnectionMode.ReadWrite => Volatile.Read(ref _liveReadWriteLeaseCount),
+        _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+    };
+
+    internal int LiveOwnerLeaseCountFor(CovenantSqliteConnectionMode mode) => mode switch
+    {
+        CovenantSqliteConnectionMode.ReadOnly => Volatile.Read(ref _liveReadOnlyOwnerLeaseCount),
+        CovenantSqliteConnectionMode.ReadWrite => Volatile.Read(ref _liveReadWriteOwnerLeaseCount),
+        _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+    };
+
+    internal int LiveBorrowLeaseCountFor(CovenantSqliteConnectionMode mode) => mode switch
+    {
+        CovenantSqliteConnectionMode.ReadOnly => Volatile.Read(ref _liveReadOnlyBorrowLeaseCount),
+        CovenantSqliteConnectionMode.ReadWrite => Volatile.Read(ref _liveReadWriteBorrowLeaseCount),
         _ => throw new ArgumentOutOfRangeException(nameof(mode)),
     };
 
@@ -240,11 +292,37 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
 
             _ = Interlocked.Increment(ref _liveOwnerLeaseCount);
 
+            if (mode is CovenantSqliteConnectionMode.ReadOnly)
+            {
+
+                _ = Interlocked.Increment(ref _liveReadOnlyOwnerLeaseCount);
+
+            }
+            else
+            {
+
+                _ = Interlocked.Increment(ref _liveReadWriteOwnerLeaseCount);
+
+            }
+
         }
         else
         {
 
             _ = Interlocked.Increment(ref _liveBorrowLeaseCount);
+
+            if (mode is CovenantSqliteConnectionMode.ReadOnly)
+            {
+
+                _ = Interlocked.Increment(ref _liveReadOnlyBorrowLeaseCount);
+
+            }
+            else
+            {
+
+                _ = Interlocked.Increment(ref _liveReadWriteBorrowLeaseCount);
+
+            }
 
         }
 
@@ -275,11 +353,37 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
 
                         _ = Interlocked.Decrement(ref _liveOwnerLeaseCount);
 
+                        if (mode is CovenantSqliteConnectionMode.ReadOnly)
+                        {
+
+                            _ = Interlocked.Decrement(ref _liveReadOnlyOwnerLeaseCount);
+
+                        }
+                        else
+                        {
+
+                            _ = Interlocked.Decrement(ref _liveReadWriteOwnerLeaseCount);
+
+                        }
+
                     }
                     else
                     {
 
                         _ = Interlocked.Decrement(ref _liveBorrowLeaseCount);
+
+                        if (mode is CovenantSqliteConnectionMode.ReadOnly)
+                        {
+
+                            _ = Interlocked.Decrement(ref _liveReadOnlyBorrowLeaseCount);
+
+                        }
+                        else
+                        {
+
+                            _ = Interlocked.Decrement(ref _liveReadWriteBorrowLeaseCount);
+
+                        }
 
                     }
 
@@ -360,13 +464,17 @@ internal sealed class ScopedConsumerPause : IDisposable
 
     private readonly IDisposable _override;
 
+    private GrimoireScopedConsumerFinalUse? _finalUse;
+
     internal ScopedConsumerPause(string checkpoint)
     {
 
         _override = GrimoireScopedConsumerTestSeam.Override(
             checkpoint,
-            cancellationToken =>
+            (finalUse, cancellationToken) =>
             {
+
+                _finalUse = finalUse;
 
                 _entered.TrySetResult();
 
@@ -378,6 +486,9 @@ internal sealed class ScopedConsumerPause : IDisposable
 
     internal Task WaitUntilEnteredAsync() =>
         _entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+    internal GrimoireScopedConsumerFinalUse FinalUse =>
+        _finalUse ?? throw new InvalidOperationException("The final-use checkpoint has not been reached.");
 
     internal void Release() => _released.TrySetResult();
 
