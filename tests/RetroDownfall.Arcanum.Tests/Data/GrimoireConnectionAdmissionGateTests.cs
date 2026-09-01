@@ -1531,6 +1531,60 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    /// <summary>
+    /// Aborting a stuck transition is the escape hatch, so a cancelled caller cannot be refused it.
+    /// </summary>
+    /// <remarks>
+    /// A stage one that timed out leaves the gate Closing: every request and work lease is refused
+    /// and every ordinary open without a live finisher lifetime throws. Abort is the only way back,
+    /// and the caller most likely to reach it is a host unwinding under an ambient token that has
+    /// already fired. Refusing there leaves the gate Closing with nothing left to release it.
+    /// </remarks>
+    [Fact]
+    public async Task Precancelled_abort_still_releases_a_timed_out_stage_one_transition()
+    {
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? request));
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(45));
+
+        Task<Result> drain = gate
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(BoundedWait);
+
+        clock.Advance(OpeningTimeout);
+
+        Assert.True((await drain).IsFailure);
+
+        await request!.DisposeAsync();
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        Result aborted = await gate.AbortClosingAsync(
+            closing,
+            static _ => ValueTask.FromResult(true),
+            cancelled.Token);
+
+        Assert.True(aborted.IsSuccess, aborted.IsFailure ? aborted.Error.Message : null);
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? admitted));
+
+        await admitted!.DisposeAsync();
+
+    }
+
     [Fact]
     public async Task Revoked_work_cannot_start_effect_after_proven_stage_one_abort()
     {

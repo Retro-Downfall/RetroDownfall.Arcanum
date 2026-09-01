@@ -717,12 +717,16 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
+        // Abort is the only way out of a stage one that timed out, and while the gate is Closing
+        // every request and work lease is refused. The caller most likely to reach here is a host
+        // unwinding under an ambient token that has already fired, so honouring that token would
+        // withhold the escape hatch from exactly the caller who needs it and leave the gate Closing
+        // with nothing left to release it. The proof runs uncancelled for the same reason: a proof
+        // abandoned halfway is indistinguishable from a proof that failed.
+        _ = cancellationToken;
 
-        bool provenSafe = await proveNoDestructiveEffectAsync(cancellationToken)
+        bool provenSafe = await proveNoDestructiveEffectAsync(CancellationToken.None)
             .ConfigureAwait(false);
-
-        cancellationToken.ThrowIfCancellationRequested();
 
         if (!provenSafe)
         {
