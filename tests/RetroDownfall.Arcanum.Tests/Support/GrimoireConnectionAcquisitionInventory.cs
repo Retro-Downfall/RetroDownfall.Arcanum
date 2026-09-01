@@ -311,6 +311,36 @@ internal static class GrimoireConnectionAcquisitionScanner
 
             }
 
+            foreach (ImplicitObjectCreationExpressionSyntax creation in root.DescendantNodes()
+                .OfType<ImplicitObjectCreationExpressionSyntax>())
+            {
+
+                VariableDeclaratorSyntax? target = ImplicitObjectCreationTarget(creation);
+
+                if (target is null)
+                {
+
+                    continue;
+
+                }
+
+                VariableDeclarationSyntax declaration = (VariableDeclarationSyntax)target.Parent!;
+
+                string typeName = TerminalName(declaration.Type);
+
+                if (typeName is "DbConnection" or "SqliteConnection")
+                {
+
+                    identities.Add(ImplicitObjectCreationIdentity(
+                        source.RelativePath,
+                        creation,
+                        target,
+                        declaration.Type));
+
+                }
+
+            }
+
         }
 
         return identities;
@@ -991,6 +1021,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.StoppedHostAuthority, "InstallationResetActiveStore.OpenEnvelope(4)", 0)),
         
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/GrimoireDiagnostics.cs", "GrimoireProbe", "OpenReadOnlyAsync(2)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(newSqliteConnectionStringBuilder{DataSource=path,Mode=SqliteOpenMode.ReadOnly,Pooling=false,Password=passphrase,}.ToString())"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/GrimoireDiagnostics.cs", "GrimoireProbe", "OpenReadOnlyAsync(2)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
@@ -1054,12 +1091,26 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
         
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "CheckpointOnShutdownAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(connectionString)"),
+            GrimoirePathAuthority.ShutdownGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.ShutdownHeldLock, "GrimoireDatabaseBootstrapper.CheckpointOnShutdownAsync(3)", 0)),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "CheckpointOnShutdownAsync(3)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.ShutdownGrimoire,
             GrimoireAcquisitionKind.BootstrapOrShutdown,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.ShutdownHeldLock, "GrimoireDatabaseBootstrapper.CheckpointOnShutdownAsync(3)", 0)),
         
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "EnsureInitializedAsync(9)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "probe=newSqliteConnection(connectionString)"),
+            GrimoirePathAuthority.PreReadinessGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireDatabaseBootstrapper.EnsureInitializedAsync(9)", 0)),
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "EnsureInitializedAsync(9)", AcquisitionConstructKind.ProviderOpen, "probe.OpenAsync", 1, "probe.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.PreReadinessGrimoire,
@@ -1068,6 +1119,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireDatabaseBootstrapper.EnsureInitializedAsync(9)", 0)),
         
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "EnsureInitializedAsync(9)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "installConnection=newSqliteConnection(connectionString)"),
+            GrimoirePathAuthority.PreReadinessGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireDatabaseBootstrapper.EnsureInitializedAsync(9)", 0)),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "EnsureInitializedAsync(9)", AcquisitionConstructKind.ProviderOpen, "installConnection.OpenAsync", 1, "installConnection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.PreReadinessGrimoire,
             GrimoireAcquisitionKind.BootstrapOrShutdown,
@@ -1075,12 +1133,26 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireDatabaseBootstrapper.EnsureInitializedAsync(9)", 0)),
         
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "RekeyToPbkdf2Async(5)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "rekeyConnection=newSqliteConnection(newSqliteConnectionStringBuilder{DataSource=dbPath,Password=oldPassphrase,}.ToString())"),
+            GrimoirePathAuthority.PreReadinessGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireDatabaseBootstrapper.RekeyToPbkdf2Async(5)", 0)),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "RekeyToPbkdf2Async(5)", AcquisitionConstructKind.ProviderOpen, "rekeyConnection.OpenAsync", 1, "rekeyConnection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.PreReadinessGrimoire,
             GrimoireAcquisitionKind.BootstrapOrShutdown,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireDatabaseBootstrapper.RekeyToPbkdf2Async(5)", 0)),
         
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "CanOpenDatabaseAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "probe=newSqliteConnection(newSqliteConnectionStringBuilder{DataSource=dbPath,Password=passphrase,}.ToString())"),
+            GrimoirePathAuthority.PreReadinessGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireDatabaseBootstrapper.CanOpenDatabaseAsync(3)", 0)),
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "CanOpenDatabaseAsync(3)", AcquisitionConstructKind.ProviderOpen, "probe.OpenAsync", 1, "probe.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.PreReadinessGrimoire,
@@ -1159,12 +1231,26 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
         
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupDatabaseSnapshotter.cs", "BackupDatabaseSnapshotter", "CreateAsync(4)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "source=newSqliteConnection(sourceConnectionString)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupDatabaseSnapshotter.cs", "BackupDatabaseSnapshotter", "CreateAsync(4)", AcquisitionConstructKind.ProviderOpen, "source.OpenAsync", 1, "source.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
         
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupDatabaseSnapshotter.cs", "BackupDatabaseSnapshotter", "CreateAsync(4)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "destination=newSqliteConnection(destinationConnectionString)"),
+            GrimoirePathAuthority.ArchiveOrSnapshot,
+            GrimoireAcquisitionKind.StagingOrArchive,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupDatabaseSnapshotter.CreateAsync(4)", 0)),
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupDatabaseSnapshotter.cs", "BackupDatabaseSnapshotter", "CreateAsync(4)", AcquisitionConstructKind.ProviderOpen, "destination.OpenAsync", 1, "destination.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.ArchiveOrSnapshot,
@@ -1173,12 +1259,26 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupDatabaseSnapshotter.CreateAsync(4)", 0)),
         
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupDatabaseSnapshotter.cs", "BackupDatabaseSnapshotter", "VerifySnapshotAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(BuildConnectionString(path,passphrase,SqliteOpenMode.ReadOnly))"),
+            GrimoirePathAuthority.ArchiveOrSnapshot,
+            GrimoireAcquisitionKind.StagingOrArchive,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupDatabaseSnapshotter.VerifySnapshotAsync(3)", 0)),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupDatabaseSnapshotter.cs", "BackupDatabaseSnapshotter", "VerifySnapshotAsync(3)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.ArchiveOrSnapshot,
             GrimoireAcquisitionKind.StagingOrArchive,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupDatabaseSnapshotter.VerifySnapshotAsync(3)", 0)),
         
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupArchiveCodec.cs", "BackupArchiveCodec", "VerifyDatabaseAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(connectionString)"),
+            GrimoirePathAuthority.ArchiveOrSnapshot,
+            GrimoireAcquisitionKind.StagingOrArchive,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupArchiveCodec.VerifyDatabaseAsync(3)", 0)),
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupArchiveCodec.cs", "BackupArchiveCodec", "VerifyDatabaseAsync(3)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.ArchiveOrSnapshot,
@@ -1187,12 +1287,26 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupArchiveCodec.VerifyDatabaseAsync(3)", 0)),
         
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupService.cs", "BackupService", "ReadSchemaVersionAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(newSqliteConnectionStringBuilder{DataSource=databasePath,Password=databasePassphrase,Mode=SqliteOpenMode.ReadOnly,Pooling=false,}.ToString())"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupService.cs", "BackupService", "ReadSchemaVersionAsync(3)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
         
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupService.cs", "BackupService", "RemoveOperationFromSnapshotAsync(4)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(newSqliteConnectionStringBuilder{DataSource=databasePath,Password=databasePassphrase,Mode=SqliteOpenMode.ReadWrite,Pooling=false,}.ToString())"),
+            GrimoirePathAuthority.ArchiveOrSnapshot,
+            GrimoireAcquisitionKind.StagingOrArchive,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupService.RemoveOperationFromSnapshotAsync(4)", 0)),
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupService.cs", "BackupService", "RemoveOperationFromSnapshotAsync(4)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.ArchiveOrSnapshot,
@@ -1243,12 +1357,26 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
         
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupInventoryPlanner.cs", "BackupInventoryPlanner", "AddDatabaseBackedFilesAsync(9)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(connectionString)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupInventoryPlanner.cs", "BackupInventoryPlanner", "AddDatabaseBackedFilesAsync(9)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
         
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreDatabaseWorker.cs", "BackupRestoreDatabaseWorker", "OpenAsync(4)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(newSqliteConnectionStringBuilder{DataSource=databasePath,Password=passphrase,Mode=readOnly?SqliteOpenMode.ReadOnly:SqliteOpenMode.ReadWrite,Pooling=false,}.ToString())"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreDatabaseWorker.cs", "BackupRestoreDatabaseWorker", "OpenAsync(4)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
@@ -3285,6 +3413,38 @@ internal static class GrimoireConnectionAcquisitionScanner
             calleeOrConstructedType,
             arity,
             Tokens(node));
+
+    private static AcquisitionIdentity ImplicitObjectCreationIdentity(
+        string relativePath,
+        ImplicitObjectCreationExpressionSyntax creation,
+        VariableDeclaratorSyntax target,
+        TypeSyntax targetType) =>
+        new(
+            relativePath.Replace('\\', '/'),
+            EnclosingType(creation),
+            EnclosingMember(creation),
+            AcquisitionConstructKind.ProviderObjectCreation,
+            Tokens(targetType),
+            creation.ArgumentList.Arguments.Count,
+            target.Identifier.ValueText
+                + "=new" + Tokens(targetType) + Tokens(creation.ArgumentList)
+                + (creation.Initializer is null ? string.Empty : Tokens(creation.Initializer)));
+
+    private static VariableDeclaratorSyntax? ImplicitObjectCreationTarget(
+        ImplicitObjectCreationExpressionSyntax creation)
+    {
+
+        if (creation.Parent is not EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax variable }
+            || variable.Parent is not VariableDeclarationSyntax)
+        {
+
+            return null;
+
+        }
+
+        return variable;
+
+    }
 
     private static AcquisitionIdentity MarkedRouteIdentity(
         string relativePath,

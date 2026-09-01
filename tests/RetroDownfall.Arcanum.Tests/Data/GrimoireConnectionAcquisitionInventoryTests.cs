@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 392;
+    private const int ExpectedProductionAcquisitionCount = 406;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -75,6 +75,46 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             []);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.UncataloguedDiscovery);
+
+    }
+
+    [Fact]
+    public void Injected_unlisted_target_typed_acquisition_has_normalized_identity_and_fails_independently()
+    {
+
+        AcquisitionSource unlisted = Source("""
+            using Microsoft.Data.Sqlite;
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    SqliteConnection connection = new("Data Source=fixture.db");
+                }
+            }
+            """);
+
+        AcquisitionIdentity identity = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Discover([unlisted]));
+
+        Assert.Equal(
+            new(
+                "Fixtures/Fixture.cs",
+                "Fixture",
+                "Open(0)",
+                AcquisitionConstructKind.ProviderObjectCreation,
+                "SqliteConnection",
+                1,
+                "connection=newSqliteConnection(\"Data Source=fixture.db\")"),
+            identity);
+
+        IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
+            [identity],
+            []);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Code == InventoryFailureCode.UncataloguedDiscovery
+                && failure.Identity == identity);
 
     }
 
