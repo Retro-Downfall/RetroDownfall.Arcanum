@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -427,17 +429,16 @@ public sealed class CovenantCommands(
         if (invocationContext.Options.Json)
         {
 
-            // The last page's own search health and filter digest are carried through rather than
-            // invented. Only the items and the continuation are this loop's to replace: it holds every
-            // page, so there is nothing left for a caller to continue from.
+            // The last page's own search health is carried through rather than invented. Only the
+            // entries and the continuation are this loop's to replace: it holds every page, so there
+            // is nothing left for a caller to continue from.
             dispatcher.WriteJson(
-                last with
-                {
-                    Items = [.. items],
-                    NextCursor = null,
-                    Truncated = stalled,
-                },
-                ArcanumJsonContext.Default.CovenantPageDto);
+                new CovenantListPayload(
+                    [.. items.Select(Project)],
+                    NextCursor: null,
+                    stalled,
+                    last.Search),
+                CliJsonContext.Default.CovenantListPayload);
 
             return (int)CliExitCode.Success;
 
@@ -493,7 +494,41 @@ public sealed class CovenantCommands(
         if (invocationContext.Options.Json)
         {
 
-            dispatcher.WriteJson(detail.Value, ArcanumJsonContext.Default.CovenantDetailDto);
+            List<CovenantVersionDto> versions = [];
+
+            // The documented payload carries a history member, so the flag that fills it has to be
+            // honored in the mode a script reads. Reporting an empty array for a key that has a
+            // history would be a payload that answers a question nobody asked.
+            if (history && detail.Value.EntryId is { } historyEntryId)
+            {
+
+                foreach (CovenantLane lane in Lanes(detail.Value))
+                {
+
+                    int read = await ReadHistoryAsync(historyEntryId, lane, versions, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (read != (int)CliExitCode.Success)
+                    {
+
+                        return read;
+
+                    }
+
+                }
+
+            }
+
+            dispatcher.WriteJson(
+                new CovenantShowPayload(
+                    detail.Value.Scope,
+                    detail.Value.CampaignId,
+                    detail.Value.Key,
+                    detail.Value.Confirmed is null ? null : Project(detail.Value.Confirmed),
+                    detail.Value.Proposed is null ? null : Project(detail.Value.Proposed),
+                    detail.Value.KeyEpoch,
+                    [.. versions]),
+                CliJsonContext.Default.CovenantShowPayload);
 
             return (int)CliExitCode.Success;
 
@@ -580,6 +615,45 @@ public sealed class CovenantCommands(
 
         dispatcher.WritePayload($"{lane} history:");
 
+        List<CovenantVersionDto> versions = [];
+
+        int read = await ReadHistoryAsync(entryId, lane, versions, cancellationToken).ConfigureAwait(false);
+
+        if (read != (int)CliExitCode.Success)
+        {
+
+            return read;
+
+        }
+
+        foreach (CovenantVersionDto version in versions)
+        {
+
+            dispatcher.WritePayload(
+                $"  revision {version.LaneRevision}  {version.Operation}  {version.Origin}  "
+                + $"{version.CompiledByteCost} bytes  mutation {version.MutationId}  "
+                + $"{version.CreatedAtUtc:u}");
+
+        }
+
+        return (int)CliExitCode.Success;
+
+    }
+
+    /// <summary>
+    /// Follows one lane's version cursor to exhaustion, collecting what it hands back.
+    /// </summary>
+    /// <remarks>
+    /// One walk for both modes. The rendering differs and the reading does not, and a second copy of
+    /// the cursor loop would be a second place for the stall guard to be forgotten.
+    /// </remarks>
+    private async Task<int> ReadHistoryAsync(
+        Guid entryId,
+        CovenantLane lane,
+        List<CovenantVersionDto> into,
+        CancellationToken cancellationToken)
+    {
+
         string? cursor = null;
 
         while (true)
@@ -598,15 +672,7 @@ public sealed class CovenantCommands(
 
             }
 
-            foreach (CovenantVersionDto version in page.Value.Items)
-            {
-
-                dispatcher.WritePayload(
-                    $"  revision {version.LaneRevision}  {version.Operation}  {version.Origin}  "
-                    + $"{version.CompiledByteCost} bytes  mutation {version.MutationId}  "
-                    + $"{version.CreatedAtUtc:u}");
-
-            }
+            into.AddRange(page.Value.Items);
 
             if (page.Value.NextCursor is not { Length: > 0 } next
                 || string.Equals(next, cursor, StringComparison.Ordinal))
@@ -633,6 +699,35 @@ public sealed class CovenantCommands(
                 + $"updated {head.UpdatedAtUtc:u}");
 
     }
+
+    /// <summary>
+    /// Projects one wire head into the entry shape the <c>--json</c> promise froze.
+    /// </summary>
+    /// <remarks>
+    /// The two records answer to different contracts: the wire shape belongs to the API and this one
+    /// to the documented CLI surface. Emitting the DTO instead handed a script <c>items</c> where the
+    /// reference promised <c>entries</c>, and <c>laneRevision</c> and <c>compiledByteCost</c> where it
+    /// promised <c>revision</c> and <c>byteCost</c> — close enough to look right and wrong at every
+    /// member a caller reads.
+    ///
+    /// <para>The authored hashes, provenance counts and creation timestamp are wire detail the CLI
+    /// payload does not carry. What survives is what the reference lists.</para>
+    /// </remarks>
+    private static CovenantEntryPayload Project(CovenantHeadDto head) =>
+        new(
+            head.EntryId,
+            head.VersionId,
+            head.Scope,
+            head.CampaignId,
+            head.Key,
+            head.Lane,
+            head.LaneRevision,
+            head.Lifecycle,
+            head.Origin,
+            head.CompiledByteCost,
+            head.Shadow,
+            head.Materialization,
+            head.UpdatedAtUtc);
 
     /// <summary>
     /// Refuses a write the commit would refuse, before the operator is asked to approve it.
@@ -692,7 +787,13 @@ public sealed class CovenantCommands(
         CancellationToken cancellationToken)
     {
 
-        if (!invocationContext.Options.Json)
+        if (invocationContext.Options.Json)
+        {
+
+            WritePlan(preflight);
+
+        }
+        else
         {
 
             dispatcher.WritePayload(
@@ -731,6 +832,39 @@ public sealed class CovenantCommands(
 
     }
 
+    /// <summary>
+    /// Publishes the server's plan as the documented structured payload, on the diagnostic stream.
+    /// </summary>
+    /// <remarks>
+    /// Stdout under <c>--json</c> belongs to the one document a script parses, and the result is that
+    /// document — so the plan travels beside the question it belongs to, exactly as the backup-restore
+    /// statement does. Publishing it at all is what keeps the server's own measurement on the record
+    /// for an unattended run: <c>--yes</c> answers the question, it does not make the compiled hash,
+    /// the framed cost, and the affected-Campaign count stop mattering.
+    ///
+    /// <para>Every number is the preflight's. A client that recomputed one would be publishing a
+    /// second opinion about an effect only the server evaluates.</para>
+    /// </remarks>
+    private void WritePlan(CovenantMutationPreflightDto preflight) =>
+        dispatcher.WriteDiagnostic(
+            JsonSerializer.Serialize(
+                new CovenantMutationPlanPayload(
+                    preflight.Scope,
+                    preflight.CampaignId,
+                    preflight.NormalizedKey,
+                    preflight.Lane,
+                    preflight.Operation,
+                    preflight.MutationId,
+                    preflight.RenderedHash,
+                    preflight.CompiledByteCost,
+                    preflight.CurrentLaneRevision,
+                    preflight.Effect.LocalDecision,
+                    preflight.Effect.AffectedCampaignCount,
+                    preflight.Effect.ExamplesTruncated,
+                    preflight.Effect.AppliesToFutureCampaigns,
+                    preflight.ExpiresAtUtc),
+                CliJsonContext.Default.CovenantMutationPlanPayload));
+
     private int WriteMutation(Result<CovenantMutationResultDto> committed)
     {
 
@@ -744,7 +878,18 @@ public sealed class CovenantCommands(
         if (invocationContext.Options.Json)
         {
 
-            dispatcher.WriteJson(committed.Value, ArcanumJsonContext.Default.CovenantMutationResultDto);
+            dispatcher.WriteJson(
+                new CovenantMutationResultPayload(
+                    committed.Value.MutationId,
+                    committed.Value.Outcome,
+                    committed.Value.Operation,
+                    committed.Value.Scope,
+                    committed.Value.CampaignId,
+                    committed.Value.NormalizedKey,
+                    committed.Value.Lane,
+                    committed.Value.ResultingLaneRevision,
+                    committed.Value.Replayed),
+                CliJsonContext.Default.CovenantMutationResultPayload);
 
             return (int)CliExitCode.Success;
 

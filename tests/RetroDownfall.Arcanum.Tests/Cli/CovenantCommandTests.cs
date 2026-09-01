@@ -764,6 +764,141 @@ public sealed class CovenantCommandTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A listing publishes the payload the reference froze, not the wire page behind it.
+    /// </summary>
+    /// <remarks>
+    /// The two shapes are close enough to be mistaken for one another and different where it counts:
+    /// a script reading the documented <c>entries</c> found <c>items</c>, and the documented
+    /// <c>revision</c> and <c>byteCost</c> arrived as <c>laneRevision</c> and <c>compiledByteCost</c>.
+    /// Asserted on property names rather than by deserializing, because the CLI context skips unmapped
+    /// members — the wire page deserializes into the documented record as an object of nulls.
+    /// </remarks>
+    [Fact]
+    public async Task A_listing_publishes_the_documented_list_payload()
+    {
+
+        RecordingHandler handler = new() { ListPages = 2 };
+
+        CliTestResult result = await RunCliAsync(handler, ["memory", "covenant", "list", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        JsonElement root = document.RootElement;
+
+        Assert.False(root.TryGetProperty("items", out _));
+
+        Assert.True(root.TryGetProperty("entries", out JsonElement entries));
+
+        Assert.Equal(2, entries.GetArrayLength());
+
+        Assert.True(root.TryGetProperty("nextCursor", out _));
+
+        Assert.True(root.TryGetProperty("truncated", out _));
+
+        Assert.True(root.TryGetProperty("search", out _));
+
+        Assert.True(entries[0].TryGetProperty("revision", out _));
+
+        Assert.True(entries[0].TryGetProperty("byteCost", out _));
+
+    }
+
+    /// <summary>
+    /// A lookup publishes the documented show payload, history included when it was asked for.
+    /// </summary>
+    /// <remarks>
+    /// The documented record carries a <c>history</c> member and <c>--json --history</c> read no
+    /// version page at all, so the one flag that fills it was silently ignored in the mode a script
+    /// uses. An empty array there would be a payload that lies about what was asked.
+    /// </remarks>
+    [Fact]
+    public async Task A_lookup_publishes_the_documented_show_payload_with_the_history_it_was_asked_for()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = await RunCliAsync(
+            handler,
+            ["memory", "covenant", "show", "preference.builds", "--history", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(
+            ["POST /api/memory/covenant/detail", "POST /api/memory/covenant/versions"],
+            handler.Requests);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        JsonElement root = document.RootElement;
+
+        Assert.True(root.TryGetProperty("keyEpoch", out _));
+
+        Assert.True(root.TryGetProperty("confirmed", out JsonElement confirmed));
+
+        Assert.True(confirmed.TryGetProperty("revision", out _));
+
+        Assert.True(root.TryGetProperty("proposed", out JsonElement proposed));
+
+        Assert.Equal(JsonValueKind.Null, proposed.ValueKind);
+
+        Assert.True(root.TryGetProperty("history", out JsonElement history));
+
+        Assert.Equal(1, history.GetArrayLength());
+
+    }
+
+    /// <summary>
+    /// A mutation publishes the documented plan, then the documented result.
+    /// </summary>
+    /// <remarks>
+    /// The plan travels on the diagnostic stream because stdout under <c>--json</c> belongs to the one
+    /// document a script parses — the same split the backup-restore statement already uses. Publishing
+    /// it at all is what keeps the server's own measurement available to an unattended run, which is
+    /// the whole reason the preflight is called before the commit.
+    /// </remarks>
+    [Fact]
+    public async Task A_mutation_publishes_the_documented_plan_then_the_documented_result()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = await RunCliAsync(handler, Invocation("set", approve: "--yes"));
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument resultDocument = JsonDocument.Parse(result.Output);
+
+        JsonElement resultRoot = resultDocument.RootElement;
+
+        Assert.False(resultRoot.TryGetProperty("normalizedKey", out _));
+
+        Assert.True(resultRoot.TryGetProperty("key", out _));
+
+        Assert.True(resultRoot.TryGetProperty("revision", out _));
+
+        Assert.True(resultRoot.TryGetProperty("replayed", out _));
+
+        string planLine = Assert.Single(
+            result.Error.Split('\n'),
+            line => line.StartsWith('{'));
+
+        using JsonDocument planDocument = JsonDocument.Parse(planLine);
+
+        JsonElement planRoot = planDocument.RootElement;
+
+        Assert.True(planRoot.TryGetProperty("byteCost", out _));
+
+        Assert.True(planRoot.TryGetProperty("currentRevision", out _));
+
+        Assert.True(planRoot.TryGetProperty("affectedCampaignCount", out _));
+
+        Assert.True(planRoot.TryGetProperty("expiresAtUtc", out _));
+
+    }
+
     private static readonly Guid MaskCampaignId = new("55555555-5555-4555-8555-555555555555");
 
     private string[] Invocation(string verb, string? approve)
