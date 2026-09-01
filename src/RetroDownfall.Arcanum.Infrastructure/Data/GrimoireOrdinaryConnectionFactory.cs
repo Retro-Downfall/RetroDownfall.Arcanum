@@ -511,9 +511,8 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
     }
 
-    private static Result<IGrimoireOrdinaryConnectionLease> Refused(string message) =>
-        Result<IGrimoireOrdinaryConnectionLease>.Failure(
-            new Error(ErrorCodes.Covenant.Unavailable, message));
+    private static Error Refused(string message) =>
+        new(ErrorCodes.Covenant.Unavailable, message);
 
     private sealed class Lease(
         SqliteConnection connection,

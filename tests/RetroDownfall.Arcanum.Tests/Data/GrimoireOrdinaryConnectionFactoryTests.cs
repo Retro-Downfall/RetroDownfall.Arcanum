@@ -299,6 +299,40 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
     }
 
     [Fact]
+    public async Task Synchronously_disposed_borrowed_lease_leaves_connection_open_and_releases_registration_once()
+    {
+
+        await using SqliteConnection connection = CanonicalScopedConnection();
+
+        connection.Open();
+
+        RecordingRegistration borrowed = new(connection);
+
+        RecordingLifecycle lifecycle = new()
+        {
+            BorrowResult = Result<IGrimoireOrdinaryConnectionRegistration>.Success(borrowed),
+        };
+
+        GrimoireOrdinaryConnectionFactory factory = CreateFactory(
+            lifecycle,
+            new RecordingRuntime(initializeProvider: false));
+
+        Result<IGrimoireOrdinaryConnectionLease> result = await factory.AcquireScopedAsync(
+            connection,
+            CovenantSqliteConnectionMode.ReadWrite,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        result.Value.Dispose();
+
+        Assert.Equal(ConnectionState.Open, connection.State);
+
+        Assert.Equal(1, borrowed.DisposeCount);
+
+    }
+
+    [Fact]
     public async Task Already_open_unproven_or_stale_scoped_connection_is_refused()
     {
 
