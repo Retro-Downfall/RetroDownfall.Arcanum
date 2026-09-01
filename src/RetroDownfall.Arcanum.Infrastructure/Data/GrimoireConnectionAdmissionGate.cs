@@ -2730,12 +2730,17 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 revalidateDurableOwnerAsync,
                 cancellationToken);
 
+        // The token is accepted for symmetry with the rest of the lease surface and is deliberately
+        // not observed. CompleteClosedLease is the only edge from Closed back to Ordinary and it is
+        // a pure in-lock state transition with no I/O to abandon, so there is nothing here that
+        // cancelling could save - only a wedged gate, because a cleanup path unwinding under an
+        // ambient shutdown token is exactly the caller that must still be allowed to reopen.
         public ValueTask<Result> CompleteAsync(
             CovenantExclusiveLeaseDisposition disposition,
             CancellationToken cancellationToken)
         {
 
-            cancellationToken.ThrowIfCancellationRequested();
+            _ = cancellationToken;
 
             if (disposition is not CovenantExclusiveLeaseDisposition.RollbackAndReopen
                 and not CovenantExclusiveLeaseDisposition.CommitAndReopen

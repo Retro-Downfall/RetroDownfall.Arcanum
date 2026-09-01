@@ -761,6 +761,42 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    /// <summary>
+    /// Reopening connection admission is compensation, so a cancelled caller cannot refuse it.
+    /// </summary>
+    /// <remarks>
+    /// Completing the closed lease is the only edge from Closed back to Ordinary, and it is a pure
+    /// in-lock state transition with no I/O to abandon. The caller that reaches it under an already
+    /// cancelled ambient token - a host shutting down while maintenance unwinds - is exactly the one
+    /// that must not be turned away: refusing leaves the gate Closed with no live lease, and every
+    /// later ordinary open is refused for the rest of the process.
+    /// </remarks>
+    [Fact]
+    public async Task Precancelled_lease_disposition_still_reopens_connection_admission()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, Owner(42));
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        Result reopened = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            cancelled.Token);
+
+        Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? admitted));
+
+        await admitted!.DisposeAsync();
+
+    }
+
     [Fact]
     public async Task Owner_generation_and_double_disposition_mismatches_are_rejected()
     {
