@@ -366,6 +366,52 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
+    public void Multi_argument_Result_failure_call_does_not_exempt_an_opaque_route()
+    {
+
+        AcquisitionSource source = Source("""
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                Task<Result<IGrimoireOrdinaryConnectionLease, FailureDetail>> AcquireAsync() =>
+                    Task.FromResult(Result<IGrimoireOrdinaryConnectionLease, FailureDetail>.Failure(default));
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
+                && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
+
+    }
+
+    [Fact]
+    public void Generic_failure_call_does_not_exempt_an_opaque_route()
+    {
+
+        AcquisitionSource source = Source("""
+            using System.Threading.Tasks;
+            sealed class Fixture
+            {
+                Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireAsync() =>
+                    Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure<FailureDetail>(default));
+            }
+            """);
+
+        IReadOnlyList<InventoryFailure> failures =
+            GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
+                && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
+
+    }
+
+    [Fact]
     public void Ambiguous_same_name_failure_helper_does_not_exempt_an_opaque_route()
     {
 

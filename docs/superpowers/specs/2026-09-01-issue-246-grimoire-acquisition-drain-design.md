@@ -474,6 +474,12 @@ route, broad directory/type grouping, or a concrete call site from its exact cat
 lease/session boundaries. The cost of a mistaken rule is a missed indirect route, bounded by the
 bidirectional direct/marker equality proof.
 
+**Task 11:** parked load-bearing — exact literal failure shape must be `Result<T>.Failure` with one
+`Result` argument and non-generic `Failure`; carried into Task 12 preflight; cost if wrong is an
+opaque acquisition marker bypass.
+
+**Task 11 completion:** this ruling is fixed by the `fix: require exact typed failure shape` commit.
+
 Discovery identities use normalized file, syntax-derived enclosing type/member declaration, syntax
 kind, normalized callee or constructed-type text, arity, and a normalized construct fingerprint rather
 than line number so ordinary formatting does not invalidate the catalog. The scanner never claims

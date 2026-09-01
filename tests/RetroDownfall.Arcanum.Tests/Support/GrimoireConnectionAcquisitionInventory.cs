@@ -3131,8 +3131,12 @@ internal static class GrimoireConnectionAcquisitionScanner
                 Expression: GenericNameSyntax
                 {
                     Identifier.ValueText: "Result",
+                    TypeArgumentList.Arguments.Count: 1,
                 },
-                Name.Identifier.ValueText: "Failure",
+                Name: IdentifierNameSyntax
+                {
+                    Identifier.ValueText: "Failure",
+                },
             })
         {
 
