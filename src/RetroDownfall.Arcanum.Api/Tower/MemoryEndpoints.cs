@@ -897,7 +897,7 @@ internal static class MemoryEndpoints
             connection,
             sessionId is null
                 ? "SELECT COUNT(*) FROM Entries"
-                : "SELECT COUNT(*) FROM Entries WHERE SessionId = @sessionId",
+                : "SELECT COUNT(*) FROM Entries WHERE SessionId = @canonicalSessionId",
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
@@ -905,7 +905,7 @@ internal static class MemoryEndpoints
             connection,
             sessionId is null
                 ? "SELECT COUNT(*) FROM Entries WHERE IsPinned = 1"
-                : "SELECT COUNT(*) FROM Entries WHERE SessionId = @sessionId AND IsPinned = 1",
+                : "SELECT COUNT(*) FROM Entries WHERE SessionId = @canonicalSessionId AND IsPinned = 1",
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
@@ -913,7 +913,7 @@ internal static class MemoryEndpoints
             connection,
             sessionId is null
                 ? "SELECT COUNT(*) FROM Sessions WHERE Summary IS NOT NULL AND trim(Summary) <> ''"
-                : "SELECT COUNT(*) FROM Sessions WHERE Id = @sessionId AND Summary IS NOT NULL AND trim(Summary) <> ''",
+                : "SELECT COUNT(*) FROM Sessions WHERE Id = @canonicalSessionId AND Summary IS NOT NULL AND trim(Summary) <> ''",
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
@@ -1058,7 +1058,7 @@ internal static class MemoryEndpoints
             FROM Entries e
             INNER JOIN Sessions s ON s.Id = e.SessionId
             WHERE instr(lower(e.Content), lower(@query)) > 0
-            {(sessionId is null ? string.Empty : "AND e.SessionId = @sessionId")}
+            {(sessionId is null ? string.Empty : "AND e.SessionId = @canonicalSessionId")}
             ORDER BY e.CreatedAt DESC, e.Sequence DESC
             LIMIT @limit
             """;
@@ -1113,7 +1113,7 @@ internal static class MemoryEndpoints
             FROM Sessions
             WHERE Summary IS NOT NULL
               AND instr(lower(Summary), lower(@query)) > 0
-              {(sessionId is null ? string.Empty : "AND Id = @sessionId")}
+              {(sessionId is null ? string.Empty : "AND Id = @canonicalSessionId")}
             ORDER BY UpdatedAt DESC
             LIMIT @limit
             """;
@@ -1537,13 +1537,10 @@ internal static class MemoryEndpoints
     /// the bound-attachment count then compared a lowercase value against a canonical column and
     /// reported zero.
     ///
-    /// <para><b>Predicates below still bind the minority name against a canonical column, and that is a
-    /// defect this split does not fix.</b> <c>Entries.SessionId</c> and <c>Sessions.Id</c>
-    /// have held the canonical form since long before this work, so the entry, pinned-entry and
-    /// campaign-summary counts have reported zero for a session filter for as long as they have existed.
-    /// Correcting them changes numbers an operator reads, on a family this change is not about, so they
-    /// are left exactly as they are and handed to the pass that reverts the normalised comparisons. The
-    /// parameter they need now exists, so each is a one-name change when that pass reaches them.</para>
+    /// <para>Every predicate that reads a canonical column now binds <c>@canonicalSessionId</c>: the
+    /// entry, pinned-entry and campaign-summary counts, and both session-scoped search predicates, join
+    /// the bound-attachment count in doing so. Only the three columns named above stay bound to the
+    /// deliberately-lowercase group.</para>
     ///
     /// <para>Both names are always added. A named parameter a statement never mentions is simply not
     /// bound, so a query that wants only one of them is unaffected by the other's presence.</para>
