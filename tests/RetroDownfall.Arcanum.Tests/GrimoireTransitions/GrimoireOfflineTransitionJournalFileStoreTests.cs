@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 
+[Collection(ProcessGlobalSeamCollectionName.Value)]
 public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDisposable
 {
 

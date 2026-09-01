@@ -63,6 +63,8 @@ internal enum GrimoireOfflineTransitionJournalRetirementSource : byte
 
     Retiring = 3,
 
+    Working = 4,
+
 }
 
 internal sealed class GrimoireOfflineTransitionJournalFileRead : IDisposable
@@ -1082,6 +1084,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 GrimoireOfflineTransitionJournalRetirementSource.Canonical => evidence.Canonical,
                 GrimoireOfflineTransitionJournalRetirementSource.Previous => evidence.Previous,
                 GrimoireOfflineTransitionJournalRetirementSource.Retiring => evidence.Retiring,
+                GrimoireOfflineTransitionJournalRetirementSource.Working => evidence.Working,
                 _ => null,
             };
 
@@ -1090,7 +1093,8 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 || requireCanonicalAfter;
 
             bool shape = selected is not null
-                && evidence.Working is null
+                && (evidence.Working is null
+                    || source is GrimoireOfflineTransitionJournalRetirementSource.Working)
                 && (source is GrimoireOfflineTransitionJournalRetirementSource.Canonical
                     ? evidence.Previous is null && evidence.Retiring is null
                     : evidence.Previous is null || source is GrimoireOfflineTransitionJournalRetirementSource.Previous)
@@ -1118,7 +1122,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
                 string sourceLeaf = source is GrimoireOfflineTransitionJournalRetirementSource.Canonical
                     ? location.JournalLeaf
-                    : location.PreviousLeaf;
+                    : source is GrimoireOfflineTransitionJournalRetirementSource.Working
+                        ? location.WorkingLeaf
+                        : location.PreviousLeaf;
 
                 Before("file:retiring-moved");
 

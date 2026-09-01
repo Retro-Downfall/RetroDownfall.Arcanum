@@ -809,7 +809,34 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             Result<GrimoireOfflineTransitionJournalPublication> next =
                 AuthenticateOneAhead(location, evidence.Working, anchor);
 
-            if (current.IsFailure || next.IsFailure
+            if (current.IsSuccess && next.IsSuccess
+                && evidence.Previous is null && evidence.Retiring is null)
+            {
+
+                Result resumed = await _files.ResumeWorkingPublicationAsync(
+                        heldInstallationLock,
+                        location,
+                        current.Value.FileMetadata,
+                        evidence.Canonical.Bytes,
+                        next.Value.FileMetadata,
+                        evidence.Working.Bytes,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                return resumed.IsSuccess
+                    ? await RecoverAsync(heldInstallationLock, guardedDirectory, cancellationToken)
+                        .ConfigureAwait(false)
+                    : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result<GrimoireOfflineTransitionJournalPublication> workingOneAhead =
+                AuthenticateOneAhead(location, evidence.Canonical, anchor);
+
+            Result<GrimoireOfflineTransitionJournalPublication> predecessor =
+                AuthenticateEvidence(location, evidence.Working, anchor);
+
+            if (workingOneAhead.IsFailure || predecessor.IsFailure
                 || evidence.Previous is not null || evidence.Retiring is not null)
             {
 
@@ -817,19 +844,43 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             }
 
-            Result resumed = await _files.ResumeWorkingPublicationAsync(
+            Result retired = await _files.CompleteRetirementAsync(
                     heldInstallationLock,
                     location,
-                    current.Value.FileMetadata,
-                    evidence.Canonical.Bytes,
-                    next.Value.FileMetadata,
+                    GrimoireOfflineTransitionJournalRetirementSource.Working,
+                    predecessor.Value.FileMetadata,
                     evidence.Working.Bytes,
+                    requireCanonicalAfter: true,
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            return resumed.IsSuccess
-                ? await RecoverAsync(heldInstallationLock, guardedDirectory, cancellationToken)
-                    .ConfigureAwait(false)
+            if (retired.IsFailure)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result<GrimoireOfflineTransitionJournalPublication> revalidated =
+                await ReauthenticateCanonicalAsync(location, workingOneAhead.Value, cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (revalidated.IsFailure)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result workingAnchorAdvanced = _anchors.CompareWriteAndVerify(
+                heldInstallationLock,
+                location,
+                anchor,
+                workingOneAhead.Value.Anchor,
+                GrimoireOfflineTransitionAnchorWriteStage.Advance);
+
+            return workingAnchorAdvanced.IsSuccess
+                ? Authenticated(revalidated.Value)
                 : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
 
         }
@@ -870,8 +921,13 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            return completed.IsSuccess
-                ? Authenticated(canonical.Value)
+            Result<GrimoireOfflineTransitionJournalPublication> revalidated = completed.IsSuccess
+                ? await ReauthenticateCanonicalAsync(location, canonical.Value, cancellationToken)
+                    .ConfigureAwait(false)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+            return revalidated.IsSuccess
+                ? Authenticated(revalidated.Value)
                 : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
 
         }
@@ -921,6 +977,19 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
 
             }
+
+            Result<GrimoireOfflineTransitionJournalPublication> revalidated =
+                await ReauthenticateCanonicalAsync(location, oneAhead.Value, cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (revalidated.IsFailure)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            oneAhead = revalidated;
 
         }
 
@@ -1218,6 +1287,41 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 payload.Value,
                 anchor,
                 file.Metadata)
+            : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+    }
+
+    private async Task<Result<GrimoireOfflineTransitionJournalPublication>> ReauthenticateCanonicalAsync(
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionJournalPublication expected,
+        CancellationToken cancellationToken)
+    {
+
+        Result<GrimoireOfflineTransitionJournalFileRead?> reread = await _files.ReadIfPresentAsync(
+                location,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (reread.IsFailure || reread.Value is null)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+        }
+
+        using GrimoireOfflineTransitionJournalFileRead canonical = reread.Value;
+
+        Result<GrimoireOfflineTransitionJournalPublication> authenticated =
+            AuthenticateEvidence(location, canonical, expected.Anchor);
+
+        return authenticated.IsSuccess
+            && FileHandleIdentity.IdentitiesMatch(
+                expected.FileMetadata.Identity,
+                authenticated.Value.FileMetadata.Identity)
+            && authenticated.Value.Envelope == expected.Envelope
+            && authenticated.Value.EnvelopeDigest == expected.EnvelopeDigest
+            && authenticated.Value.PayloadBytes.AsSpan().SequenceEqual(expected.PayloadBytes)
+            ? authenticated
             : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
 
     }
