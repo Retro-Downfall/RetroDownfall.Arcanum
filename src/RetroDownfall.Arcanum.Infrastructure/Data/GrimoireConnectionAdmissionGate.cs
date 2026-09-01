@@ -32,6 +32,18 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private readonly TimeSpan _openingAttemptTimeout;
 
+    /// <summary>
+    /// How long stage one waits for ordinary requests and background work to finish.
+    /// </summary>
+    /// <remarks>
+    /// A separate deadline from <see cref="_openingAttemptTimeout"/> because it bounds a different
+    /// thing - session-attachment indexing, entry weaving and saga extraction rather than one
+    /// physical connection reaching its terminal callback - and its expiry is reported under its own
+    /// error code. Both default to the same value, so separating them moves no deadline; it gives
+    /// the failure an operator reads a knob of its own to turn.
+    /// </remarks>
+    private readonly TimeSpan _workDrainCheckpoint;
+
     private readonly Func<CancellationToken, ValueTask> _afterSuccessfulDrainTestSeam;
 
     private readonly HashSet<OpenTicket> _unresolvedOpens = [];
@@ -99,6 +111,35 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         TimeProvider timeProvider,
         ICovenantConnectionDrain drain,
         TimeSpan openingAttemptTimeout,
+        TimeSpan workDrainCheckpoint)
+        : this(
+            timeProvider,
+            drain,
+            openingAttemptTimeout,
+            workDrainCheckpoint,
+            AfterSuccessfulDrainNoOpAsync)
+    {
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        TimeSpan openingAttemptTimeout,
+        Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam)
+        : this(
+            timeProvider,
+            drain,
+            openingAttemptTimeout,
+            openingAttemptTimeout,
+            afterSuccessfulDrainTestSeam)
+    {
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        TimeSpan openingAttemptTimeout,
+        TimeSpan workDrainCheckpoint,
         Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam)
     {
 
@@ -115,11 +156,20 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
+        if (workDrainCheckpoint <= TimeSpan.Zero)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(workDrainCheckpoint));
+
+        }
+
         _timeProvider = timeProvider;
 
         _drain = drain;
 
         _openingAttemptTimeout = openingAttemptTimeout;
+
+        _workDrainCheckpoint = workDrainCheckpoint;
 
         _afterSuccessfulDrainTestSeam = afterSuccessfulDrainTestSeam;
 
@@ -468,7 +518,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         {
 
             await Task.WhenAll(terminalLifetimes)
-                .WaitAsync(_openingAttemptTimeout, _timeProvider, cancellationToken)
+                .WaitAsync(_workDrainCheckpoint, _timeProvider, cancellationToken)
                 .ConfigureAwait(false);
 
         }

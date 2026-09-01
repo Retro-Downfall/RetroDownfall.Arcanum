@@ -1478,6 +1478,61 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    /// <summary>
+    /// The stage-one drain and the physical-open wait are different waits with different deadlines.
+    /// </summary>
+    /// <remarks>
+    /// One is how long a physical connection may take to reach its terminal callback; the other is
+    /// how long ordinary requests and background work may take to finish. Session-attachment
+    /// indexing, entry weaving and saga extraction routinely outlast any sane open deadline, and the
+    /// drain reports its expiry under its own error code - so an operator who reads a work-drain
+    /// timeout needs a work-drain knob to turn, not the one named for connection opening.
+    ///
+    /// <para>The drain checkpoint is the shorter of the two here so the assertion discriminates: the
+    /// clock is advanced by exactly that value, which a drain still keyed to the opening timeout
+    /// would never reach. The opening timeout keeps its own coverage in
+    /// <c>Opening_timeout_leaves_admission_closed_and_does_not_issue_a_closed_lease</c>, which
+    /// advances by exactly that value instead. Production passes neither: both waits keep the same
+    /// default, so this separates the knobs without moving either deadline.</para>
+    /// </remarks>
+    [Fact]
+    public async Task Stage_one_drain_honours_its_own_deadline_not_the_physical_open_one()
+    {
+
+        ManualTimeProvider clock = new();
+
+        TimeSpan workDrainCheckpoint = OpeningTimeout / 4;
+
+        GrimoireConnectionAdmissionGate gate = new(
+            clock,
+            new RecordingStageTwoDrain(block: false),
+            OpeningTimeout,
+            workDrainCheckpoint);
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? request));
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(46));
+
+        Task<Result> drain = gate
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(BoundedWait);
+
+        clock.Advance(workDrainCheckpoint);
+
+        Result timedOut = await drain.WaitAsync(BoundedWait);
+
+        Assert.True(timedOut.IsFailure);
+
+        Assert.Equal("Grimoire.WorkDrainTimeout", timedOut.Error.Code);
+
+        await request!.DisposeAsync();
+
+    }
+
     [Fact]
     public async Task Only_proven_pre_erasure_safety_can_abort_a_timed_out_stage_one_transition()
     {
