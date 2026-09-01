@@ -214,6 +214,54 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A staged refusal that arrives with the operator's token already cancelled still reports the
+    /// refusal rather than the cancellation.
+    /// </summary>
+    /// <remarks>
+    /// The window is narrow and entirely real: the marker preparation answers with a refusal, and the
+    /// coordinator's next act is to roll its staged transaction back. Issued on the caller's token,
+    /// that rollback returns a cancelled task the moment the token is cancelled — so the line after it,
+    /// the one that returns the typed refusal, never runs, and what reaches the operator is a bare
+    /// cancellation that says nothing about why the restore stopped.
+    ///
+    /// <para>The token is cancelled from inside the preparation because that is the only place the
+    /// window opens; a token cancelled before the restore begins is refused far earlier, and one
+    /// cancelled after has nothing left to race.</para>
+    ///
+    /// <para>Entered at <see cref="BackupRestoreService.RestoreAsync"/> through the harness, so the
+    /// assertion is about what the caller of a restore is told, which is the thing the defect
+    /// destroys.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_staged_refusal_under_a_cancelled_token_still_reports_the_refusal()
+    {
+
+        Harness harness = await CreateHarnessAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.Markers.PrepareRefusal = () =>
+        {
+
+            cancellation.Cancel();
+
+            return new Error(
+                ErrorCodes.Covenant.ManualRecoveryRequired,
+                "The staged marker children could not be prepared.");
+
+        };
+
+        BackupRestoreResult result = await harness.RestoreAsync(cancellation.Token);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            Assert.Single(result.Issues).Code);
+
+    }
+
     [Fact]
     public async Task A_restore_that_never_enabled_the_gate_behaves_exactly_as_it_always_did()
     {
@@ -598,8 +646,9 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         }
 
-        internal async Task<BackupRestoreResult> RestoreAsync() =>
-            await CreateService().RestoreAsync(Request(), Passphrase.AsMemory(), CancellationToken.None);
+        internal async Task<BackupRestoreResult> RestoreAsync(
+            CancellationToken cancellationToken = default) =>
+            await CreateService().RestoreAsync(Request(), Passphrase.AsMemory(), cancellationToken);
 
         private BackupRestoreRequest Request() =>
             new(
@@ -1182,6 +1231,18 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                     new CampaignPathRestoreCleanupInventory(
                         ImmutableArray<CampaignPathRestoreCleanupSeed>.Empty)));
 
+        /// <summary>
+        /// Answers the staged preparation with something other than a receipt, at the exact moment the
+        /// coordinator is inside its staged transaction.
+        /// </summary>
+        /// <remarks>
+        /// A hook rather than a settable failure, because what the compensation case needs is not a
+        /// different answer but a different <em>world</em> at the moment of answering: the operator's
+        /// token is cancelled while this call is on the stack, which is the only way to reach the
+        /// rollback that follows with cancellation already requested.
+        /// </remarks>
+        internal Func<Error>? PrepareRefusal { get; set; }
+
         public Task<Result<CampaignPathRestoreCleanupPreparationReceipt>>
             PrepareRestoreCleanupInStagedDatabaseAsync(
                 CampaignPathRestoreCleanupPreparation preparation,
@@ -1189,6 +1250,14 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                 SqliteTransaction stagedTransaction,
                 CancellationToken cancellationToken)
         {
+
+            if (PrepareRefusal is { } refusal)
+            {
+
+                return Task.FromResult(
+                    Result<CampaignPathRestoreCleanupPreparationReceipt>.Failure(refusal()));
+
+            }
 
             CampaignPathRestoreCleanupPreparationReceipt receipt = new(
                 preparation.Owner,
