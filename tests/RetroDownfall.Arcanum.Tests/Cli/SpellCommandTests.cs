@@ -258,6 +258,43 @@ public sealed class SpellCommandTests
 
     }
 
+    /// <summary>W10-2: an irreversible delete must ask before it acts.</summary>
+    [Fact]
+    public void Spell_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["spell", "delete", "greet", "--workspace", "/tmp/demo"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Spell_delete_binds_name_when_confirmed()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["--yes", "spell", "delete", "greet", "--workspace", "/tmp/demo"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Delete, request.Method);
+
+        Assert.Equal("/api/spells/greet", request.RequestUri!.AbsolutePath);
+
+    }
+
     [Fact]
     public void Spell_execute_posts_prompt_and_prints_response()
     {

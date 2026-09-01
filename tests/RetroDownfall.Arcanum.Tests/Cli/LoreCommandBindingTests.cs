@@ -120,7 +120,7 @@ public sealed class LoreCommandBindingTests
 
         RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
 
-        CliTestResult result = RunCommand(handler, ["lore", "delete", "ward.color"]);
+        CliTestResult result = RunCommand(handler, ["--yes", "lore", "delete", "ward.color"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -129,6 +129,23 @@ public sealed class LoreCommandBindingTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/lore/ward.color", request.RequestUri!.AbsolutePath);
+
+    }
+
+    /// <summary>W10-2: an irreversible delete must ask before it acts.</summary>
+    [Fact]
+    public void Lore_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
+
+        CliTestResult result = RunCommand(handler, ["lore", "delete", "ward.color"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
 
     }
 

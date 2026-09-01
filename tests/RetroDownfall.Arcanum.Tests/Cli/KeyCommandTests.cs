@@ -249,13 +249,36 @@ public sealed class KeyCommandTests
 
         CliTestResult result = await CliTestHarness.RunAsync(
             CreateServices(providers),
-            ["key", "provider", "delete", "alpha"]);
+            ["--yes", "key", "provider", "delete", "alpha"]);
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.False(providers.Stored.ContainsKey("alpha"));
 
         Assert.Equal("sk-other", providers.Stored["beta"]);
+
+    }
+
+    /// <summary>W10-2: an irreversible delete must ask before it acts.</summary>
+    [Fact]
+    public async Task Provider_delete_requires_confirmation_before_touching_any_store()
+    {
+
+        FakeProviderCredentialStore providers = new();
+
+        providers.Stored["alpha"] = ProviderSecret;
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(providers),
+            ["key", "provider", "delete", "alpha"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+
+        Assert.True(providers.Stored.ContainsKey("alpha"));
+
+        Assert.Equal(0, providers.WriteCount);
 
     }
 
@@ -354,9 +377,9 @@ public sealed class KeyCommandTests
             {
                 "master-set" => (["key", "set"], "master-secret\n"),
                 "provider-set" => (["key", "provider", "set", "alpha"], ProviderSecret + "\n"),
-                "provider-delete" => (["key", "provider", "delete", "alpha"], null),
+                "provider-delete" => (["--yes", "key", "provider", "delete", "alpha"], null),
                 "web-set" => (["key", "provider", "set", "perplexity"], "pplx-secret\n"),
-                _ => (["key", "provider", "delete", "perplexity"], null),
+                _ => (["--yes", "key", "provider", "delete", "perplexity"], null),
             };
 
             CliTestResult result = await CliTestHarness.RunAsync(

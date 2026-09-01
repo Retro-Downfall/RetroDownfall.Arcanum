@@ -22,7 +22,8 @@ public sealed class KeyCommands(
     IOptions<ArcanumSettings> settings,
     IConsoleDispatcher console,
     ICliInvocationContext invocationContext,
-    IGrimoireCliInitialization initialization)
+    IGrimoireCliInitialization initialization,
+    IConfirmationPrompt confirmationPrompt)
 {
 
     /// <summary>Reserved credential name routed to the native web-research provider by default.</summary>
@@ -376,6 +377,21 @@ public sealed class KeyCommands(
         {
 
             return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        string confirmationSubject = webResearch
+            ? "the Perplexity API key"
+            : $"the provider API key for '{provider.Trim()}'";
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete {confirmationSubject}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            console.WriteDiagnostic("Credential deletion cancelled.");
+
+            return (int)CliExitCode.Success;
 
         }
 

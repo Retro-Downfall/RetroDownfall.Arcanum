@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -55,6 +56,7 @@ internal static class SpellCommandSupport
 public sealed class SpellCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
+    IConfirmationPrompt confirmationPrompt,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -353,6 +355,15 @@ public sealed class SpellCommands(
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
             return 1;
+        }
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete spell '{name}'?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Spell deletion cancelled.")));
+
+            return 0;
         }
 
         Result result = await apiClient.DeleteSpellAsync(name, workspace, cancellationToken).ConfigureAwait(false);

@@ -179,7 +179,7 @@ public sealed class CampaignCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CliTestResult result = RunCommand(handler, ["campaign", "delete", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["--yes", "campaign", "delete", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -188,6 +188,58 @@ public sealed class CampaignCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}", request.RequestUri!.AbsolutePath);
+
+    }
+
+    /// <summary>W10-2: an irreversible delete must ask before it acts.</summary>
+    [Fact]
+    public void Campaign_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "delete", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>W10-2: campaign codex delete is also irreversible and must ask before it acts.</summary>
+    [Fact]
+    public void Campaign_codex_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "codex", "delete", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Campaign_codex_delete_binds_id_when_confirmed()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["--yes", "campaign", "codex", "delete", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Delete, request.Method);
+
+        Assert.Equal($"/api/campaigns/{SampleId:D}/codex", request.RequestUri!.AbsolutePath);
 
     }
 

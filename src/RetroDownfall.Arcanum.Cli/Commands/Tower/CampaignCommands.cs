@@ -129,6 +129,7 @@ public sealed class CampaignCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
     IConsoleDispatcher dispatcher,
+    IConfirmationPrompt confirmationPrompt,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -343,6 +344,15 @@ public sealed class CampaignCommands(
 
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete campaign {campaignId:D}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            dispatcher.WriteDiagnostic("Campaign deletion cancelled.");
+
+            return 0;
+        }
 
         Result result = await apiClient.DeleteCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
@@ -731,6 +741,7 @@ public sealed class CampaignCommands(
 public sealed class CampaignCodexCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
+    IConfirmationPrompt confirmationPrompt,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -815,6 +826,15 @@ public sealed class CampaignCodexCommands(
 
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete CODEX.md for campaign {campaignId:D}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("CODEX.md deletion cancelled.")));
+
+            return 0;
+        }
 
         Result result = await apiClient.DeleteCampaignCodexAsync(campaignId, cancellationToken).ConfigureAwait(false);
 

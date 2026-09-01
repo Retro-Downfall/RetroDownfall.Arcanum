@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -107,6 +108,7 @@ public sealed class ApprenticeCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
     WatchCommands watchCommands,
+    IConfirmationPrompt confirmationPrompt,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -353,6 +355,15 @@ public sealed class ApprenticeCommands(
 
         (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete Apprentice {apprenticeId:D}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Apprentice deletion cancelled.")));
+
+            return 0;
+        }
 
         Result result = await apiClient.DeleteApprenticeAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 

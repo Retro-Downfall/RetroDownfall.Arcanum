@@ -118,13 +118,30 @@ public sealed class ApprenticeCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CliTestResult result = RunCommand(handler, ["apprentice", "delete", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["--yes", "apprentice", "delete", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal(HttpMethod.Delete, request.Method);
+
+    }
+
+    /// <summary>W10-2: an irreversible delete must ask before it acts.</summary>
+    [Fact]
+    public void Apprentice_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "delete", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
 
     }
 

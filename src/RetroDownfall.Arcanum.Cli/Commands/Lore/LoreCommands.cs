@@ -17,7 +17,8 @@ public sealed class LoreCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
     IConsoleDispatcher console,
-    ICliInvocationContext invocationContext)
+    ICliInvocationContext invocationContext,
+    IConfirmationPrompt confirmationPrompt)
 {
 
     private const int SnippetMaxLength = 50;
@@ -168,6 +169,17 @@ public sealed class LoreCommands(
     /// <param name="key">The lore key.</param>
     public async Task<int> Delete(string key, CancellationToken cancellationToken)
     {
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete lore key '{key}'?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            console.WriteDiagnostic("Lore deletion cancelled.");
+
+            return 0;
+
+        }
 
         Result<bool> result = await apiClient.DeleteLoreAsync(key, cancellationToken).ConfigureAwait(false);
 

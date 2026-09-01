@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -14,6 +15,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 public sealed class PromptCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
+    IConfirmationPrompt confirmationPrompt,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -406,6 +408,15 @@ public sealed class PromptCommands(
 
         (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete prompt {promptId:D}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Prompt deletion cancelled.")));
+
+            return 0;
+        }
 
         Result result = await apiClient.DeletePromptAsync(promptId, cancellationToken).ConfigureAwait(false);
 
