@@ -274,7 +274,9 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             _attachments!,
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(_settings),
-            _index);
+            _index,
+            covenantKernel: null,
+            FixtureOrdinaryConnectionFactory.For(_db!));
 
         (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
             sessionId: null,

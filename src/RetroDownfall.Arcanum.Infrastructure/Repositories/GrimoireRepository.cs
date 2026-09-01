@@ -7,7 +7,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -66,58 +65,19 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     internal Func<Guid, CancellationToken, ValueTask>? AfterRollupRemainingCountedForTesting { get; set; }
 
     /// <summary>
-    /// Lowers the code-owned summarization ceiling so overflow recovery can be exercised without
-    /// seeding a production-sized session.
+    /// The only composition. Internal because both the Covenant mutation kernel and the
+    /// ordinary-connection factory are Infrastructure implementation details: public parameters of
+    /// those types would put the canonical write path and connection admission on the assembly's
+    /// public surface.
     /// </summary>
-    public GrimoireRepository(
-        ArcanumDbContext db,
-        ISessionAttachmentStore attachments,
-        ILogger<GrimoireRepository> logger,
-        IOptionsSnapshot<ArcanumSettings> arcOptions,
-        ISessionAttachmentIndexMaintenance? attachmentIndex = null,
-        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null,
-        IServiceProvider? serviceProvider = null)
-        : this(
-            db,
-            attachments,
-            logger,
-            arcOptions,
-            attachmentIndex,
-            covenantKernel: null,
-            connections: serviceProvider?.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
-                ?? UnavailableOrdinaryConnectionFactory.Instance,
-            labeledArtifactGuard: labeledArtifactGuard)
-    {
-    }
-
-    /// <summary>
-    /// The composed constructor. Internal because the Covenant mutation kernel is an Infrastructure
-    /// implementation detail: a public parameter of that type would put the canonical write path on
-    /// the assembly's public surface.
-    /// </summary>
-    internal GrimoireRepository(
-        ArcanumDbContext db,
-        ISessionAttachmentStore attachments,
-        ILogger<GrimoireRepository> logger,
-        IOptionsSnapshot<ArcanumSettings> arcOptions,
-        ISessionAttachmentIndexMaintenance? attachmentIndex,
-        CovenantMutationKernel? covenantKernel,
-        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
-        : this(
-            db,
-            attachments,
-            logger,
-            arcOptions,
-            attachmentIndex,
-            covenantKernel,
-            UnavailableOrdinaryConnectionFactory.Instance,
-            labeledArtifactGuard)
-    {
-    }
-
-    /// <summary>
-    /// The serving composition, including the exact singleton ordinary-connection factory.
-    /// </summary>
+    /// <remarks>
+    /// There is deliberately no constructor that omits <paramref name="connections" />, and none that
+    /// resolves it from an <see cref="IServiceProvider" />. The pair that did — a public one with an
+    /// optional provider, and an internal one that hard-coded a refusing stand-in — meant a caller
+    /// that named neither received a factory that refused every acquisition, so once the turn-commit
+    /// path began acquiring, every such construction became a run-time refusal at the commit instead
+    /// of a compile error at the call site. Naming the dependency is now the only way to build one.
+    /// </remarks>
     internal GrimoireRepository(
         ArcanumDbContext db,
         ISessionAttachmentStore attachments,
@@ -147,30 +107,6 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         _labeledArtifactGuard = labeledArtifactGuard;
 
         _finalizationCapacity = new CovenantQuotaGuard();
-    }
-
-    private sealed class UnavailableOrdinaryConnectionFactory : IGrimoireOrdinaryConnectionFactory
-    {
-
-        internal static readonly UnavailableOrdinaryConnectionFactory Instance = new();
-
-        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
-            SqliteConnection connection,
-            CovenantSqliteConnectionMode mode,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
-                new Error(
-                    ErrorCodes.Grimoire.WriteFailed,
-                    "Ordinary Grimoire connection admission is not configured.")));
-
-        public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
-            GrimoireOrdinaryFreshConnectionKind kind,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
-                new Error(
-                    ErrorCodes.Grimoire.WriteFailed,
-                    "Ordinary Grimoire connection admission is not configured.")));
-
     }
 
     public async Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(

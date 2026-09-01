@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Storage;
 
@@ -435,7 +436,10 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
             _db!,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot(new ArcanumSettings()));
+            new TestOptionsSnapshot(new ArcanumSettings()),
+            attachmentIndex: null,
+            covenantKernel: null,
+            FixtureOrdinaryConnectionFactory.For(_db!));
 
     private async Task<(Guid SessionId, Guid AssistantEntryId)> SeedTurnAsync()
     {

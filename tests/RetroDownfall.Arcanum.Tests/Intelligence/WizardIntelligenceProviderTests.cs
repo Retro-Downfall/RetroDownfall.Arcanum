@@ -5188,7 +5188,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         chat.EnqueueText("buffered answer");
 
-        RecordingScopedOrdinaryConnectionFactory connections = new();
+        FixtureOrdinaryConnectionFactory connections = new();
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -8252,7 +8252,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ILogger<ToolExecutionPipeline>? toolLogger = null,
         ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
         ISessionAttachmentStore? sessionAttachmentStore = null,
-        RecordingScopedOrdinaryConnectionFactory? ordinaryConnections = null)
+        FixtureOrdinaryConnectionFactory? ordinaryConnections = null)
     {
         settings ??= DefaultSettings();
 
@@ -8309,7 +8309,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ServiceCollection ordinaryServices = new();
 
         ordinaryServices.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
-            ordinaryConnections ?? new RecordingScopedOrdinaryConnectionFactory());
+            ordinaryConnections ?? new FixtureOrdinaryConnectionFactory());
 
         ServiceProvider ordinaryProvider = ordinaryServices.BuildServiceProvider();
 

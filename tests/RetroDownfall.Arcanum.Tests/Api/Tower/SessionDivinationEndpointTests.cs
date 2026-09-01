@@ -19,6 +19,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 
@@ -120,7 +121,7 @@ public sealed class SessionDivinationEndpointTests
 
         FakeWeaveService weave = new();
 
-        RecordingScopedOrdinaryConnectionFactory connections = new();
+        FixtureOrdinaryConnectionFactory connections = new();
 
         await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(weave, connections);
 
@@ -278,7 +279,7 @@ public sealed class SessionDivinationEndpointTests
 
     private static ArcanumWebApplicationFactory CreateEnabledFactory(
         IWeaveService weaveService,
-        RecordingScopedOrdinaryConnectionFactory? connections = null) =>
+        FixtureOrdinaryConnectionFactory? connections = null) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -306,8 +307,8 @@ public sealed class SessionDivinationEndpointTests
                 if (connections is not null)
                 {
 
-                    services.RemoveAll<IGrimoireOrdinaryConnectionFactory>();
-
+                    // Appended rather than substituted: the last registration is what
+                    // GetRequiredService returns, so the production descriptor stays composed.
                     services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
 
                 }

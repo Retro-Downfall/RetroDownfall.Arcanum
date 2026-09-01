@@ -99,7 +99,10 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
             _db,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            attachmentIndex: null,
+            covenantKernel: null,
+            FixtureOrdinaryConnectionFactory.For(_db));
 
         string results = await repository.SearchArchivesAsync("moonstone", maxResults: 10, CancellationToken.None);
 
