@@ -645,17 +645,36 @@ internal static class CliApplicationFactory
     /// never be torn down by System.CommandLine's process-termination handler.
     /// </summary>
     /// <remarks>
-    /// Two of them, both reached by parsing. <c>run</c> reaches <c>AskCommand</c>, which installs a
-    /// handler that maps Ctrl+C to "cancel this turn" and then drains the human-in-the-loop queue
-    /// before returning 130; every <c>watch</c> verb goes through
-    /// <c>WatchCommands.WithCancellationAsync</c>, which installs one of its own. Both used to inherit
-    /// the ten-second grace, so an unwind that ran longer than it was torn down by the framework
-    /// rather than by the contract the verb advertises.
+    /// Two of them, both reached by parsing. Every <c>watch</c> verb goes through
+    /// <c>WatchCommands.WithCancellationAsync</c>, which installs a handler of its own, so the whole
+    /// group qualifies. <c>run</c> qualifies only on the arm that reaches <c>AskCommand</c>, where the
+    /// handler maps Ctrl+C to "cancel this turn" and then drains the human-in-the-loop queue before
+    /// returning 130 — see <see cref="ClaimsTheKeypress"/> for the two routes that do not. Both used
+    /// to inherit the ten-second grace, so an unwind that ran longer than it was torn down by the
+    /// framework rather than by the contract the verb advertises.
     ///
     /// <para>Command Center still claims nothing here: it is entered before parsing, so no parse
     /// result describes it.</para>
     /// </remarks>
     private static readonly string[] SelfManagedTerminationCommands = ["run", "watch"];
+
+    /// <summary>
+    /// The <c>run</c> flags that route away from the one arm which installs a keypress handler.
+    /// </summary>
+    /// <remarks>
+    /// <c>RunExecutionDispatcher</c> has three terminal branches: <c>--dry-run</c> goes to the context
+    /// preview, <c>--research</c> to the web workflow, and everything else — including <c>--spell</c>
+    /// — to <c>AskCommand</c>. Only the last installs <c>Console.CancelKeyPress</c>. Opting the whole
+    /// verb out therefore left the first two with no handler at all and no framework grace either,
+    /// which is worse than the inheritance this opt-out exists to prevent: a Ctrl+C would take the CLR
+    /// default and end the process at once, with no cooperative unwind and no exit 130.
+    ///
+    /// <para>Read off the parse rather than off the dispatcher, because the timeout is decided before
+    /// the command runs. The two spellings are the coupling this file cannot enforce, and the reason
+    /// <c>CliOperatorSurfaceTests</c> parses both routes: rename either flag without changing this
+    /// list and the verb silently opts out again.</para>
+    /// </remarks>
+    private static readonly string[] RunRoutesThatClaimNoKeypress = ["research", "dry-run"];
 
     internal static TimeSpan? ResolveProcessTerminationTimeout(ParseResult parseResult) =>
         OwnsCancelKeyPress(parseResult) ? null : ProcessTerminationGrace;
@@ -696,7 +715,48 @@ internal static class CliApplicationFactory
         }
 
         return topLevelVerb is not null
-            && SelfManagedTerminationCommands.Contains(topLevelVerb, StringComparer.Ordinal);
+            && SelfManagedTerminationCommands.Contains(topLevelVerb, StringComparer.Ordinal)
+            && ClaimsTheKeypress(parseResult, topLevelVerb);
+
+    }
+
+    /// <summary>
+    /// Whether the route this invocation selected is one that installs a handler.
+    /// </summary>
+    /// <remarks>
+    /// Only <c>run</c> is route-sensitive; <c>watch</c> installs its handler in the wrapper every
+    /// subcommand goes through. <c>--dry-run</c> is tested before the route in the dispatcher, so
+    /// either flag alone and both together give the same answer.
+    /// </remarks>
+    private static bool ClaimsTheKeypress(ParseResult parseResult, string topLevelVerb)
+    {
+
+        if (!string.Equals(topLevelVerb, "run", StringComparison.Ordinal))
+        {
+
+            return true;
+
+        }
+
+        foreach (Option option in parseResult.CommandResult.Command.Options)
+        {
+
+            // Trimmed because an option's name carries its prefix, and a list written without one
+            // would match nothing and silently opt the route out again.
+            if (option is Option<bool> flag
+                && RunRoutesThatClaimNoKeypress.Contains(
+                    flag.Name.TrimStart('-'),
+                    StringComparer.Ordinal)
+                && parseResult.GetValue(flag))
+            {
+
+                return false;
+
+            }
+
+        }
+
+        return true;
 
     }
 

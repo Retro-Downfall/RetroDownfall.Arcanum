@@ -407,11 +407,15 @@ public sealed class CliOperatorSurfaceTests
     /// A verb that installs its own Ctrl+C handler is not also torn down by System.CommandLine's.
     /// </summary>
     /// <remarks>
-    /// <c>run</c> reaches <c>AskCommand</c>, which installs <c>Console.CancelKeyPress</c>, and every
-    /// <c>watch</c> verb goes through <c>WatchCommands.WithCancellationAsync</c>, which installs one
-    /// too. Both inherited the ten-second termination grace, so a cooperative unwind longer than that
-    /// — <c>run</c>'s cancel path drains the human-in-the-loop queue before returning 130 — was torn
-    /// down by the framework's handler rather than finishing under the verb's own contract.
+    /// A route that installs its own Ctrl+C handler is not also torn down by System.CommandLine's.
+    ///
+    /// <para><c>run</c> without <c>--research</c> and without <c>--dry-run</c> reaches
+    /// <c>AskCommand</c>, which installs <c>Console.CancelKeyPress</c>; <c>--spell</c> takes the same
+    /// arm. Every <c>watch</c> verb goes through <c>WatchCommands.WithCancellationAsync</c>, which
+    /// installs one too. Both inherited the ten-second termination grace, so a cooperative unwind
+    /// longer than that — the inference cancel path drains the human-in-the-loop queue before
+    /// returning 130 — was torn down by the framework's handler rather than finishing under the
+    /// verb's own contract.</para>
     ///
     /// <para>Parsed against the production tree, not a probe root: the opt-out matches a resolved
     /// command, so a fake root would report the answer for a command that does not exist.</para>
@@ -419,6 +423,8 @@ public sealed class CliOperatorSurfaceTests
     [Theory]
 
     [InlineData("run hi")]
+
+    [InlineData("run --spell summarize hi")]
 
     [InlineData("watch session 9f2a1c40-6f4a-4d2b-9a1e-1b2c3d4e5f60")]
 
@@ -430,6 +436,41 @@ public sealed class CliOperatorSurfaceTests
         ParseResult parsed = BuildProductionRoot().Parse(commandLine);
 
         Assert.Null(CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
+
+    }
+
+    /// <summary>
+    /// The two <c>run</c> routes that install no handler of their own keep the grace window.
+    /// </summary>
+    /// <remarks>
+    /// <c>run</c> has three terminal branches and only one of them claims the keypress:
+    /// <c>--dry-run</c> goes to the context preview and <c>--research</c> to the web workflow, neither
+    /// of which installs <c>Console.CancelKeyPress</c>. Opting the whole verb out left those two with
+    /// no handler at all — a Ctrl+C would take the CLR default and terminate immediately, with no
+    /// cooperative unwind and no exit 130, where before they had ten seconds.
+    ///
+    /// <para><c>--dry-run</c> is checked before the route, so the pair together is the same answer as
+    /// either alone. These cases also pin the option spellings the opt-out reads: rename either flag
+    /// without updating it and the verb silently opts out again, which is the drift this whole
+    /// contract exists to prevent.</para>
+    /// </remarks>
+    [Theory]
+
+    [InlineData("run --research hi")]
+
+    [InlineData("run --dry-run hi")]
+
+    [InlineData("run --dry-run --research hi")]
+
+    public void ResolveProcessTerminationTimeout_is_the_grace_for_a_run_route_that_claims_no_keypress(
+        string commandLine)
+    {
+
+        ParseResult parsed = BuildProductionRoot().Parse(commandLine);
+
+        Assert.Equal(
+            CliApplicationFactory.ProcessTerminationGrace,
+            CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
 
     }
 
