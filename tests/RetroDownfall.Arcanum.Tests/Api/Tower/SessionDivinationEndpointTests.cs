@@ -133,7 +133,19 @@ public sealed class SessionDivinationEndpointTests
             campaignId: null,
             status: "active");
 
-        HttpResponseMessage response = await PostDivineAsync(client, new SemanticSearchRequest("cache invalidation bug"));
+        using ScopedConsumerPause pause = new("SessionDivinationEndpoints.JoinSessionMetadataAsync");
+
+        Task<HttpResponseMessage> searching = PostDivineAsync(
+            client,
+            new SemanticSearchRequest("cache invalidation bug"));
+
+        await pause.WaitUntilEnteredAsync();
+
+        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        pause.Release();
+
+        HttpResponseMessage response = await searching;
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -155,7 +167,7 @@ public sealed class SessionDivinationEndpointTests
 
         Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
 
-        Assert.Equal(0, connections.LiveLeaseCount);
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
     }
 

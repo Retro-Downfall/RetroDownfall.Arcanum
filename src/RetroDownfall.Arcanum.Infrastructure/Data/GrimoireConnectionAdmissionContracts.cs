@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data.Common;
 
 using Microsoft.Data.Sqlite;
@@ -26,6 +27,68 @@ internal interface IGrimoireOrdinaryConnectionLease : IDisposable, IAsyncDisposa
 {
 
     SqliteConnection Connection { get; }
+
+}
+
+internal static class GrimoireScopedConsumerTestSeam
+{
+
+    private static readonly ConcurrentDictionary<string, Func<CancellationToken, ValueTask>> Checkpoints =
+        new(StringComparer.Ordinal);
+
+    internal static IDisposable Override(
+        string checkpoint,
+        Func<CancellationToken, ValueTask> callback)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(checkpoint);
+
+        ArgumentNullException.ThrowIfNull(callback);
+
+        if (!Checkpoints.TryAdd(checkpoint, callback))
+        {
+
+            throw new InvalidOperationException($"The scoped consumer checkpoint '{checkpoint}' is already overridden.");
+
+        }
+
+        return new OverrideScope(checkpoint, callback);
+
+    }
+
+    internal static ValueTask PauseAsync(
+        string checkpoint,
+        CancellationToken cancellationToken) =>
+        Checkpoints.TryGetValue(checkpoint, out Func<CancellationToken, ValueTask>? callback)
+            ? callback(cancellationToken)
+            : ValueTask.CompletedTask;
+
+    private sealed class OverrideScope(
+        string checkpoint,
+        Func<CancellationToken, ValueTask> callback) : IDisposable
+    {
+
+        private int _disposed;
+
+        public void Dispose()
+        {
+
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+
+                if (Checkpoints.TryGetValue(checkpoint, out Func<CancellationToken, ValueTask>? registered)
+                    && ReferenceEquals(registered, callback))
+                {
+
+                    _ = Checkpoints.TryRemove(checkpoint, out _);
+
+                }
+
+            }
+
+        }
+
+    }
 
 }
 

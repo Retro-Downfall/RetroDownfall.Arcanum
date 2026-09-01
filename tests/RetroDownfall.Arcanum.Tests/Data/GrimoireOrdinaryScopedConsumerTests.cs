@@ -40,13 +40,23 @@ public sealed class GrimoireLivenessProbeTests(GrimoireFixture fixture)
 
         GrimoireLivenessProbe probe = new(provider.GetRequiredService<IServiceScopeFactory>());
 
-        (bool ok, _) = await probe.ProbeAsync(CancellationToken.None);
+        using ScopedConsumerPause pause = new("GrimoireLivenessProbe.ExecuteProbeAsync");
+
+        Task<(bool Ok, string Detail)> probing = probe.ProbeAsync(CancellationToken.None);
+
+        await pause.WaitUntilEnteredAsync();
+
+        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        pause.Release();
+
+        (bool ok, _) = await probing;
 
         Assert.True(ok);
 
         Assert.Equal([CovenantSqliteConnectionMode.ReadOnly], connections.Modes);
 
-        Assert.Equal(0, connections.LiveLeaseCount);
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
     }
 
@@ -78,9 +88,19 @@ public sealed class CovenantCampaignScopeProbeTests(GrimoireFixture fixture)
 
         CovenantCampaignScopeProbe probe = new(provider.GetRequiredService<IServiceScopeFactory>());
 
-        Result<CovenantCampaignScopeState> result = await probe.ResolveAsync(
+        using ScopedConsumerPause pause = new("CovenantCampaignScopeProbe.HasDeletionEventAsync");
+
+        Task<Result<CovenantCampaignScopeState>> resolving = probe.ResolveAsync(
             Guid.NewGuid(),
-            CancellationToken.None);
+            CancellationToken.None).AsTask();
+
+        await pause.WaitUntilEnteredAsync();
+
+        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        pause.Release();
+
+        Result<CovenantCampaignScopeState> result = await resolving;
 
         Assert.True(result.IsSuccess);
 
@@ -88,7 +108,7 @@ public sealed class CovenantCampaignScopeProbeTests(GrimoireFixture fixture)
 
         Assert.Equal([CovenantSqliteConnectionMode.ReadOnly], connections.Modes);
 
-        Assert.Equal(0, connections.LiveLeaseCount);
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
     }
 
@@ -110,6 +130,8 @@ public sealed class CovenantConnectionSourceTests(GrimoireFixture fixture)
 
         RecordingScopedOrdinaryConnectionFactory connections = new();
 
+        await db.Database.CloseConnectionAsync();
+
         ConstructorInfo? constructor = typeof(CovenantConnectionSource)
             .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic)
             .SingleOrDefault(candidate =>
@@ -124,6 +146,10 @@ public sealed class CovenantConnectionSourceTests(GrimoireFixture fixture)
 
         Assert.Equal(1, connections.LiveLeaseCount);
 
+        Assert.Equal(1, connections.LiveOwnerLeaseCount);
+
+        Assert.Equal(0, connections.LiveBorrowLeaseCount);
+
         Result<IGrimoireOrdinaryConnectionLease> borrowed = await connections.AcquireScopedAsync(
             connection,
             CovenantSqliteConnectionMode.ReadWrite,
@@ -135,9 +161,15 @@ public sealed class CovenantConnectionSourceTests(GrimoireFixture fixture)
 
         Assert.Equal(1, connections.LiveLeaseCount);
 
+        Assert.Equal(1, connections.LiveOwnerLeaseCount);
+
+        Assert.Equal(0, connections.LiveBorrowLeaseCount);
+
         source.Dispose();
 
         Assert.Equal(0, connections.LiveLeaseCount);
+
+        Assert.Equal(0, connections.LiveOwnerLeaseCount);
 
     }
 
@@ -148,9 +180,28 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
 
     private int _liveLeaseCount;
 
+    private int _liveOwnerLeaseCount;
+
+    private int _liveBorrowLeaseCount;
+
+    private int _liveReadOnlyLeaseCount;
+
+    private int _liveReadWriteLeaseCount;
+
     internal List<CovenantSqliteConnectionMode> Modes { get; } = [];
 
     internal int LiveLeaseCount => Volatile.Read(ref _liveLeaseCount);
+
+    internal int LiveOwnerLeaseCount => Volatile.Read(ref _liveOwnerLeaseCount);
+
+    internal int LiveBorrowLeaseCount => Volatile.Read(ref _liveBorrowLeaseCount);
+
+    internal int LiveLeaseCountFor(CovenantSqliteConnectionMode mode) => mode switch
+    {
+        CovenantSqliteConnectionMode.ReadOnly => Volatile.Read(ref _liveReadOnlyLeaseCount),
+        CovenantSqliteConnectionMode.ReadWrite => Volatile.Read(ref _liveReadWriteLeaseCount),
+        _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+    };
 
     public async Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
         SqliteConnection connection,
@@ -160,7 +211,9 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
 
         Modes.Add(mode);
 
-        if (connection.State != System.Data.ConnectionState.Open)
+        bool ownsPhysicalOpen = connection.State != System.Data.ConnectionState.Open;
+
+        if (ownsPhysicalOpen)
         {
 
             await connection.OpenAsync(cancellationToken);
@@ -169,8 +222,68 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
 
         _ = Interlocked.Increment(ref _liveLeaseCount);
 
+        if (mode is CovenantSqliteConnectionMode.ReadOnly)
+        {
+
+            _ = Interlocked.Increment(ref _liveReadOnlyLeaseCount);
+
+        }
+        else
+        {
+
+            _ = Interlocked.Increment(ref _liveReadWriteLeaseCount);
+
+        }
+
+        if (ownsPhysicalOpen)
+        {
+
+            _ = Interlocked.Increment(ref _liveOwnerLeaseCount);
+
+        }
+        else
+        {
+
+            _ = Interlocked.Increment(ref _liveBorrowLeaseCount);
+
+        }
+
         return Result<IGrimoireOrdinaryConnectionLease>.Success(
-            new RecordingLease(connection, () => Interlocked.Decrement(ref _liveLeaseCount)));
+            new RecordingLease(
+                connection,
+                ownsPhysicalOpen,
+                () =>
+                {
+
+                    _ = Interlocked.Decrement(ref _liveLeaseCount);
+
+                    if (mode is CovenantSqliteConnectionMode.ReadOnly)
+                    {
+
+                        _ = Interlocked.Decrement(ref _liveReadOnlyLeaseCount);
+
+                    }
+                    else
+                    {
+
+                        _ = Interlocked.Decrement(ref _liveReadWriteLeaseCount);
+
+                    }
+
+                    if (ownsPhysicalOpen)
+                    {
+
+                        _ = Interlocked.Decrement(ref _liveOwnerLeaseCount);
+
+                    }
+                    else
+                    {
+
+                        _ = Interlocked.Decrement(ref _liveBorrowLeaseCount);
+
+                    }
+
+                }));
 
     }
 
@@ -179,14 +292,30 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
         CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
-    private sealed class RecordingLease(
-        SqliteConnection connection,
-        Action onDispose) : IGrimoireOrdinaryConnectionLease
+    private sealed class RecordingLease : IGrimoireOrdinaryConnectionLease
     {
 
         private int _disposed;
 
-        public SqliteConnection Connection { get; } = connection;
+        private readonly bool _ownsPhysicalOpen;
+
+        private readonly Action _onDispose;
+
+        internal RecordingLease(
+            SqliteConnection connection,
+            bool ownsPhysicalOpen,
+            Action onDispose)
+        {
+
+            Connection = connection;
+
+            _ownsPhysicalOpen = ownsPhysicalOpen;
+
+            _onDispose = onDispose;
+
+        }
+
+        public SqliteConnection Connection { get; }
 
         public void Dispose()
         {
@@ -194,7 +323,14 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
 
-                onDispose();
+                if (_ownsPhysicalOpen)
+                {
+
+                    Connection.Close();
+
+                }
+
+                _onDispose();
 
             }
 
@@ -208,6 +344,49 @@ internal sealed class RecordingScopedOrdinaryConnectionFactory : IGrimoireOrdina
             return ValueTask.CompletedTask;
 
         }
+
+    }
+
+}
+
+internal sealed class ScopedConsumerPause : IDisposable
+{
+
+    private readonly TaskCompletionSource _entered =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private readonly TaskCompletionSource _released =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private readonly IDisposable _override;
+
+    internal ScopedConsumerPause(string checkpoint)
+    {
+
+        _override = GrimoireScopedConsumerTestSeam.Override(
+            checkpoint,
+            cancellationToken =>
+            {
+
+                _entered.TrySetResult();
+
+                return new ValueTask(_released.Task.WaitAsync(cancellationToken));
+
+            });
+
+    }
+
+    internal Task WaitUntilEnteredAsync() =>
+        _entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+    internal void Release() => _released.TrySetResult();
+
+    public void Dispose()
+    {
+
+        Release();
+
+        _override.Dispose();
 
     }
 

@@ -190,7 +190,20 @@ public sealed class WorkspaceDivinationEndpointTests
             content: "public class Baz {}",
             vector: [1f, 0f, 0f]);
 
-        HttpResponseMessage response = await PostDivineAsync(client, targetWorkspace.Id, new WorkspaceSemanticSearchRequest("how does Foo work?"));
+        using ScopedConsumerPause pause = new("WorkspaceDivinationEndpoints.GetTotalChunksByPathAsync");
+
+        Task<HttpResponseMessage> searching = PostDivineAsync(
+            client,
+            targetWorkspace.Id,
+            new WorkspaceSemanticSearchRequest("how does Foo work?"));
+
+        await pause.WaitUntilEnteredAsync();
+
+        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        pause.Release();
+
+        HttpResponseMessage response = await searching;
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -204,7 +217,7 @@ public sealed class WorkspaceDivinationEndpointTests
 
         Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
 
-        Assert.Equal(0, connections.LiveLeaseCount);
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
     }
 

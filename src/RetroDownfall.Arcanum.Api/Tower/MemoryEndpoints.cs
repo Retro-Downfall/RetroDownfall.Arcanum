@@ -1128,6 +1128,10 @@ internal static class MemoryEndpoints
             .ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        await GrimoireScopedConsumerTestSeam
+            .PauseAsync("MemoryEndpoints.SearchSessionAsync", cancellationToken)
+            .ConfigureAwait(false);
+
         while (await summaryReader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
 
@@ -1445,6 +1449,10 @@ internal static class MemoryEndpoints
             AddParameter(command, "@workspacePath", workspacePath);
 
         }
+
+        await GrimoireScopedConsumerTestSeam
+            .PauseAsync("MemoryEndpoints.CountWorkspaceChunksAsync", cancellationToken)
+            .ConfigureAwait(false);
 
         object? value = await command
             .ExecuteScalarAsync(cancellationToken)

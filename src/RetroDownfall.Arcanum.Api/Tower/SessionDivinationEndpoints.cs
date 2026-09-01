@@ -269,6 +269,10 @@ internal static class SessionDivinationEndpoints
 
         await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
+        await GrimoireScopedConsumerTestSeam
+            .PauseAsync("SessionDivinationEndpoints.JoinSessionMetadataAsync", cancellationToken)
+            .ConfigureAwait(false);
+
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
 

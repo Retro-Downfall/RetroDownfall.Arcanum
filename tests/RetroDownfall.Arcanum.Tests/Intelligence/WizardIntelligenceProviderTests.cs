@@ -5199,10 +5199,20 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             db: db,
             ordinaryConnections: connections);
 
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+        using ScopedConsumerPause pause = new("WizardIntelligenceProvider.GetTotalChunksByPathAsync");
+
+        Task<Result<PromptTurnResult>> executing = wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "how does Foo work?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
+
+        await pause.WaitUntilEnteredAsync();
+
+        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        pause.Release();
+
+        Result<PromptTurnResult> result = await executing;
 
         Assert.True(result.IsSuccess);
 
@@ -5218,7 +5228,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal([CovenantSqliteConnectionMode.ReadOnly], connections.Modes);
 
-        Assert.Equal(0, connections.LiveLeaseCount);
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
     }
 

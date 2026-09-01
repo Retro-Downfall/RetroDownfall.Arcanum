@@ -85,13 +85,69 @@ public sealed class MemoryEndpointTests
 
         HttpClient client = admitted.CreateAuthenticatedClient();
 
-        HttpResponseMessage response = await client.GetAsync("/api/memory/status");
+        using ScopedConsumerPause pause = new("MemoryEndpoints.CountWorkspaceChunksAsync");
+
+        Task<HttpResponseMessage> loading = client.GetAsync("/api/memory/status");
+
+        await pause.WaitUntilEnteredAsync();
+
+        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        pause.Release();
+
+        HttpResponseMessage response = await loading;
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
 
-        Assert.Equal(0, connections.LiveLeaseCount);
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+    }
+
+    [SkippableFact]
+
+    public async Task Search_retains_read_only_admission_while_its_result_reader_is_open()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingScopedOrdinaryConnectionFactory connections = new();
+
+        await using ArcanumWebApplicationFactory admitted = new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                services.RemoveAll<IGrimoireOrdinaryConnectionFactory>();
+
+                services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
+
+            },
+        };
+
+        HttpClient client = admitted.CreateAuthenticatedClient();
+
+        using ScopedConsumerPause pause = new("MemoryEndpoints.SearchSessionAsync");
+
+        Task<HttpResponseMessage> searching = client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("not-present", MemorySearchScope.Session),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        await pause.WaitUntilEnteredAsync();
+
+        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        pause.Release();
+
+        HttpResponseMessage response = await searching;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
     }
 

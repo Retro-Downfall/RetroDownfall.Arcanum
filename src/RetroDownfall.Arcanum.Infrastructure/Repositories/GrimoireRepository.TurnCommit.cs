@@ -97,6 +97,10 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             await _db.Database.UseTransactionAsync(sqliteTransaction, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("EF could not attach the SQLite turn-commit transaction.");
 
+        await GrimoireScopedConsumerTestSeam
+            .PauseAsync("GrimoireRepository.CommitWithinImmediateTransactionAsync", cancellationToken)
+            .ConfigureAwait(false);
+
         try
         {
 

@@ -5,13 +5,17 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -62,6 +66,49 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             File.Delete(_dbPath);
 
         }
+
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_retains_read_write_admission_through_its_transaction()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingScopedOrdinaryConnectionFactory connections = new();
+
+        GrimoireRepository repository = CreateRepository(connections: connections);
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "What is the ward sigil?",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        using ScopedConsumerPause pause = new("GrimoireRepository.CommitWithinImmediateTransactionAsync");
+
+        Task<Result<TurnCommitReceipt>> committing = repository.CommitTurnAsync(
+            new TurnCommitRequest(
+                assistantEntryId,
+                sessionId,
+                AssistantFinalizationOutcome.Committed,
+                "The sigil is cobalt.",
+                CovenantTask6Fixture.D(31),
+                ContentSensitivity.None,
+                GenerationProvenance.CreateExact([])),
+            CancellationToken.None);
+
+        await pause.WaitUntilEnteredAsync();
+
+        Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+
+        pause.Release();
+
+        Result<TurnCommitReceipt> committed = await committing;
+
+        Assert.True(committed.IsSuccess, committed.Error.Message);
+
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
 
     }
 
@@ -1461,12 +1508,13 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     private GrimoireRepository CreateRepository(
         ArcanumDbContext? db = null,
-        ILogger<GrimoireRepository>? logger = null)
+        ILogger<GrimoireRepository>? logger = null,
+        RecordingScopedOrdinaryConnectionFactory? connections = null)
     {
         ServiceCollection services = new();
 
         services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
-            new RecordingScopedOrdinaryConnectionFactory());
+            connections ?? new RecordingScopedOrdinaryConnectionFactory());
 
         return new GrimoireRepository(
             db ?? _db!,
