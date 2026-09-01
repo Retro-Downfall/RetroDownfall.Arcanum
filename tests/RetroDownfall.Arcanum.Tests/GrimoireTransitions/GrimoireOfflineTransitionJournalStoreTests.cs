@@ -748,10 +748,63 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
         }
 
-        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await Store().RecoverAsync(
+        int workingNormalized = 0;
+
+        GrimoireOfflineTransitionJournalFileStore normalizingFiles = new(
+            afterStep: step =>
+            {
+
+                if (step != "file:working-normalized")
+                {
+
+                    return;
+
+                }
+
+                workingNormalized++;
+
+                using GrimoireOfflineTransitionJournalEvidence normalized = Value(new GrimoireOfflineTransitionJournalFileStore()
+                    .InspectEvidenceAsync(current.Location, CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult());
+
+                Assert.NotNull(normalized.Canonical);
+
+                Assert.Null(normalized.Working);
+
+                Assert.NotNull(normalized.Previous);
+
+                Assert.Null(normalized.Retiring);
+
+                GrimoireOfflineTransitionEnvelopeV1 canonical = Value(
+                    GrimoireOfflineTransitionJournalAuthenticator.DecodeEnvelope(
+                        normalized.Canonical!.Bytes.Span));
+
+                GrimoireOfflineTransitionEnvelopeV1 predecessor = Value(
+                    GrimoireOfflineTransitionJournalAuthenticator.DecodeEnvelope(
+                        normalized.Previous!.Bytes.Span));
+
+                Assert.Equal(current.Envelope.Revision + 1, canonical.Revision);
+
+                Assert.Equal(current.EnvelopeDigest, canonical.PreviousEnvelopeDigest);
+
+                Assert.Equal(current.Envelope, predecessor);
+
+                Assert.Equal(current.FileMetadata.Identity, normalized.Previous.Metadata.Identity);
+
+            });
+
+        GrimoireOfflineTransitionJournalStore recovering = new(
+            _credentials,
+            normalizingFiles,
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await recovering.RecoverAsync(
             _lock,
             _guarded,
             CancellationToken.None));
+
+        Assert.Equal(1, workingNormalized);
 
         Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated, recovered.Outcome);
 

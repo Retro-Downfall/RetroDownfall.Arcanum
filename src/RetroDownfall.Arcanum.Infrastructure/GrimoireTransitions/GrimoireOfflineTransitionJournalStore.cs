@@ -844,10 +844,27 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             }
 
+            Result normalized = await _files.NormalizeWorkingPredecessorAsync(
+                    heldInstallationLock,
+                    location,
+                    workingOneAhead.Value.FileMetadata,
+                    evidence.Canonical.Bytes,
+                    predecessor.Value.FileMetadata,
+                    evidence.Working.Bytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (normalized.IsFailure)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
             Result retired = await _files.CompleteRetirementAsync(
                     heldInstallationLock,
                     location,
-                    GrimoireOfflineTransitionJournalRetirementSource.Working,
+                    GrimoireOfflineTransitionJournalRetirementSource.Previous,
                     predecessor.Value.FileMetadata,
                     evidence.Working.Bytes,
                     requireCanonicalAfter: true,
