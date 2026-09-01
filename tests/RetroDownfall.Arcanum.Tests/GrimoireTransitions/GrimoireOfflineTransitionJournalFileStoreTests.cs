@@ -1205,6 +1205,38 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
+    public void Production_windows_identity_acl_call_sites_dispose_the_current_identity()
+    {
+
+        string source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
+
+        string verifier = SourceMethod(
+            source,
+            "private static bool VerifyWindowsOwnerOnlyHandle(",
+            "private static bool TryCreateOwnerOnlySecurityDescriptor(");
+
+        string descriptor = SourceMethod(
+            source,
+            "private static bool TryCreateOwnerOnlySecurityDescriptor(",
+            "private static bool ValidLeaf(");
+
+        Assert.Contains(
+            "using WindowsIdentity current = WindowsIdentity.GetCurrent();",
+            verifier,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "using WindowsIdentity current = WindowsIdentity.GetCurrent();",
+            descriptor,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("WindowsIdentity.GetCurrent().User", source, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public void Windows_access_masks_and_replace_invocation_are_exact()
     {
 

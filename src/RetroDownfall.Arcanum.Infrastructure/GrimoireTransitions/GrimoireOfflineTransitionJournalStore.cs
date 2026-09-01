@@ -1191,10 +1191,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (AllAbsent(evidence))
         {
 
-            return new GrimoireOfflineTransitionJournalRecoveryState(
-                GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
-                Publication: null,
-                anchor.OperationId);
+            Result absent = _files.ProveAbsentDurably(heldInstallationLock, location);
+
+            return absent.IsSuccess
+                ? new GrimoireOfflineTransitionJournalRecoveryState(
+                    GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+                    Publication: null,
+                    anchor.OperationId)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
 
         }
 

@@ -1683,7 +1683,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 out _,
                 out securityDescriptor);
 
-            SecurityIdentifier? currentUser = WindowsIdentity.GetCurrent().User;
+            using WindowsIdentity current = WindowsIdentity.GetCurrent();
+
+            SecurityIdentifier? currentUser = current.User;
 
             if (status != 0 || securityDescriptor == IntPtr.Zero
                 || owner == IntPtr.Zero || dacl == IntPtr.Zero || currentUser is null
@@ -1763,7 +1765,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
         descriptor = IntPtr.Zero;
 
-        SecurityIdentifier? user = WindowsIdentity.GetCurrent().User;
+        using WindowsIdentity current = WindowsIdentity.GetCurrent();
+
+        SecurityIdentifier? user = current.User;
 
         if (user is null)
         {

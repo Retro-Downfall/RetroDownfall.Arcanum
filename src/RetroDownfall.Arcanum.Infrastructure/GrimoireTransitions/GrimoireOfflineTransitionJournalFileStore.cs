@@ -979,44 +979,57 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
 
-        if (!ProveAllAbsentAsync(
-                primitives,
-                location,
-                CancellationToken.None)
-            .GetAwaiter()
-            .GetResult())
+        try
+        {
+
+            if (!ProveAllAbsentAsync(
+                    primitives,
+                    location,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult())
+            {
+
+                return RecoveryRequired();
+
+            }
+
+            Before("file:absence-parent-flushed");
+
+            if (primitives.FlushParent().IsFailure)
+            {
+
+                return RecoveryRequired();
+
+            }
+
+            Emit("file:absence-parent-flushed");
+
+            if (!ProveAllAbsentAsync(
+                    primitives,
+                    location,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult())
+            {
+
+                return RecoveryRequired();
+
+            }
+
+            Before("file:absence-proved");
+
+            Emit("file:absence-proved");
+
+            return Result.Success();
+
+        }
+        catch (InjectedStepFailureException)
         {
 
             return RecoveryRequired();
 
         }
-
-        Before("file:absence-parent-flushed");
-
-        if (primitives.FlushParent().IsFailure)
-        {
-
-            return RecoveryRequired();
-
-        }
-
-        Emit("file:absence-parent-flushed");
-
-        if (!ProveAllAbsentAsync(
-                primitives,
-                location,
-                CancellationToken.None)
-            .GetAwaiter()
-            .GetResult())
-        {
-
-            return RecoveryRequired();
-
-        }
-
-        Emit("file:absence-proved");
-
-        return Result.Success();
 
     }
 

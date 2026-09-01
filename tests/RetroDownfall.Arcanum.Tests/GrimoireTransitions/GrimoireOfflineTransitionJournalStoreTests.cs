@@ -1426,6 +1426,90 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     }
 
+    [Theory]
+    [InlineData("file:absence-parent-flushed")]
+    [InlineData("file:absence-proved")]
+    public async Task Recover_closed_absence_requires_durable_parent_flush_and_repeat_proof(
+        string boundary)
+    {
+
+        GrimoireOfflineTransitionJournalStore initial = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(initial);
+
+        GrimoireOfflineTransitionJournalStore interrupted = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(
+                failBeforeStep: step => step == boundary),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Assert.True((await interrupted.RetireAsync(
+            _lock,
+            terminal,
+            CancellationToken.None)).IsFailure);
+
+        using (GrimoireOfflineTransitionJournalEvidence absent = Value(
+                   await new GrimoireOfflineTransitionJournalFileStore().InspectEvidenceAsync(
+                       terminal.Location,
+                       CancellationToken.None)))
+        {
+
+            Assert.Null(absent.Canonical);
+
+            Assert.Null(absent.Working);
+
+            Assert.Null(absent.Previous);
+
+            Assert.Null(absent.Retiring);
+
+        }
+
+        List<string> attempted = [];
+
+        GrimoireOfflineTransitionJournalStore blocked = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(
+                failBeforeStep: step =>
+                {
+
+                    attempted.Add(step);
+
+                    return step == boundary;
+
+                }),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> blockedRecovery = await blocked.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(blockedRecovery.IsFailure, boundary);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, blockedRecovery.Error.Code);
+
+        Assert.Contains(boundary, attempted);
+
+        List<string> events = [];
+
+        GrimoireOfflineTransitionJournalStore completing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(events.Add),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Assert.Equal(
+            GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+            Value(await completing.RecoverAsync(
+                _lock,
+                _guarded,
+                CancellationToken.None)).Outcome);
+
+        Assert.Contains("file:absence-parent-flushed", events);
+
+        Assert.Contains("file:absence-proved", events);
+
+    }
+
     [Fact]
     public async Task Retire_is_idempotent_after_closed_anchor_file_delete_and_parent_fsync()
     {
