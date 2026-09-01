@@ -41,6 +41,44 @@ public sealed class AskCommandErrorHandlingTests
 
     }
 
+    /// <summary>
+    /// W10-6: the bare <c>catch (Exception ex)</c> around the ask turn used to print
+    /// <c>ex.Message</c> verbatim, so an <see cref="IOException"/> naming a local path reached the
+    /// operator's stderr unredacted, and the exit code was a hardcoded 1 rather than
+    /// <see cref="CliFailureMapper"/>'s classification. Routed through the mapper, only its safe
+    /// copy and exit code reach the console; the raw message is confined to <c>-v</c> output.
+    /// </summary>
+    [Fact]
+    public void Ask_routes_unexpected_exceptions_through_the_safe_failure_mapper()
+    {
+
+        const string LeakedPath = "/Users/x/.arcanum/secret.bin";
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+
+        services.AddSingleton<IEyeOfTheWorld>(
+            new ThrowingEyeWith(new IOException($"{LeakedPath} denied")));
+
+        CliTestResult result = CliTestHarness.Run(services, "run", "hello");
+
+        CliFailure expected = CliFailureMapper.Map(new IOException($"{LeakedPath} denied"));
+
+        Assert.Equal((int)expected.ExitCode, result.ExitCode);
+
+        Assert.DoesNotContain(LeakedPath, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("IOException", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains(expected.SafeMessage, result.Error, StringComparison.Ordinal);
+
+    }
+
     private sealed class ThrowingEye : IEyeOfTheWorld
     {
 
@@ -50,6 +88,14 @@ public sealed class AskCommandErrorHandlingTests
             throw new InvalidOperationException("simulated eye failure");
 
         }
+
+    }
+
+    private sealed class ThrowingEyeWith(Exception exception) : IEyeOfTheWorld
+    {
+
+        public Task<PatternSnapshot> PerceivePatternAsync(string directoryPath, CancellationToken cancellationToken) =>
+            throw exception;
 
     }
 

@@ -22,7 +22,8 @@ public sealed class AskCommand(
     ICliEnvironment cliEnvironment,
     IOptions<ArcanumSettings> arcanumSettings,
     IArcanumServeLauncher serveLauncher,
-    ICliInferenceContextResolver contextResolver)
+    ICliInferenceContextResolver contextResolver,
+    IConsoleDispatcher dispatcher)
 {
 
     /// <summary>
@@ -531,10 +532,15 @@ public sealed class AskCommand(
         {
 
             _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
-            stderrConsole.MarkupLine(
-                palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(FormatStreamTransportError(ex.Message))));
 
-            return 1;
+            CliFailure failure = CliFailureMapper.Map(ex);
+
+            dispatcher.WriteVerbose(ex.Message);
+
+            stderrConsole.MarkupLine(
+                palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(failure.SafeMessage)));
+
+            return (int)failure.ExitCode;
 
         }
         finally
