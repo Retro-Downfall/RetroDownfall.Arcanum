@@ -33,7 +33,12 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// The assertions are about ordering and refusal, not formatting. What matters is that an operator
 /// sees the server's own measurement before they are asked, and that declining reaches no mutating
 /// route at all.
+///
+/// <para>The whole class joins the <c>GlobalConsole</c> collection because the <c>--json</c> tests
+/// run through <see cref="CliTestHarness"/>, which substitutes <see cref="Console.Out"/> — process
+/// global state another test in the same collection would otherwise race.</para>
 /// </remarks>
+[Collection("GlobalConsole")]
 public sealed class CovenantCommandTests : IDisposable
 {
 
@@ -678,6 +683,166 @@ public sealed class CovenantCommandTests : IDisposable
         _ = await commands.Show("preference.builds", campaignId: null, history: false, Token);
 
         Assert.Equal(["POST /api/memory/covenant/detail"], handler.Requests);
+
+    }
+
+    /// <summary>
+    /// Every mutating verb leaves exactly one JSON document on stdout under <c>--json</c>.
+    /// </summary>
+    /// <remarks>
+    /// The confirmation screen is written with <c>WritePayload</c>, which is stdout, and stdout under
+    /// <c>--json</c> is buffered and flushed verbatim. So an approved mutation emitted four to six
+    /// plain-text lines ahead of its document and the documented automation spelling could not be
+    /// piped into anything that parses JSON.
+    ///
+    /// <para>Parsed rather than pattern-matched: <see cref="JsonDocument.Parse(string,
+    /// JsonDocumentOptions)"/> refuses a leading plain-text line and a second root value alike, which
+    /// is exactly the pair of failures the one-document contract forbids. The route sequence travels
+    /// with it because a verb that refused early would also leave one clean document behind.</para>
+    /// </remarks>
+    [Theory]
+
+    [InlineData("set")]
+
+    [InlineData("retire")]
+
+    [InlineData("correct")]
+
+    [InlineData("pin")]
+
+    [InlineData("unpin")]
+
+    [InlineData("mask")]
+
+    [InlineData("unmask")]
+
+    public async Task An_approved_json_mutation_puts_exactly_one_document_on_stdout(string verb)
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = await RunCliAsync(handler, Invocation(verb, approve: "--yes"));
+
+        Assert.Equal(0, result.ExitCode);
+
+        // Two routes: the preflight, then the commit. A verb that stopped at the preflight would
+        // leave a clean stdout for a reason this test is not about.
+        Assert.Equal(2, handler.Requests.Count);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+
+    }
+
+    /// <summary>
+    /// The same holds when the operator typed <c>y</c> rather than passing <c>--yes</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>--yes</c> is not what corrupts the stream; approval is. Pinning the interactive answer
+    /// separately keeps the guard honest against a fix that only reads <c>Options.Yes</c>, and keeps
+    /// this assertion independent of whether the prompt refuses <c>--json</c> on its own.
+    /// </remarks>
+    [Fact]
+    public async Task An_interactively_approved_json_mutation_puts_exactly_one_document_on_stdout()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = await RunCliAsync(
+            handler,
+            Invocation("set", approve: null),
+            new FixedConfirmation(true));
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+
+    }
+
+    private static readonly Guid MaskCampaignId = new("55555555-5555-4555-8555-555555555555");
+
+    private string[] Invocation(string verb, string? approve)
+    {
+
+        string[] common = approve is null ? ["--json"] : ["--json", approve];
+
+        return verb switch
+        {
+            "set" =>
+            [
+                "memory", "covenant", "set", "preference.builds",
+                "--file", WriteTempFile("Run build commands from the repository root."),
+                "--expected-revision", "0",
+                .. common,
+            ],
+            "retire" =>
+            [
+                "memory", "covenant", "retire", "preference.builds",
+                "--lane", "Confirmed",
+                "--expected-revision", "0",
+                .. common,
+            ],
+            "correct" =>
+            [
+                "memory", "covenant", "correct", "preference.builds",
+                "--file", WriteTempFile("Run build commands from the repository root."),
+                "--target-version", RecordingHandler.DetailEntryId.ToString(),
+                "--target-hash", RecordingHandler.RenderedHash,
+                "--expected-revision", "0",
+                .. common,
+            ],
+            "mask" or "unmask" =>
+            [
+                "memory", "covenant", verb, "preference.builds",
+                "--campaign", MaskCampaignId.ToString(),
+                .. common,
+            ],
+            _ =>
+            [
+                "memory", "covenant", verb, "preference.builds",
+                .. common,
+            ],
+        };
+
+    }
+
+    /// <summary>
+    /// Runs one command line through the same entry point <c>Program.Main</c> uses.
+    /// </summary>
+    /// <remarks>
+    /// The stdout capture is the point. <c>--json</c> substitutes the console writer inside
+    /// <c>CliApplicationFactory.RunAsync</c> and flushes the buffer itself, so a test that called the
+    /// handler directly would never see the stream an operator redirects.
+    /// </remarks>
+    private static Task<CliTestResult> RunCliAsync(
+        RecordingHandler handler,
+        string[] args,
+        IConfirmationPrompt? confirmationPrompt = null)
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<IHttpClientFactory>(new SingleHandlerFactory(handler));
+
+        services.AddSingleton<ISecretStore>(new FixedSecretStore());
+
+        if (confirmationPrompt is not null)
+        {
+
+            services.AddSingleton(confirmationPrompt);
+
+        }
+
+        return CliTestHarness.RunAsync(services, args);
 
     }
 

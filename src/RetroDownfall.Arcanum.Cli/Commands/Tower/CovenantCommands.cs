@@ -680,6 +680,11 @@ public sealed class CovenantCommands(
     /// parsed. It is the field that says which of the two standings is about to change, and a
     /// confirmation screen that omitted it could not show an operator that their <c>--lane</c> named
     /// something other than what the request carries.</para>
+    ///
+    /// <para>The screen is written only outside <c>--json</c>. Every line of it goes to stdout, and
+    /// stdout under <c>--json</c> is the payload stream: an approved mutation used to emit these lines
+    /// ahead of its document, so the documented automation spelling produced something no JSON parser
+    /// would accept.</para>
     /// </remarks>
     private async Task<bool> ConfirmAsync(
         CovenantMutationPreflightDto preflight,
@@ -687,31 +692,36 @@ public sealed class CovenantCommands(
         CancellationToken cancellationToken)
     {
 
-        dispatcher.WritePayload(
-            $"{verb} '{preflight.NormalizedKey}' in the {preflight.Lane} lane, {preflight.Scope} scope.");
-
-        dispatcher.WritePayload($"  Current revision: {preflight.CurrentLaneRevision}");
-
-        if (preflight.CompiledByteCost is { } cost)
+        if (!invocationContext.Options.Json)
         {
 
-            dispatcher.WritePayload($"  Compiled cost:    {cost} bytes");
+            dispatcher.WritePayload(
+                $"{verb} '{preflight.NormalizedKey}' in the {preflight.Lane} lane, {preflight.Scope} scope.");
 
-        }
+            dispatcher.WritePayload($"  Current revision: {preflight.CurrentLaneRevision}");
 
-        if (preflight.RenderedHash is { } hash)
-        {
+            if (preflight.CompiledByteCost is { } cost)
+            {
 
-            dispatcher.WritePayload($"  Rendered hash:    {hash}");
+                dispatcher.WritePayload($"  Compiled cost:    {cost} bytes");
 
-        }
+            }
 
-        dispatcher.WritePayload($"  Affects:          {preflight.Effect.AffectedCampaignCount} Campaign(s)");
+            if (preflight.RenderedHash is { } hash)
+            {
 
-        if (preflight.Effect.AppliesToFutureCampaigns)
-        {
+                dispatcher.WritePayload($"  Rendered hash:    {hash}");
 
-            dispatcher.WritePayload("  Also applies to Campaigns created later.");
+            }
+
+            dispatcher.WritePayload($"  Affects:          {preflight.Effect.AffectedCampaignCount} Campaign(s)");
+
+            if (preflight.Effect.AppliesToFutureCampaigns)
+            {
+
+                dispatcher.WritePayload("  Also applies to Campaigns created later.");
+
+            }
 
         }
 
@@ -755,37 +765,45 @@ public sealed class CovenantCommands(
     /// The broader-scope sentence is the line that matters. Masking a Global key and retiring a
     /// Campaign entry are opposite answers to "what applies here afterwards", and only one of them
     /// leaves the operator with nothing.
+    ///
+    /// <para>Suppressed under <c>--json</c> for the same reason the mutation screen is: these lines go
+    /// to stdout, which is where the one JSON document has to be alone.</para>
     /// </remarks>
     private async Task<bool> ConfirmCurationAsync(
         CovenantCurationPreflightDto preflight,
         CancellationToken cancellationToken)
     {
 
-        dispatcher.WritePayload(
-            $"{preflight.Kind} '{preflight.NormalizedKey}' in the {preflight.Lane} lane, {preflight.Scope} scope.");
-
-        dispatcher.WritePayload($"  Current state:    pinned={preflight.IsPinned}, masked={preflight.IsMasked}");
-
-        dispatcher.WritePayload($"  Current revision: {preflight.CurrentRevision}");
-
-        if (!preflight.ChangesAnything)
+        if (!invocationContext.Options.Json)
         {
 
-            dispatcher.WritePayload("  This subject is already in that state; committing records the request and changes nothing.");
+            dispatcher.WritePayload(
+                $"{preflight.Kind} '{preflight.NormalizedKey}' in the {preflight.Lane} lane, {preflight.Scope} scope.");
 
-        }
+            dispatcher.WritePayload($"  Current state:    pinned={preflight.IsPinned}, masked={preflight.IsMasked}");
 
-        if (preflight.GlobalConfirmedSuppressed)
-        {
+            dispatcher.WritePayload($"  Current revision: {preflight.CurrentRevision}");
 
-            dispatcher.WritePayload("  The Global entry for this key stops applying in this Campaign, and nothing replaces it.");
+            if (!preflight.ChangesAnything)
+            {
 
-        }
+                dispatcher.WritePayload("  This subject is already in that state; committing records the request and changes nothing.");
 
-        if (preflight.GlobalConfirmedResurfaces)
-        {
+            }
 
-            dispatcher.WritePayload("  The Global entry for this key starts applying in this Campaign again.");
+            if (preflight.GlobalConfirmedSuppressed)
+            {
+
+                dispatcher.WritePayload("  The Global entry for this key stops applying in this Campaign, and nothing replaces it.");
+
+            }
+
+            if (preflight.GlobalConfirmedResurfaces)
+            {
+
+                dispatcher.WritePayload("  The Global entry for this key starts applying in this Campaign again.");
+
+            }
 
         }
 
