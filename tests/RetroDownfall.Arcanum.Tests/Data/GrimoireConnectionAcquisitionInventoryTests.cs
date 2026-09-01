@@ -100,6 +100,27 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     [Fact]
+    public void Broad_catalog_identity_fails_independently()
+    {
+
+        AcquisitionIdentity broad = new(
+            "src/RetroDownfall.Arcanum.Infrastructure/*",
+            "Fixture",
+            "Open()",
+            AcquisitionConstructKind.ProviderOpen,
+            "OpenConnectionAsync",
+            1,
+            "OpenConnectionAsync(*)");
+
+        IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
+            [broad],
+            [Entry(broad)]);
+
+        Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
+
+    }
+
+    [Fact]
     public void Misclassified_canonical_live_acquisition_fails_independently()
     {
 
@@ -593,6 +614,142 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
 
     }
 
+    [Fact]
+    public void Connection_owning_return_routes_are_all_marked()
+    {
+
+        IReadOnlyList<AcquisitionSource> sources = ProductionSources();
+
+        IReadOnlyList<AcquisitionIdentity> discoveries =
+            GrimoireConnectionAcquisitionScanner.Discover(sources);
+
+        IReadOnlyList<GrimoireAcquisitionCatalogEntry> catalog =
+            GrimoireConnectionAcquisitionScanner.Catalog();
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Validate(discoveries, catalog));
+
+        Assert.All(
+            catalog.Where(entry => entry.AcquisitionKind
+                is GrimoireAcquisitionKind.ServingEfOrdinary),
+            entry => Assert.Equal(
+                GrimoireRuntimeAdmissionRoute.SharedEfInterceptor,
+                entry.RuntimeRoute));
+
+        Assert.All(
+            catalog.Where(entry => entry.AcquisitionKind
+                is GrimoireAcquisitionKind.ServingRawOrdinary),
+            entry => Assert.Equal(
+                GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+                entry.RuntimeRoute));
+
+        Assert.All(
+            catalog.Where(entry => entry.AcquisitionKind
+                is GrimoireAcquisitionKind.JournalMaintenance),
+            entry => Assert.Equal(
+                GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+                entry.RuntimeRoute));
+
+        Assert.All(
+            catalog.Where(entry => entry.AcquisitionKind
+                is GrimoireAcquisitionKind.StoppedHostRecovery),
+            entry => AssertExactProof(
+                entry,
+                GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
+                ExactNonServingProofKind.StoppedHostAuthority));
+
+        Assert.All(
+            catalog.Where(entry => entry.AcquisitionKind
+                is GrimoireAcquisitionKind.LegacyV3Maintenance),
+            entry => AssertExactProof(
+                entry,
+                GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+                ExactNonServingProofKind.LegacyV3ExclusiveLease,
+                248));
+
+        Assert.All(
+            catalog.Where(entry => entry.PathAuthority
+                is GrimoirePathAuthority.PreReadinessGrimoire),
+            entry => AssertExactProof(
+                entry,
+                GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+                ExactNonServingProofKind.PreReadinessHeldLock));
+
+        Assert.All(
+            catalog.Where(entry => entry.PathAuthority
+                is GrimoirePathAuthority.ShutdownGrimoire),
+            entry => AssertExactProof(
+                entry,
+                GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+                ExactNonServingProofKind.ShutdownHeldLock));
+
+        Assert.All(
+            catalog.Where(entry => entry.AcquisitionKind
+                is GrimoireAcquisitionKind.StagingOrArchive
+                && (entry.PathAuthority is GrimoirePathAuthority.ArchiveOrSnapshot
+                    or GrimoirePathAuthority.RestoreOrCompactionStaging)),
+            entry => AssertExactProof(
+                entry,
+                GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+                ExactNonServingProofKind.TypedStagingOrSnapshot));
+
+        Assert.All(
+            catalog.Where(entry => entry.PathAuthority
+                is GrimoirePathAuthority.DesignTimeScratch),
+            entry => AssertExactProof(
+                entry,
+                GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+                ExactNonServingProofKind.DesignTimeScratch));
+
+        Assert.All(
+            catalog.Where(entry => entry.PathAuthority
+                is GrimoirePathAuthority.NativeRuntimeValidation),
+            entry => AssertExactProof(
+                entry,
+                GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+                ExactNonServingProofKind.NativeRuntimeValidation));
+
+        GrimoireAcquisitionCatalogEntry[] negatives =
+        [
+            .. catalog.Where(entry => entry.AcquisitionKind
+                is GrimoireAcquisitionKind.NonGrimoireCandidate),
+        ];
+
+        Assert.All(
+            negatives,
+            entry => AssertExactProof(
+                entry,
+                GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+                ExactNonServingProofKind.NegativeNonDatabaseProof));
+
+        Assert.All(
+            negatives,
+            entry => Assert.Single(discoveries, identity => identity == entry.Identity));
+
+        AcquisitionIdentity[] markedRoutes =
+        [
+            .. discoveries.Where(identity => identity.ConstructKind
+                is AcquisitionConstructKind.MarkedRouteDeclaration
+                or AcquisitionConstructKind.MarkedRouteInvocation),
+        ];
+
+        Assert.NotEmpty(markedRoutes);
+
+        Assert.All(
+            markedRoutes,
+            identity => Assert.Single(catalog, entry => entry.Identity == identity));
+
+        Assert.All(
+            catalog,
+            entry => Assert.DoesNotContain(
+                new[] { '*' },
+                character => entry.Identity.RelativePath.Contains(character, StringComparison.Ordinal)
+                    || entry.Identity.EnclosingType.Contains(character, StringComparison.Ordinal)
+                    || entry.Identity.EnclosingMember.Contains(character, StringComparison.Ordinal)
+                    || entry.Identity.CalleeOrConstructedType.Contains(character, StringComparison.Ordinal)
+                    || entry.Identity.Fingerprint.Contains(character, StringComparison.Ordinal)));
+
+    }
+
     private static GrimoireAcquisitionCatalogEntry Entry(
         AcquisitionIdentity identity,
         GrimoirePathAuthority pathAuthority = GrimoirePathAuthority.LiveGrimoire,
@@ -607,6 +764,23 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 ? GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory
                 : GrimoireRuntimeAdmissionRoute.ExactNonServingProof),
             proof);
+
+    private static void AssertExactProof(
+        GrimoireAcquisitionCatalogEntry entry,
+        GrimoireRuntimeAdmissionRoute route,
+        ExactNonServingProofKind proofKind,
+        int removalIssue = 0)
+    {
+
+        Assert.Equal(route, entry.RuntimeRoute);
+
+        ExactNonServingProof proof = Assert.IsType<ExactNonServingProof>(entry.NonServingProof);
+
+        Assert.Equal(proofKind, proof.Kind);
+
+        Assert.Equal(removalIssue, proof.RemovalIssue);
+
+    }
 
     private static AcquisitionSource Source(string text) => new("Fixtures/Fixture.cs", text);
 

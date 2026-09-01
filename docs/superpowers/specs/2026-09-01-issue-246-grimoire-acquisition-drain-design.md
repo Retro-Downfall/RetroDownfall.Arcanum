@@ -1,7 +1,6 @@
 # Issue #246 Grimoire Acquisition and Physical-Drain Design
 
-**Status:** Approved in the design conversation; GitHub issue #246 remains open and in progress until
-delivery completes.
+**Status:** In progress — final child qualification pending.
 
 **Parent:** GitHub issue #239.
 
@@ -461,6 +460,12 @@ including those types recursively wrapped by `Task<T>`, `ValueTask<T>`, or `Resu
 method containing a direct provider open that returns an open-owning wrapper. The
 attribute is never inspected by production runtime code and creates no reflection or AOT dependency.
 
+Marker coverage applies only to concrete method or local-function acquisition implementations that
+have a body. Declaration-only interface, abstract, and partial contracts are excluded because they
+contain no executable acquisition route for the syntax scanner to resolve. This is the syntax-only
+resolution of the approved text's duplicate-name contradiction: it does not exempt an executable
+route, broad directory/type grouping, or a concrete call site from its exact catalog identity.
+
 Discovery identities use normalized file, syntax-derived enclosing type/member declaration, syntax
 kind, normalized callee or constructed-type text, arity, and a normalized construct fingerprint rather
 than line number so ordinary formatting does not invalidate the catalog. The scanner never claims
@@ -567,7 +572,9 @@ duplicated here because the approved umbrella assigns them to #257's unchanged f
 #246 failure may justify one diagnostic command but does not turn that diagnostic into parent-wide
 qualification evidence.
 
-After all applicable gates are green, the feature branch is merged into `grimoire-fixes`, the merged
-tree identity is verified, `grimoire-fixes` is pushed, the feature branch is deleted locally and, if it
-was ever pushed, remotely, and issue #246 plus its Feature Tracker item are moved to Done. Issue #239
-remains open and in progress. Issue #242 remains unchanged.
+Task 12 owns final child review and the Release build gate. Until those gates complete, #246 remains
+**in progress — final child qualification pending** and no delivered/Done claim, issue closure, project
+transition, merge, push, or branch deletion follows from this implementation task. #247 retains V4/V2
+launch binding and terminal database reconciliation; #248 retains typed Covenant handler activation,
+compaction and sidecar recovery, effect publication, and V3-adapter removal; and #257 retains the
+final umbrella qualification. Issue #239 remains open and in progress. Issue #242 remains unchanged.

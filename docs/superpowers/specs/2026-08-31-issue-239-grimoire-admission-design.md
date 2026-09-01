@@ -1,6 +1,7 @@
 # Issue #239: Host-wide Grimoire Admission and Offline Transitions
 
-**Status:** Approved umbrella; #243/#244 integrated; #245 current delivered child; #246–#257 pending.
+**Status:** Approved umbrella; #243/#244 integrated; #245 delivered; #246 in progress — final child
+qualification pending; #247–#257 pending.
 
 **Branch:** `codex/issue-239-grimoire-admission`, cut from `origin/main` at
 `988a469c765346132e5a2ea1bf3906519f6bdf00`.
@@ -772,6 +773,21 @@ inference. There are no current installed users whose in-flight checkpoint rows 
 Ordinary non-Covenant long-running-operation checkpoints are unchanged.
 
 ## 12. Sub-issue and branch plan
+
+### 12.0 Current #246 boundary
+
+#246 now supplies the singleton-composed serving EF interceptor and physical drain, the ordinary
+raw-connection factory, stage-two open-ticket/handle/pool closure ordering, capability-and-lane-bound
+journal maintenance acquisition, exact stopped-host installation-reset opens, and the bidirectional
+source inventory. Its temporary V3 adapter remains per call site, requires the existing #124 exclusive
+lease, and identifies #248 as its removal owner. #246 is still **in progress — final child
+qualification pending**; this boundary does not qualify the parent or activate a journal handler.
+
+#247 remains responsible for V4/V2 immutable launch binding and terminal database reconciliation.
+#248 remains responsible for the typed Covenant reset/factory effect handler, canonical target binding,
+compaction and sidecar recovery, factory-row preservation, runtime-authority publication, and removal
+of the exact V3 adapter entries. #257 alone owns the final full-host, cross-platform, Native AOT, and
+umbrella qualification on the reviewed final SHA.
 
 Issue #239 remains the umbrella and closes only after every child is integrated and the final branch
 is delivered. Create these separately reviewable children in dependency order:

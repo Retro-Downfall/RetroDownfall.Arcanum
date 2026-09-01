@@ -383,6 +383,16 @@ internal static class GrimoireConnectionAcquisitionScanner
         foreach (GrimoireAcquisitionCatalogEntry entry in catalog)
         {
 
+            if (HasBroadIdentity(entry.Identity))
+            {
+
+                failures.Add(new(
+                    InventoryFailureCode.InvalidClassification,
+                    entry.Identity,
+                    "A catalog identity must name one exact authored construct, not a wildcard."));
+
+            }
+
             bool canonicalLivePath = entry.Identity.Fingerprint.Contains(
                 "ArcanumPaths.GrimoireDatabaseFile",
                 StringComparison.Ordinal);
@@ -3001,6 +3011,13 @@ internal static class GrimoireConnectionAcquisitionScanner
 
     private static bool IsMarked(LocalFunctionStatementSyntax localFunction) =>
         localFunction.AttributeLists.SelectMany(static list => list.Attributes).Any(IsRouteAttribute);
+
+    private static bool HasBroadIdentity(AcquisitionIdentity identity) =>
+        identity.RelativePath.Contains('*', StringComparison.Ordinal)
+        || identity.EnclosingType.Contains('*', StringComparison.Ordinal)
+        || identity.EnclosingMember.Contains('*', StringComparison.Ordinal)
+        || identity.CalleeOrConstructedType.Contains('*', StringComparison.Ordinal)
+        || identity.Fingerprint.Contains('*', StringComparison.Ordinal);
 
     private static bool IsRouteAttribute(AttributeSyntax attribute) =>
         TerminalName(attribute.Name) == "GrimoireConnectionAcquisitionRoute";
