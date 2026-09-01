@@ -1,5 +1,7 @@
 using System.Globalization;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Commands;
@@ -9,6 +11,8 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Cli.UX;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -27,6 +31,7 @@ public sealed class SessionCommands(
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
     WatchCommands watchCommands,
+    IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -66,7 +71,7 @@ public sealed class SessionCommands(
         if (!TryValue(result, out SessionQueryResult? page))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -139,7 +144,7 @@ public sealed class SessionCommands(
             || !TryValue(attachmentsResult, out SessionAttachmentDto[]? attachments))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(detailResult.IsFailure ? detailResult.Error : attachmentsResult.Error);
 
         }
 
@@ -221,7 +226,7 @@ public sealed class SessionCommands(
         if (!TryValue(result, out EntryDto[]? entries))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -274,7 +279,7 @@ public sealed class SessionCommands(
         if (!TryValue(result, out SessionDetailDto? fork))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -329,7 +334,7 @@ public sealed class SessionCommands(
         if (!TryValue(result, out SessionDetailDto? renamed))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -373,7 +378,7 @@ public sealed class SessionCommands(
 
             WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -429,7 +434,7 @@ public sealed class SessionCommands(
         if (!TryValue(result, out SessionExportResult? export))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -471,7 +476,7 @@ public sealed class SessionCommands(
 
             WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -502,7 +507,7 @@ public sealed class SessionCommands(
         if (!TryValue(result, out SessionAttachmentDto[]? attachments))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -598,7 +603,7 @@ public sealed class SessionCommands(
         if (!TryValue(result, out CompactResult? compact))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -656,7 +661,7 @@ public sealed class SessionCommands(
         if (!TryValue(result, out SemanticSearchResult? searchResult))
         {
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -766,7 +771,7 @@ public sealed class SessionCommands(
 
             WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -930,7 +935,8 @@ public sealed class SessionCommands(
     }
 
     private void WriteError(Error error) =>
-        CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(error));
+        CliErrorOutput.WriteMarkupLine(
+            themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
 
     private void WriteArgumentError(string message) =>
         CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(message)));

@@ -12,6 +12,10 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Hosting;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -62,6 +66,27 @@ public sealed class SessionManagementCommandTests
             Assert.Contains(command, result.Output, StringComparison.Ordinal);
 
         }
+
+    }
+
+    /// <summary>
+    /// W10-3: an unreachable host is a network failure, not a generic one — scripts need exit 3 to
+    /// tell "arcanum serve is down" apart from a real domain error, and the message must name the
+    /// address the client actually tried so an operator on a non-default <c>Arcanum:Host</c> can act.
+    /// </summary>
+    [Fact]
+    public void Session_list_reports_a_network_failure_and_names_the_configured_base_address()
+    {
+
+        RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
+
+        CliTestResult result = RunCommand(handler, ["session", "list"]);
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings());
+
+        Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
 
     }
 
