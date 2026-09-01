@@ -281,7 +281,10 @@ internal static class BackupRestoreStagingIndex
 
         }
 
-        File.Move(temporaryPath, path, overwrite: true);
+        // Forced, not merely renamed: this file is the only pointer back to a staging root that does
+        // not sit beside the live installation, and a rename left in the page cache loses the trail to
+        // a decrypted tree rather than only a label.
+        BackupRestoreDurablePublication.Publish(temporaryPath, path);
 
         SecureFilePermissions.ApplyOwnerOnlyFile(path);
 

@@ -2,6 +2,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 /// <summary>
@@ -91,6 +93,42 @@ public sealed class BackupRestoreStagingIndexTests : IDisposable
             inspected.Value);
 
         Assert.Contains(newest, record.StagingRoots);
+
+    }
+
+    /// <summary>
+    /// Both restore control files are published through the durability barrier rather than through a
+    /// bare rename.
+    /// </summary>
+    /// <remarks>
+    /// An inventory over the two writers rather than a behavioural case, and the limit is worth
+    /// stating plainly: what this pins is the call, not the durability. Proving the durability needs
+    /// the machine to lose power between the rename and the directory entry reaching the platter,
+    /// which no test in this suite can arrange — so the next best thing is that neither writer can
+    /// quietly go back to a rename nobody forced.
+    ///
+    /// <para>Both files matter, not just the journal. The journal loses a phase label, which recovery
+    /// reconciles against filesystem evidence; the staging index loses the only pointer back to a
+    /// decrypted tree that does not sit beside the live installation, which nothing sweeps.</para>
+    /// </remarks>
+    [Theory]
+    [InlineData("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournal.cs")]
+    [InlineData("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreStagingIndex.cs")]
+    public void Restore_control_files_are_published_through_the_durability_barrier(
+        string repositoryRelativePath)
+    {
+
+        ProductionSource source = Assert.Single(
+            ProductionSourceInventory.Sources(),
+            candidate => candidate.IsExactOwner(repositoryRelativePath));
+
+        Assert.True(
+            source.Names("BackupRestoreDurablePublication.Publish("),
+            $"{repositoryRelativePath} publishes a restore control file without forcing the rename.");
+
+        Assert.False(
+            source.Names("File.Move("),
+            $"{repositoryRelativePath} still renames a control file into place unforced.");
 
     }
 

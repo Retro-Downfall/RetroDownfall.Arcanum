@@ -316,7 +316,10 @@ internal static class BackupRestoreJournal
 
         }
 
-        File.Move(temporaryPath, path, overwrite: true);
+        // The contents are forced above and the rename is forced here. Without the second half the
+        // phase this journal just advanced to lives only in the page cache, so a power loss can leave
+        // a journal naming the phase before the one the filesystem has already acted on.
+        BackupRestoreDurablePublication.Publish(temporaryPath, path);
 
         return record;
 
