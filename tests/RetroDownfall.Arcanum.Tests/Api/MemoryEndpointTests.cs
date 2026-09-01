@@ -225,21 +225,25 @@ public sealed class MemoryEndpointTests
     }
 
     /// <summary>
-    /// A Session's bound-attachment count reports the attachment the store actually wrote.
+    /// A Session's status counts report what its own stores actually hold, and its explain surface
+    /// agrees with the counts it derives from.
     /// </summary>
     /// <remarks>
     /// This endpoint binds one Session identity across six predicates, and the columns behind them do
-    /// not agree on one spelling: <c>SessionAttachments.SessionId</c> holds the canonical form while
-    /// <c>session_attachment_chunks.SessionId</c>, <c>saga_memories.SessionId</c> and
-    /// <c>tapestry_generations.ScopeId</c> deliberately hold the minority one. A single parameter served
-    /// both groups, so once the attachment family moved this count compared a lowercase value against a
-    /// canonical column and reported zero - a store an operator can see filling up, reported empty, with
-    /// no error anywhere.
+    /// not agree on one spelling: <c>SessionAttachments.SessionId</c>, <c>Entries.SessionId</c> and
+    /// <c>Sessions.Id</c> hold the canonical form while <c>session_attachment_chunks.SessionId</c>,
+    /// <c>saga_memories.SessionId</c> and <c>tapestry_generations.ScopeId</c> deliberately hold the
+    /// minority one. A single parameter served both groups, so a predicate bound to the canonical group
+    /// compared a lowercase value against a canonical column and reported zero - a store an operator can
+    /// see filling up, reported empty, with no error anywhere. <c>/memory/explain</c> derives its
+    /// eligibility from these same counts, so it told the operator a store that was not empty was not
+    /// eligible for a turn at all.
     ///
     /// <para>The attachment is written through <c>SessionAttachmentStore.PersistNewAsync</c> rather than
     /// seeded, because a seeded row can only ever agree with whatever the seed chose and that is how
-    /// this defect family has stayed alive. The assertion is on the number, since the label is present
-    /// either way.</para>
+    /// this defect family has stayed alive. The Session and Entry are seeded through EF, which renders
+    /// the same canonical form the production write paths do. The assertions are on the numbers and on
+    /// explain's eligibility flags, since the labels are present either way.</para>
     /// </remarks>
     [SkippableFact]
 
@@ -268,13 +272,36 @@ public sealed class MemoryEndpointTests
 
                 UpdatedAt = DateTimeOffset.UtcNow,
 
+                Summary = "campaign summary text",
+
             };
 
             db.Sessions.Add(session);
 
-            _ = await db.SaveChangesAsync();
-
             sessionId = session.Id;
+
+            db.Entries.Add(new Entry
+            {
+
+                Id = Guid.NewGuid(),
+
+                SessionId = sessionId,
+
+                Role = MessageRole.User,
+
+                Content = "pinned entry content",
+
+                ModelUsed = "gpt-oracle",
+
+                CreatedAt = DateTimeOffset.UtcNow,
+
+                Sequence = 1,
+
+                IsPinned = true,
+
+            });
+
+            _ = await db.SaveChangesAsync();
 
             ISessionAttachmentStore attachments =
                 scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
@@ -304,13 +331,41 @@ public sealed class MemoryEndpointTests
 
         Assert.NotNull(envelope?.Data);
 
+        MemoryStoreStatusDto entriesStore = Assert.Single(
+            envelope.Data.Stores,
+            static store => string.Equals(store.Name, "Session Entries", StringComparison.Ordinal));
+
+        Assert.Equal(1, entriesStore.Count);
+
         MemoryStoreStatusDto attachmentStore = Assert.Single(
             envelope.Data.Stores,
             static store => string.Equals(store.Name, "Attachments", StringComparison.Ordinal));
 
         Assert.Equal(1, attachmentStore.Count);
 
+        HttpResponseMessage explainResponse = await client.GetAsync(
+            "/api/memory/explain/" + sessionId.ToString("D"));
+
+        Assert.Equal(HttpStatusCode.OK, explainResponse.StatusCode);
+
+        ApiResponse<MemoryExplainDto>? explainEnvelope = await ReadAsync(
+            explainResponse,
+            ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        Assert.NotNull(explainEnvelope?.Data);
+
+        Assert.True(EligibleSource(explainEnvelope.Data, "Session Entries"));
+
+        Assert.True(EligibleSource(explainEnvelope.Data, "Pinned Entries"));
+
+        Assert.True(EligibleSource(explainEnvelope.Data, "Campaign Summary"));
+
     }
+
+    private static bool EligibleSource(MemoryExplainDto explain, string name) =>
+        Assert.Single(
+            explain.Sources,
+            source => string.Equals(source.Name, name, StringComparison.Ordinal)).Eligible;
 
     [SkippableFact]
 
