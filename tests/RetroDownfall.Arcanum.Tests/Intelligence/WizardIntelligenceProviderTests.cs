@@ -43,6 +43,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Mcp;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -1402,6 +1403,142 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal(
             Enumerable.Range(0, frameCount).Select(static i => $"human-frame-{i}").ToArray(),
             humanFrames);
+
+    }
+
+    /// <summary>
+    /// MCP elicitation end to end. A server raises <c>elicitation/create</c> while one of its tools is
+    /// running. The request arrives on the SDK client's receive loop, which started at connect time on
+    /// an execution context that never sees the per-tool-call ambient, so the connection has to learn
+    /// the attended turn's emitter from the tool call itself or every elicitation declines.
+    /// </summary>
+    [Fact]
+    public async Task StreamingMcpToolCall_ElicitationReachesTheOperatorAndTheAnswerReturnsToTheServer()
+    {
+
+        await using FakeElicitingMcpServer server = new();
+
+        HumanPromptRegistry humanPrompts = new();
+
+        await using SdkMcpClientWrapper client = await CreateElicitationCapableClientAsync(server, humanPrompts);
+
+        McpBridgeTool tool = new(
+            FakeElicitingMcpServer.ToolName,
+            "asks the operator a question through MCP elicitation",
+            JsonDocument.Parse("""{"type":"object","properties":{}}""").RootElement,
+            client,
+            toolOutputCapBytes: 65536);
+
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(tool);
+
+        chat.EnqueueStreamUpdates(
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new FunctionCallContent("call-1", FakeElicitingMcpServer.ToolName, new Dictionary<string, object?>())]));
+
+        chat.EnqueueStreamTokens("done");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp, humanPrompts: humanPrompts);
+
+        using CancellationTokenSource bound = new(TimeSpan.FromSeconds(60));
+
+        List<IntelligenceEvent> events = [];
+
+        await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(
+            BaseRequest() with { Prompt = "ask the operator", SkipSpellRouting = true },
+            InvocationContexts.AttendedSession(),
+            bound.Token))
+        {
+
+            events.Add(evt);
+
+            if (evt is { Type: IntelligenceEventType.ToolCall, ToolCall.Name: "ask_human" })
+            {
+
+                string promptId = JsonDocument
+                    .Parse(evt.ToolCall.ArgumentsJson)
+                    .RootElement
+                    .GetProperty("promptId")
+                    .GetString()!;
+
+                Assert.True(humanPrompts.TrySubmitResponse(promptId, "42"));
+
+            }
+
+        }
+
+        Assert.Equal(new[] { "accept:42" }, server.ElicitationOutcomes);
+
+        IntelligenceEvent toolResult = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.ToolResult
+                && (e.Data?.Contains("elicitation:", StringComparison.Ordinal) ?? false));
+
+        Assert.Contains("elicitation:accept:42", toolResult.Data, StringComparison.Ordinal);
+
+        Assert.Contains(
+            events,
+            static e => e.Type == IntelligenceEventType.ToolResult
+                && e.Message == "ask_human"
+                && e.Data == "42");
+
+    }
+
+    /// <summary>
+    /// The live emitter is one instance per turn, not one per tool call: the MCP connection's
+    /// elicitation sink tells turns apart by emitter identity, so every tool call of a turn has to
+    /// present the same instance or two calls from one turn would read as two turns.
+    /// </summary>
+    [Fact]
+    public async Task StreamingToolCalls_OfOneTurn_ObserveTheSameHumanPromptEmitterInstance()
+    {
+
+        const string toolName = "capture_ambient";
+
+        List<IHumanPromptLiveEmitter?> captured = [];
+
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(
+            AIFunctionFactory.Create(
+                () =>
+                {
+                    captured.Add(HumanPromptLiveEmitterAmbient.Current);
+
+                    return "captured";
+                },
+                toolName,
+                "records the ambient emitter instance"));
+
+        chat.EnqueueStreamUpdates(
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [
+                    new FunctionCallContent("call-1", toolName, new Dictionary<string, object?>()),
+                    new FunctionCallContent("call-2", toolName, new Dictionary<string, object?>()),
+                ]));
+
+        chat.EnqueueStreamTokens("done");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "capture twice", SkipSpellRouting = true });
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        Assert.Equal(2, captured.Count);
+
+        Assert.NotNull(captured[0]);
+
+        Assert.Same(captured[0], captured[1]);
 
     }
 
@@ -8710,7 +8847,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
         ISessionAttachmentStore? sessionAttachmentStore = null,
         FixtureOrdinaryConnectionFactory? ordinaryConnections = null,
-        IModelTokenEstimator? modelTokenEstimator = null)
+        IModelTokenEstimator? modelTokenEstimator = null,
+        IHumanPromptRegistry? humanPrompts = null)
     {
         settings ??= DefaultSettings();
 
@@ -8809,7 +8947,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
             budgetMonitor,
             sessionAttachmentStore,
-            new HumanPromptRegistry(),
+            humanPrompts ?? new HumanPromptRegistry(),
             healthTracker: null,
             guardrailsPipeline: guardrailsPipeline,
             turnRunWriter: turnRunWriter,
@@ -9234,6 +9372,37 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             },
             name,
             "records ambient nullness and emits several live human-channel frames");
+
+    /// <summary>
+    /// Builds an SDK client over <paramref name="server"/> with the elicitation wiring
+    /// <see cref="McpConnectionManager"/> gives every connection, so the turn exercises the real bridge.
+    /// </summary>
+    private static async Task<SdkMcpClientWrapper> CreateElicitationCapableClientAsync(
+        FakeElicitingMcpServer server,
+        IHumanPromptRegistry humanPrompts)
+    {
+
+        McpElicitationBridge bridge = new(humanPrompts);
+
+        McpElicitationSink sink = new();
+
+        SdkMcpClientWrapper client = new(
+            server.CreateClientTransport(),
+            new ModelContextProtocol.Client.McpClientOptions
+            {
+                ClientInfo = new ModelContextProtocol.Protocol.Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+                Handlers = bridge.CreateClientHandlers(sink),
+            },
+            initializationTimeout: TimeSpan.FromSeconds(10),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: sink);
+
+        await client.InitializeAsync();
+
+        return client;
+
+    }
 
     private AIFunction CreateProductionApplyPatchTool(
         ArcanumSettings settings,

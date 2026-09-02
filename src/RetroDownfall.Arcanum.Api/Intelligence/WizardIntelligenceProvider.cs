@@ -1596,6 +1596,8 @@ public sealed partial class WizardIntelligenceProvider(
 
         Channel<IntelligenceEvent>? liveHumanPromptChannel = null;
 
+        ChannelHumanPromptLiveEmitter? liveHumanPromptEmitter = null;
+
         TurnAccountingHandle? streamAccounting = null;
 
         InferenceRunStatus streamAccountingStatus = InferenceRunStatus.Abandoned;
@@ -2431,14 +2433,20 @@ public sealed partial class WizardIntelligenceProvider(
 
         // Per-turn live HITL emitter — created before tool-set assembly so HumanInteractionAvailable
         // can strip ask_human when no live response channel exists (buffered path never creates this).
-        // Also published via AsyncLocal so the singleton MCP ElicitationHandler can emit ask_human-shaped
-        // frames on this same channel during nested tool calls.
+        // Also published via AsyncLocal for the tool-call site: in-process tools read it directly, and
+        // SdkMcpClientWrapper.CallToolAsync hands it to the connection's McpElicitationSink so the MCP
+        // ElicitationHandler, which runs on the SDK receive loop where the ambient is never visible,
+        // can emit ask_human-shaped frames on this same channel during nested tool calls.
         Func<IntelligenceEvent, CancellationToken, Task>? liveHumanPromptEmit = null;
 
         // Buffered turns never have a live HITL channel — ask_human would deadlock until timeout.
         if (streaming && !request.UnattendedMode)
         {
             liveHumanPromptChannel = Channel.CreateUnbounded<IntelligenceEvent>();
+
+            // One emitter instance per turn: the MCP connection's elicitation sink tells turns apart
+            // by emitter identity, so every tool call of this turn must present the same instance.
+            liveHumanPromptEmitter = new ChannelHumanPromptLiveEmitter(liveHumanPromptChannel);
 
             liveHumanPromptEmit = async (evt, ct) =>
             {
@@ -3581,10 +3589,9 @@ public sealed partial class WizardIntelligenceProvider(
                                 // whole attempt) because each preceding ToolCall/ToolResult/ward
                                 // frame's own yield return already discarded whatever the previous
                                 // call established.
-                                if (liveHumanPromptChannel is { } humanPromptChannel)
+                                if (liveHumanPromptEmitter is { } humanPromptEmitter)
                                 {
-                                    HumanPromptLiveEmitterAmbient.Current =
-                                        new ChannelHumanPromptLiveEmitter(humanPromptChannel);
+                                    HumanPromptLiveEmitterAmbient.Current = humanPromptEmitter;
                                 }
 
                                 try
