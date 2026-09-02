@@ -395,6 +395,22 @@ public sealed class SpellCommandTests
 
     }
 
+    [Fact]
+    public void Spell_search_rejects_an_undocumented_source_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["spell", "search", "--source", "bogus"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--source", result.Error, StringComparison.Ordinal);
+
+    }
+
     /// <summary>
     /// The body preview is capped at 800 characters. An astral-plane character straddling that
     /// boundary must be dropped whole rather than halved into an unpaired surrogate.
