@@ -502,6 +502,35 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Advance_propagates_an_unavailable_key_during_payload_verification()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(setup);
+
+        PrefixThrowingCredentialStore keyUnavailable = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailable,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+    }
+
+    [Fact]
     public async Task Advance_requires_external_installation_identity_to_still_match()
     {
 
@@ -1368,6 +1397,50 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
         Assert.False(File.Exists(location.PreviousPath));
 
         Assert.False(File.Exists(location.RetiringPath));
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_during_predecessor_authentication()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication first = await BeginAsync(setup);
+
+        GrimoireOfflineTransitionJournalPublication second = Value(await setup.AdvanceAsync(
+            _lock,
+            first,
+            Bytes("second"),
+            CancellationToken.None));
+
+        byte[] predecessorBytes = Value(
+            GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(first.Envelope));
+
+        WriteOwnerOnly(second.Location.PreviousPath, predecessorBytes);
+
+        // The canonical file (second, revision 2) already matches the anchor exactly, so
+        // RecoverAsync reads the key twice before reaching IsExactPredecessor's own Open call:
+        // once for the early explicit key-presence check, once to authenticate the canonical
+        // file. The third matching read is IsExactPredecessor's -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnThirdRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 3);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnThirdRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
 
     }
 
@@ -2371,6 +2444,52 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
             _armed && account.StartsWith(throwingAccountPrefix, StringComparison.Ordinal)
                 ? throw new IOException("The credential store is unavailable for this account.")
                 : inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            inner.Delete(service, account);
+
+    }
+
+    /// <summary>
+    /// Delegates every read to <paramref name="inner"/> except for one account prefix, which
+    /// throws only on its <paramref name="throwOnOccurrence"/>-th matching read. Lets a fixed
+    /// number of legitimate earlier reads of the same account succeed before the read under
+    /// test is made to fail, when the exact occurrence to fail is known but no diagnostic step
+    /// exists to arm on.
+    /// </summary>
+    private sealed class CountedPrefixThrowingCredentialStore(
+        IOsCredentialStore inner,
+        string throwingAccountPrefix,
+        int throwOnOccurrence) : IOsCredentialStore
+    {
+
+        private int _matchingCalls;
+
+        public bool IsAvailable => inner.IsAvailable;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+
+            if (account.StartsWith(throwingAccountPrefix, StringComparison.Ordinal))
+            {
+
+                _matchingCalls++;
+
+                if (_matchingCalls == throwOnOccurrence)
+                {
+
+                    throw new IOException("The credential store is unavailable for this account.");
+
+                }
+
+            }
+
+            return inner.TryGet(service, account);
+
+        }
 
         public OsCredentialStoreResult Set(string service, string account, string secret) =>
             inner.Set(service, account, secret);
