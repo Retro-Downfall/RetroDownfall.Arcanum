@@ -87,11 +87,29 @@ public sealed class ArcanumApiClientConfigurationTests
         Assert.Empty(events);
     }
 
+    [Fact]
+    public async Task GetSseAsync_non2xxResponse_ThrowsInsteadOfYieldingNothing()
+    {
+        ArcanumApiClient client = CreateClient(handler: new StatusCodeHandler(HttpStatusCode.Unauthorized));
+
+        async Task DrainAsync()
+        {
+            await foreach (SseEvent sseEvent in client.GetSseAsync("/api/sessions/stream", CancellationToken.None))
+            {
+                _ = sseEvent;
+            }
+        }
+
+        HttpRequestException ex = await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
+        Assert.Equal(HttpStatusCode.Unauthorized, ex.StatusCode);
+    }
+
     private static ArcanumApiClient CreateClient(
         string baseUrl = "http://localhost:5001",
-        string apiKey = "test-key") =>
+        string apiKey = "test-key",
+        HttpMessageHandler? handler = null) =>
         new(
-            new StaticHttpClientFactory(new EmptyOkHandler()),
+            new StaticHttpClientFactory(handler ?? new EmptyOkHandler()),
             new StaticTheForgeSettingsMonitor(new TheForgeSettings
             {
                 BaseUrl = baseUrl,
@@ -124,6 +142,17 @@ public sealed class ArcanumApiClientConfigurationTests
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(string.Empty),
+            });
+    }
+
+    private sealed class StatusCodeHandler(HttpStatusCode statusCode) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(statusCode)
             {
                 Content = new StringContent(string.Empty),
             });

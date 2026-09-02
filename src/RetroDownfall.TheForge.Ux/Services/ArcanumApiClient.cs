@@ -232,7 +232,10 @@ public sealed class ArcanumApiClient
 
                 _logger.LogWarning("NDJSON stream POST {Path} returned {StatusCode}.", path, (int)response.StatusCode);
 
-                yield break;
+                throw new HttpRequestException(
+                    $"NDJSON stream POST {path} returned {(int)response.StatusCode}.",
+                    inner: null,
+                    response.StatusCode);
 
             }
 
@@ -358,7 +361,10 @@ public sealed class ArcanumApiClient
 
                 _logger.LogWarning("SSE GET {Path} returned {StatusCode}.", path, (int)response.StatusCode);
 
-                yield break;
+                throw new HttpRequestException(
+                    $"SSE GET {path} returned {(int)response.StatusCode}.",
+                    inner: null,
+                    response.StatusCode);
 
             }
 

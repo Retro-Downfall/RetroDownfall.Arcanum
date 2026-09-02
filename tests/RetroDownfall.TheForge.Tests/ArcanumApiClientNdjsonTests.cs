@@ -196,6 +196,29 @@ public sealed class ArcanumApiClientNdjsonTests
             static message => message.Contains("maximum line size", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task PostNdjsonStreamAsync_NonSuccessStatusCode_ThrowsInsteadOfYieldingNothing()
+    {
+        ListLogger<ArcanumApiClient> logger = new();
+        ArcanumApiClient client = CreateClient(new StatusCodeHandler(HttpStatusCode.Unauthorized), logger);
+
+        async Task DrainAsync()
+        {
+            await foreach (IntelligenceEvent evt in client.PostNdjsonStreamAsync(
+                               "/api/spells/test/execute-stream",
+                               new PingRequest("hello"),
+                               TheForgeJsonContext.Default.PingRequest,
+                               TheForgeJsonContext.Default.IntelligenceEvent,
+                               CancellationToken.None))
+            {
+                _ = evt;
+            }
+        }
+
+        HttpRequestException ex = await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
+        Assert.Equal(HttpStatusCode.Unauthorized, ex.StatusCode);
+    }
+
     private static ArcanumApiClient CreateClient(
         string ndjson,
         ILogger<ArcanumApiClient> logger) =>
@@ -253,6 +276,17 @@ public sealed class ArcanumApiClientNdjsonTests
                 new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-ndjson");
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class StatusCodeHandler(HttpStatusCode statusCode) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent(string.Empty),
+            });
     }
 
     private sealed class FragmentingResponseStream(byte[] payload, int maxChunkBytes) : Stream
