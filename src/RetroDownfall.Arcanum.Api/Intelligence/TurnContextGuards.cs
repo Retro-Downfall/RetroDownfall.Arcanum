@@ -132,7 +132,7 @@ internal static class TurnContextGuards
 
         int guard = messages.Count;
 
-        // W1-5: track the running total and subtract each removed run's own marginal
+        // Track the running total and subtract each removed run's own marginal
         // contribution instead of re-estimating the whole, still-largely-untrimmed transcript on
         // every iteration — an N-pair trim then costs N small estimates rather than N
         // full-transcript ones, so it no longer scales with the size of the conversation being

@@ -105,7 +105,7 @@ public static class IdempotencyEndpointFilters
 
         request.EnableBuffering();
 
-        // W2-2: hashed incrementally instead of materialized (no MemoryStream, no ToArray()), so a
+        // Hashed incrementally instead of materialized (no MemoryStream, no ToArray()), so a
         // large keyed request (up to the 16 MiB route ceiling) retains only a 32-byte digest rather
         // than 2-3x its own size in managed memory for the whole handler execution. The digest is a
         // fingerprint-equivalent substitute for the raw bytes — collision-resistant, so folding it
@@ -654,7 +654,7 @@ public static class IdempotencyEndpointFilters
             // (validation refusal) still caches, since resending the same request would fail the same
             // way for the same reason.
             //
-            // Also gated on content type when there is a body to worry about (W2-9): the claim is
+            // Also gated on content type when there is a body to worry about: the claim is
             // stored as a UTF-8 string and replayed by re-encoding it, so any non-UTF-8 byte would
             // silently become U+FFFD on replay. Every route this filter attaches to today emits JSON,
             // NDJSON, or SSE — all guaranteed UTF-8 — so this cannot change behavior for a current
@@ -758,7 +758,7 @@ public static class IdempotencyEndpointFilters
     /// UTF-8-safe type outside the three — <c>text/plain; charset=utf-8</c>, for example — is
     /// refused and the request re-executes rather than replaying, even though nothing about it would
     /// round-trip lossy. That is deliberate: production never emits that shape today, and widening
-    /// the check to "anything UTF-8" would reopen the exact unbounded surface W2-9 narrowed this to
+    /// the check to "anything UTF-8" would reopen the exact unbounded surface this predicate narrows to
     /// close, admitting a future non-JSON/NDJSON/SSE route's response the first time someone attaches
     /// this filter to one, rather than requiring it to be added here explicitly.
     /// </summary>

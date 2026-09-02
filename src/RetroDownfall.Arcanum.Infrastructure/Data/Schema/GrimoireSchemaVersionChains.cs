@@ -111,7 +111,7 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 5)] =
                 "35B3B5AD90B8BE3571516C88CB0FDF4F8E61712F86F8D1134D07D92B3F980AC1",
 
-            // Read out of the Core head tree on 2026-09-02, before any object file was edited for
+            // Read out of the Core head tree before any object file was edited for
             // version 6 and before the tier's published computation moved to the normalized one. It is
             // therefore a raw value, like every pin above it and unlike the head fingerprint Core
             // publishes from version 6 onward, and that is not an inconsistency: this is the number a

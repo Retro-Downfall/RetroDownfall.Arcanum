@@ -184,7 +184,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     }
 
     /// <summary>
-    /// Wraps the exclusive acquisition in <see cref="SqliteBusyRetry"/> (W3a-4), the same bounded
+    /// Wraps the exclusive acquisition in <see cref="SqliteBusyRetry"/>, the same bounded
     /// backoff <see cref="CovenantDisclosureJournal"/> already gives its own <c>BEGIN IMMEDIATE</c>.
     /// A drain proves every handle this process knows about has closed, but that is not the same
     /// proof as an uncontested lock - a pooled Microsoft.Data.Sqlite handle or a lingering -wal/-shm

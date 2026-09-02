@@ -543,7 +543,7 @@ public static class ApiBootstrapper
     {
         if (IsRateLimitEnabled(app.Configuration))
         {
-            // W2-10: the limiter's partition key is Connection.RemoteIpAddress
+            // The limiter's partition key is Connection.RemoteIpAddress
             // (ResolveRateLimitPartitionKey below), and ListenAny — the only bind that turns this
             // limiter on — is documented above as the "behind a reverse proxy that terminates TLS"
             // topology. Without this, every caller behind that proxy collapses into the proxy's own
@@ -1089,7 +1089,7 @@ public static class ApiBootstrapper
                         // Scalar's rendered page ships one inline, src-less <script type="module">
                         // bootstrap alongside its same-origin embedded bundle — script-src 'self' alone
                         // satisfies the bundle but blocks the inline script, so the page renders an
-                        // empty <div id="app"> (W2-11). WithNonce() below makes Scalar emit a fresh
+                        // empty <div id="app">. WithNonce() below makes Scalar emit a fresh
                         // per-request nonce on every script tag, including the inline one, and stash it
                         // on HttpContext.Items under NonceHttpContextItemKey for exactly this middleware
                         // to read, so the CSP's nonce source matches what the page actually emits.

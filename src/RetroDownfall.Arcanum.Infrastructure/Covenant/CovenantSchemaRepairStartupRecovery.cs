@@ -433,7 +433,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
     /// <paramref name="refusedInvariant"/> is the message of the ArgumentException the durable owner
     /// or its scope classification refused with, when one is available - an operator refused at
     /// startup otherwise sees only "could not be reconstructed safely" with no way to tell a malformed
-    /// owner apart from a scope-classification disagreement (W8-9).
+    /// owner apart from a scope-classification disagreement.
     /// </summary>
     private static Result<CovenantSchemaRepairStartupRecoveryPreparation> PreparationFailure(
         string? refusedInvariant = null) =>

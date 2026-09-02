@@ -97,7 +97,7 @@ internal static class InferenceExecuteWriter
 
                 if (ev.Type == IntelligenceEventType.Error)
                 {
-                    // Fix round 1, item 1: a provider that yields IntelligenceEventType.Error as an
+                    // A provider that yields IntelligenceEventType.Error as an
                     // ordinary element of its own event stream — not by throwing — completes this
                     // await foreach normally, same as a genuine success. Status stays 200 (headers
                     // already sent) and the body is non-empty, so without this, PersistClaimAsync's
@@ -162,7 +162,7 @@ internal static class InferenceExecuteWriter
                 return;
             }
 
-            // Fix round 1, item 1: not calling MarkIdempotencyTerminal here (W2-1) is not by itself
+            // Not calling MarkIdempotencyTerminal here is not by itself
             // enough — PersistClaimAsync's own buffered/aborted fallback treats any non-empty,
             // non-aborted body as terminal independent of the marker, and a client that is still
             // connected here (httpContext.RequestAborted is false in every branch that reaches this
@@ -216,7 +216,7 @@ internal static class InferenceExecuteWriter
                 IntelligenceEventType.Error,
                 PublicStreamFailureMessage);
 
-            // Fix round 1, item 1: see the matching comment in the OperationCanceledException arm
+            // See the matching comment in the OperationCanceledException arm
             // above — a client still connected here (the common case for a provider-side fault)
             // left PersistClaimAsync's own buffered/aborted fallback free to cache this failure
             // frame regardless of whether the terminal marker was set, so this has to say so

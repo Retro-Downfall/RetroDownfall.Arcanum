@@ -10,7 +10,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 
 /// <summary>
 /// Shared classification from a failed <see cref="Result"/>'s <see cref="Error"/> to the CLI exit-code
-/// contract (W10-3). Only five command sites classified a <c>Connection.*</c> failure as
+/// contract. Only five command sites classified a <c>Connection.*</c> failure as
 /// <see cref="CliExitCode.NetworkError"/> before this; every other failed <c>Result</c> returned the
 /// generic exit code, so scripts could not tell "arcanum serve is down" (retryable) from a real domain
 /// failure. Every other failure keeps <see cref="CliExitCode.GenericError"/> unchanged.
