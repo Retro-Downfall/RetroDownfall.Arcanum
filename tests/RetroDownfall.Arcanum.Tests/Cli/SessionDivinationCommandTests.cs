@@ -104,7 +104,7 @@ public sealed class SessionDivinationCommandTests
 
         CliTestResult result = RunCommand(handler, ["session", "divine", "hello", "--campaign", "not-a-guid"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 

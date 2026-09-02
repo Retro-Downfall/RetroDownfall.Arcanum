@@ -248,37 +248,18 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
 
         try
         {
-            using Process process = new()
+            ProcessStartInfo startInfo = new()
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = "stty",
-                    Arguments = "size",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                },
+                FileName = "stty",
+                Arguments = "size",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
             };
 
-            if (!process.Start())
+            if (!TryReadWithDeadline(startInfo, timeoutMilliseconds: 1000, out string output))
             {
-                return false;
-            }
-
-            string output = process.StandardOutput.ReadToEnd();
-            _ = process.StandardError.ReadToEnd();
-            if (!process.WaitForExit(1000))
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch
-                {
-                    // ignore
-                }
-
                 return false;
             }
 
@@ -304,6 +285,59 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
             rows = 0;
             return false;
         }
+    }
+
+    /// <summary>
+    /// Runs the process described by <paramref name="startInfo"/> (which must redirect stdout and
+    /// stderr) and returns its captured stdout, governed by <paramref name="timeoutMilliseconds"/>.
+    /// </summary>
+    /// <remarks>
+    /// W15-7: both redirected streams are drained with <see cref="Process.StandardOutput"/>'s and
+    /// <see cref="Process.StandardError"/>'s async reads started <em>before</em>
+    /// <see cref="Process.WaitForExit(int)"/> is ever called, so the deadline governs the wait — a
+    /// child that never writes and never exits is killed at the deadline instead of blocking the
+    /// calling thread forever on a synchronous <c>ReadToEnd()</c> that will not return until the
+    /// child's stdout handle closes. Reading synchronously first (the previous shape) made the
+    /// timeout and the <see cref="Process.Kill(bool)"/> recovery below it unreachable dead code.
+    /// </remarks>
+    internal static bool TryReadWithDeadline(
+        ProcessStartInfo startInfo,
+        int timeoutMilliseconds,
+        out string standardOutput)
+    {
+        standardOutput = string.Empty;
+
+        using Process process = new()
+        {
+            StartInfo = startInfo,
+        };
+
+        if (!process.Start())
+        {
+            return false;
+        }
+
+        Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
+        Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
+
+        if (!process.WaitForExit(timeoutMilliseconds))
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // ignore
+            }
+
+            return false;
+        }
+
+        standardOutput = standardOutputTask.GetAwaiter().GetResult();
+        _ = standardErrorTask.GetAwaiter().GetResult();
+
+        return true;
     }
 
     [UnconditionalSuppressMessage(
