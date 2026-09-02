@@ -2433,17 +2433,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ToolsCall_list_directory_recursive_yields_contained_directory_symlink_once_without_following_cycle()
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-cycle containment is exercised on Unix hosts.");
 
         string loopDirectory = _workspace.CreateSubdir("directory-cycle");
 
@@ -2922,7 +2918,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     // In both shapes, a resume that loses track of canonical directories descended on an earlier page
     // re-triggers a full re-descent through a later alias to the same target, compounding across pages
     // instead of staying bounded.
-    [Theory]
+    [SkippableTheory]
     [InlineData(6, false)]
     [InlineData(6, true)]
     [InlineData(8, false)]
@@ -2940,13 +2936,9 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         bool subdirectoryScope)
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink containment is exercised on Unix hosts.");
 
         const int directoryCount = 6;
 
@@ -3157,17 +3149,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     // holding one nested real subdirectory, with a page size (4) and per-target entry count (3: the
     // alias itself, its nested subdirectory, and one file inside it) engineered so a boundary lands
     // exactly on the alias entry itself for every other target.
-    [Fact]
+    [SkippableFact]
     public async Task ToolsCall_list_directory_shows_an_out_of_scope_aliass_content_when_a_page_boundary_lands_on_the_alias_itself()
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink containment is exercised on Unix hosts.");
 
         const int directoryCount = 6;
 
@@ -3304,17 +3292,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     // refuse, on a fixture that otherwise fits in one page (no continuation at all) -- exactly the shape
     // the reviewer measured as "IsError false, one page, no continuation marker, no truncation text,
     // indistinguishable from a complete listing".
-    [Fact]
+    [SkippableFact]
     public async Task ToolsCall_list_directory_reports_a_truncation_marker_when_the_out_of_scope_budget_refuses_a_descent()
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink containment is exercised on Unix hosts.");
 
         string targetDirectory = _workspace.CreateSubdir("dirX");
 
@@ -3389,17 +3373,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     // reviewer measured: the separator-joined token decodes the target's single recorded identity back
     // into two garbled fragments, neither of which matches the target's real canonical path, so the
     // second alias's checkpoint-itself seek does not recognize it as already shown and redescends.
-    [Fact]
+    [SkippableFact]
     public async Task ToolsCall_list_directory_preserves_an_out_of_scope_targets_identity_when_its_name_contains_the_tokens_prefix_boundary_byte()
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink containment is exercised on Unix hosts.");
 
         string weirdName = "weird" + (char)0x1F + "dir";
 

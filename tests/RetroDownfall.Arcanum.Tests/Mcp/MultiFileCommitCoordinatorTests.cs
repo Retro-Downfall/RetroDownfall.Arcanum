@@ -30,16 +30,13 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Commit_rejects_destinations_that_are_canonical_filesystem_aliases()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows(),
+            "Case-insensitive filesystem aliasing is Mac/Windows behavior.");
 
         string firstPath = OperatingSystem.IsWindows()
             ? "Folder/File"
@@ -311,10 +308,15 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Staged_output_is_never_group_or_world_readable_while_it_is_written()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below, including inside the
+        // AfterStagingArtifactCreated callback nested in the object initializer further down.
         if (OperatingSystem.IsWindows())
         {
 

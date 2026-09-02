@@ -322,19 +322,13 @@ public sealed class AttachmentSourceResolverTests : IDisposable
         Assert.Equal("text/plain", result.DetectedMimeType);
     }
 
-    [Fact]
+    [SkippableFact]
 
     public async Task ResolveForReferenceAsync_rejects_in_workspace_symlink_retarget_before_open()
 
     {
 
-        if (OperatingSystem.IsWindows())
-
-        {
-
-            return;
-
-        }
+        Skip.If(OperatingSystem.IsWindows(), "Symlink retarget-before-open is exercised on Unix hosts.");
 
         string first = Path.Combine(_workspace, "first.txt");
 
