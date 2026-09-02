@@ -23,6 +23,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 
@@ -414,12 +415,23 @@ internal sealed class InstallationResetExistingGrimoire(
                 context,
                 ordinaryConnections);
 
+            // The stopped-host reset deletes the same labelled artifacts the serving host refuses to
+            // remove outside the purge boundary, so it asks the same guard. It is built here rather
+            // than injected because this path runs with no container: the host is stopped, and the
+            // context above is composed over a maintenance lease this method owns.
+            using CovenantConnectionSource covenantConnections = new(
+                context,
+                ordinaryConnections);
+
             DataRetentionService retention = new(
                 context,
                 _settings,
                 operations,
                 timeProvider,
-                loggerFactory.CreateLogger<DataRetentionService>());
+                loggerFactory.CreateLogger<DataRetentionService>(),
+                new CovenantLabeledArtifactGuard(
+                    new ArtifactSensitivityLedger(covenantConnections),
+                    covenantConnections));
 
             return await action(
                 retention,

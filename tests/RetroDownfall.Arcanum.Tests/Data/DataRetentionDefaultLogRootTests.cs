@@ -127,6 +127,7 @@ public sealed class DataRetentionDefaultLogRootTests(GrimoireFixture fixture)
                     TestOrdinaryConnectionFactory.For(db)),
                 timeProvider,
                 NullLogger<DataRetentionService>.Instance,
+                FixtureLabeledArtifactGuard.For(db),
                 attachmentsRoot,
                 filesRoot,
                 logsRootOverride: null);
