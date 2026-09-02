@@ -127,6 +127,42 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Begin_propagates_an_unavailable_key_during_publication_reauthentication()
+    {
+
+        SeedIdentity(Installation);
+
+        // A fresh profile's key account sees five matching reads before AuthenticatePublishedAsync's
+        // own Open call: IsPresent's genesis guard (1), CreateOrOpen's existing-check and
+        // post-write readback (2, 3), Seal's own OpenExisting (4), and finally
+        // AuthenticatePublishedAsync's Open (5) -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnFifthRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 5);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnFifthRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            1,
+            Bytes("first"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+    }
+
+    [Fact]
     public async Task Begin_propagates_a_post_genesis_anchor_reread_failure()
     {
 

@@ -540,7 +540,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (published.IsFailure)
         {
 
-            return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(published.Error);
 
         }
 
@@ -789,9 +789,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     cancellationToken)
                 .ConfigureAwait(false);
 
-        if (published.IsFailure || _anchors.RequireMatches(
-                current.Location,
-                current.Anchor).IsFailure)
+        if (published.IsFailure)
+        {
+
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(published.Error);
+
+        }
+
+        if (_anchors.RequireMatches(current.Location, current.Anchor).IsFailure)
         {
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
