@@ -98,6 +98,10 @@ public sealed class WardGate : IWard
 
             wardLease!.Dispose();
 
+            DisposeEntry(entry);
+
+            entryCts.Dispose();
+
             throw new InvalidOperationException($"A ward with id '{wardId}' is already active.");
 
         }
@@ -252,8 +256,10 @@ public sealed class WardGate : IWard
     }
 
     // W3.4 Group B: dispose the pooled native memory behind WardEntry.Arguments when the
-    // entry leaves _pending on any terminal path (resolve / timeout / caller-cancel). The
-    // arguments may be null (ward placed without a payload), so guard the disposal.
+    // entry leaves _pending on any terminal path (resolve / timeout / caller-cancel), and also
+    // when a duplicate ward id rejects admission before the entry ever enters _pending (W7-6) —
+    // that rejection is terminal for this entry too, just never pending. The arguments may be
+    // null (ward placed without a payload), so guard the disposal.
     private static void DisposeEntry(WardEntry entry)
     {
 

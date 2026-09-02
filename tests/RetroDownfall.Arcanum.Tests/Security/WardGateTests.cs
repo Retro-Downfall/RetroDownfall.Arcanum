@@ -862,6 +862,40 @@ public sealed class WardGateTests
 
     }
 
+    // W7-6: a duplicate ward id rejects admission before the entry ever enters _pending, so none
+    // of the three terminal paths above run for it. The rejected entry's own JsonDocument and
+    // CancellationTokenSource must still be released, or every retried/duplicate ward id leaks a
+    // pooled native buffer.
+
+    [Fact]
+    public async Task WardAsync_DuplicateWardId_disposes_arguments_JsonDocument()
+    {
+
+        WardGate gate = CreateGate();
+
+        _ = gate.WardAsync(
+            "ward-duplicate-dispose",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        JsonDocument arguments = JsonDocument.Parse("""{"path":"README.md"}""");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            gate.WardAsync(
+                "ward-duplicate-dispose",
+                "write_file",
+                arguments,
+                sessionId: null,
+                timeout: TimeSpan.FromSeconds(30),
+                CancellationToken.None));
+
+        Assert.Throws<ObjectDisposedException>(() => arguments.RootElement.ValueKind);
+
+    }
+
     [Fact]
     public async Task WardAsync_NullArguments_does_not_throw_on_resolve()
     {
