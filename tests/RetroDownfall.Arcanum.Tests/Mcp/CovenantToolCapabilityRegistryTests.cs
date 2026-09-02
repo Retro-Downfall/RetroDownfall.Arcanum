@@ -1,7 +1,9 @@
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using ArcanumJsonRpcRequest = RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol.JsonRpcRequest;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -152,6 +154,96 @@ public sealed class CovenantToolCapabilityRegistryTests
         Assert.Same(second, registry.TryTake("connection-b", "1").Value.Capability);
     }
 
+    // SweepExpired() (below) is the only registry-side reclaim, and it has never had a production
+    // caller — only a failed-send unbind that was already wired for every other binding store
+    // (SessionAttachmentToolAmbient, ApplyPatchInvocationBinding, PersistedToolInvocationBinding,
+    // ApprenticeToolInvocationBinding) but stopped short of this registry. TryRegister is TryAdd-only,
+    // so a request id whose frame never reached the wire stayed permanently stranded on a live
+    // connection.
+    [Fact]
+    public void A_failed_send_releases_its_registration_so_a_retry_can_register()
+    {
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+
+        ArcanumJsonRpcRequest first = ToolsCall("7", CovenantToolNames.ProposeCovenant);
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, first);
+
+        Assert.Equal(1, registry.CountForTests);
+
+        // Mirrors InProcessMcpTransport.WriteRequestAsync's catch block: the frame never reached the
+        // wire, so no handler could ever have called TryTake for this id.
+        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, first);
+
+        Assert.Equal(0, registry.CountForTests);
+
+        ArcanumJsonRpcRequest retry = ToolsCall("7", CovenantToolNames.ProposeCovenant);
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, retry);
+
+        Result<CovenantToolCapabilityGrant> taken = registry.TryTake(Connection, "7");
+
+        Assert.True(taken.IsSuccess, taken.IsFailure ? taken.Error.Message : string.Empty);
+
+    }
+
+    [Fact]
+    public void A_taken_registration_survives_a_late_unbind_on_the_same_id()
+    {
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+
+        ArcanumJsonRpcRequest request = ToolsCall("7", CovenantToolNames.ProposeCovenant);
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, request);
+
+        Result<CovenantToolCapabilityGrant> taken = registry.TryTake(Connection, "7");
+
+        Assert.True(taken.IsSuccess, taken.IsFailure ? taken.Error.Message : string.Empty);
+
+        // The send actually succeeded (a handler already took the capability); an unbind reaching
+        // here late must not pull the id out from under the handler that is still draining it.
+        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, request);
+
+        Assert.Equal(CovenantToolCapabilityState.Taken, taken.Value.Capability.State);
+
+    }
+
+    private static CovenantToolStagingContext Staging(CovenantToolCapabilityRegistry registry)
+    {
+
+        CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
+
+        return new CovenantToolStagingContext(
+            new CovenantMutationCollector(
+                Guid.NewGuid(),
+                plan.Digest,
+                CovenantTask6Fixture.BranchId),
+            CovenantCapabilityFixtures.Campaign(),
+            CovenantCapabilityFixtures.Admission(plan),
+            CovenantCapabilityFixtures.Materialization(),
+            new CovenantCapabilityFixtures.StubHeadProbe(),
+            true,
+            registry,
+            CancellationToken.None);
+
+    }
+
+    private static ArcanumJsonRpcRequest ToolsCall(string id, string toolName) =>
+        new()
+        {
+            Method = "tools/call",
+            Id = JsonDocument.Parse($"\"{id}\"").RootElement.Clone(),
+            Params = JsonDocument
+                .Parse($$$"""{"name":"{{{toolName}}}","arguments":{}}""")
+                .RootElement.Clone(),
+        };
+
     [Fact]
     public async Task Concurrent_registration_of_one_request_id_admits_exactly_one_capability()
     {
@@ -176,6 +268,98 @@ public sealed class CovenantToolCapabilityRegistryTests
         foreach ((CovenantToolInvocationContext capability, _) in candidates)
         {
             await capability.DisposeAsync();
+        }
+    }
+
+    // W8-2: ReleaseUnsent used to decide whether to remove a registration from a bare read of
+    // Capability.State, taken before RemoveExact rather than atomically with it. A TryTake landing in
+    // that gap could claim the capability (a legitimate handler about to drain it) after ReleaseUnsent
+    // had already decided -- based on a now-stale read -- to free the id out from under it. Firing
+    // ReleaseUnsentObserverForTests immediately before RemoveExact reproduces exactly that interleaving
+    // deterministically, with no thread timing involved: the callback's own TryTake call lands at
+    // precisely the point a concurrent one could have landed.
+    [Fact]
+    public async Task A_release_racing_a_take_never_frees_a_registration_the_take_already_claimed()
+    {
+        CovenantToolCapabilityRegistry registry = NewRegistry(out _);
+
+        await using CovenantToolInvocationContext capability = Capability(out CovenantToolCapabilityNonce nonce);
+
+        _ = registry.TryRegister(Connection, "1", capability, nonce);
+
+        Result<CovenantToolCapabilityGrant>? raced = null;
+
+        registry.ReleaseUnsentObserverForTests = () =>
+        {
+            raced = registry.TryTake(Connection, "1");
+        };
+
+        try
+        {
+            bool released = registry.ReleaseUnsent(Connection, "1");
+
+            Assert.NotNull(raced);
+
+            // The whole invariant this closes: a release and a take can never both succeed for the
+            // same registration.
+            Assert.False(
+                released && raced.IsSuccess,
+                "ReleaseUnsent freed the registration after a concurrent TryTake had already claimed it.");
+
+            Assert.True(raced.IsFailure, "TryTake unexpectedly succeeded racing a release.");
+
+            Assert.Equal(CovenantToolCapabilityState.Disposed, capability.State);
+        }
+        finally
+        {
+            registry.ReleaseUnsentObserverForTests = null;
+        }
+    }
+
+    // W8-2: SweepExpired had the identical check-then-act shape ReleaseUnsent did -- a bare
+    // Capability.State read gating a later RemoveExact, not atomic with it. It has no production
+    // caller today (see the class remarks), so this test is what pins the shape rather than a caller
+    // exercising it. Same deterministic reproduction as the ReleaseUnsent regression test above: the
+    // observer fires at the point in SweepExpired's control flow that means the same thing pre- and
+    // post-fix (nobody holds a lock there either way), so a callback racing a TryTake from inside it
+    // exercises exactly the gap a concurrent one could have landed in, with no thread timing involved.
+    [Fact]
+    public async Task A_sweep_racing_a_take_never_reclaims_a_registration_the_take_already_claimed()
+    {
+        CovenantToolCapabilityRegistry registry = NewRegistry(out FakeClock clock);
+
+        await using CovenantToolInvocationContext capability = Capability(out CovenantToolCapabilityNonce nonce);
+
+        _ = registry.TryRegister(Connection, "1", capability, nonce);
+
+        clock.Advance(TimeSpan.FromMinutes(11));
+
+        Result<CovenantToolCapabilityGrant>? raced = null;
+
+        registry.SweepExpiredObserverForTests = () =>
+        {
+            raced = registry.TryTake(Connection, "1");
+        };
+
+        try
+        {
+            IReadOnlyList<CovenantToolInvocationContext> reclaimed = registry.SweepExpired();
+
+            Assert.NotNull(raced);
+
+            // The whole invariant this closes: a sweep and a take can never both succeed for the same
+            // registration.
+            Assert.False(
+                reclaimed.Count > 0 && raced.IsSuccess,
+                "SweepExpired reclaimed the registration after a concurrent TryTake had already claimed it.");
+
+            Assert.True(raced.IsFailure, "TryTake unexpectedly succeeded racing a sweep.");
+
+            Assert.Equal(CovenantToolCapabilityState.Disposed, capability.State);
+        }
+        finally
+        {
+            registry.SweepExpiredObserverForTests = null;
         }
     }
 

@@ -159,13 +159,14 @@ public enum NetworkPolicy
 /// Positional so every ceiling is a real constructor parameter with a real default. Written as
 /// init-only auto-properties these would be pseudo constructor parameters to System.Text.Json's
 /// generated creator, and a body such as <c>{"resourceLimits":{}}</c> would zero all seven — which
-/// for <see cref="MaxCpuSeconds"/>, <see cref="MaxMemoryMb"/>, and <see cref="MaxFileDescriptors"/>
-/// means "unlimited", i.e. the omission would remove the ceiling rather than keep it.
+/// for <see cref="ProcessTimeoutSeconds"/>, <see cref="MaxCpuSeconds"/>, <see cref="MaxMemoryMb"/>,
+/// and <see cref="MaxFileDescriptors"/> means "unlimited", i.e. the omission would remove the
+/// ceiling rather than keep it.
 /// </remarks>
 /// <param name="MaxProcessMemoryMb">Maximum per-process memory in megabytes.</param>
 /// <param name="MaxProcessCount">Maximum concurrent child processes.</param>
 /// <param name="MaxFileWriteMb">Maximum single file-write size in megabytes.</param>
-/// <param name="ProcessTimeoutSeconds">Maximum wall-clock seconds per child process.</param>
+/// <param name="ProcessTimeoutSeconds">Maximum wall-clock seconds per child process. 0 = unlimited.</param>
 /// <param name="MaxCpuSeconds">Maximum CPU time in seconds per tool invocation, enforced at the OS level. 0 = unlimited.</param>
 /// <param name="MaxMemoryMb">Maximum resident memory in megabytes per tool invocation, enforced at the OS level. 0 = unlimited.</param>
 /// <param name="MaxFileDescriptors">Maximum open file descriptors per tool invocation, enforced at the OS level. 0 = unlimited.</param>

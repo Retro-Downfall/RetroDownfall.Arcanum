@@ -140,6 +140,62 @@ public sealed class CovenantToolCapabilityRegistry
     }
 
     /// <summary>
+    /// Test seam: invoked in <see cref="ReleaseUnsent"/> after the atomic release has already
+    /// succeeded (<see cref="CovenantToolInvocationContext.TryReleaseUnsent"/> returned
+    /// <see langword="true"/>), immediately before the dictionary entry is removed. A test callback
+    /// that calls <see cref="TryTake"/> from here must fail -- the capability is already
+    /// <see cref="CovenantToolCapabilityState.Disposed"/> by this point -- which is exactly the
+    /// assertion the regression test for this compare-and-swap makes.
+    /// </summary>
+    internal Action? ReleaseUnsentObserverForTests { get; set; }
+
+    /// <summary>
+    /// Releases one connection-and-request-id's registration when the frame that would have carried
+    /// it to a handler never left the client — a failed transport send, before any handler could
+    /// have reached <see cref="TryTake"/> for this id. No nonce is required: the caller here is the
+    /// send path itself, not a handler that took the capability.
+    /// </summary>
+    /// <remarks>
+    /// A no-op once the registration has been taken. The state check and the transition off
+    /// <see cref="CovenantToolCapabilityState.Registered"/> happen together, atomically, inside
+    /// <see cref="CovenantToolInvocationContext.TryReleaseUnsent"/> — not as a separate read of
+    /// <see cref="CovenantToolInvocationContext.State"/> here followed by a decision, which a
+    /// concurrent <see cref="TryTake"/> could fall between and win after this method had already
+    /// decided to remove the registration. Mirrors the equivalent state guard in
+    /// <see cref="SweepExpired"/>, so a handler that is still draining a capability it already took
+    /// keeps its own bounded cancellation lifetime either way.
+    /// </remarks>
+    public bool ReleaseUnsent(string connectionKey, string requestId)
+    {
+
+        if (string.IsNullOrWhiteSpace(connectionKey) || string.IsNullOrWhiteSpace(requestId))
+        {
+            return false;
+        }
+
+        string key = ComposeKey(connectionKey, requestId);
+
+        if (!_byRequest.TryGetValue(key, out Registration? registration)
+            || !registration.Capability.TryReleaseUnsent())
+        {
+            return false;
+        }
+
+        ReleaseUnsentObserverForTests?.Invoke();
+
+        return RemoveExact(key, registration);
+
+    }
+
+    /// <summary>
+    /// Test seam: invoked in <see cref="SweepExpired"/> immediately after one registration's atomic
+    /// release has already succeeded, before its dictionary entry is removed -- same shape and purpose
+    /// as <see cref="ReleaseUnsentObserverForTests"/>. A callback that calls <see cref="TryTake"/> from
+    /// here must fail against the already-<see cref="CovenantToolCapabilityState.Disposed"/> capability.
+    /// </summary>
+    internal Action? SweepExpiredObserverForTests { get; set; }
+
+    /// <summary>
     /// Reclaims registrations that were installed and never taken, returning them for disposal.
     /// </summary>
     public IReadOnlyList<CovenantToolInvocationContext> SweepExpired()
@@ -152,11 +208,22 @@ public sealed class CovenantToolCapabilityRegistry
         foreach (KeyValuePair<string, Registration> pair in _byRequest)
         {
 
-            if (now - pair.Value.CreatedTimestamp <= _ttlTicks
-                || pair.Value.Capability.State != CovenantToolCapabilityState.Registered)
+            if (now - pair.Value.CreatedTimestamp <= _ttlTicks)
             {
                 continue;
             }
+
+            // The state check and the transition off Registered happen together, atomically, inside
+            // TryReleaseUnsent -- not as a separate read of Capability.State here followed by a
+            // decision, which a concurrent TryTake could fall between and win after this loop had
+            // already decided to reclaim the registration (the same compare-and-swap ReleaseUnsent
+            // needed; see its own remarks).
+            if (!pair.Value.Capability.TryReleaseUnsent())
+            {
+                continue;
+            }
+
+            SweepExpiredObserverForTests?.Invoke();
 
             if (RemoveExact(pair.Key, pair.Value))
             {

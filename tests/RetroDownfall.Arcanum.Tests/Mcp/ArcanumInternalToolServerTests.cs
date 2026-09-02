@@ -1060,6 +1060,115 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // read_file_chunk decoded the whole file into a string before slicing, so a file larger than
+    // MaxFileReadSizeBytes (default 1 MiB, ArcanumRuntimeDefaults.cs) had no readable chunk at all --
+    // startLine/endLine never affected the read. A narrow range near the top of an oversized file must
+    // still succeed.
+    [Fact]
+    public async Task ToolsCall_read_file_chunk_returns_a_narrow_range_from_a_file_larger_than_the_read_cap()
+    {
+
+        const string relativePath = "notes/oversized.txt";
+
+        string[] requestedLines =
+        [
+            "line one",
+            "line two",
+            "line three",
+            "line four",
+            "line five",
+        ];
+
+        string head = string.Join('\n', requestedLines) + "\n";
+
+        // 2 MiB total, comfortably past the 1 MiB default read cap, padded well past the five
+        // requested lines so it is the range -- not the file happening to be small anyway -- under test.
+        string padding = new string('x', (2 * 1024 * 1024) - head.Length);
+
+        _workspace.WriteFile(relativePath, head + padding);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "read_file_chunk",
+            JsonSerializer.SerializeToElement(
+                new ReadFileChunkParams
+                {
+                    RelativePath = relativePath,
+                    StartLine = 1,
+                    EndLine = 5,
+                },
+                McpJsonSerializerContext.Default.ReadFileChunkParams));
+
+        Assert.False(result.IsError);
+
+        Assert.Equal(string.Join('\n', requestedLines), result.Content![0].Text);
+
+    }
+
+    // The former whole-file read decoded the entire capped read in one pass, so invalid UTF-8 anywhere
+    // in the file -- not just inside the requested range -- failed the call. The streaming read stops
+    // decoding once it has enough for the requested range, so a request whose own range is valid text
+    // now succeeds even when the file contains invalid UTF-8 further down, never reached by this
+    // request. Recorded per the ruling on task-15's report: a behavior change flagged as a concern
+    // there, now asserted directly.
+    [Fact]
+    public async Task ToolsCall_read_file_chunk_succeeds_when_invalid_utf8_lies_outside_the_requested_range()
+    {
+
+        const string relativePath = "notes/valid-head-invalid-tail.txt";
+
+        string[] requestedLines =
+        [
+            "line one",
+            "line two",
+            "line three",
+        ];
+
+        // StreamReader's own internal byte buffer (bufferSize: 8192 in the production code) fills from
+        // the underlying stream in one pass per ReadAsync call, decoding everything it pulls in --
+        // proven directly below: an earlier version of this fixture with only the three requested lines
+        // ahead of the invalid tail failed, because that first internal-buffer fill reached past line
+        // three into the invalid bytes before the line-three terminator ever got a chance to stop the
+        // walk. A large valid filler block keeps every byte the first (and likely several) ReadAsync
+        // calls actually touch inside valid content, so this fixture is testing the range, not
+        // accidentally relying on the invalid tail already being unreachable for unrelated reasons.
+        string filler = string.Concat(Enumerable.Repeat("filler line well past the requested range\n", 1_000));
+
+        string head = string.Join('\n', requestedLines) + "\n" + filler;
+
+        byte[] headBytes = Encoding.UTF8.GetBytes(head);
+
+        // 0xFF is never a valid UTF-8 leading or continuation byte, anywhere in a UTF-8 byte stream.
+        byte[] invalidTail = new byte[64 * 1024];
+
+        Array.Fill(invalidTail, (byte)0xFF);
+
+        string fullPath = Path.Combine(_workspace.Root, relativePath);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+
+        await File.WriteAllBytesAsync(fullPath, [.. headBytes, .. invalidTail]);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "read_file_chunk",
+            JsonSerializer.SerializeToElement(
+                new ReadFileChunkParams
+                {
+                    RelativePath = relativePath,
+                    StartLine = 1,
+                    EndLine = 3,
+                },
+                McpJsonSerializerContext.Default.ReadFileChunkParams));
+
+        Assert.False(result.IsError);
+
+        Assert.Equal(string.Join('\n', requestedLines), result.Content![0].Text);
+
+    }
+
     [Fact]
     public async Task ToolsCall_read_file_chunk_returns_requested_lines()
     {
@@ -1177,6 +1286,49 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.False(result.IsError);
 
         Assert.Equal("alpha\rbeta", result.Content![0].Text);
+
+    }
+
+    // A regular, fully contained file with more than one hard link is rejected by SandboxedFileIo's
+    // containment gate, but before the fix it reused PathEscapesSandboxMessage -- telling the model to
+    // rewrite a path that already is relative and inside the root, and for which no spelling has a
+    // hard link count of 1. The remediation it prescribed could never succeed.
+    [SkippableFact]
+    public async Task ToolsCall_read_file_chunk_names_hard_links_instead_of_a_sandbox_escape()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Unsupported operating system.");
+
+        const string relativePath = "notes/hard-linked.txt";
+
+        string target = Path.Combine(_workspace.Root, relativePath);
+
+        _workspace.WriteFile(relativePath, "line one\nline two");
+
+        string secondLink = Path.Combine(_workspace.Root, "notes", "hard-linked-alias.txt");
+
+        Assert.True(HardLinkTestSupport.TryCreate(secondLink, target));
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "read_file_chunk",
+            JsonSerializer.SerializeToElement(
+                new ReadFileChunkParams
+                {
+                    RelativePath = relativePath,
+                    StartLine = 1,
+                    EndLine = 1,
+                },
+                McpJsonSerializerContext.Default.ReadFileChunkParams));
+
+        Assert.True(result.IsError);
+
+        Assert.Contains("hard link", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("leave the workspace sandbox", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -1748,6 +1900,139 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // The read loop dispatches every inbound line on its own Task.Run (ArcanumInternalToolServer.cs),
+    // so line order does not imply handler order: this notification's task can reach
+    // HandleCancelledNotification before the matching tools/call's task reaches its own
+    // _inFlightToolCalls registration, even though the client always writes tools/call first. Before
+    // the fix that miss silently dropped the notification and the call ran to completion uncancelled.
+    [Fact]
+    public async Task NotificationsCancelled_arriving_before_registration_still_cancels_the_call()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        string sentinelPath = Path.Combine(_workspace.Root, "early-cancel-sentinel.txt");
+
+        (string command, string[] argumentList) = ResolveDelayedWriteCommand(sentinelPath);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "execute_command", Arguments = arguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        const int fixedId = 9191;
+
+        await session.SendCancelNotificationAsync(fixedId);
+
+        // Lets the notification's own dispatched line handling fully complete (recording its
+        // tombstone) before the tools/call for the same id is even written, the same handshake style
+        // Duplicate_in_flight_request_id_is_rejected_with_json_rpc_error already uses to let one
+        // dispatched line finish before the next is sent.
+        await Task.Delay(300);
+
+        await session.WriteRequestWithFixedIdAsync(fixedId, "tools/call", callParams);
+
+        JsonRpcResponse response = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(response.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.True(result.IsError);
+
+        Assert.Equal("Tool call was cancelled.", result.Content[0].Text);
+
+        // The tombstone is consulted before the handler ever dispatches, so the child that would
+        // have written this sentinel after its own delay never starts (stronger proof than "was
+        // killed": here it never ran at all).
+        Assert.False(
+            File.Exists(sentinelPath),
+            "execute_command ran despite a cancellation that arrived before the call registered.");
+
+    }
+
+    // The mirror image of the test above: a notifications/cancelled miss against _inFlightToolCalls can
+    // also mean the id's *previous* use already ran to completion and was removed, not that this id has
+    // never registered yet. Before the fix, HandleCancelledNotification tombstoned every miss
+    // unconditionally, so a late cancellation for an already-finished call poisoned that same id's next
+    // reuse -- refusing a brand new, unrelated tools/call within the tombstone's 5-second TTL without
+    // ever running it. Request ids repeat over a long-lived connection (§10.14), so this is not
+    // hypothetical.
+    [Fact]
+    public async Task NotificationsCancelled_arriving_after_completion_does_not_block_the_ids_next_reuse()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        const int reusedId = 9393;
+
+        // First use of the id: a fast tool that runs to completion normally, so by the time its
+        // response comes back the id has already been removed from _inFlightToolCalls.
+        JsonElement listArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams { RelativePath = "." },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        JsonElement firstCallParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "list_directory", Arguments = listArguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        await session.WriteRequestWithFixedIdAsync(reusedId, "tools/call", firstCallParams);
+
+        JsonRpcResponse firstResponse = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(firstResponse.Error);
+
+        // A cancel notification for that same id arrives only now -- late, well after the call it
+        // actually named is already done and gone from _inFlightToolCalls.
+        await session.SendCancelNotificationAsync(reusedId);
+
+        // Lets the notification's own dispatched line handling fully complete before the id is reused,
+        // the same handshake the early-arrival test above uses.
+        await Task.Delay(300);
+
+        string sentinelPath = Path.Combine(_workspace.Root, "late-cancel-reuse-sentinel.txt");
+
+        (string command, string[] argumentList) = ResolveQuickWriteCommand(sentinelPath);
+
+        JsonElement execArguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        JsonElement secondCallParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "execute_command", Arguments = execArguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        // Reuses the exact same request id for a brand new, unrelated call.
+        await session.WriteRequestWithFixedIdAsync(reusedId, "tools/call", secondCallParams);
+
+        JsonRpcResponse secondResponse = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(secondResponse.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            secondResponse.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.False(
+            result.IsError,
+            "The reused id's call was refused instead of running: " +
+            (result.Content.Length > 0 ? result.Content[0].Text : "<no content>"));
+
+        Assert.True(
+            File.Exists(sentinelPath),
+            "execute_command never ran: a stale tombstone from a late cancel notification for the id's " +
+            "prior use blocked its reuse.");
+
+    }
+
     [Fact]
     public async Task Duplicate_in_flight_request_id_is_rejected_with_json_rpc_error()
     {
@@ -1795,6 +2080,53 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
 
         Assert.True(result.IsError);
+
+    }
+
+    // Sanctum's ResourceLimits.ProcessTimeoutSeconds is operator-settable, clamped, and persisted,
+    // but nothing under src/ used to read it: every model-directed child runner was handed
+    // Timeout.InfiniteTimeSpan, so a configured ceiling had no effect on a child blocked on a socket
+    // or an infinite loop that never touches the CPU-time rlimit. No cancellation is sent here — the
+    // configured process timeout alone must end the call well short of the child's own 10-second sleep.
+    [Fact]
+    public async Task ExecuteCommand_is_bounded_by_the_configured_process_timeout()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            resourceLimits: new ResourceLimits(ProcessTimeoutSeconds: 1));
+
+        (string command, string[] argumentList) = ResolveSleepCommand(seconds: 10);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "execute_command", Arguments = arguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        JsonRpcResponse? response = await session.SendRequestWithTimeoutAsync(
+            "tools/call",
+            callParams,
+            TimeSpan.FromSeconds(8));
+
+        Assert.True(
+            response is not null,
+            "execute_command returned no response within 8s for a 1-second configured process "
+            + "timeout; the child ran unbounded toward its own 10-second sleep.");
+
+        Assert.Null(response!.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.True(result.IsError);
+
+        Assert.Contains(
+            "deadline",
+            result.Content[0].Text,
+            StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -1992,6 +2324,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 offset = page.NextOffset.Value;
 
             }
+
             while (true);
 
             Assert.Equal(
@@ -2434,6 +2767,855 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         string secondText = Assert.Single(second.Content).Text!;
 
         Assert.Contains(expectedNextPath, secondText.Split('\n'));
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_list_directory_does_not_reenumerate_earlier_directories_on_every_continuation()
+    {
+
+        // Wide, not deep: 40 sibling directories at the root, 5 files each. The former mitigation
+        // (skip full validation for a plain file while replaying past it) already keeps a deep, narrow
+        // tree cheap -- ToolsCall_list_directory_does_not_revalidate_already_paged_entries_on_every_continuation
+        // covers that shape. A directory is always validated, replay or not, so this shape isolates the
+        // cost the earlier mitigation does not touch: re-walking (and re-validating) every one of the 40
+        // already-emitted directories again on every subsequent page.
+        const int directoryCount = 40;
+
+        const int filesPerDirectory = 5;
+
+        for (int d = 0; d < directoryCount; d++)
+        {
+
+            for (int f = 0; f < filesPerDirectory; f++)
+            {
+
+                _workspace.WriteFile($"dir-{d:D3}/file-{f}.txt", "x");
+
+            }
+
+        }
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        int directoryValidations = 0;
+
+        session.Server.ListDirectoryEntryValidationObserverForTests =
+            entry =>
+            {
+
+                if (Path.GetFileName(entry).StartsWith("dir-", StringComparison.Ordinal))
+                {
+
+                    Interlocked.Increment(ref directoryValidations);
+
+                }
+
+            };
+
+        HashSet<string> observed = new(StringComparer.Ordinal);
+
+        int pages = 0;
+
+        string? continuation = null;
+
+        try
+        {
+
+            do
+            {
+
+                pages++;
+
+                JsonElement arguments = JsonSerializer.SerializeToElement(
+                    new ListDirectoryParams
+                    {
+                        RelativePath = ".",
+                        Recursive = true,
+                        Continuation = continuation,
+                    },
+                    McpJsonSerializerContext.Default.ListDirectoryParams);
+
+                McpToolsCallResultWire result = await session.CallToolAsync(
+                    "list_directory",
+                    arguments);
+
+                Assert.False(result.IsError);
+
+                string text = Assert.Single(result.Content).Text!;
+
+                foreach (string line in text.Split('\n'))
+                {
+
+                    if (line.StartsWith("dir-", StringComparison.Ordinal)
+                        && !line.StartsWith("...", StringComparison.Ordinal))
+                    {
+
+                        observed.Add(line);
+
+                    }
+
+                }
+
+                const string cursorPrefix = "continuation=";
+
+                int cursorStart = text.LastIndexOf(
+                    cursorPrefix,
+                    StringComparison.Ordinal);
+
+                if (cursorStart < 0)
+                {
+
+                    break;
+
+                }
+
+                cursorStart += cursorPrefix.Length;
+
+                int cursorEnd = text.IndexOf(';', cursorStart);
+
+                Assert.True(cursorEnd > cursorStart);
+
+                continuation = text[cursorStart..cursorEnd];
+
+            } while (true);
+
+        }
+        finally
+        {
+
+            session.Server.ListDirectoryEntryValidationObserverForTests = null;
+
+        }
+
+        // directoryCount directory entries plus directoryCount * filesPerDirectory file entries, each
+        // exactly once -- proves the walk is still complete and duplicate-free under the new resume.
+        Assert.Equal(
+            directoryCount * (filesPerDirectory + 1),
+            observed.Count);
+
+        Assert.True(pages > 1, "the fixture must span more than one page for a replay cost to show up at all.");
+
+        // Every directory is validated once when the forward walk actually reaches it, plus at most one
+        // ancestor re-validation per continuation call (this tree is one level deep, so each resume seeks
+        // through exactly one ancestor). A full-replay design instead re-validates all `directoryCount`
+        // directories on every page: directoryCount * pages, which for this fixture is 40 * pages and
+        // blows past this bound as soon as there is more than one page.
+        int bound = directoryCount + pages + 2;
+
+        Assert.True(
+            directoryValidations <= bound,
+            $"Expected at most {bound} directory validations across {pages} pages, but observed {directoryValidations}. " +
+            "This grows with page count when list_directory replays every earlier directory on each continuation.");
+
+    }
+
+    // Reproduces the reviewer's W6-4 shape at two scopes, swept over several fixture sizes:
+    // - subdirectoryScope: false -- listed from the workspace root, so every symlink's target lies
+    //   *inside* the listing scope (round-1 shape; the target's own real name also appears in this
+    //   same listing).
+    // - subdirectoryScope: true -- listed from a dedicated "scope" subdirectory whose own symlinks
+    //   point at the six cross-linked directories from *outside* it, so every symlink's target lies
+    //   outside the listing scope but still inside the workspace (round-2 shape: the target's real
+    //   name is never part of this listing at all, so an out-of-scope alias needs different cross-page
+    //   memory than an in-scope one does).
+    // In both shapes, a resume that loses track of canonical directories descended on an earlier page
+    // re-triggers a full re-descent through a later alias to the same target, compounding across pages
+    // instead of staying bounded.
+    [Theory]
+    [InlineData(6, false)]
+    [InlineData(6, true)]
+    [InlineData(8, false)]
+    [InlineData(8, true)]
+    [InlineData(16, false)]
+    [InlineData(16, true)]
+    [InlineData(18, false)]
+    [InlineData(18, true)]
+    [InlineData(28, false)]
+    [InlineData(28, true)]
+    [InlineData(40, false)]
+    [InlineData(40, true)]
+    public async Task ToolsCall_list_directory_does_not_duplicate_content_reached_through_multiple_directory_symlinks_across_pages(
+        int filesPerDirectory,
+        bool subdirectoryScope)
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        const int directoryCount = 6;
+
+        const int symlinksPerDirectory = directoryCount - 1;
+
+        const int symlinkCount = directoryCount * symlinksPerDirectory;
+
+        string[] directories = new string[directoryCount];
+
+        for (int d = 0; d < directoryCount; d++)
+        {
+
+            directories[d] = _workspace.CreateSubdir($"dir{d}");
+
+            for (int f = 0; f < filesPerDirectory; f++)
+            {
+
+                _workspace.WriteFile($"dir{d}/f{f:D3}.txt", "x");
+
+            }
+
+        }
+
+        // Complete directed graph: every directory holds one symlink to each of the other five, so any
+        // one of them can be reached through five different aliases in addition to its own name -- dense
+        // cross-linking, not a handful of disjoint pairs.
+        int linkIndex = 0;
+
+        for (int source = 0; source < directoryCount; source++)
+        {
+
+            for (int k = 0; k < symlinksPerDirectory; k++)
+            {
+
+                int target = (source + 1 + k) % directoryCount;
+
+                Directory.CreateSymbolicLink(
+                    Path.Combine(directories[source], $"link{linkIndex}"),
+                    directories[target]);
+
+                linkIndex++;
+
+            }
+
+        }
+
+        Assert.Equal(symlinkCount, linkIndex);
+
+        string listingRelativePath = ".";
+
+        if (subdirectoryScope)
+        {
+
+            string scopeDirectory = _workspace.CreateSubdir("scope");
+
+            for (int d = 0; d < directoryCount; d++)
+            {
+
+                Directory.CreateSymbolicLink(
+                    Path.Combine(scopeDirectory, $"scopelink{d}"),
+                    directories[d]);
+
+            }
+
+            listingRelativePath = "scope";
+
+        }
+
+        // Oracle: run the exact same call with a page size large enough that the whole listing fits in
+        // one page (no continuation at all), and let the walk's own first-encounter-wins resolution
+        // order decide the count -- not a hand-derived formula. Unlike the root-scope shape (where a
+        // real directory's own name always wins the race against any alias to it, making the count a
+        // simple sum), the subdirectory shape's count depends on which of several out-of-scope aliases
+        // reaches a given target first, which is not practical to predict by hand.
+        const int oracleMaxPaths = 100_000;
+
+        await using TestMcpSession oracleSession = await CreateSessionAsync(
+            listDirectoryMaxPaths: oracleMaxPaths);
+
+        JsonElement oracleArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams
+            {
+                RelativePath = listingRelativePath,
+                Recursive = true,
+            },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire oracleResult = await oracleSession.CallToolAsync(
+            "list_directory",
+            oracleArguments);
+
+        Assert.False(oracleResult.IsError);
+
+        string oracleText = Assert.Single(oracleResult.Content).Text!;
+
+        Assert.DoesNotContain(
+            "[MORE:",
+            oracleText,
+            StringComparison.Ordinal);
+
+        int oracleCount = oracleText.Split('\n').Length;
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        List<string> allLines = new();
+
+        int pages = 0;
+
+        string? continuation = null;
+
+        const int pageSafetyCap = 500;
+
+        do
+        {
+
+            pages++;
+
+            Assert.True(
+                pages <= pageSafetyCap,
+                $"Aborting after {pageSafetyCap} pages without reaching the end of the listing " +
+                $"(filesPerDirectory={filesPerDirectory}, subdirectoryScope={subdirectoryScope}). That is " +
+                "itself the failure: bounded re-descent should finish in a small, small-multiple-of-" +
+                "oracleCount/64 number of pages, not run away.");
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams
+                {
+                    RelativePath = listingRelativePath,
+                    Recursive = true,
+                    Continuation = continuation,
+                },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            foreach (string line in text.Split('\n'))
+            {
+
+                if (!line.StartsWith("...", StringComparison.Ordinal))
+                {
+
+                    allLines.Add(line);
+
+                }
+
+            }
+
+            const string cursorPrefix = "continuation=";
+
+            int cursorStart = text.LastIndexOf(cursorPrefix, StringComparison.Ordinal);
+
+            if (cursorStart < 0)
+            {
+
+                break;
+
+            }
+
+            cursorStart += cursorPrefix.Length;
+
+            int cursorEnd = text.IndexOf(';', cursorStart);
+
+            Assert.True(cursorEnd > cursorStart);
+
+            continuation = text[cursorStart..cursorEnd];
+
+        } while (true);
+
+        // The whole check: every real path shown exactly once. A resume that loses track of canonical
+        // directories descended on an earlier page re-descends into content reachable through more than
+        // one directory symlink, which shows up here as extra lines -- allLines.Count above oracleCount
+        // -- not as literal duplicate strings (re-descended content is emitted under a different alias
+        // prefix each time, so it never collides in a plain list of the emitted lines themselves).
+        Assert.True(
+            allLines.Count == oracleCount,
+            $"Expected {oracleCount} entries across all continuations (filesPerDirectory={filesPerDirectory}, " +
+            $"subdirectoryScope={subdirectoryScope}) but observed {allLines.Count} over {pages} pages. A " +
+            "resume that loses track of canonical directories descended on an earlier page re-descends " +
+            "into content reachable through more than one directory symlink.");
+
+        int expectedPages = (int)Math.Ceiling(oracleCount / 64.0);
+
+        Assert.True(
+            pages == expectedPages,
+            $"Expected exactly {expectedPages} pages for {oracleCount} entries at 64 per page " +
+            $"(filesPerDirectory={filesPerDirectory}, subdirectoryScope={subdirectoryScope}), but observed " +
+            $"{pages} pages. Page count above the arithmetic minimum confirms combinatorial re-descent, not " +
+            "just a few extra duplicate pages.");
+
+    }
+
+    // Round-2 re-review follow-up: a page boundary landing exactly on an out-of-scope alias entry
+    // drops that alias's content instead of duplicating it. ListDirectoryCore's foreach must call
+    // MoveNext() one entry past the page boundary to learn whether hasMore is true, and that call
+    // resumes the walk's lazy iterator past the boundary entry's own yield -- running that entry's
+    // descend decision (including recording it into the OutOfScopeDescentTracker) even though nothing
+    // that decision produces is ever shown on this page. Without a fix, that premature recording flows
+    // into the continuation token, and the next page's checkpoint-itself seek sees the boundary entry
+    // as already recorded and refuses to redescend -- the alias is emitted but its content never
+    // appears on any page. Six out-of-scope targets, each reached through exactly one symlink (no
+    // cross-linking, to isolate this mechanism from the combinatorial-duplication shape above) and each
+    // holding one nested real subdirectory, with a page size (4) and per-target entry count (3: the
+    // alias itself, its nested subdirectory, and one file inside it) engineered so a boundary lands
+    // exactly on the alias entry itself for every other target.
+    [Fact]
+    public async Task ToolsCall_list_directory_shows_an_out_of_scope_aliass_content_when_a_page_boundary_lands_on_the_alias_itself()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        const int directoryCount = 6;
+
+        string[] directories = new string[directoryCount];
+
+        for (int d = 0; d < directoryCount; d++)
+        {
+
+            directories[d] = _workspace.CreateSubdir($"dir{d}");
+
+            string nested = Path.Combine(directories[d], "nested");
+
+            Directory.CreateDirectory(nested);
+
+            File.WriteAllText(Path.Combine(nested, "g.txt"), "x");
+
+        }
+
+        string scopeDirectory = _workspace.CreateSubdir("scope");
+
+        for (int d = 0; d < directoryCount; d++)
+        {
+
+            Directory.CreateSymbolicLink(
+                Path.Combine(scopeDirectory, $"scopelink{d}"),
+                directories[d]);
+
+        }
+
+        await using TestMcpSession oracleSession = await CreateSessionAsync(
+            listDirectoryMaxPaths: 100_000);
+
+        JsonElement oracleArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams { RelativePath = "scope", Recursive = true },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire oracleResult = await oracleSession.CallToolAsync(
+            "list_directory",
+            oracleArguments);
+
+        Assert.False(oracleResult.IsError);
+
+        string oracleText = Assert.Single(oracleResult.Content).Text!;
+
+        int oracleCount = oracleText.Split('\n').Length;
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            listDirectoryMaxPaths: 4);
+
+        List<string> allLines = new();
+
+        int pages = 0;
+
+        string? continuation = null;
+
+        do
+        {
+
+            pages++;
+
+            Assert.True(pages <= 200, "Runaway paging -- aborting the test.");
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams
+                {
+                    RelativePath = "scope",
+                    Recursive = true,
+                    Continuation = continuation,
+                },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            foreach (string line in text.Split('\n'))
+            {
+
+                if (!line.StartsWith("...", StringComparison.Ordinal))
+                {
+
+                    allLines.Add(line);
+
+                }
+
+            }
+
+            const string cursorPrefix = "continuation=";
+
+            int cursorStart = text.LastIndexOf(cursorPrefix, StringComparison.Ordinal);
+
+            if (cursorStart < 0)
+            {
+
+                break;
+
+            }
+
+            cursorStart += cursorPrefix.Length;
+
+            int cursorEnd = text.IndexOf(';', cursorStart);
+
+            continuation = text[cursorStart..cursorEnd];
+
+        } while (true);
+
+        HashSet<string> oracleSet = new(oracleText.Split('\n'), StringComparer.Ordinal);
+
+        HashSet<string> observedSet = new(allLines, StringComparer.Ordinal);
+
+        List<string> missing = oracleSet.Except(observedSet).OrderBy(static s => s, StringComparer.Ordinal).ToList();
+
+        List<string> extra = observedSet.Except(oracleSet).OrderBy(static s => s, StringComparer.Ordinal).ToList();
+
+        // The whole check: every real path shown exactly once, across every page, including the one a
+        // page boundary happened to land on. A dropped alias shows up here as allLines.Count below
+        // oracleCount, with the dropped alias's own nested subdirectory and file named in "missing" --
+        // the alias entry itself is still shown (it was already yielded before the boundary), only its
+        // content never appears on any page.
+        Assert.True(
+            allLines.Count == oracleCount,
+            $"Expected {oracleCount} entries across all continuations but observed {allLines.Count} over " +
+            $"{pages} pages. A page boundary landing on an out-of-scope alias must not drop its content. " +
+            $"Missing: [{string.Join(", ", missing)}]. Extra: [{string.Join(", ", extra)}].");
+
+    }
+
+    // Round 3: a refused out-of-scope descent must say so in the response, not vanish silently. Forcing
+    // ReservedOverheadBytesForTests absurdly high makes the very first out-of-scope TryRecord call
+    // refuse, on a fixture that otherwise fits in one page (no continuation at all) -- exactly the shape
+    // the reviewer measured as "IsError false, one page, no continuation marker, no truncation text,
+    // indistinguishable from a complete listing".
+    [Fact]
+    public async Task ToolsCall_list_directory_reports_a_truncation_marker_when_the_out_of_scope_budget_refuses_a_descent()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string targetDirectory = _workspace.CreateSubdir("dirX");
+
+        _workspace.WriteFile("dirX/f.txt", "x");
+
+        string scopeDirectory = _workspace.CreateSubdir("scope");
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(scopeDirectory, "scopelink0"),
+            targetDirectory);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        session.Server.ReservedOverheadBytesForTests = 100_000_000;
+
+        try
+        {
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams { RelativePath = "scope", Recursive = true },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            // The alias itself is still shown -- only its content is missing.
+            Assert.Contains(
+                "scope/scopelink0",
+                text.Split('\n'),
+                StringComparer.Ordinal);
+
+            Assert.DoesNotContain(
+                "scope/scopelink0/f.txt",
+                text,
+                StringComparison.Ordinal);
+
+            // The exact scenario the reviewer measured: everything fit in one page, so there is no
+            // continuation to hang an incompleteness signal off of -- the truncation marker is the only
+            // thing that can say so.
+            Assert.DoesNotContain(
+                "[MORE:",
+                text,
+                StringComparison.Ordinal);
+
+            Assert.Contains(
+                "[TRUNCATED: scope/scopelink0 was not listed because its contents did not fit the continuation token's byte budget.]",
+                text,
+                StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            session.Server.ReservedOverheadBytesForTests = 4_096;
+
+        }
+
+    }
+
+    // Round 3, item 2: the continuation token's out-of-scope-descent segment used to join entries with
+    // a single separator byte. A workspace-relative path can legally contain any byte a POSIX filesystem
+    // allows (NUL and '/' excepted) -- including that exact separator byte, built here via a numeric
+    // cast rather than typed as an escape sequence, since typing that escape sequence directly in source
+    // has twice landed the raw byte on disk instead during this same body of work (see the report's
+    // "tooling hazard" note). A target directory named with that byte embedded, reached through two
+    // different aliases with a page boundary forced between them, exercises exactly the shape the
+    // reviewer measured: the separator-joined token decodes the target's single recorded identity back
+    // into two garbled fragments, neither of which matches the target's real canonical path, so the
+    // second alias's checkpoint-itself seek does not recognize it as already shown and redescends.
+    [Fact]
+    public async Task ToolsCall_list_directory_preserves_an_out_of_scope_targets_identity_when_its_name_contains_the_tokens_prefix_boundary_byte()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string weirdName = "weird" + (char)0x1F + "dir";
+
+        string targetDirectory = _workspace.CreateSubdir(weirdName);
+
+        _workspace.WriteFile(weirdName + "/f.txt", "x");
+
+        string scopeDirectory = _workspace.CreateSubdir("scope");
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(scopeDirectory, "scopelinkA"),
+            targetDirectory);
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(scopeDirectory, "scopelinkB"),
+            targetDirectory);
+
+        // Sorts after both aliases ("z" > "s") and is a plain file, not a directory symlink: it does
+        // not touch the out-of-scope tracker at all. Its only job is giving the page-one lookahead a
+        // real fourth item to discard so hasMore genuinely becomes true -- without it, scopelinkB's own
+        // (correctly refused, live-state) descend decision leaves nothing else in the walk, hasMore
+        // never becomes true, no continuation token is ever encoded, and the encode/decode round trip
+        // this test exists to exercise never runs at all. Confirmed by getting a false GREEN against the
+        // unfixed separator-based encoding before adding this and diagnosing why.
+        _workspace.WriteFile("scope/zzz.txt", "x");
+
+        await using TestMcpSession oracleSession = await CreateSessionAsync(
+            listDirectoryMaxPaths: 100_000);
+
+        JsonElement oracleArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams { RelativePath = "scope", Recursive = true },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire oracleResult = await oracleSession.CallToolAsync(
+            "list_directory",
+            oracleArguments);
+
+        Assert.False(oracleResult.IsError);
+
+        string oracleText = Assert.Single(oracleResult.Content).Text!;
+
+        int oracleCount = oracleText.Split('\n').Length;
+
+        // Page size 3: page one keeps scopelinkA, scopelinkA's own child (its descent is legitimately
+        // decided producing that child, not a page-boundary peek), and scopelinkB itself -- so the
+        // target's identity is recorded into the outgoing token from scopelinkA's fully-page-one-owned
+        // descent, and scopelinkB's own descent decision is deferred whole to page two's checkpoint-
+        // itself seek, with no mid-ancestor walk through scopelinkA on the way there to mask the bug by
+        // incidentally re-deriving the target's identity fresh.
+        await using TestMcpSession session = await CreateSessionAsync(
+            listDirectoryMaxPaths: 3);
+
+        List<string> allLines = new();
+
+        int pages = 0;
+
+        string? continuation = null;
+
+        do
+        {
+
+            pages++;
+
+            Assert.True(pages <= 50, "Runaway paging -- aborting the test.");
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams
+                {
+                    RelativePath = "scope",
+                    Recursive = true,
+                    Continuation = continuation,
+                },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            foreach (string line in text.Split('\n'))
+            {
+
+                if (!line.StartsWith("...", StringComparison.Ordinal))
+                {
+
+                    allLines.Add(line);
+
+                }
+
+            }
+
+            const string cursorPrefix = "continuation=";
+
+            int cursorStart = text.LastIndexOf(cursorPrefix, StringComparison.Ordinal);
+
+            if (cursorStart < 0)
+            {
+
+                break;
+
+            }
+
+            cursorStart += cursorPrefix.Length;
+
+            int cursorEnd = text.IndexOf(';', cursorStart);
+
+            continuation = text[cursorStart..cursorEnd];
+
+        } while (true);
+
+        // The whole check: the target's content shown exactly once. A fragmented decode loses the
+        // target's identity, so the second alias's checkpoint does not recognize it as already shown
+        // and redescends -- one extra "scope/scopelinkB/f.txt" line, allLines.Count above oracleCount.
+        Assert.True(
+            allLines.Count == oracleCount,
+            $"Expected {oracleCount} entries across all continuations but observed {allLines.Count} over " +
+            $"{pages} pages. A continuation token entry containing the length-prefix boundary byte must " +
+            "round-trip intact, not fragment into pieces that fail to match the target's real identity. " +
+            $"Lines observed: [{string.Join(", ", allLines)}].");
+
+    }
+
+    // Round 3 follow-up (self-caught before returning): a review pass raised an int-overflow concern
+    // against ParseLengthPrefixedEntries's digit-accumulation loop. Investigated by simulating the
+    // digit-by-digit accumulation in isolation (see the report's own subsection on this) and found
+    // unreachable in practice -- the loop's own check runs after *every* digit, not once at the end, so
+    // the accumulated value can never exceed entriesPortion.Length entering any single multiply-add, and
+    // entriesPortion.Length is itself bounded well below int.MaxValue by
+    // TryDecodeListDirectoryContinuation's own byte-budget check up front. No defect, so no RED/GREEN
+    // pair for an overflow that does not occur -- what this pins instead is coverage that genuinely
+    // did not exist before: a length prefix larger than what remains of the token is rejected as
+    // malformed through the existing catch clause, not left to throw some other, unhandled exception.
+    [Fact]
+    public async Task ToolsCall_list_directory_rejects_a_continuation_whose_out_of_scope_entry_length_prefix_overruns_the_token()
+    {
+
+        string targetDirectory = _workspace.CreateSubdir("dirX");
+
+        _workspace.WriteFile("dirX/f.txt", "x");
+
+        string scopeDirectory = _workspace.CreateSubdir("scope");
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(scopeDirectory, "scopelink0"),
+            targetDirectory);
+
+        // Page size 1 forces scopelink0's own descend to be decided by the page-one lookahead and its
+        // resulting recording excluded from the snapshot (the round-2-follow-up fix), so the resulting
+        // token's third segment is empty on page one -- irrelevant here, since only a genuine,
+        // real-looking token (correct fingerprint and checkpoint path) is needed as a base to splice a
+        // forged third segment onto; its own out-of-scope content, if any, is discarded below.
+        await using TestMcpSession session = await CreateSessionAsync(
+            listDirectoryMaxPaths: 1);
+
+        JsonElement firstArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams { RelativePath = "scope", Recursive = true },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire firstResult = await session.CallToolAsync(
+            "list_directory",
+            firstArguments);
+
+        Assert.False(firstResult.IsError);
+
+        string firstText = Assert.Single(firstResult.Content).Text!;
+
+        const string cursorPrefix = "continuation=";
+
+        int cursorStart = firstText.IndexOf(cursorPrefix, StringComparison.Ordinal);
+
+        Assert.True(cursorStart >= 0, "Expected page one to need a continuation at page size 1.");
+
+        cursorStart += cursorPrefix.Length;
+
+        int cursorEnd = firstText.IndexOf(';', cursorStart);
+
+        string realToken = firstText[cursorStart..cursorEnd];
+
+        string realPayload = Encoding.UTF8.GetString(
+            Convert.FromBase64String(realToken));
+
+        int firstNewline = realPayload.IndexOf('\n');
+
+        int secondNewline = realPayload.IndexOf('\n', firstNewline + 1);
+
+        string fingerprintAndCheckpoint = secondNewline < 0
+            ? realPayload
+            : realPayload[..secondNewline];
+
+        string forgedPayload = fingerprintAndCheckpoint + "\n9999999999:x";
+
+        string forgedToken = Convert.ToBase64String(
+            Encoding.UTF8.GetBytes(forgedPayload));
+
+        JsonElement forgedArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams
+            {
+                RelativePath = "scope",
+                Recursive = true,
+                Continuation = forgedToken,
+            },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire forgedResult = await session.CallToolAsync(
+            "list_directory",
+            forgedArguments);
+
+        Assert.True(forgedResult.IsError);
+
+        Assert.Contains(
+            "malformed",
+            Assert.Single(forgedResult.Content).Text!,
+            StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -3106,7 +4288,6 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
 
-
     }
 
     /// <summary>Records the arguments the continuation tool handed to the Archmage Client.</summary>
@@ -3194,7 +4375,6 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             string taskId,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
-
 
     }
 
@@ -3337,6 +4517,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         IntelligenceSettings? intelligenceSettings = null,
         long maxFileReadSizeBytes = 1024 * 1024,
         int maxJsonRpcLineBytes = 2_097_152,
+        int listDirectoryMaxPaths = 64,
         bool conclaveEnabled = false,
         bool sagaEnabled = false,
         bool a2aClientEnabled = false,
@@ -3344,7 +4525,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         IA2AClientService? a2aClientService = null,
         CodingToolsSettings? codingToolsSettings = null,
         IWorkspaceCheckRuntime? workspaceCheckRuntime = null,
-        IGrimoireRepository? grimoireRepository = null)
+        IGrimoireRepository? grimoireRepository = null,
+        ResourceLimits? resourceLimits = null)
     {
 
         string? normalizedRoot = configureWorkspace
@@ -3362,7 +4544,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         services.AddSingleton<IMemoryScopeResolver>(new FakeMemoryScopeResolver());
 
-        services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
+        services.AddSingleton<ISanctumGuard>(new PermissiveSanctumGuard(resourceLimits ?? new ResourceLimits()));
 
         services.AddSingleton<RetroDownfall.Arcanum.Core.Platform.IProcessResourceLimiter, ProcessResourceLimiter>();
 
@@ -3406,7 +4588,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             scopeFactory,
             pacer,
             normalizedRoot,
-            listDirectoryMaxPaths: 64,
+            listDirectoryMaxPaths: listDirectoryMaxPaths,
             intelligenceSettings: settings,
             maxFileReadSizeBytes: maxFileReadSizeBytes,
             conclaveEnabled: conclaveEnabled,
@@ -3593,6 +4775,34 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    private static (string Command, string[] ArgumentList) ResolveQuickWriteCommand(string sentinelPath)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return ("powershell.exe", ["-NoProfile", "-Command", $"Set-Content -Path '{sentinelPath}' -Value done"]);
+
+        }
+
+        return ("/bin/sh", ["-c", $"echo done > '{sentinelPath}'"]);
+
+    }
+
+    private static (string Command, string[] ArgumentList) ResolveSleepCommand(int seconds)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return ("powershell.exe", ["-NoProfile", "-Command", $"Start-Sleep -Seconds {seconds}"]);
+
+        }
+
+        return ("/bin/sh", ["-c", $"sleep {seconds}"]);
+
+    }
+
     private static (string Command, string[] ArgumentList) ResolveLargeOutputCommand(
         int payloadCharacters)
     {
@@ -3689,6 +4899,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             offset = page.NextOffset.Value;
 
         }
+
         while (true);
 
     }
@@ -4146,7 +5357,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 "A canceled receipt probe must not reach handoff.");
     }
 
-    private sealed class PermissiveSanctumGuard : ISanctumGuard
+    private sealed class PermissiveSanctumGuard(ResourceLimits resourceLimits) : ISanctumGuard
     {
 
         public Task<SanctumResult> ValidatePathAsync(
@@ -4168,7 +5379,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             Task.FromResult(new SanctumResult { Allowed = true });
 
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
-            Task.FromResult(new ResourceLimits());
+            Task.FromResult(resourceLimits);
 
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,

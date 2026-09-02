@@ -39,6 +39,10 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
     {
         _hostProcessTools.Dispose();
 
+        // Belt-and-suspenders: the class shares process state ([Collection("ProcessEnvironment")]), so a
+        // test that threw before its own finally ran would otherwise leak the fault into every later test.
+        ArcanumSpellScriptTool.ResolveLinkTargetFaultForTests = null;
+
         try
         {
             if (Directory.Exists(_baseDir))
@@ -250,6 +254,62 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
             global::System.Environment.SetEnvironmentVariable(declaredSecretName, null);
 
             global::System.Environment.SetEnvironmentVariable(markerName, null);
+        }
+    }
+
+    /// <summary>
+    /// A genuine symlink cycle or over-limit chain long enough to make the real
+    /// <c>File.ResolveLinkTarget</c>/<c>Directory.ResolveLinkTarget</c> calls throw already makes
+    /// <c>FindScriptMatches</c>'s earlier <c>File.Exists</c> gate fail first on every platform this was
+    /// measured on, so this exercises the fail-closed catch through
+    /// <see cref="ArcanumSpellScriptTool.ResolveLinkTargetFaultForTests"/> instead -- the tool is still
+    /// invoked through the real <c>InvokeAsync</c> path with a real, resolvable script; only the
+    /// resolution call inside it is forced to fail the way a real ELOOP or permission failure would.
+    /// </summary>
+    [Fact]
+    public async Task Invoke_RealpathResolutionFailure_RefusesInsteadOfRunningTheUnresolvedScript()
+    {
+        string scriptName = OperatingSystem.IsWindows() ? "hello.ps1" : "hello.sh";
+
+        string scriptPath = Path.Combine(_rootA, scriptName);
+
+        string script = OperatingSystem.IsWindows()
+            ? "Write-Output 'ok'\n"
+            : "#!/bin/sh\necho ok\n";
+
+        await File.WriteAllTextAsync(scriptPath, script);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        ArcanumSpellScriptTool tool = new(
+            [_rootA],
+            allowUnsandboxedToolChildren: true);
+
+        ArcanumSpellScriptTool.ResolveLinkTargetFaultForTests =
+            static _ => throw new IOException("Too many levels of symbolic links.");
+
+        try
+        {
+            string? result = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = scriptName }))
+                as string;
+
+            Assert.NotNull(result);
+
+            Assert.Contains("could not resolve", result, StringComparison.OrdinalIgnoreCase);
+
+            // The defect this replaces silently continued past the failed resolution and launched the
+            // child anyway, on the pre-resolution candidate -- so the un-fixed catch makes this script
+            // run and print "ok" instead of refusing. Asserting the exit-code marker's absence, not just
+            // the refusal text's presence, is what makes this RED for the right reason: on the old code
+            // this assertion fails because the child actually ran, not because the message differs.
+            Assert.DoesNotContain("--- exit code ---", result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ArcanumSpellScriptTool.ResolveLinkTargetFaultForTests = null;
         }
     }
 

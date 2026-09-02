@@ -339,6 +339,42 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
 
     }
 
+    /// <summary>
+    /// Atomically discards a capability that was registered but never taken -- the frame that would
+    /// have carried it to a handler never reached the client. No-op (returns <see langword="false"/>)
+    /// once <see cref="TryTake"/> has already claimed it, even if that happened only an instant
+    /// earlier: the state check and the transition below run under the same <see cref="_gate"/>
+    /// <see cref="TryTake"/> does, so a concurrent caller can never observe (or act on) this capability
+    /// as still <see cref="CovenantToolCapabilityState.Registered"/> between the two -- unlike a caller
+    /// that reads <see cref="State"/> on its own and decides what to do with it afterward, which is
+    /// exactly the gap a compare-and-swap here closes. No nonce is required: the caller is the send
+    /// path itself, not a handler that took the capability.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Finish"/> is safe to call directly here (skipping the drain
+    /// <see cref="DisposeAsync"/> would otherwise wait on): a capability nobody has taken can have no
+    /// outstanding uses, since <see cref="TryAcquireUse"/> itself requires
+    /// <see cref="CovenantToolCapabilityState.Taken"/>.
+    /// </remarks>
+    public bool TryReleaseUnsent()
+    {
+
+        lock (_gate)
+        {
+
+            if (State != CovenantToolCapabilityState.Registered)
+            {
+                return false;
+            }
+
+            Finish();
+
+            return true;
+
+        }
+
+    }
+
     /// <summary>Takes the short atomic lease every capability operation runs under.</summary>
     public Result<IDisposable> TryAcquireUse(CovenantToolCapabilityNonce nonce)
     {
