@@ -204,7 +204,7 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
             return IsExactly(current, intended, terminalErrorCode)
                 ? new GrimoireOfflineTransitionDatabaseReconciliation(
                     GrimoireOfflineTransitionDatabaseOutcome.AlreadyTerminal,
-                    TerminalWinnerDigest(binding, current))
+                    WinnerDigest(binding, current))
                 : Outcome(GrimoireOfflineTransitionDatabaseOutcome.TerminalConflict);
 
         }
@@ -270,7 +270,7 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
             won
                 ? GrimoireOfflineTransitionDatabaseOutcome.Terminalized
                 : GrimoireOfflineTransitionDatabaseOutcome.AlreadyTerminal,
-            TerminalWinnerDigest(binding, winner));
+            WinnerDigest(binding, winner));
 
     }
 
@@ -355,7 +355,7 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
     /// writing process knows, so the process that comes back after a crash recomputes the identical
     /// value from the row it rereads.
     /// </remarks>
-    private static CovenantDigest TerminalWinnerDigest(
+    internal static CovenantDigest WinnerDigest(
         GrimoireOfflineTransitionBinding binding,
         LongRunningOperation winner)
     {

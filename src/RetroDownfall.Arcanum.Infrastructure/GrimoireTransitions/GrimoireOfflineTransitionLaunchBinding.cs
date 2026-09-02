@@ -142,14 +142,15 @@ internal static class GrimoireOfflineTransitionLaunch
     /// Builds the journal binding this launch may be published under.
     /// </summary>
     /// <remarks>
-    /// The launch digest and the expected database revision are derived here rather than accepted
-    /// from the caller, because those two fields are what later proves the journal and the row are
-    /// halves of the same transition. A caller that could supply them could publish a journal bound
-    /// to a launch it is not.
+    /// The launch digest is derived here rather than accepted from the caller, because it is what
+    /// later proves the journal and the row are halves of the same transition. A caller that could
+    /// supply it could publish a journal bound to a launch it is not.
     ///
-    /// <para><paramref name="expectedDatabaseOperationRevision"/> must be past the launch's own
-    /// recorded revision: committing the launch checkpoint advances the row, so a payload can never
-    /// name the revision it will itself produce, and an expected revision at or below the recorded
+    /// <para><paramref name="expectedDatabaseOperationRevision"/> cannot be derived and stays the
+    /// caller's to read back: committing the launch checkpoint advances the row, and a lease renewal
+    /// before the opening publication may advance it again, so only a reread immediately before
+    /// publishing knows the value. What is enforced here is the one thing that is knowable — it must
+    /// be past the revision the launch itself recorded, because an expected revision at or below that
     /// one names a row state from before the checkpoint existed.</para>
     /// </remarks>
     internal static Result<GrimoireOfflineTransitionBinding> JournalBinding(

@@ -779,8 +779,10 @@ Ordinary non-Covenant long-running-operation checkpoints are unchanged.
 `DataRetentionFactoryTransitionLaunchV2` checkpoint codecs and their immutable
 operation/kind/recovery/effect/source/target/starting-revision launch fields, the single projection
 that turns either shape into the journal launch binding, the domain-separated
-`DatabaseOperationLaunchBindingDigest` and the journal-binding constructor that derives it and the
-expected row revision rather than accepting them, the unconditional refusal that stops a legacy V3/V1
+`DatabaseOperationLaunchBindingDigest` and the journal-binding constructor that derives it rather than
+accepting it — the expected row revision remains the caller's to read back after the launch commit, and
+is refused unless it is past the revision the launch itself recorded — the unconditional refusal that
+stops a legacy V3/V1
 checkpoint becoming a launch, and the exact terminal reconciler: one compare-exchange to `Completed`
 or to a journal-proven pre-effect `Failed`, a winner reread under the same rules, an idempotent
 already-terminal arm carrying the identical winner digest, and separate non-writing refusals for a

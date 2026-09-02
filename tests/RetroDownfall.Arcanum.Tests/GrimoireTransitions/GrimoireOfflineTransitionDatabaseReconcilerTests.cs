@@ -353,26 +353,160 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
     }
 
     /// <summary>
-    /// The winner digest is a function of the launch and the exact terminal row, so two transitions
-    /// that ended the same way over different launches are still distinguishable.
+    /// End to end: two transitions that reach the identical terminal state under the identical
+    /// terminal code still produce distinguishable evidence.
     /// </summary>
     [Fact]
-    public async Task The_winner_digest_binds_the_launch_it_terminalized()
+    public async Task Two_transitions_over_different_launches_carry_different_evidence()
+    {
+
+        Guid other = Guid.Parse("99999999-9999-4999-8999-999999999999");
+
+        FakeLongRunningOperationStore store = Store();
+
+        FakeLongRunningOperationStore renamed = Store(operationId: other);
+
+        GrimoireOfflineTransitionDatabaseReconciliation first = await Reconcile(store);
+
+        GrimoireOfflineTransitionDatabaseReconciliation second =
+            await new GrimoireOfflineTransitionDatabaseReconciler(renamed, _time).ReconcileAsync(
+                Payload(CovenantResetPhaseMachine.Last, null, other),
+                GrimoireOfflineTransitionTerminalDisposition.Completed,
+                CancellationToken.None);
+
+        Assert.Equal(GrimoireOfflineTransitionDatabaseOutcome.Terminalized, first.Outcome);
+
+        Assert.Equal(GrimoireOfflineTransitionDatabaseOutcome.Terminalized, second.Outcome);
+
+        Assert.NotEqual(first.TerminalWinnerDigest, second.TerminalWinnerDigest);
+
+    }
+
+    /// <summary>
+    /// The launch binding is part of the evidence, and it is the part a row cannot supply.
+    /// </summary>
+    /// <remarks>
+    /// Asserted against one identical winning row on purpose. Two transitions over different launches
+    /// also differ in the operation the row names, so an end-to-end comparison cannot tell a digest
+    /// that covers the launch from one that only covers the row — which is exactly the regression
+    /// that would let a journal accept a terminal row belonging to a different transition of the same
+    /// operation.
+    /// </remarks>
+    [Fact]
+    public void The_winner_digest_binds_the_launch_binding_and_not_only_the_row()
+    {
+
+        LongRunningOperation winner = Winner(ExpectedRevision + 1);
+
+        GrimoireOfflineTransitionBinding binding = Journal();
+
+        GrimoireOfflineTransitionBinding rebound = binding with
+        {
+            DatabaseOperationLaunchBindingDigest =
+                new CovenantDigest([.. Enumerable.Repeat((byte)0x5a, 32)]),
+        };
+
+        Assert.NotEqual(
+            GrimoireOfflineTransitionDatabaseReconciler.WinnerDigest(binding, winner),
+            GrimoireOfflineTransitionDatabaseReconciler.WinnerDigest(rebound, winner));
+
+    }
+
+    /// <summary>
+    /// The exact winning revision is part of the evidence, so a row that reached the same terminal
+    /// after a different history is not the same winner.
+    /// </summary>
+    [Fact]
+    public void The_winner_digest_binds_the_revision_that_won()
+    {
+
+        GrimoireOfflineTransitionBinding binding = Journal();
+
+        Assert.NotEqual(
+            GrimoireOfflineTransitionDatabaseReconciler.WinnerDigest(binding, Winner(ExpectedRevision + 1)),
+            GrimoireOfflineTransitionDatabaseReconciler.WinnerDigest(binding, Winner(ExpectedRevision + 2)));
+
+    }
+
+    /// <summary>
+    /// The terminal code is part of the evidence too, and of the comparison that reads it back: a
+    /// row failed under somebody else's code is not this transition's answer.
+    /// </summary>
+    [Fact]
+    public async Task A_row_failed_under_another_terminal_code_is_a_conflict_not_a_replay()
     {
 
         FakeLongRunningOperationStore store = Store();
 
-        GrimoireOfflineTransitionDatabaseReconciliation completed = await Reconcile(store);
+        Seed(store, LongRunningOperationState.Failed, "data-retention.mutation_never_started");
 
-        FakeLongRunningOperationStore other = Store();
+        LongRunningOperation before = Assert.Single(store.Operations);
 
-        GrimoireOfflineTransitionDatabaseReconciliation failed = await Reconcile(
-            other,
+        GrimoireOfflineTransitionDatabaseReconciliation reconciled = await Reconcile(
+            store,
             GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect,
             CovenantResetPhaseMachine.First,
             inFlight: null);
 
-        Assert.NotEqual(completed.TerminalWinnerDigest, failed.TerminalWinnerDigest);
+        Assert.Equal(GrimoireOfflineTransitionDatabaseOutcome.TerminalConflict, reconciled.Outcome);
+
+        Assert.False(reconciled.PermitsRetirement);
+
+        Assert.Equal(before, Assert.Single(store.Operations));
+
+    }
+
+    /// <summary>
+    /// A pre-effect failure replays the way a completion does: same outcome, same evidence, no
+    /// second write.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_effect_failure_is_idempotent_with_the_same_winner_digest()
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        GrimoireOfflineTransitionDatabaseReconciliation first = await Reconcile(
+            store,
+            GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect,
+            CovenantResetPhaseMachine.First,
+            inFlight: null);
+
+        long settled = Assert.Single(store.Operations).Revision;
+
+        GrimoireOfflineTransitionDatabaseReconciliation second = await Reconcile(
+            store,
+            GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect,
+            CovenantResetPhaseMachine.First,
+            inFlight: null);
+
+        Assert.Equal(GrimoireOfflineTransitionDatabaseOutcome.AlreadyTerminal, second.Outcome);
+
+        Assert.Equal(first.TerminalWinnerDigest, second.TerminalWinnerDigest);
+
+        Assert.Equal(settled, Assert.Single(store.Operations).Revision);
+
+    }
+
+    /// <summary>
+    /// A row completed while this transition intends a pre-effect failure is the opposite verdict,
+    /// and the state comparison alone is what refuses it.
+    /// </summary>
+    [Fact]
+    public async Task A_completed_row_is_a_conflict_for_a_transition_intending_failure()
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        Seed(store, LongRunningOperationState.Completed, terminalErrorCode: null);
+
+        GrimoireOfflineTransitionDatabaseReconciliation reconciled = await Reconcile(
+            store,
+            GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect,
+            CovenantResetPhaseMachine.First,
+            inFlight: null);
+
+        Assert.Equal(GrimoireOfflineTransitionDatabaseOutcome.TerminalConflict, reconciled.Outcome);
 
     }
 
@@ -386,7 +520,7 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
 
         GrimoireOfflineTransitionDatabaseReconciliation reconciled =
             await new GrimoireOfflineTransitionDatabaseReconciler(store, _time).ReconcileAsync(
-                Payload(CovenantResetPhaseMachine.First, null) with
+                Payload(CovenantResetPhaseMachine.First, null, Operation) with
                 {
                     Binding = Journal() with { ExpectedDatabaseOperationRevision = 0 },
                 },
@@ -415,14 +549,14 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
         CovenantResetPhase lastCompleted,
         CovenantResetPhase? inFlight) =>
         new GrimoireOfflineTransitionDatabaseReconciler(store, _time).ReconcileAsync(
-            Payload(lastCompleted, inFlight),
+            Payload(lastCompleted, inFlight, Operation),
             disposition,
             CancellationToken.None);
 
-    private static CovenantOfflineTransitionLaunchV4 Launch() =>
+    private static CovenantOfflineTransitionLaunchV4 Launch(Guid operationId) =>
         new(
             CovenantOfflineTransitionLaunchV4.CurrentVersion,
-            Operation,
+            operationId,
             LongRunningOperationKinds.DataRetentionMutation,
             nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
             CovenantExclusiveOperation.CovenantReset,
@@ -433,9 +567,11 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
             new CovenantOfflineTransitionEpochsV1(12, 23, 34),
             LaunchRevision);
 
-    private static GrimoireOfflineTransitionBinding Journal() =>
+    private static GrimoireOfflineTransitionBinding Journal() => Journal(Operation);
+
+    private static GrimoireOfflineTransitionBinding Journal(Guid operationId) =>
         GrimoireOfflineTransitionLaunch.JournalBinding(
-            GrimoireOfflineTransitionLaunch.FromLaunch(Launch()).Value,
+            GrimoireOfflineTransitionLaunch.FromLaunch(Launch(operationId)).Value,
             slotEpoch: 3,
             payloadVersion: 1,
             ExpectedRevision,
@@ -443,9 +579,10 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
 
     private static CovenantResetOfflineTransitionPayloadV1 Payload(
         CovenantResetPhase lastCompleted,
-        CovenantResetPhase? inFlight) =>
+        CovenantResetPhase? inFlight,
+        Guid operationId) =>
         new(
-            Journal(),
+            Journal(operationId),
             new GrimoireOfflineTransitionLifecycle(
                 GrimoireOfflineTransitionState.DatabaseReconciliationPending,
                 GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
@@ -464,7 +601,11 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
             InFlightBeforeState: null,
             ReplacementEvidence: null);
 
-    private FakeLongRunningOperationStore Store(string disturbed = "")
+    private FakeLongRunningOperationStore Store(string disturbed = "") => Store(disturbed, Operation);
+
+    private FakeLongRunningOperationStore Store(Guid operationId) => Store("", operationId);
+
+    private FakeLongRunningOperationStore Store(string disturbed, Guid operationId)
     {
 
         FakeLongRunningOperationStore store = new(_time);
@@ -473,7 +614,7 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
         {
 
             "launch-payload" => CovenantRecoveryCheckpointCodec.Encode(
-                Launch() with { StartingRevision = LaunchRevision + 1 }),
+                Launch(operationId) with { StartingRevision = LaunchRevision + 1 }),
 
             "legacy" => CovenantRecoveryCheckpointCodec.Encode(
                 new DataRetentionMutationCheckpointV3(
@@ -481,18 +622,18 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
                     Subtype: "reset-memory",
                     Target: "5",
                     new CovenantResetEffectArmV1(
-                        Operation,
+                        operationId,
                         Effect,
                         CovenantExclusiveOperation.CovenantReset,
                         CovenantResetPhaseMachine.First))),
 
-            _ => CovenantRecoveryCheckpointCodec.Encode(Launch()),
+            _ => CovenantRecoveryCheckpointCodec.Encode(Launch(operationId)),
 
         };
 
         store.Add(
             new LongRunningOperation(
-                Operation,
+                operationId,
                 disturbed is "kind"
                     ? LongRunningOperationKinds.DataRetentionFactoryReset
                     : LongRunningOperationKinds.DataRetentionMutation,
@@ -524,7 +665,7 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
                     ? "retention-mutation:not-this-one"
                     : CovenantResetCheckpointInitiator.CheckpointReference(
                         LongRunningOperationKinds.DataRetentionMutation,
-                        Operation),
+                        operationId),
                 PublicSummary: "Covenant memory reset",
                 TerminalErrorCode: null,
                 Revision: disturbed is "revision" ? ExpectedRevision + 1 : ExpectedRevision));
@@ -532,6 +673,14 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
         return store;
 
     }
+
+    private LongRunningOperation Winner(long revision) =>
+        Store().Operations.Single() with
+        {
+            State = LongRunningOperationState.Completed,
+            CompletedAt = _time.GetUtcNow(),
+            Revision = revision,
+        };
 
     private void Seed(
         FakeLongRunningOperationStore store,
