@@ -416,9 +416,11 @@ public sealed class SanctumGuard(
         string campaignId,
         CancellationToken ct)
     {
-        // A malformed non-blank id is already denied by DenyIfInvalidCampaignId before any caller
-        // reaches here, but this check is kept defensive (Unresolvable, not NotSupplied) so this
-        // loader is fail-closed on its own even if a future caller skips that gate.
+        // A blank id means no campaign context was supplied at all, which DenyIfInvalidCampaignId
+        // also lets through, so this returns NotSupplied and the caller grants full permission -
+        // there is no config to enforce. The malformed-but-non-blank case below is the one that gate
+        // already denies; it is repeated here, returning Unresolvable, so this loader stays
+        // fail-closed on its own even if a future caller skips the gate.
         if (string.IsNullOrWhiteSpace(campaignId))
         {
             return (CampaignLoadOutcome.NotSupplied, null, null);
