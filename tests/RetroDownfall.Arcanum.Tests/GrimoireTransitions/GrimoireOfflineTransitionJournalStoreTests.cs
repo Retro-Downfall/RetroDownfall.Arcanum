@@ -1861,6 +1861,44 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_while_finishing_closed_file_cleanup()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore(
+            failBeforeStep: step => step == "file:retiring-unlinked");
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsFailure);
+
+        // Interrupting retirement here leaves the closed anchor with its file already exchanged
+        // into the Retiring slot (not Canonical), so recovery reaches RecoverClosedAsync's
+        // *retiring* branch -- confirmed empirically: reverting only the canonical branch's fix
+        // left this test green, and reverting only the retiring branch's fix turned it red. The
+        // early explicit key-presence check is the first matching read; that branch's own
+        // AuthenticateEvidence -> Open call is the second -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnSecondRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 2);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnSecondRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
     [Theory]
     [InlineData("file:absence-parent-flushed")]
     [InlineData("file:absence-proved")]

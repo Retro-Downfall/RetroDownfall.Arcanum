@@ -1033,7 +1033,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (revalidated.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(revalidated.Error);
 
             }
 
@@ -1107,9 +1107,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     .ConfigureAwait(false)
                 : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
 
-            return revalidated.IsSuccess
-                ? Authenticated(revalidated.Value)
-                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+            if (revalidated.IsFailure)
+            {
+
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(revalidated.Error);
+
+            }
+
+            return Authenticated(revalidated.Value);
 
         }
 
@@ -1166,7 +1171,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (revalidated.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(revalidated.Error);
 
             }
 
@@ -1434,7 +1439,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (canonical.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(canonical.Error);
 
             }
 
@@ -1469,7 +1474,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (retiring.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(retiring.Error);
 
             }
 
@@ -1560,8 +1565,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         Result<GrimoireOfflineTransitionJournalPublication> authenticated =
             AuthenticateEvidence(location, canonical, expected.Anchor);
 
-        return authenticated.IsSuccess
-            && FileHandleIdentity.IdentitiesMatch(
+        if (authenticated.IsFailure)
+        {
+
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(authenticated.Error);
+
+        }
+
+        return FileHandleIdentity.IdentitiesMatch(
                 expected.FileMetadata.Identity,
                 authenticated.Value.FileMetadata.Identity)
             && authenticated.Value.Envelope == expected.Envelope
