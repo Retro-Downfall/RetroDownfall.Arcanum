@@ -1433,6 +1433,58 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     }
 
+    [Theory]
+    [InlineData("begin")]
+    [InlineData("recover")]
+    [InlineData("retire")]
+    public async Task Begin_recover_and_retire_propagate_an_unavailable_key_credential_store(
+        string entryPoint)
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(setup);
+
+        if (entryPoint is "begin")
+        {
+
+            Assert.True((await setup.RetireAsync(_lock, current, CancellationToken.None)).IsSuccess);
+
+        }
+
+        PrefixThrowingCredentialStore keyUnavailable = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailable,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Guid nextOperation = Guid.Parse("77777777-7777-4777-8777-777777777777");
+
+        Result outcome = entryPoint switch
+        {
+            "begin" => await probing.BeginAsync(
+                _lock,
+                _guarded,
+                Installation,
+                nextOperation,
+                GrimoireOfflineTransitionKind.CovenantReset,
+                1,
+                Bytes("next"),
+                CancellationToken.None),
+            "recover" => await probing.RecoverAsync(_lock, _guarded, CancellationToken.None),
+            "retire" => await probing.RetireAsync(_lock, current, CancellationToken.None),
+            _ => throw new Xunit.Sdk.XunitException(entryPoint),
+        };
+
+        Assert.True(outcome.IsFailure, entryPoint);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, outcome.Error.Code);
+
+    }
+
     [Fact]
     public async Task Retire_writes_and_reads_closed_anchor_before_deleting_the_file()
     {
@@ -2110,5 +2162,29 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     private static T Value<T>(Result<T> result) =>
         result.IsSuccess ? result.Value : throw new Xunit.Sdk.XunitException(result.Error.Message);
+
+    /// <summary>
+    /// Delegates every read to <paramref name="inner"/> except for the one account prefix under
+    /// test, which throws to simulate a transient OS credential store outage for that secret alone.
+    /// </summary>
+    private sealed class PrefixThrowingCredentialStore(
+        IOsCredentialStore inner,
+        string throwingAccountPrefix) : IOsCredentialStore
+    {
+
+        public bool IsAvailable => inner.IsAvailable;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            account.StartsWith(throwingAccountPrefix, StringComparison.Ordinal)
+                ? throw new IOException("The credential store is unavailable for this account.")
+                : inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            inner.Delete(service, account);
+
+    }
 
 }

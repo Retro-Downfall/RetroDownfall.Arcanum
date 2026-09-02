@@ -398,7 +398,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (present.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+                return KeyFailure<GrimoireOfflineTransitionJournalPublication>(present.Error);
 
             }
 
@@ -886,7 +886,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (key.IsFailure)
         {
 
-            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+            return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(key.Error);
 
         }
 
@@ -1183,7 +1183,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (key.IsFailure)
         {
 
-            return RecoveryRequired();
+            return KeyFailure(key.Error);
 
         }
 
@@ -1954,5 +1954,15 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
     private static Result RecoveryRequired() => new Error(
         ErrorCodes.Covenant.ManualRecoveryRequired,
         "The transition journal has durable evidence that requires exact recovery.");
+
+    private static Result<T> KeyFailure<T>(Error error) =>
+        error.Code == ErrorCodes.Covenant.Unavailable
+            ? Result<T>.Failure(error)
+            : RecoveryRequired<T>();
+
+    private static Result KeyFailure(Error error) =>
+        error.Code == ErrorCodes.Covenant.Unavailable
+            ? Result.Failure(error)
+            : RecoveryRequired();
 
 }
