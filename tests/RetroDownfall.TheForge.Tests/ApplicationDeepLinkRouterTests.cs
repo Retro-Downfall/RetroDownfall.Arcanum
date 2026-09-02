@@ -165,6 +165,42 @@ public sealed class ApplicationDeepLinkRouterTests
 
     }
 
+    [Theory]
+    [MemberData(nameof(DeepLinkArgumentFailedToParseCases))]
+    public void DeepLinkArgumentFailedToParse_MatchesWhetherTheArgumentWasPresentButUnparseable(
+        string[] arguments,
+        bool expected)
+    {
+
+        // Drives Program's predicate the way Main actually would: parse the raw arguments first
+        // (TheForgeDeepLinkStartup.Parse, the same call Main makes), then hand both the raw
+        // arguments and the parse result to the predicate under test — nothing here seeds
+        // deepLinkParseFailed directly.
+        TheForgeStartupArguments startup = TheForgeDeepLinkStartup.Parse(arguments);
+
+        Assert.Equal(expected, Program.DeepLinkArgumentFailedToParse(arguments, startup.DeepLink));
+
+    }
+
+    public static TheoryData<string[], bool> DeepLinkArgumentFailedToParseCases()
+    {
+
+        string validPayload = ApplicationDeepLinkCodec.Encode(
+            NewLink(ApplicationResourceKind.None, resourceId: null!));
+
+        return new TheoryData<string[], bool>
+        {
+
+            { ["--arcanum-deep-link", "{not json"], true },
+
+            { [], false },
+
+            { ["--arcanum-deep-link", validPayload], false },
+
+        };
+
+    }
+
     [Fact]
     public async Task RouteAsync_Session_OpensSessionDocument()
     {
