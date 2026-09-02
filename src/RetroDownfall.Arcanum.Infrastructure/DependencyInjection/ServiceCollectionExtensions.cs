@@ -1411,8 +1411,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ArcanumDbContext>(),
                 sp.GetRequiredService<ISessionAttachmentStore>(),
                 sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
-                sp.GetService<ISessionAttachmentIndexQueue>(),
-                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                sp.GetService<ISessionAttachmentIndexQueue>()));
 
         services.AddSingleton<SessionEventHub>();
 
