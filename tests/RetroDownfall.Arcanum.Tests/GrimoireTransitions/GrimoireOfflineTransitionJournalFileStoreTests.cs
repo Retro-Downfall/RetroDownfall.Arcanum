@@ -1816,6 +1816,61 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     }
 
+    /// <summary>
+    /// CompareUnlink's post-condition requires the retained handle's HardLinkCount to reach zero after
+    /// the POSIX-semantics delete on Windows, re-read through the still-open handle that is keeping the
+    /// deleted file object alive. Whether NTFS reports zero before the last handle closes cannot be
+    /// settled by reading Microsoft's documentation or by running anything on this host; only an actual
+    /// Windows run of DeleteDurably answers it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_delete_durably_succeeds_after_publication()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: settles whether NTFS reports the retained handle's link count as zero "
+                + "after a POSIX-semantics delete on a still-open handle.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalFileStore store = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("windows-delete-durably").ToArray();
+
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleMetadata metadata;
+
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await store.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            metadata = current.Metadata;
+
+        }
+
+        Result result = store.DeleteDurably(held, location, metadata, bytes);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+    }
+
     [Fact]
     public void Windows_desired_access_and_share_mode_constants_are_exact()
     {
