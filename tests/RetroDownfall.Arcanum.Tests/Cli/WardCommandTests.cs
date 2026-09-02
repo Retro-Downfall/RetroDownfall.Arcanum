@@ -114,7 +114,7 @@ public sealed class WardCommandTests
 
         CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 
@@ -128,7 +128,7 @@ public sealed class WardCommandTests
 
         CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--allow", "--deny"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 
