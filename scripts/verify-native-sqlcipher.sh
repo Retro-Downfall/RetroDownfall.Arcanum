@@ -26,6 +26,8 @@ SELECTED_RID=""
 
 FAILURES=0
 
+UNVERIFIED=0
+
 LF="
 "
 
@@ -52,6 +54,17 @@ fail() {
 pass() {
 
   echo "  ok: $*"
+
+}
+
+# A property this script has no way to check on this host or in this job -- distinct from both a
+# proven "ok" and a proven "FAIL". Printed rather than silently passed, because a claim nobody
+# checked is not the same evidence as a claim that was checked and held.
+unverified() {
+
+  echo "  UNVERIFIED: $*"
+
+  UNVERIFIED=$((UNVERIFIED + 1))
 
 }
 
@@ -552,7 +565,14 @@ verify_rid_symbols() {
 
     win-*)
 
-      pass "${rid} symbol inspection is performed by the Windows native job"
+      # No job in verify-native-sqlcipher.yml runs dumpbin /EXPORTS (or any equivalent) against
+      # the checked-in win-* binary, so this script cannot claim the symbol table was inspected.
+      # The construction-time guarantee is real -- build-native-sqlcipher.ps1 builds the .def
+      # export list from dumpbin /symbols filtered to sqlite3_* and links with /DEF, so a leaked
+      # export is not possible from this build path -- but that is a property of the build script,
+      # not something this verification step checked, so it is reported as such rather than as a
+      # pass.
+      unverified "${rid} symbol table is not inspected by any job (see build-native-sqlcipher.ps1's /DEF export list for the construction-time guarantee)"
 
       ;;
 
@@ -673,7 +693,13 @@ verify_rid_dependencies() {
 
     win-*)
 
-      pass "${rid} import table is checked by the Windows native job"
+      # No job in verify-native-sqlcipher.yml runs dumpbin /DEPENDENTS (or any equivalent) against
+      # the checked-in win-* binary, so nothing compares its import table to the manifest's
+      # declared dynamicDependencies (ADVAPI32.dll, KERNEL32.dll, bcrypt.dll) even though
+      # build-native-sqlcipher.ps1 also links ws2_32.lib, crypt32.lib and user32.lib. Unlike the
+      # symbol table, there is no construction-time guarantee standing in for this check, so an
+      # unlisted import would ship undetected until an import-table step exists in the Windows job.
+      unverified "${rid} import table is not checked by any job; the manifest's dynamicDependencies are unverified against the built binary"
 
       ;;
 
@@ -800,6 +826,16 @@ case "${MODE}" in
 
     done < <(jq -r '.assets[].rid' "${MANIFEST}")
 
+    # --all's own contract, in the usage banner above, is "every shipping RID", never skipped. An
+    # UNVERIFIED report from any RID's checks is exactly the skip that contract rules out, so it
+    # fails the run here -- even though --rid and --manifest-only, which is what CI actually
+    # invokes, leave the same report non-failing.
+    if [ "${UNVERIFIED}" -ne 0 ]; then
+
+      fail "--all found ${UNVERIFIED} unverified check(s) above; --all never skips, and an unverified check is not a pass"
+
+    fi
+
     ;;
 
 esac
@@ -814,4 +850,12 @@ if [ "${FAILURES}" -ne 0 ]; then
 
 fi
 
-echo "verify-native-sqlcipher: all checks passed."
+if [ "${UNVERIFIED}" -ne 0 ]; then
+
+  echo "verify-native-sqlcipher: all checks passed (${UNVERIFIED} unverified)."
+
+else
+
+  echo "verify-native-sqlcipher: all checks passed."
+
+fi
