@@ -329,6 +329,49 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
     }
 
+    [Theory]
+    [InlineData("profile")]
+    [InlineData("installation")]
+    [InlineData("location")]
+    public void Open_refuses_a_mismatched_expectation_for_each_pre_checked_field(string header)
+    {
+
+        // Unlike Envelope_aad_rejects_each_changed_header_field, the envelope here is exactly
+        // as sealed -- untampered, so its AAD reconstructs identically and the tag verifies.
+        // Only a caller-supplied expectation that genuinely disagrees with the envelope's own
+        // (unmodified) field can make Open refuse here, which is what proves the pre-check at
+        // Open:239-241 still exists and still runs before AES-GCM, independent of AAD coverage.
+        GrimoireOfflineTransitionEnvelopeV1 envelope = Seal();
+
+        using GrimoireOfflineTransitionJournalKeyLease opening = OpenLease();
+
+        Result<byte[]> result = header switch
+        {
+            "profile" => GrimoireOfflineTransitionJournalAuthenticator.Open(
+                opening,
+                Digest(10),
+                Installation,
+                Digest(3),
+                envelope),
+            "installation" => GrimoireOfflineTransitionJournalAuthenticator.Open(
+                opening,
+                Digest(1),
+                Guid.Parse("99999999-9999-4999-8999-999999999999"),
+                Digest(3),
+                envelope),
+            "location" => GrimoireOfflineTransitionJournalAuthenticator.Open(
+                opening,
+                Digest(1),
+                Installation,
+                Digest(8),
+                envelope),
+            _ => throw new ArgumentOutOfRangeException(nameof(header)),
+        };
+
+        Assert.True(result.IsFailure);
+
+    }
+
     [Fact]
     public void Ciphertext_tag_wrong_key_and_resealed_same_revision_are_refused()
     {

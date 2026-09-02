@@ -2101,6 +2101,36 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Open_refuses_a_genuinely_mismatched_expected_installation_id()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication published = await BeginAsync(store);
+
+        MethodInfo open = typeof(GrimoireOfflineTransitionJournalStore).GetMethod(
+            "Open",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new Xunit.Sdk.XunitException(
+                "GrimoireOfflineTransitionJournalStore no longer declares a private Open method.");
+
+        Guid mismatchedInstallationId = Guid.Parse("88888888-8888-4888-8888-888888888888");
+
+        // published.Envelope genuinely carries Installation (unmutated, exactly as sealed); this
+        // invokes the store's private Open directly -- bypassing every caller's own independent
+        // installation check -- with an expectation that disagrees with the real envelope, so
+        // only Open's own comparison against expectedInstallationId can refuse it.
+        object? invoked = open.Invoke(
+            store,
+            [published.Location, mismatchedInstallationId, published.Envelope]);
+
+        Result<byte[]> result = Assert.IsType<Result<byte[]>>(invoked);
+
+        Assert.True(result.IsFailure);
+
+    }
+
     private GrimoireOfflineTransitionJournalStore ReadyStore(
         List<string>? events = null,
         Func<string, bool>? failBeforeStep = null)
