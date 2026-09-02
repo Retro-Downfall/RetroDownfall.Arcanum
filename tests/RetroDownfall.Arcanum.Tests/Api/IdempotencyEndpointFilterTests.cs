@@ -1007,6 +1007,63 @@ public sealed class IdempotencyEndpointFilterTests
 
     }
 
+    // Fix round 1, item 3: ComputeBodyDigestAsync reads the body through an 80 KiB (81920-byte)
+    // pooled buffer, one ReadAsync per iteration. Nothing pinned that the loop actually consumes
+    // every byte of every chunk rather than, say, only the start of each read — a bug shaped exactly
+    // like that would still pass every existing test, none of which sends a body over one buffer's
+    // worth. Two bodies here share their first 85,000 bytes (past the boilerplate and past the first
+    // 81920-byte chunk boundary, so both chunks' starts fall inside the shared region) and then
+    // diverge in a short distinct tail. The shared block lives inside the JSON "content" string's
+    // value so both bodies stay valid, so a digest that only sampled each chunk's leading bytes would
+    // still see byte-identical input from both requests and treat the second as a replay of the
+    // first. The real, correct loop hashes every byte, so the two full bodies produce different
+    // digests, different fingerprints, and Security.IdempotencyConflict (409) under the same key.
+    [SkippableFact]
+    public async Task PostChatCompletions_TwoLargeBodiesSharingAnEightyKibPrefix_SecondRequestConflictsInsteadOfReplaying()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "shared-prefix-probe-response";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        const int sharedPrefixLength = 85_000;
+
+        const string boilerplate = "{\"model\":\"mistral:latest\",\"messages\":[{\"role\":\"user\",\"content\":\"";
+
+        string sharedPadding = new string('a', sharedPrefixLength);
+
+        string key = $"shared-prefix-{Guid.NewGuid():N}";
+
+        async Task<HttpResponseMessage> SendAsync(string distinctTail)
+        {
+
+            string payload = boilerplate + sharedPadding + distinctTail + "\"}]}";
+
+            HttpRequestMessage request = new(HttpMethod.Post, "/v1/chat/completions")
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+
+            request.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+            return await client.SendAsync(request);
+
+        }
+
+        HttpResponseMessage firstResponse = await SendAsync("-body-one-tail");
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        HttpResponseMessage secondResponse = await SendAsync("-body-two-tail-differs-here");
+
+        Assert.Equal(HttpStatusCode.Conflict, secondResponse.StatusCode);
+
+    }
+
 }
 
 public sealed class IdempotencyEndpointFilterOwnershipTests
