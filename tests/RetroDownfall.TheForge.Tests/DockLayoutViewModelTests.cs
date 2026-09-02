@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.Docking;
@@ -314,6 +316,84 @@ public class DockLayoutViewModelTests
             }
 
         }
+
+    }
+
+    [Fact]
+    public void Dispose_WhenTheFlushExceedsTheShutdownTimeout_ReturnsWithinTheBoundAndLogs()
+    {
+
+        RecordingLogger<DockLayoutViewModel> logger = new();
+
+        SlowSettingsStore store = new(blockFor: TimeSpan.FromMilliseconds(400));
+
+        DockLayoutViewModel layout = new(
+            store,
+            persistDebounce: TimeSpan.FromSeconds(30),
+            logger: logger,
+            shutdownFlushTimeout: TimeSpan.FromMilliseconds(50));
+
+        layout.MoveTool(layout.FindTool(DockToolId.Gatehouse)!, DockRegion.Left);
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+
+        layout.Dispose();
+
+        stopwatch.Stop();
+
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromMilliseconds(300),
+            $"Dispose took {stopwatch.Elapsed}, expected to return close to the 50ms bound rather than wait out the 400ms flush.");
+
+        Assert.Contains(
+            logger.Messages,
+            static m => m.Contains("did not complete", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    private sealed class SlowSettingsStore(TimeSpan blockFor) : ITheForgeSettingsStore
+    {
+
+        public string SettingsPath => "slow-store";
+
+        public Task<TheForgeSettings> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new TheForgeSettings());
+
+        public Task SaveAsync(TheForgeSettings settings, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public async Task SavePatchAsync(
+            Func<TheForgeSettings, TheForgeSettings> patch,
+            CancellationToken cancellationToken = default)
+        {
+
+            // A real slow write (contended disk, a huge payload) is not interrupted by the
+            // caller's token either — Dispose's flush always calls through with CancellationToken
+            // .None, so this ignores cancellationToken and blocks unconditionally.
+            await Task.Delay(blockFor, CancellationToken.None).ConfigureAwait(false);
+
+        }
+
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull =>
+            null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Messages.Add(formatter(state, exception));
 
     }
 
