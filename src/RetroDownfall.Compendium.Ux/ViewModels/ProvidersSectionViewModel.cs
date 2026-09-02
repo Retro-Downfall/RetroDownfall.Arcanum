@@ -372,6 +372,16 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private bool _supportsVision;
 
+        /// <summary>
+        /// Tri-state, matching <see cref="ModelEntry.SupportsTools"/> exactly: <see langword="null"/>
+        /// (unset) means undeclared, and must stay expressible as such rather than default to
+        /// <see langword="false"/> — an unset model may still support tools fine. Bound directly to a
+        /// three-state control rather than split into a separate "declared?" flag plus a plain bool
+        /// (the shape <see cref="HasReasoningMaxBudgetTokens"/> below uses for a nullable int), since
+        /// the nullable bool already has exactly the three states the control needs.
+        /// </summary>
+        [ObservableProperty] private bool? _supportsTools;
+
         [ObservableProperty] private bool _hasReasoning;
 
         [ObservableProperty] private ReasoningWireDialect _reasoningDialect =
@@ -408,6 +418,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             SupportsVision = snapshot.SupportsVision;
 
+            SupportsTools = snapshot.SupportsTools;
+
             HasReasoning = snapshot.Reasoning?.WireDialect is not null;
 
             ReasoningDialect = snapshot.Reasoning?.WireDialect
@@ -423,6 +435,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         {
             Name = Name,
             SupportsVision = SupportsVision,
+            SupportsTools = SupportsTools,
             Reasoning = !HasReasoning
                 ? null
                 : new ModelReasoningSettings
