@@ -439,9 +439,35 @@ public sealed class WebWorkflowEndpointTests
 
         Guid sessionId = Assert.IsType<Guid>(createdSession?.Data?.Id);
 
-        Guid campaignId = Guid.Parse(
+        string campaignPath = Path.Combine(
+            factory.TempHome,
+            $"research-continuation-campaign-{Guid.NewGuid():N}");
 
-            "22222222-2222-2222-2222-222222222222");
+        Directory.CreateDirectory(campaignPath);
+
+        RegisterCampaignRequest campaignRegistration = new(
+            "Research Continuation Campaign",
+            campaignPath,
+            WorkspaceType.Campaign,
+            null);
+
+        HttpResponseMessage campaignRegistrationResponse = await client.PostAsync(
+            "/api/campaigns",
+            new StringContent(
+                JsonSerializer.Serialize(
+                    campaignRegistration,
+                    ArcanumJsonContext.Default.RegisterCampaignRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        ApiResponse<CampaignDto>? registeredCampaign = JsonSerializer.Deserialize(
+            await campaignRegistrationResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseCampaignDto);
+
+        // The campaign egress ward denies every citation fetch for a campaign id that does not
+        // resolve, so a research run that is expected to render sources must name a registered
+        // campaign rather than a literal id.
+        Guid campaignId = Assert.IsType<Guid>(registeredCampaign?.Data?.Id);
 
         AttachedFileDto attachedFile = new(
 
