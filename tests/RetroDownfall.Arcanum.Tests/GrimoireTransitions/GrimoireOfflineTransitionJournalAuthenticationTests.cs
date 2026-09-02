@@ -278,10 +278,12 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
         GrimoireOfflineTransitionEnvelopeV1 envelope = Seal();
 
+        Guid changedInstallationId = Guid.NewGuid();
+
         GrimoireOfflineTransitionEnvelopeV1 changed = header switch
         {
             "profile" => envelope with { ProfileNamespaceDigest = Digest(10) },
-            "installation" => envelope with { InstallationId = Guid.NewGuid() },
+            "installation" => envelope with { InstallationId = changedInstallationId },
             "epoch" => envelope with { SlotEpoch = 2 },
             "operation" => envelope with { OperationId = Guid.NewGuid() },
             "kind" => envelope with { Kind = GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure },
@@ -292,13 +294,22 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
             _ => throw new ArgumentOutOfRangeException(nameof(header)),
         };
 
+        // The three fields Open pre-checks before AES-GCM ever runs must be passed as the
+        // *changed* expectation so that pre-check passes and only the AAD-bound tag can reject;
+        // otherwise these three cases would still pass with the AAD field deleted entirely.
+        CovenantDigest expectedProfile = header is "profile" ? Digest(10) : Digest(1);
+
+        Guid expectedInstallation = header is "installation" ? changedInstallationId : Installation;
+
+        CovenantDigest expectedLocation = header is "location" ? Digest(8) : Digest(3);
+
         using GrimoireOfflineTransitionJournalKeyLease opening = OpenLease();
 
         Assert.True(GrimoireOfflineTransitionJournalAuthenticator.Open(
             opening,
-            Digest(1),
-            Installation,
-            Digest(3),
+            expectedProfile,
+            expectedInstallation,
+            expectedLocation,
             changed).IsFailure);
 
     }
