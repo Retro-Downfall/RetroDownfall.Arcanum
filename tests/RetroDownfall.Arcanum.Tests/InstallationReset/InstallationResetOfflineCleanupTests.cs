@@ -665,6 +665,55 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W5-7 (residual, review round 1): FailureOrIncomplete's own discriminator was
+    /// <c>filesDeleted == 0</c>, so a directory-only mutation followed by a *later* directory-loop
+    /// failure (not cancellation - the case above already covers that) reported a clean hard Failure,
+    /// discarding the fact that a directory really was deleted. Same misread as the cancellation
+    /// predicate, in the non-cancellation path.
+    /// </summary>
+    [Fact]
+    public async Task Directory_only_mutation_then_a_later_directory_failure_is_reported_incomplete()
+    {
+
+        string selected = _workspace.CreateSubdir("selected-directory-only-then-identity-changes");
+
+        _ = Directory.CreateDirectory(Path.Combine(selected, "nested"));
+
+        InstallationResetOfflineCleanup cleanup = new(
+            afterInitialCapture: null,
+            afterFileDeleted: null,
+            afterDirectoryDeleted: _ =>
+            {
+
+                // "nested" (the deeper path, processed first) is now gone. Delete and recreate the
+                // root itself so its identity (volume + file id) no longer matches what inventory
+                // captured, forcing the *next* directory in the loop - "selected" - into the
+                // "changed identity" failure instead of a clean delete.
+                Directory.Delete(selected);
+
+                Directory.CreateDirectory(selected);
+
+            });
+
+        Result<InstallationResetOfflineCleanupResult> result = await cleanup.ExecuteAsync(
+            CreatePlan(selected),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, result.Value.FilesDeleted);
+
+        Assert.False(result.Value.Verification.Succeeded);
+
+        InstallationResetIssueSummary issue = Assert.Single(result.Value.Verification.RemainingIssues);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, issue.Code);
+
+        Assert.Contains("changed identity", issue.Message, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task Hard_linked_file_fails_closed_without_deleting_either_link()
     {

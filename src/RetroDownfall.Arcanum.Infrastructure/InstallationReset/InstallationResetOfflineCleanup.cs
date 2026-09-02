@@ -310,6 +310,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                     return Task.FromResult(FailureOrIncomplete(
                         filesDeleted,
+                        mutationCount,
                         bytesDeleted,
                         backups,
                         ErrorCodes.Data.RecoveryRequired,
@@ -349,6 +350,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                     return Task.FromResult(FailureOrIncomplete(
                         filesDeleted,
+                        mutationCount,
                         bytesDeleted,
                         backups,
                         ErrorCodes.Data.RecoveryRequired,
@@ -361,6 +363,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                     return Task.FromResult(FailureOrIncomplete(
                         filesDeleted,
+                        mutationCount,
                         bytesDeleted,
                         backups,
                         ErrorCodes.Data.RecoveryRequired,
@@ -384,6 +387,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                     return Task.FromResult(FailureOrIncomplete(
                         filesDeleted,
+                        mutationCount,
                         bytesDeleted,
                         backups,
                         ErrorCodes.Data.RecoveryRequired,
@@ -404,6 +408,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                 return Task.FromResult(FailureOrIncomplete(
                     filesDeleted,
+                    mutationCount,
                     bytesDeleted,
                     backups,
                     backupVerification.Error.Code,
@@ -422,6 +427,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                 return Task.FromResult(FailureOrIncomplete(
                     filesDeleted,
+                    mutationCount,
                     bytesDeleted,
                     backups,
                     remainingFiles.Error.Code,
@@ -491,6 +497,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
             return Task.FromResult(FailureOrIncomplete(
                 filesDeleted,
+                mutationCount,
                 bytesDeleted,
                 backups,
                 ErrorCodes.Data.RecoveryRequired,
@@ -1093,13 +1100,18 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
             code,
             message));
 
+    // mutationCount (files and directories both) is the discriminator, not filesDeleted: a
+    // directory-only pass that then hits one of these failure sites really did mutate the
+    // filesystem, and reporting a clean Failure here would discard that (review round 1, same
+    // misread the cancellation predicate above already had - W5-7).
     private static Result<InstallationResetOfflineCleanupResult> FailureOrIncomplete(
         long filesDeleted,
+        long mutationCount,
         long bytesDeleted,
         List<InstallationResetPreservedBackup> backups,
         string code,
         string message) =>
-        filesDeleted == 0
+        mutationCount == 0
             ? Failure(code, message)
             : Incomplete(
                 filesDeleted,
