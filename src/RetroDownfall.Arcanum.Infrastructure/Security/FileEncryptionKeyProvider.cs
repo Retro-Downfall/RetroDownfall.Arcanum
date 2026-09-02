@@ -434,26 +434,13 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
             .ConfigureAwait(false);
     }
 
-    private bool TryFindKey(string requestedKeyId, out FileEncryptionKeyMaterial? material)
-    {
-        foreach ((string keyId, FileEncryptionKeyMaterial candidate) in _keys!)
-        {
-            byte[] expected = System.Text.Encoding.ASCII.GetBytes(keyId);
-            byte[] actual = System.Text.Encoding.ASCII.GetBytes(requestedKeyId);
-            bool matches = expected.Length == actual.Length
-                && CryptographicOperations.FixedTimeEquals(expected, actual);
-            CryptographicOperations.ZeroMemory(expected);
-            CryptographicOperations.ZeroMemory(actual);
-            if (matches)
-            {
-                material = candidate;
-                return true;
-            }
-        }
-
-        material = null;
-        return false;
-    }
+    // W7-8: key ids are public lookup identifiers persisted in blob metadata (DESIGN §5.4.6),
+    // not secrets, and _keys is already a Dictionary<string, FileEncryptionKeyMaterial> built with
+    // StringComparer.Ordinal (see the constructions above), so a hash lookup is a drop-in
+    // replacement for the per-candidate byte[]-allocating fixed-time scan this used to run on
+    // every encrypted-blob read.
+    private bool TryFindKey(string requestedKeyId, out FileEncryptionKeyMaterial? material) =>
+        _keys!.TryGetValue(requestedKeyId, out material);
 
     private static EncryptedBlobKeyException UnknownKey(string keyId) =>
         new(
