@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -57,6 +59,17 @@ internal sealed record BackupRestoreProfileNamespace(
 internal static class BackupRestoreJournalAuthenticator
 {
 
+    internal enum StableJournalAesOutcome : byte
+    {
+
+        Completed = 1,
+
+        LeaseSpent = 2,
+
+        Invalid = 3,
+
+    }
+
     internal const byte EnvelopeVersion = 2;
 
     internal const byte AnchorVersion = 1;
@@ -78,6 +91,8 @@ internal static class BackupRestoreJournalAuthenticator
     /// allocated from a length the file claims.
     /// </remarks>
     internal const int MaxPayloadBytes = 512 * 1024;
+
+    private const int GrimoireOfflineTransitionAssociatedDataBytes = 199;
 
     /// <summary>The ceiling on the encoded journal file, checked before it is read into memory.</summary>
     internal const int MaxJournalFileBytes = 1024 * 1024;
@@ -747,6 +762,134 @@ internal static class BackupRestoreJournalAuthenticator
             : payload;
 
     }
+
+    /// <summary>
+    /// Performs the transition journal's single bounded encryption without exposing its raw key.
+    /// </summary>
+    internal static StableJournalAesOutcome EncryptGrimoireOfflineTransitionJournal(
+        GrimoireOfflineTransitionJournalKeyLease key,
+        ReadOnlySpan<byte> nonce,
+        ReadOnlySpan<byte> plaintext,
+        Span<byte> ciphertext,
+        Span<byte> tag,
+        ReadOnlySpan<byte> associatedData)
+    {
+
+        ArgumentNullException.ThrowIfNull(key);
+
+        if (!ValidGrimoireOfflineTransitionBuffers(
+                nonce,
+                plaintext.Length,
+                ciphertext.Length,
+                tag,
+                associatedData))
+        {
+
+            return StableJournalAesOutcome.Invalid;
+
+        }
+
+        if (!key.TryTakeKey(out byte[]? material))
+        {
+
+            return StableJournalAesOutcome.LeaseSpent;
+
+        }
+
+        try
+        {
+
+            using AesGcm aes = new(material, GrimoireOfflineTransitionJournalAuthenticator.TagBytes);
+
+            aes.Encrypt(nonce, plaintext, ciphertext, tag, associatedData);
+
+            return StableJournalAesOutcome.Completed;
+
+        }
+        catch (Exception exception) when (exception is CryptographicException or ArgumentException)
+        {
+
+            return StableJournalAesOutcome.Invalid;
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(material);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Performs the transition journal's single bounded decryption without exposing its raw key.
+    /// </summary>
+    internal static StableJournalAesOutcome DecryptGrimoireOfflineTransitionJournal(
+        GrimoireOfflineTransitionJournalKeyLease key,
+        ReadOnlySpan<byte> nonce,
+        ReadOnlySpan<byte> ciphertext,
+        ReadOnlySpan<byte> tag,
+        Span<byte> plaintext,
+        ReadOnlySpan<byte> associatedData)
+    {
+
+        ArgumentNullException.ThrowIfNull(key);
+
+        if (!ValidGrimoireOfflineTransitionBuffers(
+                nonce,
+                ciphertext.Length,
+                plaintext.Length,
+                tag,
+                associatedData))
+        {
+
+            return StableJournalAesOutcome.Invalid;
+
+        }
+
+        if (!key.TryTakeKey(out byte[]? material))
+        {
+
+            return StableJournalAesOutcome.LeaseSpent;
+
+        }
+
+        try
+        {
+
+            using AesGcm aes = new(material, GrimoireOfflineTransitionJournalAuthenticator.TagBytes);
+
+            aes.Decrypt(nonce, ciphertext, tag, plaintext, associatedData);
+
+            return StableJournalAesOutcome.Completed;
+
+        }
+        catch (Exception exception) when (exception is CryptographicException or ArgumentException)
+        {
+
+            return StableJournalAesOutcome.Invalid;
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(material);
+
+        }
+
+    }
+
+    private static bool ValidGrimoireOfflineTransitionBuffers(
+        ReadOnlySpan<byte> nonce,
+        int inputBytes,
+        int outputBytes,
+        ReadOnlySpan<byte> tag,
+        ReadOnlySpan<byte> associatedData) =>
+        nonce.Length == GrimoireOfflineTransitionJournalAuthenticator.NonceBytes
+        && inputBytes <= GrimoireOfflineTransitionJournalAuthenticator.MaxPlaintextBytes
+        && outputBytes == inputBytes
+        && tag.Length == GrimoireOfflineTransitionJournalAuthenticator.TagBytes
+        && associatedData.Length == GrimoireOfflineTransitionAssociatedDataBytes;
 
     /// <summary>
     /// Every rule the payload's closed shape freezes, checked before any field is believed.

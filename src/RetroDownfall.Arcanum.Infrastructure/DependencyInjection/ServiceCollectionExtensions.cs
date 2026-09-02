@@ -311,7 +311,9 @@ public static class ServiceCollectionExtensions
             ArcanumDbContextOptionsConfigurator.Configure(
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()));
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
 
         // GrimoireRepository requires the attachment store (session fork/purge hooks). Register it
         // here for the deliberately offline CLI maintenance operations.
@@ -332,7 +334,9 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ILogger<GrimoireRepository>>(),
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
                 sp.GetService<ISessionAttachmentIndexMaintenance>(),
-                sp.GetService<CovenantMutationKernel>()));
+                sp.GetService<CovenantMutationKernel>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -345,7 +349,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGrimoireTurnCommitter>(
             static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
 
-        services.AddSingleton<IGrimoireCliInitialization, GrimoireCliInitialization>();
+        services.AddSingleton<GrimoireCliInitialization>();
+        services.AddSingleton<IGrimoireCliInitialization>(static provider =>
+            provider.GetRequiredService<GrimoireCliInitialization>());
+        services.AddSingleton<IGrimoireCliStoppedHostInitialization>(static provider =>
+            provider.GetRequiredService<GrimoireCliInitialization>());
         services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
@@ -433,9 +441,15 @@ public static class ServiceCollectionExtensions
                 settings,
                 provider.GetService<TimeProvider>() ?? TimeProvider.System,
                 provider.GetService<ILoggerFactory>()
-                    ?? LoggerFactory.Create(static _ => { })));
+                    ?? LoggerFactory.Create(static _ => { }),
+                provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                provider.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>()));
 
         services.TryAddScoped<IInstallationResetDataService>(provider =>
+            provider.GetRequiredService<InstallationResetExistingGrimoire>());
+
+        services.TryAddScoped<IInstallationResetStoppedHostDataService>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
         services.TryAddScoped<IInstallationResetWorkspaceResolver>(provider =>
@@ -456,9 +470,16 @@ public static class ServiceCollectionExtensions
             IInstallationResetHostProcessToolsDatabaseEvidenceReader>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
+        services.TryAddScoped<InstallationResetHostProcessToolsPairReader>();
+
+        services.TryAddScoped<IInstallationResetHostProcessToolsPairReader>(provider =>
+            provider.GetRequiredService<
+                InstallationResetHostProcessToolsPairReader>());
+
         services.TryAddScoped<
-            IInstallationResetHostProcessToolsPairReader,
-            InstallationResetHostProcessToolsPairReader>();
+            IInstallationResetStoppedHostProcessToolsPairReader>(provider =>
+            provider.GetRequiredService<
+                InstallationResetHostProcessToolsPairReader>());
 
         services.TryAddScoped<IInstallationResetCredentialService>(provider =>
             new InstallationResetCredentialCatalog(
@@ -501,8 +522,7 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton<IHostToolsMarkerPairResetDatabase>(provider =>
             new HostToolsMarkerPairResetDatabase(
-                provider.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-                provider.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>()));
 
         services.TryAddSingleton<IFullInstallationResetCampaignSchemaReadiness>(provider =>
             new FullInstallationResetCampaignSchemaReadiness(
@@ -521,7 +541,8 @@ public static class ServiceCollectionExtensions
                     IFullInstallationResetRemediationAttestationVerifier>(),
                 provider.GetRequiredService<ICampaignPathMarkerLifecycle>(),
                 provider.GetRequiredService<IHostToolsMarkerPairResetOsPort>(),
-                provider.GetRequiredService<IFullInstallationResetManagedFileReconciler>()));
+                provider.GetRequiredService<IFullInstallationResetManagedFileReconciler>(),
+                canonicalDatabasePath: ArcanumPaths.GrimoireDatabaseFile));
 
         // Scoped for the same reason the coordinator is: the active store it authenticates against and
         // the erasure kernel it routes through are scoped, and a singleton would outlive the connection
@@ -576,6 +597,9 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<InstallationResetService>());
 
         services.TryAddScoped<IInstallationResetLockedService>(provider =>
+            provider.GetRequiredService<InstallationResetService>());
+
+        services.TryAddScoped<IInstallationResetStoppedHostPlanner>(provider =>
             provider.GetRequiredService<InstallationResetService>());
 
         return services;
@@ -991,6 +1015,7 @@ public static class ServiceCollectionExtensions
             static sp => new EmbeddingsResetService(
                 sp.GetRequiredService<ArcanumDbContext>(),
                 sp.GetRequiredService<WeaveIndexAvailability>(),
+                sp,
                 sp.GetRequiredService<ICovenantSensitiveArtifactPurger>()));
         services.AddScoped<ITapestryStore, TapestryStore>();
         services.AddScoped<SessionAttachmentIndexRepository>();
@@ -1120,7 +1145,9 @@ public static class ServiceCollectionExtensions
             (sp, options) => ArcanumDbContextOptionsConfigurator.Configure(
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()),
             poolSize: 32);
 
         services.AddScoped<IUnseenServantWatermarkStore, UnseenServantWatermarkStore>();
@@ -1222,7 +1249,9 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ILogger<GrimoireRepository>>(),
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
                 sp.GetService<ISessionAttachmentIndexMaintenance>(),
-                sp.GetService<CovenantMutationKernel>()));
+                sp.GetService<CovenantMutationKernel>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -1377,7 +1406,13 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IGrimoireDbReadiness>(),
             sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
 
-        services.AddScoped<ISessionRepository, SessionRepository>();
+        services.AddScoped<ISessionRepository>(
+            static sp => new SessionRepository(
+                sp.GetRequiredService<ArcanumDbContext>(),
+                sp.GetRequiredService<ISessionAttachmentStore>(),
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                sp.GetService<ISessionAttachmentIndexQueue>()));
 
         services.AddSingleton<SessionEventHub>();
 
@@ -1633,9 +1668,35 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
+        services.AddSingleton(
+            static sp => new GrimoireConnectionAdmissionGate(
+                sp.GetRequiredService<TimeProvider>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>()));
+
+        services.AddSingleton<IGrimoireConnectionAdmissionGate>(
+            static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());
+
         // Its enrolment set is the proof a drain owns. Every direct Covenant handle in the process
         // therefore has to meet the same instance, whichever request scope opened it.
         services.AddSingleton<ICovenantConnectionDrain, CovenantConnectionDrain>();
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionLifecycle>(static sp =>
+            new GrimoireOrdinaryConnectionLifecycle(
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>()));
+
+        services.AddSingleton<ISqliteNativeRuntime>(SqliteNativeRuntime.Instance);
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactoryTestSeam>(static _ =>
+            new NoOpGrimoireOrdinaryConnectionFactoryTestSeam());
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory, GrimoireOrdinaryConnectionFactory>();
+
+        services.AddSingleton<IGrimoireMaintenanceConnectionFactory>(static sp =>
+            new GrimoireMaintenanceConnectionFactory(
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ISqliteNativeRuntime>()));
 
         services.AddSingleton<ICovenantCampaignScopeProbe>(
             static sp => new CovenantCampaignScopeProbe(sp.GetRequiredService<IServiceScopeFactory>()));
@@ -1657,7 +1718,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICovenantConnectionSource>(
             static sp => new CovenantConnectionSource(
                 sp.GetRequiredService<ArcanumDbContext>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()));
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
         services.AddScoped<ICovenantStore>(
             static sp => new CovenantStore(sp.GetRequiredService<ICovenantConnectionSource>()));
@@ -1733,13 +1794,30 @@ public static class ServiceCollectionExtensions
         // identity would make every subject look like it belonged to a boot that had already ended.
         services.AddSingleton<CovenantProcessBootIdentity>();
 
-        services.AddSingleton<ICovenantMaintenanceConnectionFactory, CovenantMaintenanceConnectionFactory>();
+        services.AddSingleton<StoppedHostGrimoireConnectionFactory>(static sp =>
+            new StoppedHostGrimoireConnectionFactory(
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ISqliteNativeRuntime>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddSingleton<IStoppedHostGrimoireConnectionFactory>(static sp =>
+            sp.GetRequiredService<StoppedHostGrimoireConnectionFactory>());
+
+        services.AddSingleton<CovenantV3MaintenanceConnectionFactory>(
+            static sp => new CovenantV3MaintenanceConnectionFactory(
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ISqliteNativeRuntime>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddSingleton<ICovenantV3MaintenanceConnectionFactory>(
+            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
+
+        services.AddSingleton<ICovenantV3MaintenancePathAuthority>(
+            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
 
         services.AddSingleton(
             static sp => new CovenantHealthyCatalogErasureGuard(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<GrimoireSchemaManifestInspector>()));
 
         services.AddSingleton(static _ => new CovenantManagedFileErasureRequestReader());
@@ -1752,7 +1830,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantCanonicalErasureTransaction(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<TimeProvider>()));
@@ -1762,7 +1840,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantLocalErasureStorageHealth(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantV3MaintenancePathAuthority>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<TimeProvider>()));
@@ -1779,9 +1858,7 @@ public static class ServiceCollectionExtensions
         // writer it had quiesced was the only one.
         services.AddSingleton(
             static sp => new CovenantDisclosureWriter(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<ICovenantAvailability>(),
                 sp.GetRequiredService<ICovenantDisclosureTransactionWriter>()));
 
@@ -1916,9 +1993,7 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped(
             static sp => new CovenantErasureInventorySource(
-                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<CovenantHealthyCatalogErasureGuard>(),
                 sp.GetRequiredService<CovenantManagedFileErasureRequestReader>(),
                 sp.GetRequiredService<CovenantDisclosureExposureReader>()));
@@ -1993,7 +2068,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<TimeProvider>()));
 
         // The two recovery handlers the registry requires for the kinds this slice adds. Registering
-        // a kind without its handler is the exact drift the coverage suite fails on (#40).
+        // a kind without its handler is the exact drift the coverage suite fails on.
         services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantIndexRebuildRecoveryHandler>();
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantFamilyReinitializeRecoveryHandler>();

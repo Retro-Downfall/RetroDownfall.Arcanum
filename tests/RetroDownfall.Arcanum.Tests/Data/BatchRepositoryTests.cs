@@ -396,7 +396,7 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
             });
 
-        await started.Task;
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         await Task.Yield();
 

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -138,6 +139,83 @@ public sealed class TurnContextGuardsTests
         Assert.Equal(ChatRole.User, messages[1].Role);
     }
 
+    /// <summary>
+    /// The trim loop keeps a running total, subtracting each removed run's own marginal estimate
+    /// rather than re-estimating the whole transcript on every iteration. That total is an
+    /// approximation of what the transcript now costs, never a measurement of it: the estimator
+    /// applies its safety margin as a ceiling over the whole input, and a ceiling does not
+    /// distribute over addition, so the removed runs' own margins sum to a little more than the
+    /// share they contributed to the transcript's. The running total therefore drifts below what
+    /// the surviving list actually estimates at, and a verdict answered from it reports "under
+    /// budget" for a transcript that the authoritative breakdown taken immediately afterwards -
+    /// the one <c>EnsureContextBudgetWithMaterializations</c> builds right after this call - puts
+    /// over. The verdict has to be a measurement of what was left behind.
+    /// </summary>
+    /// <remarks>
+    /// Swept across every budget the trim can exit at, with the production estimator bound exactly
+    /// as <c>EnsureContextBudgetWithMaterializations</c> binds it, because only the budgets that
+    /// fall inside the drift can tell an accumulated total from a measurement.
+    /// </remarks>
+    [Fact]
+    public void TryTrimOldestToolExchanges_AnswersFromWhatIsLeft_NotFromTheRunningTotal()
+    {
+        ModelTokenEstimator estimator = new(
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
+
+        ProviderSettings provider = new()
+        {
+            Name = "openai-compatible",
+            Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "https://api.openai.com/v1",
+            Models = [new ModelEntry(TrimSweepModel)],
+            ContextWindowLimit = 128_000,
+        };
+
+        ChatOptions options = new();
+
+        int Count(IReadOnlyList<MeAiChatMessage> transcript) =>
+            estimator.EstimateContext(
+                new ModelTokenizationRequest(
+                    provider,
+                    TrimSweepModel,
+                    transcript,
+                    options,
+                    ReservedAnswerTokens: 256,
+                    ReservedReasoningTokens: 0))
+                .TotalTokens;
+
+        int untrimmable = Count(TrimSweepTranscript(exchanges: 0));
+        int whole = Count(TrimSweepTranscript(TrimSweepExchanges));
+
+        Assert.True(
+            whole > untrimmable,
+            $"the sweep is vacuous unless the tool exchanges cost something: {whole} vs {untrimmable}");
+
+        List<string> disagreements = [];
+
+        for (int budget = untrimmable; budget <= whole; budget++)
+        {
+            List<MeAiChatMessage> transcript = TrimSweepTranscript(TrimSweepExchanges);
+
+            bool reportedUnderBudget = TurnContextGuards.TryTrimOldestToolExchanges(
+                transcript,
+                Count,
+                budget);
+
+            int actual = Count(transcript);
+
+            if (reportedUnderBudget != actual <= budget)
+            {
+                disagreements.Add($"budget {budget}: said {reportedUnderBudget}, left {actual}");
+            }
+        }
+
+        Assert.True(
+            disagreements.Count == 0,
+            "budgets where the returned verdict disagreed with a fresh estimate of the transcript "
+            + $"the trim left behind:\n{string.Join("\n", disagreements)}");
+    }
+
     [Fact]
     public void ResolveContinueThenReplay_AutoUsesIdempotencyHeader()
     {
@@ -150,6 +228,35 @@ public sealed class TurnContextGuardsTests
         Assert.False(TurnContextGuards.ResolveContinueThenReplay(withoutKey, DisconnectPolicy.Auto));
         Assert.True(TurnContextGuards.ResolveContinueThenReplay(withoutKey, DisconnectPolicy.ContinueThenReplay));
         Assert.False(TurnContextGuards.ResolveContinueThenReplay(withKey, DisconnectPolicy.CancelAbandoned));
+    }
+
+    private const string TrimSweepModel = "an-unlisted-model-estimated-with-a-safety-margin";
+
+    private const int TrimSweepExchanges = 16;
+
+    /// <summary>
+    /// A transcript shaped the way a stateless tool loop leaves one: a leading system message the
+    /// trim must preserve, <paramref name="exchanges"/> assistant-call/tool-result pairs it may
+    /// remove, and the final user turn.
+    /// </summary>
+    private static List<MeAiChatMessage> TrimSweepTranscript(int exchanges)
+    {
+        List<MeAiChatMessage> transcript = [new(ChatRole.System, "sys")];
+
+        for (int index = 0; index < exchanges; index++)
+        {
+            transcript.Add(new MeAiChatMessage(
+                ChatRole.Assistant,
+                [new FunctionCallContent($"call-{index}", "record_progress")]));
+
+            transcript.Add(new MeAiChatMessage(
+                ChatRole.Tool,
+                [new FunctionResultContent($"call-{index}", $"progress {index} {new string('x', 29)}")]));
+        }
+
+        transcript.Add(new MeAiChatMessage(ChatRole.User, "now"));
+
+        return transcript;
     }
 
 }

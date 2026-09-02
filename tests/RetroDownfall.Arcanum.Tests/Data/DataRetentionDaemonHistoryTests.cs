@@ -228,7 +228,9 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
 
         Assert.Equal("daemon:" + executionId, candidate);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = time.GetUtcNow();
 
@@ -297,7 +299,9 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         IDaemonExecutionMutationGate? daemonMutationGate = null)
     {
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         return new DataRetentionService(
             _db!,
@@ -305,6 +309,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             operations,
             time,
             NullLogger<DataRetentionService>.Instance,
+            FixtureLabeledArtifactGuard.For(_db!),
             Path.Combine(_root, "attachments"),
             Path.Combine(_root, "files"),
             Path.Combine(_root, "logs"),

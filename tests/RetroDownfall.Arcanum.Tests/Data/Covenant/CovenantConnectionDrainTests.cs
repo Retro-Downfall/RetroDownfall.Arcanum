@@ -1,9 +1,11 @@
 using System.Data;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -94,6 +96,59 @@ public sealed class CovenantConnectionDrainTests
     }
 
     [Fact]
+    public async Task An_EF_close_releases_only_the_interceptors_reference_counted_enrolment()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        CountingDrain drain = new(new CovenantConnectionDrain());
+
+        GrimoireConnectionAdmissionGate admission = new(TimeProvider.System, drain);
+
+        // A closed handle of its own, not the scratch database's already-open one. Handed an open
+        // external connection, EF's open and close never reach the physical handle, so no interceptor
+        // callback fires and the enrolment this test is named for never exists at all.
+        await using SqliteConnection serving = new(database.Connection.ConnectionString);
+
+        using IDisposable otherHolder = drain.Register(serving);
+
+        DbContextOptions<DrainProbeDbContext> options =
+            new DbContextOptionsBuilder<DrainProbeDbContext>()
+                .UseSqlite(serving, contextOwnsConnection: false)
+                .AddInterceptors(
+                    new CovenantConnectionEnrolmentInterceptor(
+                        new GrimoireOrdinaryConnectionLifecycle(admission, drain),
+                        drain,
+                        CovenantSqliteConnectionInitializer.Instance))
+                .Options;
+
+        await using DrainProbeDbContext context = new(options);
+
+        await context.Database.OpenConnectionAsync(Token);
+
+        await context.Database.CloseConnectionAsync();
+
+        // Counted, not inferred. The state assertions below hold whether or not the connection was
+        // ever enrolled - the other holder's own registration keeps the count at one and the drain
+        // closes the handle either way - so this is the only place the enrolment the test is named
+        // for is actually observed: two enrolments in, exactly one paid back by the EF close.
+        Assert.Equal(2, drain.RegisterCount);
+
+        Assert.Equal(1, drain.ReleaseCount);
+
+        await serving.OpenAsync(Token);
+
+        Result drained = await drain.DrainAsync(Token);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        // The interceptor paid back only its own enrolment. The other logical holder still owns the
+        // physical handle, so the reference-counted drain must retain and close it.
+        Assert.Equal(ConnectionState.Closed, serving.State);
+
+    }
+
+    [Fact]
     public async Task Every_registered_handle_is_closed_even_when_one_was_closed_already()
     {
 
@@ -121,6 +176,83 @@ public sealed class CovenantConnectionDrainTests
             Assert.Equal(ConnectionState.Closed, second.State);
 
         }
+
+    }
+
+    [Fact]
+    public async Task Every_enrolled_handle_is_observed_physically_closed_before_all_pools_clear()
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        await using SqliteConnection pooled = new(
+            new SqliteConnectionStringBuilder(database.Connection.ConnectionString)
+            {
+
+                Pooling = true,
+
+            }.ToString());
+
+        await pooled.OpenAsync(Token);
+
+        await pooled.CloseAsync();
+
+        await using ObservedCloseConnection first = new(database.Connection.ConnectionString);
+
+        await using ObservedCloseConnection second = new(database.Connection.ConnectionString);
+
+        await first.OpenAsync(Token);
+
+        await second.OpenAsync(Token);
+
+        await database.Connection.CloseAsync();
+
+        CovenantConnectionDrain drain = new();
+
+        using IDisposable firstEnrolment = drain.Register(first);
+
+        using IDisposable secondEnrolment = drain.Register(second);
+
+        Task<Result> draining = Task.Run(() => drain.DrainAsync(Token), Token);
+
+        Task firstEntered = await Task.WhenAny(first.Entered, second.Entered);
+
+        ObservedCloseConnection firstClosing = ReferenceEquals(firstEntered, first.Entered)
+            ? first
+            : second;
+
+        ObservedCloseConnection secondClosing = ReferenceEquals(firstClosing, first)
+            ? second
+            : first;
+
+        firstClosing.AllowPhysicalClose();
+
+        await firstClosing.PhysicallyClosed;
+
+        Assert.Contains(
+            CovenantResidualArtifactClass.WriteAheadLog,
+            CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        firstClosing.AllowCloseReturn();
+
+        await secondClosing.Entered.WaitAsync(TimeSpan.FromSeconds(30));
+
+        secondClosing.AllowPhysicalClose();
+
+        await secondClosing.PhysicallyClosed;
+
+        Assert.Contains(
+            CovenantResidualArtifactClass.WriteAheadLog,
+            CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        secondClosing.AllowCloseReturn();
+
+        Result drained = await draining;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
 
     }
 
@@ -178,6 +310,44 @@ public sealed class CovenantConnectionDrainTests
         Result drained = await drain.DrainAsync(Token);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+    }
+
+    [Fact]
+    public async Task Exact_pool_clear_releases_one_closed_pooled_handle_and_observes_closure()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        CovenantConnectionDrain drain = new();
+
+        await using SqliteConnection pooled = new(
+            new SqliteConnectionStringBuilder(database.Connection.ConnectionString)
+            {
+
+                Pooling = true,
+
+            }.ToString());
+
+        await pooled.OpenAsync(Token);
+
+        await pooled.CloseAsync();
+
+        await database.Connection.CloseAsync();
+
+        Assert.Equal(ConnectionState.Closed, pooled.State);
+
+        Assert.Contains(
+            CovenantResidualArtifactClass.WriteAheadLog,
+            CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        Result cleared = drain.ClearExactPoolAfterClose(pooled);
+
+        Assert.True(cleared.IsSuccess, cleared.IsFailure ? cleared.Error.Message : null);
+
+        Assert.Equal(ConnectionState.Closed, pooled.State);
 
         Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
 
@@ -290,7 +460,7 @@ public sealed class CovenantConnectionDrainTests
 
         // The drain has read the first handle back and moved on, so the reopen below is a reopen
         // rather than a close that never landed.
-        await holding.Entered;
+        await holding.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(ConnectionState.Closed, reopened.State);
 
@@ -453,6 +623,68 @@ public sealed class CovenantConnectionDrainTests
         || source.Is("SessionEntryPersistence.cs");
 
     /// <summary>
+    /// Counts enrolments and their releases while the real drain does all of the work.
+    /// </summary>
+    /// <remarks>
+    /// A decorator rather than a stand-in, because the surrounding test still needs the drain to
+    /// close the handle for real; what it could not see before is how many enrolments existed and
+    /// how many were paid back.
+    /// </remarks>
+    private sealed class CountingDrain(ICovenantConnectionDrain inner) : ICovenantConnectionDrain
+    {
+
+        internal int RegisterCount { get; private set; }
+
+        internal int ReleaseCount { get; private set; }
+
+        public IDisposable Register(SqliteConnection connection)
+        {
+
+            RegisterCount++;
+
+            return new CountedEnrolment(this, inner.Register(connection));
+
+        }
+
+        public IDisposable Register(SqliteConnection connection, Action afterPhysicalClose)
+        {
+
+            RegisterCount++;
+
+            return new CountedEnrolment(this, inner.Register(connection, afterPhysicalClose));
+
+        }
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            inner.ClearExactPoolAfterClose(connection);
+
+        public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
+            inner.DrainAsync(cancellationToken);
+
+        private sealed class CountedEnrolment(CountingDrain owner, IDisposable enrolment) : IDisposable
+        {
+
+            private int _released;
+
+            public void Dispose()
+            {
+
+                if (Interlocked.Exchange(ref _released, 1) == 0)
+                {
+
+                    owner.ReleaseCount++;
+
+                }
+
+                enrolment.Dispose();
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
     /// A real handle to the scratch database whose close this test holds open until it says so.
     /// </summary>
     /// <remarks>
@@ -480,12 +712,58 @@ public sealed class CovenantConnectionDrainTests
 
             _ = _entered.TrySetResult();
 
-            await _released.Task;
+            await _released.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             await base.CloseAsync();
 
         }
 
+    }
+
+    private sealed class ObservedCloseConnection(string connectionString)
+        : SqliteConnection(connectionString)
+    {
+
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _allowPhysicalClose =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _physicallyClosed =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _allowCloseReturn =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Entered => _entered.Task;
+
+        internal Task PhysicallyClosed => _physicallyClosed.Task;
+
+        internal void AllowPhysicalClose() => _allowPhysicalClose.TrySetResult();
+
+        internal void AllowCloseReturn() => _allowCloseReturn.TrySetResult();
+
+        public override async Task CloseAsync()
+        {
+
+            _entered.TrySetResult();
+
+            await _allowPhysicalClose.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await base.CloseAsync();
+
+            _physicallyClosed.TrySetResult();
+
+            await _allowCloseReturn.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        }
+
+    }
+
+    private sealed class DrainProbeDbContext(DbContextOptions<DrainProbeDbContext> options)
+        : DbContext(options)
+    {
     }
 
     /// <summary>

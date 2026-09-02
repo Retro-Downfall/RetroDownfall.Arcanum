@@ -178,14 +178,12 @@ public sealed class InstallationResetApplyBoundaryTests
     }
 
     [Fact]
-    public async Task Fresh_global_apply_sends_one_typed_host_handoff_then_continues_offline()
+    public async Task Fresh_global_apply_skips_online_handoff_and_keeps_coordination_through_local_apply()
     {
 
         List<string> events = [];
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
-
-        InstallationResetHostHandoff? observedHandoff = null;
 
         RecordingResetService service = new((request, _) =>
         {
@@ -206,30 +204,8 @@ public sealed class InstallationResetApplyBoundaryTests
                 return Task.FromResult(Result<bool>.Success(true));
 
             },
-            (request, _) =>
-            {
-
-                events.Add("host");
-
-                observedHandoff = request.InstallationResetHandoff;
-
-                Assert.NotNull(observedHandoff);
-
-                Assert.Equal(plan.PlanId, observedHandoff.InstallationPlanId);
-
-                Assert.Equal(
-                    plan.AcceptedBinding.DataPlanIds[0],
-                    request.ExpectedPlanId);
-
-                Assert.Equal(
-                    observedHandoff.RequestedOperationId,
-                    request.RequestedOperationId);
-
-                return Task.FromResult(
-                    Result<DataRetentionApplyResult>.Success(
-                        CreateOnlineResult(observedHandoff)));
-
-            },
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not call the host factory route."),
             service,
             _ => Acquired(new RecordingLease()),
             new ImmediateTimeProvider(),
@@ -243,27 +219,24 @@ public sealed class InstallationResetApplyBoundaryTests
                         new RecordingClientCoordinationLease(events)));
 
             },
-            CreateTestHostHandoff,
-            ReadCleanPairAsync);
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not create a host handoff."),
+            _ => throw new InvalidOperationException(
+                "Fresh local apply must not read the pair before the lock."));
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
             new InstallationResetPlanRequest(
                 InstallationResetScope.Global,
                 "/workspace"),
-            plan,
+            CreateStoppedPlan(plan),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.Error.Message);
 
-        Assert.NotNull(observedHandoff);
-
         Assert.Equal(
             [
-                "coordinate-online",
-                "host",
-                "release-client-mutation",
                 "quit",
-                "coordinate-offline",
+                "coordinate-online",
                 "offline",
                 "remove-client-blocker",
                 "release-client-mutation",
@@ -273,7 +246,7 @@ public sealed class InstallationResetApplyBoundaryTests
     }
 
     [Fact]
-    public async Task Fresh_global_apply_rechecks_the_live_pair_before_any_online_effect()
+    public async Task Fresh_global_apply_reads_no_pair_or_factory_seam_before_the_exact_lock()
     {
 
         int shutdownCalls = 0;
@@ -282,8 +255,11 @@ public sealed class InstallationResetApplyBoundaryTests
 
         int coordinationCalls = 0;
 
-        RecordingResetService service = new((_, _) =>
-            throw new InvalidOperationException("Offline apply must not run."));
+        int pairCalls = 0;
+
+        RecordingResetService service = new((request, _) =>
+            Task.FromResult(
+                Result<InstallationResetResult>.Success(CreateResult(request))));
 
         InstallationResetApplyBoundary boundary = new(
             _ =>
@@ -306,8 +282,7 @@ public sealed class InstallationResetApplyBoundaryTests
 
             },
             service,
-            _ => throw new InvalidOperationException(
-                "Maintenance lock acquisition must not run."),
+            _ => Acquired(new RecordingLease()),
             new ImmediateTimeProvider(),
             (_, _, _, _) =>
             {
@@ -319,33 +294,36 @@ public sealed class InstallationResetApplyBoundaryTests
                         new SilentClientCoordinationLease()));
 
             },
-            CreateTestHostHandoff,
-            _ => Task.FromResult(
-                Result<HostProcessToolsMarkerPairJoinResult>.Success(
-                    new HostProcessToolsMarkerPairJoinResult(
-                        HostProcessToolsMarkerPairDisposition.MismatchBlocked,
-                        MatchedPair: null))));
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not create a host handoff."),
+            _ =>
+            {
+
+                pairCalls++;
+
+                throw new InvalidOperationException(
+                    "Fresh local apply must not read the pair before the lock.");
+
+            });
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
             new InstallationResetPlanRequest(
                 InstallationResetScope.Global,
                 "/workspace"),
-            CreatePlan(InstallationResetScope.Global),
+            CreateStoppedPlan(CreatePlan(InstallationResetScope.Global)),
             CancellationToken.None);
 
-        Assert.True(result.IsFailure);
-
-        Assert.Equal(
-            ErrorCodes.Data.ExternalRemediationRequired,
-            result.Error.Code);
+        Assert.True(result.IsSuccess, result.Error.Message);
 
         Assert.Equal(0, factoryCalls);
 
-        Assert.Equal(0, shutdownCalls);
+        Assert.Equal(1, shutdownCalls);
 
-        Assert.Equal(0, coordinationCalls);
+        Assert.Equal(1, coordinationCalls);
 
-        Assert.Equal(0, service.ApplyCount);
+        Assert.Equal(0, pairCalls);
+
+        Assert.Equal(1, service.FreshApplyCount);
 
     }
 
@@ -358,31 +336,144 @@ public sealed class InstallationResetApplyBoundaryTests
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         InstallationResetApplyBoundary boundary = new(
-            _ => throw new InvalidOperationException("The host must remain running."),
-            (_, _) => Task.FromResult(
-                Result<DataRetentionApplyResult>.Failure(new Error(
+            _ =>
+            {
+
+                events.Add("quit");
+
+                return Task.FromResult(Result<bool>.Success(true));
+
+            },
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not call the host factory route."),
+            new RecordingResetService((_, _) => Task.FromResult(
+                Result<InstallationResetResult>.Failure(new Error(
                     ErrorCodes.Data.PlanChanged,
-                    "changed"))),
-            new RecordingResetService((_, _) =>
-                throw new InvalidOperationException("Offline apply must not run.")),
-            _ => throw new InvalidOperationException("Maintenance lock must not be acquired."),
+                    "changed")))),
+            _ => Acquired(new RecordingLease()),
             new ImmediateTimeProvider(),
-            (_, _, _, _) => Task.FromResult(
-                Result<IInstallationResetClientCoordinationLease>.Success(
-                    new RecordingClientCoordinationLease(events))),
-            CreateTestHostHandoff,
-            ReadCleanPairAsync);
+            (_, _, _, _) =>
+            {
+
+                events.Add("coordinate");
+
+                return Task.FromResult(
+                    Result<IInstallationResetClientCoordinationLease>.Success(
+                        new RecordingClientCoordinationLease(events)));
+
+            },
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not create a host handoff."),
+            _ => throw new InvalidOperationException(
+                "Fresh local apply must not read the pair before the lock."));
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
             new InstallationResetPlanRequest(
                 InstallationResetScope.Global,
                 "/workspace"),
-            plan,
+            CreateStoppedPlan(plan),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.PlanChanged, result.Error.Code);
+
+        Assert.Equal(
+            [
+                "quit",
+                "coordinate",
+                "remove-client-blocker",
+                "release-client-mutation",
+            ],
+            events);
+
+    }
+
+    [Fact]
+    public async Task Fresh_global_failure_attempts_safe_client_blocker_removal()
+    {
+
+        List<string> events = [];
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
+
+        InstallationResetApplyBoundary boundary = new(
+            _ => Task.FromResult(Result<bool>.Success(true)),
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not call the host factory route."),
+            new RecordingResetService((_, _) => Task.FromResult(
+                Result<InstallationResetResult>.Failure(new Error(
+                    ErrorCodes.Data.ControlPathUnavailable,
+                    "failed before active publication")))),
+            _ => Acquired(new RecordingLease()),
+            new ImmediateTimeProvider(),
+            (_, _, _, _) => Task.FromResult(
+                Result<IInstallationResetClientCoordinationLease>.Success(
+                    new RecordingClientCoordinationLease(events))),
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not create a host handoff."),
+            _ => throw new InvalidOperationException(
+                "Fresh local apply must not read the pair before the lock."));
+
+        Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
+            new InstallationResetPlanRequest(
+                InstallationResetScope.Global,
+                "/workspace"),
+            CreateStoppedPlan(plan),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, result.Error.Code);
+
+        Assert.Equal(
+            ["remove-client-blocker", "release-client-mutation"],
+            events);
+
+    }
+
+    [Fact]
+    public async Task Fresh_global_cancellation_attempts_safe_client_blocker_removal_uncancelled()
+    {
+
+        List<string> events = [];
+
+        using CancellationTokenSource cancellation = new();
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
+
+        InstallationResetApplyBoundary boundary = new(
+            _ => Task.FromResult(Result<bool>.Success(true)),
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not call the host factory route."),
+            new RecordingResetService((_, cancellationToken) =>
+            {
+
+                cancellation.Cancel();
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                throw new InvalidOperationException(
+                    "The cancelled fresh apply must not continue.");
+
+            }),
+            _ => Acquired(new RecordingLease()),
+            new ImmediateTimeProvider(),
+            (_, _, _, _) => Task.FromResult(
+                Result<IInstallationResetClientCoordinationLease>.Success(
+                    new RecordingClientCoordinationLease(events))),
+            (_, _) => throw new InvalidOperationException(
+                "Fresh local apply must not create a host handoff."),
+            _ => throw new InvalidOperationException(
+                "Fresh local apply must not read the pair before the lock."));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            boundary.ApplyFreshAsync(
+                new InstallationResetPlanRequest(
+                    InstallationResetScope.Global,
+                    "/workspace"),
+                CreateStoppedPlan(plan),
+                cancellation.Token));
 
         Assert.Equal(
             ["remove-client-blocker", "release-client-mutation"],
@@ -505,7 +596,7 @@ public sealed class InstallationResetApplyBoundaryTests
             new InstallationResetPlanRequest(
                 InstallationResetScope.Workspace,
                 "/workspace"),
-            plan,
+            CreateStoppedPlan(plan),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.Error.Message);
@@ -964,6 +1055,19 @@ public sealed class InstallationResetApplyBoundaryTests
             plan.Workspace,
             plan.AcceptedBinding);
 
+    private static StoppedHostInstallationResetPlan CreateStoppedPlan(
+        InstallationResetPlan plan) =>
+        new(
+            plan,
+            plan.Scope is InstallationResetScope.Workspace
+                ? null
+                : new DataRetentionCovenantInventory(
+                    Rows: 12,
+                    ManagedFiles: 3,
+                    LocalArtifacts: 2,
+                    AffectedSessions: 1,
+                    PossibleDisclosures: 1,
+                    RetroDownfall.Arcanum.Core.Covenant.CovenantDisclosureCountKind.Exact));
 
     private static DataRetentionApplyResult CreateOnlineResult(
         InstallationResetHostHandoff handoff) =>
@@ -978,7 +1082,6 @@ public sealed class InstallationResetApplyBoundaryTests
             Blockers: [],
             Conflicts: [],
             RequestedOperationId: handoff.RequestedOperationId);
-
 
     private static InstallationResetApplyRequest CreateRequest() =>
         new(
@@ -1054,6 +1157,8 @@ public sealed class InstallationResetApplyBoundaryTests
 
         public int FullApplyCount { get; private set; }
 
+        public int FreshApplyCount { get; private set; }
+
         public Func<
             FullInstallationResetRequest,
             ArcanumMaintenanceLock,
@@ -1094,6 +1199,27 @@ public sealed class InstallationResetApplyBoundaryTests
 
         }
 
+        public Task<Result<InstallationResetResult>> ApplyFreshUnderMaintenanceLockAsync(
+            InstallationResetPlanRequest request,
+            StoppedHostInstallationResetPlan confirmedPlan,
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default)
+        {
+
+            ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+            FreshApplyCount++;
+
+            ApplyCount++;
+
+            return apply(
+                new InstallationResetApplyRequest(
+                    request,
+                    confirmedPlan.Plan.PlanId),
+                cancellationToken);
+
+        }
+
         public Task<Result<InstallationResetResult>> ApplyFullUnderMaintenanceLockAsync(
             FullInstallationResetRequest request,
             ArcanumMaintenanceLock heldInstallationLock,
@@ -1112,7 +1238,6 @@ public sealed class InstallationResetApplyBoundaryTests
         }
 
     }
-
 
     private sealed class RecordingLease
     {

@@ -269,9 +269,10 @@ public sealed class SagaCurationEndpointTests
     /// <para>The missing row is not cut by hand here. It is left behind by
     /// <c>BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync</c>, the production writer of this
     /// state: a Grimoire restored from a backup taken under a different configured embedding width keeps
-    /// every <c>saga_memories</c> row and drops the base-table vector behind it, to be recomputed on
-    /// demand. It does not touch the vec0 mirror, so what a restore hands the operator is already the
-    /// two tables disagreeing — and a correction is one of the verbs that is supposed to settle it.</para>
+    /// every <c>saga_memories</c> row and drops the vector behind it — the base row and the vec0 mirror
+    /// row together — to be recomputed on demand. What a restore hands the operator is therefore a
+    /// memory with no vector in either table, and a correction is one of the verbs that is supposed to
+    /// give it one.</para>
     /// <para>The detail route is read before the correction as well as after, so a failure here is about
     /// the correction rather than about the arrangement: the first read is what proves the memory
     /// reached the state this case is about.</para>
@@ -306,7 +307,10 @@ public sealed class SagaCurationEndpointTests
 
         Assert.Null(await EmbeddingAsync(factory, "saga_memory_embeddings", "mem-unembedded"));
 
-        Assert.Equal(extracted, await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
+        // The mirror goes with the row it mirrors. Asserted rather than assumed, because the memory
+        // this case is about is the one with no vector anywhere: a mirror row left behind would be a
+        // vector the correction below never has to publish over.
+        Assert.Null(await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
 
         using HttpResponseMessage before = await client.GetAsync("/api/memory/saga/mem-unembedded");
 
@@ -337,11 +341,11 @@ public sealed class SagaCurationEndpointTests
 
         Assert.NotNull(published);
 
-        // The corrected text's vector rather than the one the restore stranded in the mirror.
+        // The corrected text's vector rather than the one the restore removed.
         Assert.NotEqual(extracted, published);
 
-        // And both tables hold it. Their disagreeing is the whole of what this defect cost: a
-        // correction that answered Applied while the two described different memories.
+        // And both tables hold it. Publishing into one and not the other is what this assertion is
+        // for: a correction that answered Applied while the two described different memories.
         Assert.Equal(published, await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
 
     }

@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -12,11 +13,13 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
@@ -48,6 +51,7 @@ internal static class SessionDivinationEndpoints
                 IWeaveService weaveService,
                 IDivinationService divinationService,
                 ArcanumDbContext db,
+                IGrimoireOrdinaryConnectionFactory connections,
                 IOptionsMonitor<ArcanumSettings> options,
                 HttpContext ctx) =>
             {
@@ -132,6 +136,7 @@ internal static class SessionDivinationEndpoints
 
                 SemanticSessionSearchResult[] joined = await JoinSessionMetadataAsync(
                     db,
+                    connections,
                     searchResult.Value,
                     request.CampaignId,
                     request.Status,
@@ -165,6 +170,7 @@ internal static class SessionDivinationEndpoints
     /// </summary>
     private static async Task<SemanticSessionSearchResult[]> JoinSessionMetadataAsync(
         ArcanumDbContext db,
+        IGrimoireOrdinaryConnectionFactory connections,
         DivinationResult[] hits,
         Guid? campaignIdFilter,
         string? statusFilter,
@@ -188,14 +194,29 @@ internal static class SessionDivinationEndpoints
 
         }
 
-        DbConnection connection = db.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
+        if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
         {
-
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
 
         }
+
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
+            .AcquireScopedAsync(
+                scopedConnection,
+                CovenantSqliteConnectionMode.ReadOnly,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
+        {
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
+
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+        DbConnection connection = lease.Connection;
 
         await using DbCommand cmd = connection.CreateCommand();
 
@@ -279,6 +300,14 @@ internal static class SessionDivinationEndpoints
                 createdAt));
 
         }
+
+        await GrimoireScopedConsumerTestSeam
+            .PauseAsync(
+                "SessionDivinationEndpoints.JoinSessionMetadataAsync",
+                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+                results.Count,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         return results
             .OrderByDescending(static r => r.Similarity)

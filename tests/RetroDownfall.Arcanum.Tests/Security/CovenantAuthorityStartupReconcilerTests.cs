@@ -157,11 +157,18 @@ public sealed class CovenantAuthorityStartupReconcilerTests
 
         checkpoint.WaitUntilReached();
 
-        Assert.Null(runtime.Current.Keys);
+        try
+        {
 
-        Assert.Null(runtime.Current.ActiveAuthority);
+            Assert.Null(runtime.Current.Keys);
 
-        checkpoint.Release();
+            Assert.Null(runtime.Current.ActiveAuthority);
+
+        }
+        finally
+        {
+            checkpoint.Release();
+        }
 
         await reconciliation;
 
@@ -515,6 +522,10 @@ public sealed class CovenantAuthorityStartupReconcilerTests
     private sealed class BlockingDerivationCheckpoint : ICovenantEnvelopeDerivationCheckpoint, IDisposable
     {
 
+        private static readonly TimeSpan ReachedTimeout = TimeSpan.FromSeconds(5);
+
+        private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(30);
+
         private readonly ManualResetEventSlim _reached = new();
 
         private readonly ManualResetEventSlim _release = new();
@@ -534,7 +545,10 @@ public sealed class CovenantAuthorityStartupReconcilerTests
 
             _reached.Set();
 
-            _release.Wait();
+            // The production caller parks here while it holds its lock. A test that fails before it calls
+            // Release() disposes its harness under that same lock, so an unbounded wait would hang the
+            // whole run; the bound turns that into a red test instead.
+            _release.Wait(ReleaseTimeout);
 
         }
 
@@ -542,12 +556,26 @@ public sealed class CovenantAuthorityStartupReconcilerTests
         {
         }
 
-        internal void WaitUntilReached() => Assert.True(_reached.Wait(TimeSpan.FromSeconds(5)));
+        internal void WaitUntilReached()
+        {
+
+            bool reached = _reached.Wait(ReachedTimeout);
+
+            if (!reached)
+            {
+                _release.Set();
+            }
+
+            Assert.True(reached, $"The derivation did not reach the blocked step within {ReachedTimeout.TotalSeconds:0} seconds.");
+
+        }
 
         internal void Release() => _release.Set();
 
         public void Dispose()
         {
+
+            _release.Set();
 
             _reached.Dispose();
 

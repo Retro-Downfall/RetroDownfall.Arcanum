@@ -1,7 +1,10 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
 using Spectre.Console;
@@ -107,8 +110,14 @@ public sealed class ApprenticeCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
     WatchCommands watchCommands,
+    IConfirmationPrompt confirmationPrompt,
+    IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
+
+    private void WriteError(Error error) =>
+        CliErrorOutput.WriteMarkupLine(
+            themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
 
     /// <summary>
     /// List Apprentices (GET /api/apprentices).
@@ -132,7 +141,7 @@ public sealed class ApprenticeCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -145,9 +154,9 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         ApprenticeSummaryDto[] apprentices = result.Value.Items;
@@ -225,9 +234,9 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         ApprenticeCommandSupport.WriteApprenticeDetailPanel(result.Value, themePalette);
@@ -255,7 +264,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(goal, out string resolvedGoal, out string? goalError))
@@ -269,7 +278,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal must not be empty.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Guid? parsedCampaignId = null;
@@ -281,7 +290,7 @@ public sealed class ApprenticeCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -298,9 +307,9 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
@@ -354,13 +363,22 @@ public sealed class ApprenticeCommands(
         (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete Apprentice {apprenticeId:D}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Apprentice deletion cancelled.")));
+
+            return 0;
+        }
+
         Result result = await apiClient.DeleteApprenticeAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Apprentice removed.")));
@@ -411,9 +429,9 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(themePalette.HighlightLabelMarkup(Markup.Escape($"Apprentice {actionLabel}:"), Markup.Escape(apprenticeId.ToString("D"))));
@@ -437,7 +455,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(plan, out string planJson, out string? planError))
@@ -464,16 +482,16 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan must contain at least one step.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Result<ApprenticeDetailDto> result = await apiClient.ReweaveApprenticeAsync(apprenticeId, steps, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
@@ -500,16 +518,16 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--guidance is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Result<string> result = await apiClient.IntervereApprenticeAsync(apprenticeId, guidance.Trim(), cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Divine Intervention submitted; Apprentice resuming.")));
@@ -538,7 +556,7 @@ public sealed class ApprenticeCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Result<ApprenticeDetailDto> result = await apiClient
@@ -556,10 +574,10 @@ public sealed class ApprenticeCommands(
             }
             else
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+                WriteError(result.Error);
             }
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 

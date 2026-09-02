@@ -13,17 +13,46 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
+/// <summary>
+/// One Session that is durably in the destination, named by both identities it has.
+/// </summary>
+/// <remarks>
+/// The source identity is what the operator asked for and the destination identity is what the
+/// installation now holds, and neither alone is enough to act on: the request names the first, the
+/// live Grimoire contains only the second, and a protected import mints the second per run.
+/// </remarks>
+internal sealed record BackupImportedSession(Guid SourceSessionId, Guid DestinationSessionId);
+
 internal sealed record BackupSessionImportResult(
     long Sessions,
     long Entries,
     long Attachments,
     long RemappedIds,
     long DeduplicatedBlobs,
-    BackupVerifyIssue[] Issues)
+    BackupVerifyIssue[] Issues,
+    BackupImportedSession[] Committed)
 {
 
     public static BackupSessionImportResult Failed(BackupVerifyIssue issue) =>
-        new(0, 0, 0, 0, 0, [issue]);
+        new(0, 0, 0, 0, 0, [issue], []);
+
+    /// <summary>
+    /// A refusal that arrived after earlier Sessions had already committed.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="Failed"/> because the two say opposite things about the destination. A
+    /// caller that flattened this into a refusal would report a zero-count refusal over an installation
+    /// that has already changed, which is exactly what the restore's <c>Rejected</c> status promises has
+    /// not happened.
+    /// </remarks>
+    public static BackupSessionImportResult Partial(
+        long sessions,
+        long entries,
+        long attachments,
+        long deduplicated,
+        IReadOnlyList<BackupImportedSession> committed,
+        BackupVerifyIssue issue) =>
+        new(sessions, entries, attachments, sessions, deduplicated, [issue], [.. committed]);
 
 }
 
@@ -34,9 +63,9 @@ internal sealed record BackupSessionImportResult(
 /// This is explicitly not a restore: nothing is replaced, and the destination keeps its own
 /// configuration, secrets, and every Session it already had. Colliding primary keys are remapped
 /// rather than overwritten, foreign keys follow the remap, and attachment payloads that already
-/// exist byte-for-byte are deduplicated instead of copied again. The whole merge runs in one
-/// destination transaction, so a failure imports nothing. Payload bytes are the one part no
-/// transaction covers — they are copied into the live attachment tree before the commit — so they
+/// exist byte-for-byte are deduplicated instead of copied again. With the gate off the whole merge
+/// runs in one destination transaction, so a failure imports nothing. Payload bytes are the one part
+/// no transaction covers — they are copied into the live attachment tree before the commit — so they
 /// are unwound explicitly on every path that does not reach a successful commit, cancellation
 /// included.
 ///
@@ -45,6 +74,14 @@ internal sealed record BackupSessionImportResult(
 /// an explicit destination Campaign for every Campaign-bound source. That path refuses a tainted
 /// Session outright rather than exporting protected content into a destination that never held it
 /// (§10.13). With the gate off, prompt bytes and behaviour are exactly what they were before.</para>
+///
+/// <para><b>One transaction per Session, not one across the selection.</b> Each protected Session
+/// commits under its own compound lease, so a refusal on a later Session cannot unwind the earlier
+/// ones — the store owns their transactions and they are already durable. That is why a refusal there
+/// returns <see cref="BackupSessionImportResult.Partial"/> naming what landed rather than a
+/// zero-count failure: the destination has changed, and the operator has to be told which Sessions it
+/// now holds before deciding anything, because the identities are minted per run and a re-run imports
+/// them a second time.</para>
 /// </remarks>
 internal static class BackupSessionImporter
 {
@@ -85,8 +122,9 @@ internal static class BackupSessionImporter
         // Coverage first, over the whole selection, before the destination is opened for writing at
         // all. Each Session below commits under its own compound lease with no outer transaction and
         // no compensating undo, so an unmapped third Session discovered inside the loop would leave
-        // the first two committed while the result reported the import refused — and the retry the
-        // refusal itself recommends would import those two again under fresh identities (§10.19.12).
+        // the first two committed and the operator holding a partial import to reconcile by hand. The
+        // refusals that can only be found inside the loop are reported as partial rather than
+        // prevented; this is the class that can be prevented, so it is (§10.19.12).
         await using (SqliteConnection preflight = await BackupRestoreDatabaseWorker
             .OpenAsync(sourceDatabasePath, sourceGrimoireSecret, readOnly: true, cancellationToken)
             .ConfigureAwait(false))
@@ -122,6 +160,8 @@ internal static class BackupSessionImporter
 
         long deduplicated = 0;
 
+        List<BackupImportedSession> committed = [];
+
         foreach (Guid sessionId in sessionIds)
         {
 
@@ -139,8 +179,23 @@ internal static class BackupSessionImporter
             if (imported.IsFailure)
             {
 
-                return BackupSessionImportResult.Failed(
-                    new BackupVerifyIssue("backup.restore_import_refused", imported.Error.Message));
+                BackupVerifyIssue refusal =
+                    new("backup.restore_import_refused", imported.Error.Message);
+
+                // Every Session before this one committed under its own compound lease, and no
+                // transaction spans them: those rows, their attachments, and their transfer-intent
+                // journal are in the live installation whatever this refusal says. Reporting zero
+                // counts here is what told the operator the destination was untouched — and made
+                // re-running the import, which mints fresh identities per run, import them again.
+                return committed.Count == 0
+                    ? BackupSessionImportResult.Failed(refusal)
+                    : BackupSessionImportResult.Partial(
+                        sessions,
+                        entries,
+                        attachments,
+                        deduplicated,
+                        committed,
+                        refusal);
 
             }
 
@@ -152,9 +207,18 @@ internal static class BackupSessionImporter
 
             deduplicated += imported.Value.DeduplicatedBlobs;
 
+            committed.Add(new BackupImportedSession(sessionId, imported.Value.DestinationSessionId));
+
         }
 
-        return new BackupSessionImportResult(sessions, entries, attachments, sessions, deduplicated, []);
+        return new BackupSessionImportResult(
+            sessions,
+            entries,
+            attachments,
+            sessions,
+            deduplicated,
+            [],
+            [.. committed]);
 
     }
 
@@ -435,12 +499,15 @@ internal static class BackupSessionImporter
 
             committed = true;
 
+            // No committed vector: this path really does run in one destination transaction, so it
+            // either imported everything or nothing, and there is no partial commit to name.
             return new BackupSessionImportResult(
                 sessions,
                 entries,
                 attachments,
                 remapped,
                 deduplicated,
+                [],
                 []);
 
         }

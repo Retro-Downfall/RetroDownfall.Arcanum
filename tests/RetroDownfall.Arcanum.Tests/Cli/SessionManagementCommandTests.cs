@@ -12,6 +12,10 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Hosting;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -62,6 +66,36 @@ public sealed class SessionManagementCommandTests
             Assert.Contains(command, result.Output, StringComparison.Ordinal);
 
         }
+
+    }
+
+    /// <summary>
+    /// An unreachable host is a network failure, not a generic one — scripts need exit 3 to
+    /// tell "arcanum serve is down" apart from a real domain error, and the message must name the
+    /// address the client actually tried so an operator on a non-default <c>Arcanum:Host</c> can act.
+    /// </summary>
+    [Fact]
+    public void Session_list_reports_a_network_failure_and_names_the_configured_base_address()
+    {
+
+        // A default HostSettings() and this harness's own default configuration resolve to the
+        // same address, so asserting against the default alone would also pass a hardcoded
+        // "http://localhost:5001" literal in the annotation path. Configuring a non-default port
+        // makes the assertion load-bearing on the code actually reading Arcanum:Host from DI.
+        const int ConfiguredPort = 19999;
+
+        RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["session", "list"],
+            configureServices: services => services.Configure<ArcanumSettings>(s => s.Host.Port = ConfiguredPort));
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
+
+        Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
 
     }
 
@@ -665,7 +699,10 @@ public sealed class SessionManagementCommandTests
 
     }
 
-    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(
+        RecordingHandler handler,
+        string[] args,
+        Action<ServiceCollection>? configureServices = null)
     {
 
         ServiceCollection services = new();
@@ -681,6 +718,8 @@ public sealed class SessionManagementCommandTests
         services.RemoveAll<ISecretStore>();
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
 

@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -48,6 +50,69 @@ public sealed class CampaignCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal("/api/campaigns", request.RequestUri!.AbsolutePath);
+
+    }
+
+    [Fact]
+    public void Campaign_list_rejects_an_undocumented_type_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["campaign", "list", "--type", "bogus"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--type", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Campaign_create_rejects_an_undocumented_type_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["campaign", "create", "--name", "Demo", "--path", "/tmp/demo", "--type", "bogus"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--type", result.Error, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
+    /// server-down failure was indistinguishable from a real domain failure. Routed through
+    /// <c>CliFailureExit</c>, a <c>Connection.*</c> failure now exits 3 and names the address tried.
+    /// A non-default port is configured (rather than asserting the harness's own default address)
+    /// so the assertion is load-bearing on <c>CampaignCommands.WriteError</c> actually reading
+    /// <c>Arcanum:Host</c>, not just coinciding with a hardcoded default.
+    /// </summary>
+    [Fact]
+    public void Campaign_list_reports_a_network_failure_and_names_the_configured_base_address()
+    {
+
+        const int ConfiguredPort = 19999;
+
+        RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["campaign", "list"],
+            configureServices: services => services.Configure<ArcanumSettings>(s => s.Host.Port = ConfiguredPort));
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
+
+        Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
 
     }
 
@@ -179,7 +244,7 @@ public sealed class CampaignCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CliTestResult result = RunCommand(handler, ["campaign", "delete", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["--yes", "campaign", "delete", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -188,6 +253,58 @@ public sealed class CampaignCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}", request.RequestUri!.AbsolutePath);
+
+    }
+
+    /// <summary>An irreversible delete must ask before it acts.</summary>
+    [Fact]
+    public void Campaign_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "delete", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>Campaign codex delete is also irreversible and must ask before it acts.</summary>
+    [Fact]
+    public void Campaign_codex_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "codex", "delete", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Campaign_codex_delete_binds_id_when_confirmed()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["--yes", "campaign", "codex", "delete", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Delete, request.Method);
+
+        Assert.Equal($"/api/campaigns/{SampleId:D}/codex", request.RequestUri!.AbsolutePath);
 
     }
 
@@ -343,7 +460,10 @@ public sealed class CampaignCommandTests
 
     }
 
-    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(
+        RecordingHandler handler,
+        string[] args,
+        Action<ServiceCollection>? configureServices = null)
     {
 
         ServiceCollection services = new();
@@ -359,6 +479,8 @@ public sealed class CampaignCommandTests
         services.RemoveAll<ISecretStore>();
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
+
+        configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
 

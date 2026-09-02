@@ -665,7 +665,6 @@ public sealed class CovenantErasureCoordinatorTests
                 };
 
             }
-
             else if (raceMode == LifecycleFailureRaceMode.NonActiveCheckpoint)
             {
 
@@ -1730,6 +1729,7 @@ public sealed class CovenantErasureCoordinatorTests
 
         public async Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken)
         {
 
@@ -1743,17 +1743,18 @@ public sealed class CovenantErasureCoordinatorTests
 
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) => Step("close-handles");
 
-        public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) => Step("truncate-wal");
+        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) => Step("truncate-wal");
 
-        public Task<Result> CompactAsync(CancellationToken cancellationToken) => Step("compact");
+        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) => Step("compact");
 
-        public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Step("initialize-accelerator");
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Step("verify-sidecar-absence");
 
         public async Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken)
         {
 

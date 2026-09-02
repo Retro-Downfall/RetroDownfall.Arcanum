@@ -10,12 +10,41 @@
 
     <LangVersion>latest</LangVersion>
 
-    <!-- The one place a version is written. It is stamped into every assembly, and it is what CI
-         reads when it cuts a build after a push to main, so the release and the binaries cannot
-         disagree.
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-         Two shapes. A bare channel - 0.1.0-beta - means "cut the next beta": CI finds the highest
-         v0.1.0-beta.N already released, including unpublished drafts, and cuts N+1. Changing 0.1.0
+    <!-- This also reaches NuGet's own audit-at-restore step, not only the compiler. NuGetAuditMode
+         defaults to "all" (direct and transitive dependencies, not only what this repository
+         references directly) for a net10.0+ TargetFramework, so a new advisory against any
+         package already in the restore graph, something no commit here controls since the
+         advisory feed changes independently of this repository, now fails restore everywhere
+         instead of only warning: NU1901 (low), NU1902 (moderate), NU1903 (high), NU1904
+         (critical). That is deliberate: fail closed on a dependency advisory is the posture this
+         hardening pass wants, not a quiet merge past it. When one fires, bump the flagged package
+         past the advisory; if no fixed version exists yet, add a scoped
+         NuGetAuditSuppress Include="https://github.com/advisories/GHSA-..." naming the specific
+         advisory with a comment saying why it is accepted for now, not
+         WarningsNotAsErrors covering NU1901 through NU1904, which would widen the exemption to
+         every future advisory rather than the one being triaged. -->
+
+    <!-- Both default to $(TreatWarningsAsErrors) when unset (Microsoft.NETCore.Native.targets,
+         Microsoft.NET.ILLink.targets), so the line above would otherwise also hand ILC its
+         warnaserror flag and the trimmer TreatWarningsAsErrors during a Native AOT publish.
+         scripts/verify-aot-il-warnings.sh is the designed enforcement for that closure:
+         its ALLOWED list tolerates real third-party ILC warnings (EF Core, Serilog, etc.) that
+         a blanket warnaserror flag cannot distinguish from a first-party one, and would turn
+         into a hard publish failure instead of the nuanced pass this script already makes.
+         (No literal double hyphen above: an XML comment may not contain one.) -->
+    <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
+
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
+
+    <!-- The one place a version is written. It is stamped into every assembly and it is what the
+         release workflow reads when an operator dispatches it with no version input, so the release
+         and the binaries cannot disagree. No push cuts a build: CI runs the gates on a pull request
+         or a manual dispatch and calls nothing at the end.
+
+         Two shapes. A bare channel - 0.1.0-beta - means "cut the next beta": the release workflow
+         finds the highest v0.1.0-beta.N already released, including unpublished drafts, and cuts N+1. Changing 0.1.0
          restarts that count, because it counts per base version. A fully written version -
          0.1.0-beta.12, or 0.1.0 for a real release - is used exactly as written. So editing this
          line and pushing is how you name a version by hand; leaving it alone is how the beta stream

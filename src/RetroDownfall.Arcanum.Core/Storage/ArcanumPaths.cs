@@ -37,8 +37,9 @@ public static class ArcanumPaths
 
     /// <summary>
     /// Directory holding the Data Protection secret store files: <c>~/.config/arcanum/</c> on Unix,
-    /// <c>%APPDATA%/arcanum/</c> on Windows. Distinct from <see cref="GrimoireDirectory"/> (which lives
-    /// under <c>~/.config/arcanum/</c> on Unix but under <c>%APPDATA%/arcanum/</c> on Windows).
+    /// <c>%APPDATA%/arcanum/</c> on Windows. Distinct from <see cref="GrimoireDirectory"/> (which
+    /// lives under <c>~/.config/arcanum/</c> on every platform, including Windows, where it resolves
+    /// under <c>%USERPROFILE%</c> rather than <c>%APPDATA%</c>).
     /// </summary>
     public static string SecretStoreDirectory
     {

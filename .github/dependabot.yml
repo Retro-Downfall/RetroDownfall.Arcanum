@@ -9,3 +9,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+
+  # RetroDownfall.Arcanum.slnx is read directly from this directory, and every PackageReference
+  # reachable from a project it lists -- which includes Directory.Build.props's, since every
+  # project imports it -- is discovered from here. A hand-pinned transitive advisory
+  # (Microsoft.OpenApi, GHSA-v5pm-xwqc-g5wc; see Api.csproj) already had to be found by hand before
+  # this existed. The Covenant benchmark host and the regex AOT smoke project sit outside the
+  # solution file and are not covered by this entry.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

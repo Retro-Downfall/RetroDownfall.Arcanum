@@ -64,7 +64,7 @@ public sealed partial class DataRetentionServiceTests
 
                 _firstReleaseRequested.TrySetResult();
 
-                await _allowFirstRelease.Task;
+                await _allowFirstRelease.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             }
 

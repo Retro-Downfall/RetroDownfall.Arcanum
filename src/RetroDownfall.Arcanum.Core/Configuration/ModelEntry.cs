@@ -24,12 +24,15 @@ public sealed record ModelEntry
     public ModelEntry(
         string Name,
         bool SupportsVision = false,
+        bool? SupportsTools = null,
         ModelReasoningSettings? Reasoning = null)
     {
 
         this.Name = Name;
 
         this.SupportsVision = SupportsVision;
+
+        this.SupportsTools = SupportsTools;
 
         this.Reasoning = Reasoning;
 
@@ -38,6 +41,20 @@ public sealed record ModelEntry
     public string Name { get; set; } = string.Empty;
 
     public bool SupportsVision { get; set; }
+
+    /// <summary>
+    /// Declared tool-calling capability. <see langword="null"/> means undeclared: a caller must
+    /// not treat that as "does not support tools" — an undeclared model may support tools fine —
+    /// and should fall back to some other signal instead. Only an explicit
+    /// <see langword="false"/> is an authoritative "this model does not support tools".
+    /// </summary>
+    /// <remarks>
+    /// No <c>[JsonIgnore]</c> here: <see cref="ModelEntry"/> carries a type-level
+    /// <see cref="JsonConverterAttribute"/>, so <c>System.Text.Json</c> never consults
+    /// property-level attributes for it — <see cref="ModelEntryJsonConverter.Write"/>'s own
+    /// conditional write is what omits this property when unset.
+    /// </remarks>
+    public bool? SupportsTools { get; set; }
 
     /// <summary>
     /// Optional reasoning declaration for nonstandard third-party endpoints. <see langword="null"/>
@@ -59,10 +76,11 @@ public sealed record ModelEntry
 
 /// <summary>
 /// AOT-safe converter accepting either a bare JSON string (<c>"gpt-4o"</c>, back-compat form —
-/// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c> and reasoning remains unconfigured)
-/// or a factual object with `name`/`supportsVision` and optional `reasoning` (only `wireDialect` and
-/// `maxBudgetTokens`). Writes are always the object form and include the reasoning object only when
-/// it was declared.
+/// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c>, <see cref="ModelEntry.SupportsTools"/>
+/// stays undeclared, and reasoning remains unconfigured) or a factual object with
+/// `name`/`supportsVision`/`supportsTools` and optional `reasoning` (only `wireDialect` and
+/// `maxBudgetTokens`). Writes are always the object form and include `supportsTools` only when
+/// declared and the reasoning object only when it was declared.
 /// </summary>
 public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 {
@@ -77,6 +95,8 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                 string name = string.Empty;
 
                 bool supportsVision = false;
+
+                bool? supportsTools = null;
 
                 ReasoningWireDialect? wireDialect = null;
 
@@ -101,6 +121,12 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                     {
                         supportsVision = reader.TokenType is JsonTokenType.True or JsonTokenType.False
                             && reader.GetBoolean();
+                    }
+                    else if (string.Equals(propertyName, "supportsTools", StringComparison.OrdinalIgnoreCase))
+                    {
+                        supportsTools = reader.TokenType is JsonTokenType.True or JsonTokenType.False
+                            ? reader.GetBoolean()
+                            : null;
                     }
                     else if (string.Equals(propertyName, "reasoning", StringComparison.OrdinalIgnoreCase))
                     {
@@ -162,11 +188,11 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                         }
                         : null;
 
-                return new ModelEntry(name, supportsVision, reasoning);
+                return new ModelEntry(name, supportsVision, supportsTools, reasoning);
 
             default:
                 throw new JsonException(
-                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'reasoning' (got {reader.TokenType}).");
+                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'supportsTools'/'reasoning' (got {reader.TokenType}).");
         }
     }
 
@@ -177,6 +203,11 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
         writer.WriteString("name", value.Name);
 
         writer.WriteBoolean("supportsVision", value.SupportsVision);
+
+        if (value.SupportsTools is { } supportsTools)
+        {
+            writer.WriteBoolean("supportsTools", supportsTools);
+        }
 
         if (value.Reasoning?.WireDialect is not null || value.Reasoning?.MaxBudgetTokens is not null)
         {

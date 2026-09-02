@@ -18,9 +18,11 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// hundreds of megabytes spooled for a caller who was never going to be allowed to send them
 /// (§10.18).
 ///
-/// <para>Each helper attaches both halves: the metadata the pre-binding middleware reads and the
-/// filter that rechecks the epoch as defence in depth. A route cannot carry one without the other.
-/// </para>
+/// <para>Every helper below except <see cref="RequireConditionalCovenantReadAuthority{TBuilder}"/>
+/// attaches both halves: the metadata the pre-binding middleware reads and the filter that rechecks
+/// the epoch as defence in depth. A route declared through one of those helpers always carries its
+/// filter too. <see cref="RequireConditionalCovenantReadAuthority{TBuilder}"/> attaches only the
+/// inventory marker — see its own remarks for why.</para>
 /// </remarks>
 internal static class CovenantEndpointConventionBuilderExtensions
 {

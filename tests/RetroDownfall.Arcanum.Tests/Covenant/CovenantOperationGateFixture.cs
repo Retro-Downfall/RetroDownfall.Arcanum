@@ -1,12 +1,23 @@
 using System.Text;
 
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Data;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -417,6 +428,138 @@ internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
             succeed
                 ? Result.Success()
                 : Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, "The durable journal did not advance.")));
+
+    }
+
+}
+
+/// <summary>
+/// The real <see cref="CovenantCampaignScopeProbe"/>, over a real bootstrapped Grimoire, against rows
+/// the Campaign deletion trigger actually wrote — never the <see cref="FakeCovenantCampaignScopeProbe"/>
+/// every gate suite substitutes.
+/// </summary>
+/// <remarks>
+/// Replacing <see cref="CovenantCampaignScopeProbe.HasDeletionEventAsync"/> with a hard-coded
+/// answer keeps every other suite green, because no test anywhere constructs the real probe. This is
+/// that test.
+/// </remarks>
+[Collection("Grimoire")]
+public sealed class CovenantCampaignScopeProbeTests : IAsyncLifetime
+{
+
+    private readonly GrimoireFixture _fixture;
+
+    private string _dbPath = string.Empty;
+
+    private string _workspaceRoot = string.Empty;
+
+    private ArcanumDbContext? _db;
+
+    public CovenantCampaignScopeProbeTests(GrimoireFixture fixture)
+    {
+
+        _fixture = fixture;
+
+    }
+
+    public Task InitializeAsync()
+    {
+
+        _dbPath = _fixture.CopyDatabase();
+
+        _db = _fixture.CreateContext(_dbPath);
+
+        _workspaceRoot = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-scope-probe",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(_workspaceRoot);
+
+        return Task.CompletedTask;
+
+    }
+
+    public async Task DisposeAsync()
+    {
+
+        if (_db is not null)
+        {
+
+            await _db.DisposeAsync();
+
+        }
+
+        if (File.Exists(_dbPath))
+        {
+
+            File.Delete(_dbPath);
+
+        }
+
+        if (Directory.Exists(_workspaceRoot))
+        {
+
+            Directory.Delete(_workspaceRoot, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public async Task ResolveAsync_reports_deleted_for_a_campaign_the_deletion_trigger_recorded()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CampaignRepository campaigns = new(
+            _db!,
+            NullLogger<CampaignRepository>.Instance,
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Result<Campaign> added = await campaigns.AddAsync(
+            new Campaign
+            {
+                Id = Guid.NewGuid(),
+                Name = "probe scope test",
+                Path = _workspaceRoot,
+                Type = WorkspaceType.Campaign,
+                Settings = CampaignRepository.SerializeSettings(CampaignSettings.CreateDefault()),
+                SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(
+                    CampaignRepository.DefaultSanctumConfig()),
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            CancellationToken.None);
+
+        Assert.True(added.IsSuccess, added.IsFailure ? added.Error.Message : string.Empty);
+
+        Guid campaignId = added.Value.Id;
+
+        bool deleted = await campaigns.DeleteAsync(campaignId, CancellationToken.None);
+
+        Assert.True(deleted);
+
+        ServiceCollection services = new();
+
+        services.AddSingleton(_db!);
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+            new RecordingScopedOrdinaryConnectionFactory());
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        CovenantCampaignScopeProbe probe = new(provider.GetRequiredService<IServiceScopeFactory>());
+
+        Result<CovenantCampaignScopeState> resolved = await probe.ResolveAsync(
+            campaignId,
+            CancellationToken.None);
+
+        Assert.True(resolved.IsSuccess, resolved.IsFailure ? resolved.Error.Message : string.Empty);
+
+        Assert.Equal(CovenantCampaignScopeState.Deleted, resolved.Value);
 
     }
 

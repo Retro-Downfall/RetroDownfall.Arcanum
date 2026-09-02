@@ -1649,13 +1649,13 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
                 acquired.SetResult();
 
-                await release.Task;
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
                 return 1;
 
             });
 
-        await acquired.Task;
+        await acquired.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         bool secondEntered = false;
 
@@ -1725,13 +1725,13 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
                 acquired.SetResult();
 
-                await release.Task;
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
                 return 1;
 
             });
 
-        await acquired.Task;
+        await acquired.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         try
         {

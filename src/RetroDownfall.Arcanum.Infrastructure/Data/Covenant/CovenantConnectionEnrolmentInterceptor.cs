@@ -1,80 +1,261 @@
+using System.Data;
 using System.Data.Common;
 using System.Runtime.CompilerServices;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
-/// Enrols every Grimoire connection Entity Framework opens with the Covenant drain, for exactly as
-/// long as it is open.
+/// Adapts Entity Framework connection callbacks to the process-wide ordinary Grimoire lifecycle.
 /// </summary>
-/// <remarks>
-/// Enrolment used to be a component's responsibility — the Covenant connection source enrolled the
-/// scope's handle, and so did the long-running operation store — which made "is this open handle
-/// drained" a question about which unrelated services the scope happened to resolve. A scope that
-/// obtained <see cref="ArcanumDbContext"/> and opened its connection without asking for either
-/// component held the Grimoire open and was invisible to the drain, and the maintenance sweep driver
-/// is exactly that scope. An unenrolled handle survives both the drain and the pool clear, because it
-/// is in use rather than idle, and the exclusive maintenance connection that follows then spends the
-/// whole busy timeout on every wal-index lock its first transaction takes before <c>BEGIN</c> gives
-/// up: tens of seconds of waiting ending in <c>database is locked</c>, with no way for that caller to
-/// name the holder.
-///
-/// <para>Hooked to the open rather than to a constructor, so opening without enrolling is not a shape
-/// this composition can express. A constructor-time enrolment would also be wrong for a pooled
-/// context, whose constructor runs once per pooled instance while its connection is opened and closed
-/// many times after that.</para>
-///
-/// <para>Enrolment is released on close and on dispose, and holding it across a close would be the
-/// safer-looking mistake: the drain keeps a strong reference to every handle it is holding, since an
-/// open connection nobody references still holds the database file, so a registration that outlived
-/// its connection would keep that connection alive for the life of the process.</para>
-/// </remarks>
 internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInterceptor
 {
 
+    private readonly IGrimoireOrdinaryConnectionLifecycle _lifecycle;
+
     private readonly ICovenantConnectionDrain _drain;
+
+    private readonly ICovenantSqliteConnectionInitializer _initializer;
 
     private readonly Lock _gate = new();
 
-    private readonly ConditionalWeakTable<DbConnection, IDisposable> _enrolments = [];
+    private readonly ConditionalWeakTable<DbConnection, InterceptorRegistration> _registrations = [];
 
-    internal CovenantConnectionEnrolmentInterceptor(ICovenantConnectionDrain drain)
+    internal CovenantConnectionEnrolmentInterceptor(
+        IGrimoireOrdinaryConnectionLifecycle lifecycle,
+        ICovenantConnectionDrain drain,
+        ICovenantSqliteConnectionInitializer initializer)
     {
+
+        ArgumentNullException.ThrowIfNull(lifecycle);
 
         ArgumentNullException.ThrowIfNull(drain);
 
+        ArgumentNullException.ThrowIfNull(initializer);
+
+        _lifecycle = lifecycle;
+
         _drain = drain;
+
+        _initializer = initializer;
+
+    }
+
+    public override InterceptionResult ConnectionOpening(
+        DbConnection connection,
+        ConnectionEventData eventData,
+        InterceptionResult result)
+    {
+
+        BeginOpen(connection);
+
+        return base.ConnectionOpening(connection, eventData, result);
+
+    }
+
+    public override ValueTask<InterceptionResult> ConnectionOpeningAsync(
+        DbConnection connection,
+        ConnectionEventData eventData,
+        InterceptionResult result,
+        CancellationToken cancellationToken = default)
+    {
+
+        BeginOpen(connection);
+
+        return base.ConnectionOpeningAsync(connection, eventData, result, cancellationToken);
 
     }
 
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Enrol(connection);
+        InterceptorRegistration registration = RequireRegistration(connection);
+
+        Result revalidated = registration.Registration.RevalidateAfterNativeOpen();
+
+        registration.NativeOpenRevalidated = true;
+
+        if (revalidated.IsFailure)
+        {
+
+            RefuseAfterPhysicalClose(connection);
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
+
+        try
+        {
+
+            if (connection is SqliteConnection sqlite)
+            {
+
+                _initializer.InitializeAsync(
+                        sqlite,
+                        CovenantSqliteConnectionMode.ReadWrite,
+                        CancellationToken.None)
+                    .AsTask()
+                    .GetAwaiter()
+                    .GetResult();
+
+            }
+
+            Result opened = registration.Registration.MarkOpened();
+
+            if (opened.IsFailure)
+            {
+
+                RefuseAfterPhysicalClose(connection);
+
+                throw new GrimoireMaintenanceUnavailableException();
+
+            }
+
+            registration.Opened = true;
+
+        }
+        catch
+        {
+
+            if (!registration.Opened && HasRegistration(connection))
+            {
+
+                RefuseAfterPhysicalClose(connection);
+
+            }
+
+            throw;
+
+        }
 
         base.ConnectionOpened(connection, eventData);
 
     }
 
-    public override Task ConnectionOpenedAsync(
+    public override async Task ConnectionOpenedAsync(
         DbConnection connection,
         ConnectionEndEventData eventData,
         CancellationToken cancellationToken = default)
     {
 
-        Enrol(connection);
+        InterceptorRegistration registration = RequireRegistration(connection);
 
-        return base.ConnectionOpenedAsync(connection, eventData, cancellationToken);
+        Result revalidated = registration.Registration.RevalidateAfterNativeOpen();
+
+        registration.NativeOpenRevalidated = true;
+
+        if (revalidated.IsFailure)
+        {
+
+            await RefuseAfterPhysicalCloseAsync(connection).ConfigureAwait(false);
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
+
+        try
+        {
+
+            if (connection is SqliteConnection sqlite)
+            {
+
+                await _initializer.InitializeAsync(
+                        sqlite,
+                        CovenantSqliteConnectionMode.ReadWrite,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+
+            Result opened = registration.Registration.MarkOpened();
+
+            if (opened.IsFailure)
+            {
+
+                await RefuseAfterPhysicalCloseAsync(connection).ConfigureAwait(false);
+
+                throw new GrimoireMaintenanceUnavailableException();
+
+            }
+
+            registration.Opened = true;
+
+        }
+        catch
+        {
+
+            if (!registration.Opened && HasRegistration(connection))
+            {
+
+                await RefuseAfterPhysicalCloseAsync(connection).ConfigureAwait(false);
+
+            }
+
+            throw;
+
+        }
+
+        await base.ConnectionOpenedAsync(connection, eventData, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    public override void ConnectionFailed(
+        DbConnection connection,
+        ConnectionErrorEventData eventData)
+    {
+
+        Release(connection, closePhysicalConnection: true);
+
+        base.ConnectionFailed(connection, eventData);
+
+    }
+
+    public override async Task ConnectionFailedAsync(
+        DbConnection connection,
+        ConnectionErrorEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+
+        await ReleaseAsync(connection, closePhysicalConnection: true).ConfigureAwait(false);
+
+        await base.ConnectionFailedAsync(connection, eventData, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    public override void ConnectionCanceled(
+        DbConnection connection,
+        ConnectionEndEventData eventData)
+    {
+
+        Release(connection, closePhysicalConnection: true);
+
+        base.ConnectionCanceled(connection, eventData);
+
+    }
+
+    public override async Task ConnectionCanceledAsync(
+        DbConnection connection,
+        ConnectionEndEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+
+        await ReleaseAsync(connection, closePhysicalConnection: true).ConfigureAwait(false);
+
+        await base.ConnectionCanceledAsync(connection, eventData, cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
     public override void ConnectionClosed(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: false);
 
         base.ConnectionClosed(connection, eventData);
 
@@ -83,7 +264,7 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override Task ConnectionClosedAsync(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: false);
 
         return base.ConnectionClosedAsync(connection, eventData);
 
@@ -92,7 +273,7 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override void ConnectionDisposed(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: false);
 
         base.ConnectionDisposed(connection, eventData);
 
@@ -101,22 +282,405 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override Task ConnectionDisposedAsync(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Release(connection);
+        Release(connection, closePhysicalConnection: false);
 
         return base.ConnectionDisposedAsync(connection, eventData);
 
     }
 
-    /// <summary>
-    /// Enrols one handle once, however many times its owner reopens it.
-    /// </summary>
-    /// <remarks>
-    /// A drain closes the handles it holds directly rather than through Entity Framework, so a
-    /// reopen after a drain arrives here with the enrolment still standing. Registering again would
-    /// leave a count this interceptor can never pay back, and the handle would stay enrolled after
-    /// its owner had let go of it.
-    /// </remarks>
-    private void Enrol(DbConnection connection)
+    private void BeginOpen(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            if (_registrations.TryGetValue(connection, out _))
+            {
+
+                throw new InvalidOperationException(
+                    "This physical Grimoire connection already has an interceptor registration.");
+
+            }
+
+            _registrations.Add(
+                connection,
+                new InterceptorRegistration(_lifecycle.BeginOpen(connection)));
+
+            connection.StateChange += OnPhysicalStateChanged;
+
+        }
+
+    }
+
+    private void OnPhysicalStateChanged(object? sender, StateChangeEventArgs change)
+    {
+
+        if (change.CurrentState == ConnectionState.Closed && sender is DbConnection connection)
+        {
+
+            if (IsControlledReleaseInProgress(connection))
+            {
+
+                return;
+
+            }
+
+            _lifecycle.ReleaseAfterExternalClose(connection);
+
+            Release(connection, closePhysicalConnection: false);
+
+        }
+
+    }
+
+    private bool IsControlledReleaseInProgress(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            return _registrations.TryGetValue(
+                    connection,
+                    out InterceptorRegistration? registration)
+                && registration.ReleaseInProgress;
+
+        }
+
+    }
+
+    private InterceptorRegistration RequireRegistration(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            return _registrations.TryGetValue(connection, out InterceptorRegistration? registration)
+                ? registration
+                : throw new InvalidOperationException(
+                    "This physical Grimoire connection has no interceptor registration.");
+
+        }
+
+    }
+
+    private bool HasRegistration(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            return _registrations.TryGetValue(connection, out _);
+
+        }
+
+    }
+
+    private void RefuseAfterPhysicalClose(DbConnection connection)
+    {
+
+        InterceptorRegistration? registration = TryBeginRelease(connection);
+
+        if (registration is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            if (!IsPhysicallyClosed(connection))
+            {
+
+                connection.Close();
+
+            }
+
+            ClearExactPoolAfterClose(connection);
+
+            registration.Registration.MarkRefusedAfterOpen();
+
+            registration.Registration.Dispose();
+
+            CompleteRelease(connection, registration);
+
+        }
+        catch
+        {
+
+            CancelRelease(connection, registration);
+
+            throw;
+
+        }
+
+    }
+
+    private async Task RefuseAfterPhysicalCloseAsync(DbConnection connection)
+    {
+
+        InterceptorRegistration? registration = TryBeginRelease(connection);
+
+        if (registration is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            if (!IsPhysicallyClosed(connection))
+            {
+
+                await connection.CloseAsync().ConfigureAwait(false);
+
+            }
+
+            ClearExactPoolAfterClose(connection);
+
+            registration.Registration.MarkRefusedAfterOpen();
+
+            registration.Registration.Dispose();
+
+            CompleteRelease(connection, registration);
+
+        }
+        catch
+        {
+
+            CancelRelease(connection, registration);
+
+            throw;
+
+        }
+
+    }
+
+    private void Release(DbConnection connection, bool closePhysicalConnection)
+    {
+
+        InterceptorRegistration? registration = TryBeginRelease(connection);
+
+        if (registration is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            RevalidateObservedNativeOpen(connection, registration);
+
+            if (closePhysicalConnection && !IsPhysicallyClosed(connection))
+            {
+
+                connection.Close();
+
+            }
+
+            if (!registration.Opened && registration.NativeOpenRevalidated)
+            {
+
+                ClearExactPoolAfterClose(connection);
+
+            }
+
+            CompleteRegistration(registration);
+
+            CompleteRelease(connection, registration);
+
+        }
+        catch
+        {
+
+            CancelRelease(connection, registration);
+
+            throw;
+
+        }
+
+    }
+
+    private async Task ReleaseAsync(DbConnection connection, bool closePhysicalConnection)
+    {
+
+        InterceptorRegistration? registration = TryBeginRelease(connection);
+
+        if (registration is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            RevalidateObservedNativeOpen(connection, registration);
+
+            if (closePhysicalConnection && !IsPhysicallyClosed(connection))
+            {
+
+                await connection.CloseAsync().ConfigureAwait(false);
+
+            }
+
+            if (!registration.Opened && registration.NativeOpenRevalidated)
+            {
+
+                ClearExactPoolAfterClose(connection);
+
+            }
+
+            CompleteRegistration(registration);
+
+            CompleteRelease(connection, registration);
+
+        }
+        catch
+        {
+
+            CancelRelease(connection, registration);
+
+            throw;
+
+        }
+
+    }
+
+    private static void CompleteRegistration(InterceptorRegistration registration)
+    {
+
+        if (!registration.Opened)
+        {
+
+            if (registration.NativeOpenRevalidated)
+            {
+
+                registration.Registration.MarkRefusedAfterOpen();
+
+            }
+            else
+            {
+
+                registration.Registration.MarkFailed();
+
+            }
+
+        }
+
+        registration.Registration.Dispose();
+
+    }
+
+    private static void RevalidateObservedNativeOpen(
+        DbConnection connection,
+        InterceptorRegistration registration)
+    {
+
+        if (registration.Opened
+            || registration.NativeOpenRevalidated
+            || connection.State != ConnectionState.Open)
+        {
+
+            return;
+
+        }
+
+        _ = registration.Registration.RevalidateAfterNativeOpen();
+
+        registration.NativeOpenRevalidated = true;
+
+    }
+
+    private InterceptorRegistration? TryBeginRelease(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            if (!_registrations.TryGetValue(connection, out InterceptorRegistration? registration)
+                || registration.ReleaseInProgress)
+            {
+
+                return null;
+
+            }
+
+            registration.ReleaseInProgress = true;
+
+            return registration;
+
+        }
+
+    }
+
+    private void CompleteRelease(
+        DbConnection connection,
+        InterceptorRegistration registration)
+    {
+
+        lock (_gate)
+        {
+
+            if (_registrations.TryGetValue(connection, out InterceptorRegistration? current)
+                && ReferenceEquals(current, registration))
+            {
+
+                connection.StateChange -= OnPhysicalStateChanged;
+
+                _ = _registrations.Remove(connection);
+
+            }
+
+        }
+
+    }
+
+    private void CancelRelease(
+        DbConnection connection,
+        InterceptorRegistration registration)
+    {
+
+        lock (_gate)
+        {
+
+            if (_registrations.TryGetValue(connection, out InterceptorRegistration? current)
+                && ReferenceEquals(current, registration))
+            {
+
+                registration.ReleaseInProgress = false;
+
+            }
+
+        }
+
+    }
+
+    private static bool IsPhysicallyClosed(DbConnection connection)
+    {
+
+        try
+        {
+
+            return connection.State == ConnectionState.Closed;
+
+        }
+        catch (ObjectDisposedException)
+        {
+
+            return true;
+
+        }
+
+    }
+
+    private void ClearExactPoolAfterClose(DbConnection connection)
     {
 
         if (connection is not SqliteConnection sqlite)
@@ -126,40 +690,36 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
         }
 
-        lock (_gate)
+        Result cleared = _drain.ClearExactPoolAfterClose(sqlite);
+
+        if (cleared.IsFailure)
         {
 
-            if (_enrolments.TryGetValue(sqlite, out _))
-            {
+            throw new InvalidOperationException(cleared.Error.Message);
 
-                return;
+        }
 
-            }
+        if (!IsPhysicallyClosed(connection))
+        {
 
-            _enrolments.Add(sqlite, _drain.Register(sqlite));
+            throw new InvalidOperationException(
+                "A refused ordinary Grimoire open remained physically open.");
 
         }
 
     }
 
-    private void Release(DbConnection connection)
+    private sealed class InterceptorRegistration(
+        IGrimoireOrdinaryConnectionRegistration registration)
     {
 
-        lock (_gate)
-        {
+        internal IGrimoireOrdinaryConnectionRegistration Registration { get; } = registration;
 
-            if (!_enrolments.TryGetValue(connection, out IDisposable? enrolment))
-            {
+        internal bool NativeOpenRevalidated { get; set; }
 
-                return;
+        internal bool Opened { get; set; }
 
-            }
-
-            _ = _enrolments.Remove(connection);
-
-            enrolment.Dispose();
-
-        }
+        internal bool ReleaseInProgress { get; set; }
 
     }
 

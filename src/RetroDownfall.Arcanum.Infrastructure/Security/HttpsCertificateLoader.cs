@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -13,6 +14,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 public static class HttpsCertificateLoader
 {
+    /// <summary>
+    /// Test seam: observes the unencrypted PKCS#12 export <see cref="LoadPem"/> rehydrates through
+    /// on Windows, right after export and before it is zeroed. The branch runs only under
+    /// <see cref="OperatingSystem.IsWindows"/>, so a non-Windows test cannot reach it through
+    /// <see cref="Load"/> at all; this exists so a Windows run can assert the array was zeroed.
+    /// </summary>
+    internal static Action<byte[]>? ExportedPkcs12ObserverForTests { get; set; }
+
     public static HttpsCertificateLoadResult Load(
         HttpsSettings https,
         ILogger? logger = null)
@@ -72,14 +81,31 @@ public static class HttpsCertificateLoader
 
                 byte[] pkcs12 = pemCertificate.Export(X509ContentType.Pkcs12);
 
-                pemCertificate.Dispose();
+                // The try starts immediately after pkcs12 is populated: the observer invoke and
+                // pemCertificate.Dispose() below are not exception-free, and a throw from either
+                // one, before this method's own try/finally existed, would have skipped zeroing
+                // a buffer that already held the unencrypted private key.
+                try
+                {
 
-                X509Certificate2 rehydrated = X509CertificateLoader.LoadPkcs12(
-                    pkcs12,
-                    password: null,
-                    keyStorageFlags: X509KeyStorageFlags.EphemeralKeySet);
+                    ExportedPkcs12ObserverForTests?.Invoke(pkcs12);
 
-                return ValidateAndHold(rehydrated, certificatePath, "PEM", logger);
+                    pemCertificate.Dispose();
+
+                    X509Certificate2 rehydrated = X509CertificateLoader.LoadPkcs12(
+                        pkcs12,
+                        password: null,
+                        keyStorageFlags: X509KeyStorageFlags.EphemeralKeySet);
+
+                    return ValidateAndHold(rehydrated, certificatePath, "PEM", logger);
+
+                }
+                finally
+                {
+
+                    CryptographicOperations.ZeroMemory(pkcs12);
+
+                }
 
             }
 

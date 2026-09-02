@@ -5,6 +5,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -38,6 +40,35 @@ public sealed class PromptCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal("/api/prompts", request.RequestUri!.AbsolutePath);
+
+    }
+
+    /// <summary>
+    /// Every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
+    /// server-down failure was indistinguishable from a real domain failure. Routed through
+    /// <c>CliFailureExit</c>, a <c>Connection.*</c> failure now exits 3 and names the address tried.
+    /// A non-default port is configured (rather than asserting the harness's own default address)
+    /// so the assertion is load-bearing on <c>PromptCommands.WriteError</c> actually reading
+    /// <c>Arcanum:Host</c>, not just coinciding with a hardcoded default.
+    /// </summary>
+    [Fact]
+    public void Prompt_list_reports_a_network_failure_and_names_the_configured_base_address()
+    {
+
+        const int ConfiguredPort = 19999;
+
+        RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["prompt", "list"],
+            configureServices: services => services.Configure<ArcanumSettings>(s => s.Host.Port = ConfiguredPort));
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
+
+        Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
 
     }
 
@@ -125,13 +156,34 @@ public sealed class PromptCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CliTestResult result = RunCommand(handler, ["prompt", "delete", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["--yes", "prompt", "delete", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal(HttpMethod.Delete, request.Method);
+
+    }
+
+    /// <summary>
+    /// An irreversible delete must ask before it acts. Without <c>--yes</c> and with stdout
+    /// redirected (as it always is under this harness), <see cref="ConfirmationPrompt"/> fails closed
+    /// rather than silently deleting the picker-resolved resource.
+    /// </summary>
+    [Fact]
+    public void Prompt_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["prompt", "delete", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
 
     }
 
@@ -219,7 +271,10 @@ public sealed class PromptCommandTests
 
     }
 
-    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(
+        RecordingHandler handler,
+        string[] args,
+        Action<ServiceCollection>? configureServices = null)
     {
 
         ServiceCollection services = new();
@@ -235,6 +290,8 @@ public sealed class PromptCommandTests
         services.RemoveAll<ISecretStore>();
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
+
+        configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
 

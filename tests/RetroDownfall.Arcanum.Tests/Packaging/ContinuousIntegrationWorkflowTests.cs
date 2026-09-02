@@ -726,6 +726,72 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     }
 
+    /// <summary>
+    /// A job's <c>if:</c> can gate it on <c>github.event_name == '&lt;event&gt;'</c>, and that can
+    /// only ever be true if ci.yml's own <c>on:</c> block declares <c>&lt;event&gt;</c> as a
+    /// trigger. The dead <c>shippable-change</c>/<c>beta</c> pair this repository once shipped is
+    /// exactly this shape: it named <c>push</c>, ci.yml declared none, and the job could never run
+    /// -- while still compiling, still reviewing green, and still being named by a doc that
+    /// promised it worked.
+    /// </summary>
+    [Fact]
+    public void No_ci_job_is_gated_on_an_event_the_workflow_never_receives()
+    {
+
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlySet<string> triggers = TopLevelTriggers(repositoryRoot);
+
+        IReadOnlyList<WorkflowJob> jobs = ContinuousIntegrationJobs(repositoryRoot);
+
+        foreach (WorkflowJob job in jobs)
+        {
+
+            string? requiredEvent = RequiredEventName(job.Body);
+
+            if (requiredEvent is null)
+            {
+
+                continue;
+
+            }
+
+            Assert.True(
+                triggers.Contains(requiredEvent),
+                $"{job.Id}'s if: condition requires github.event_name == '{requiredEvent}', but "
+                + $"ci.yml's on: block declares only [{string.Join(", ", triggers)}] -- this job "
+                + "can never run.");
+
+        }
+
+    }
+
+    /// <summary>
+    /// The event name inside a <c>github.event_name == '...'</c> comparison in a job's body, or
+    /// <c>null</c> when the body names none.
+    /// </summary>
+    private static string? RequiredEventName(string jobBody)
+    {
+
+        const string marker = "github.event_name == '";
+
+        int start = jobBody.IndexOf(marker, StringComparison.Ordinal);
+
+        if (start < 0)
+        {
+
+            return null;
+
+        }
+
+        start += marker.Length;
+
+        int end = jobBody.IndexOf('\'', start);
+
+        return end < 0 ? null : jobBody[start..end];
+
+    }
+
     [Theory]
 
     [InlineData(
@@ -747,6 +813,36 @@ public sealed class ContinuousIntegrationWorkflowTests
             workflow.Contains(invocation, StringComparison.Ordinal),
             $"ci.yml never invokes {description} (`{invocation}`), so the repository ships a "
             + "checker no lane runs and violations accumulate unnoticed.");
+
+    }
+
+    /// <summary>
+    /// Dependabot watches for updates per package-ecosystem entry in .github/dependabot.yml.
+    /// github-actions was the only ecosystem ever declared there, so NuGet packages got no
+    /// automated update PRs at all; Api.csproj's hand-pinned Microsoft.OpenApi
+    /// (GHSA-v5pm-xwqc-g5wc) is the transitive advisory that already had to be found without one.
+    /// </summary>
+    [Theory]
+
+    [InlineData("github-actions")]
+
+    [InlineData("nuget")]
+
+    public void Dependabot_watches_every_ecosystem_the_repository_uses(string ecosystem)
+    {
+
+        string repositoryRoot = FindRepositoryRoot();
+
+        string dependabotPath = Path.Combine(repositoryRoot, ".github", "dependabot.yml");
+
+        Assert.True(File.Exists(dependabotPath), "No .github/dependabot.yml found.");
+
+        string text = File.ReadAllText(dependabotPath);
+
+        Assert.True(
+            text.Contains($"package-ecosystem: {ecosystem}", StringComparison.Ordinal),
+            $".github/dependabot.yml declares no \"{ecosystem}\" package-ecosystem entry, so that "
+            + "ecosystem gets no automated update PRs.");
 
     }
 

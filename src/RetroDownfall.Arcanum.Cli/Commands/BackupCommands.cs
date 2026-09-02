@@ -809,7 +809,7 @@ internal sealed class BackupCommands(
                 + $"({FormatCount(reconciliation.StaleAttachmentSources)} stale sources), "
                 + $"{FormatCount(reconciliation.UploadedFiles)} uploaded files, "
                 + $"{FormatCount(reconciliation.BatchFiles)} batches, "
-                + $"{FormatCount(reconciliation.EmbeddingsRebuilt)} embeddings to rebuild, "
+                + $"{FormatCount(reconciliation.EmbeddingsToRebuild)} embeddings to rebuild, "
                 + $"{FormatCount(reconciliation.PendingOperationsCleared)} pending operations cleared");
 
             foreach (string issue in reconciliation.Issues)

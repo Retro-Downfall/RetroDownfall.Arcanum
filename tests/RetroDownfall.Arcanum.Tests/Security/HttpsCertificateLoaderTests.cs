@@ -16,6 +16,7 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
     private const string PasswordVariable = "ARCANUM_TEST_HTTPS_PFX_PASSWORD";
 
     private readonly string _tempRoot;
+
     private readonly string? _originalPassword;
 
     public HttpsCertificateLoaderTests()
@@ -140,6 +141,56 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.NotNull(result.Certificate);
 
         Assert.True(result.Certificate.HasPrivateKey);
+
+    }
+
+    /// <summary>
+    /// The Windows PEM rehydration path exports the private key into an unencrypted PKCS#12
+    /// byte[] to work around Schannel's ephemeral-key-set restriction. That array must be zeroed
+    /// before Load returns, matching every other secret buffer this project owns.
+    /// </summary>
+    /// <remarks>
+    /// The branch this exercises is gated by <see cref="OperatingSystem.IsWindows"/> in production
+    /// code, not by a test-only seam, so it is only reachable — and this test only meaningful — on
+    /// Windows; it skips everywhere else.
+    /// </remarks>
+    [SkippableFact]
+    public void Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer()
+    {
+
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "The PKCS#12 rehydration branch only runs on Windows.");
+
+        (string certPath, string keyPath) = CreatePemPair();
+
+        byte[]? captured = null;
+
+        HttpsCertificateLoader.ExportedPkcs12ObserverForTests = buffer => captured = buffer;
+
+        try
+        {
+
+            HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
+                new HttpsSettings
+                {
+                    CertificatePath = certPath,
+                    PrivateKeyPath = keyPath,
+                });
+
+            Assert.True(result.IsSuccess);
+
+        }
+        finally
+        {
+
+            HttpsCertificateLoader.ExportedPkcs12ObserverForTests = null;
+
+        }
+
+        Assert.NotNull(captured);
+
+        Assert.Equal(new byte[captured.Length], captured);
 
     }
 

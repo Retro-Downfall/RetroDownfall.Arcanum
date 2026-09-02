@@ -68,7 +68,7 @@ public partial class App : Application
 
     }
 
-    private async void OnAboutClick(object? sender, EventArgs e)
+    internal async void OnAboutClick(object? sender, EventArgs e)
     {
 
         if (_services is null)
@@ -78,13 +78,29 @@ public partial class App : Application
 
         }
 
-        string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-beta";
+        try
+        {
 
-        IDialogService dialogs = _services.GetRequiredService<IDialogService>();
+            string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-beta";
 
-        await dialogs.ShowAlertAsync(
-            "About Compendium",
-            $"Compendium — Arcanum configuration editor\nVersion {version}");
+            // GetRequiredService throws ObjectDisposedException on a disposed provider — the most
+            // reachable real trigger, since macOS keeps the native menu bar (and this Click handler)
+            // live during teardown, after DI has already been disposed. That throw has to land inside
+            // this try too, not just the await below it.
+            IDialogService dialogs = _services.GetRequiredService<IDialogService>();
+
+            await dialogs.ShowAlertAsync(
+                "About Compendium",
+                $"Compendium — Arcanum configuration editor\nVersion {version}");
+
+        }
+        catch (Exception)
+        {
+
+            // async void reposts an unhandled throw to the UI synchronization context instead of
+            // returning it to a caller, which crashes the process — matching MainWindow.axaml.cs's
+            // OnWindowClosing, failing to show the dialog is not worth taking the app down for.
+        }
 
     }
 

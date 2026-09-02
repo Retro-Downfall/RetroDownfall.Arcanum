@@ -67,13 +67,17 @@ public sealed class WardGate : IWard
 
         DateTimeOffset expiresAt = placedAt.Add(timeout);
 
-        var entryCts = new CancellationTokenSource();
-
         int maxActiveWards = ArcanumSettingClamps.MaxActiveWards(
             _runtimeSettings.MaxActiveWards);
 
         if (!_activeWards.TryEnter(maxActiveWards, out IDisposable? wardLease))
         {
+
+            // Denied before any resource beyond the capacity probe itself was allocated for
+            // this call: no CancellationTokenSource has been minted yet (it is allocated below,
+            // only once admission succeeds), and the caller's JsonDocument is released here
+            // rather than being silently dropped.
+            arguments?.Dispose();
 
             return new WardResolution(
                 false,
@@ -82,6 +86,8 @@ public sealed class WardGate : IWard
                 WardResolutionOrigin.AutoDenied);
 
         }
+
+        var entryCts = new CancellationTokenSource();
 
         var entry = new WardEntry(
             new TaskCompletionSource<WardResolution>(TaskCreationOptions.RunContinuationsAsynchronously),
@@ -97,6 +103,10 @@ public sealed class WardGate : IWard
         {
 
             wardLease!.Dispose();
+
+            DisposeEntry(entry);
+
+            entryCts.Dispose();
 
             throw new InvalidOperationException($"A ward with id '{wardId}' is already active.");
 
@@ -251,9 +261,11 @@ public sealed class WardGate : IWard
 
     }
 
-    // W3.4 Group B: dispose the pooled native memory behind WardEntry.Arguments when the
-    // entry leaves _pending on any terminal path (resolve / timeout / caller-cancel). The
-    // arguments may be null (ward placed without a payload), so guard the disposal.
+    // Dispose the pooled native memory behind WardEntry.Arguments when the
+    // entry leaves _pending on any terminal path (resolve / timeout / caller-cancel), and also
+    // when a duplicate ward id rejects admission before the entry ever enters _pending —
+    // that rejection is terminal for this entry too, just never pending. The arguments may be
+    // null (ward placed without a payload), so guard the disposal.
     private static void DisposeEntry(WardEntry entry)
     {
 

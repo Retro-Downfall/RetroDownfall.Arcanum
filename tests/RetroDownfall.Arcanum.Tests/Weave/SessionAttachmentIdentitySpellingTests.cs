@@ -344,6 +344,7 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             _db!,
             _attachments!,
             new TestOptionsMonitor<ArcanumSettings>(_settings),
+            FixtureOrdinaryConnectionFactory.For(_db!),
             new NullAttachmentIndexQueue());
 
         Session source = await sessions.CreateAsync(

@@ -17,6 +17,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class LongRunningOperationStore(
     ArcanumDbContext db,
+    IGrimoireOrdinaryConnectionFactory connections,
     ICovenantConnectionDrain? covenantDrain = null) : ILongRunningOperationStore, IDisposable
 {
     private const int MaxKindLength = 100;
@@ -36,25 +37,8 @@ internal sealed class LongRunningOperationStore(
         "PublicSummary", "TerminalErrorCode", "Revision"
         """;
 
-    /// <summary>
-    /// The scoped ledger connection string with pooling removed, for the heartbeat's own handle.
-    /// </summary>
-    /// <remarks>
-    /// Disposing a pooled <see cref="SqliteConnection"/> does not close the database: the native
-    /// handle goes back into the pool still open, so a heartbeat that has already returned leaves a
-    /// write-ahead log and a wal-index sitting beside the Grimoire until some later caller happens to
-    /// clear the pools. Nothing enrols that handle with <see cref="ICovenantConnectionDrain"/> and
-    /// nothing could — the drain runs inside the erasure whose lease this heartbeat renews, so a
-    /// drain that closed it would cancel the operation it was draining for. Unpooled, the handle is
-    /// really closed when its one UPDATE finishes and the two sidecars go with it, which is what the
-    /// Covenant erasure's proof of absence reads as "no handle is still holding the database". The
-    /// open this repeats costs one key derivation a minute, which is the cadence every heartbeat in
-    /// the repo runs at.
-    /// </remarks>
-    private readonly string? _heartbeatConnectionString =
-        db.Database.GetDbConnection() is SqliteConnection sqlite
-            ? new SqliteConnectionStringBuilder(sqlite.ConnectionString) { Pooling = false }.ToString()
-            : null;
+    private readonly IGrimoireOrdinaryConnectionFactory _connections =
+        connections ?? throw new ArgumentNullException(nameof(connections));
 
     private IDisposable? _covenantDrainEnrolment =
         covenantDrain is not null && db.Database.GetDbConnection() is SqliteConnection sqlite
@@ -117,9 +101,9 @@ internal sealed class LongRunningOperationStore(
                 Add(cmd, "@policy", (int)request.RecoveryPolicy);
                 Add(cmd, "@root", FormatNullable(request.RootOperationId));
                 Add(cmd, "@parent", FormatNullable(request.ParentOperationId));
-                Add(cmd, "@session", FormatNullable(request.SessionId));
-                Add(cmd, "@run", FormatNullable(request.RunId));
-                Add(cmd, "@inference", FormatNullable(request.InferenceRunId));
+                Add(cmd, "@session", FormatReferenceNullable(request.SessionId));
+                Add(cmd, "@run", FormatReferenceNullable(request.RunId));
+                Add(cmd, "@inference", FormatReferenceNullable(request.InferenceRunId));
                 Add(cmd, "@reservation", FormatNullable(request.BudgetReservationId));
                 Add(cmd, "@claim", FormatNullable(request.IdempotencyClaimId));
                 Add(cmd, "@created", Format(request.CreatedAt));
@@ -302,9 +286,9 @@ internal sealed class LongRunningOperationStore(
                     Add(insert, "@policy", (int)request.RecoveryPolicy);
                     Add(insert, "@root", FormatNullable(request.RootOperationId));
                     Add(insert, "@parent", FormatNullable(request.ParentOperationId));
-                    Add(insert, "@session", FormatNullable(request.SessionId));
-                    Add(insert, "@run", FormatNullable(request.RunId));
-                    Add(insert, "@inference", FormatNullable(request.InferenceRunId));
+                    Add(insert, "@session", FormatReferenceNullable(request.SessionId));
+                    Add(insert, "@run", FormatReferenceNullable(request.RunId));
+                    Add(insert, "@inference", FormatReferenceNullable(request.InferenceRunId));
                     Add(insert, "@reservation", FormatNullable(request.BudgetReservationId));
                     Add(insert, "@claim", FormatNullable(request.IdempotencyClaimId));
                     Add(insert, "@created", Format(request.CreatedAt));
@@ -482,11 +466,11 @@ internal sealed class LongRunningOperationStore(
 
                 Add(command, "@parent", FormatNullable(request.ParentOperationId));
 
-                Add(command, "@session", FormatNullable(request.SessionId));
+                Add(command, "@session", FormatReferenceNullable(request.SessionId));
 
-                Add(command, "@run", FormatNullable(request.RunId));
+                Add(command, "@run", FormatReferenceNullable(request.RunId));
 
-                Add(command, "@inference", FormatNullable(request.InferenceRunId));
+                Add(command, "@inference", FormatReferenceNullable(request.InferenceRunId));
 
                 Add(command, "@reservation", FormatNullable(request.BudgetReservationId));
 
@@ -797,7 +781,7 @@ internal sealed class LongRunningOperationStore(
 
                 // A Sending parked awaiting a peer's answer is flagged rather than closed, and the answer
                 // may arrive processes later — so that flagged row has to stay claimable, or the record
-                // that makes the continuation work becomes unusable the moment it is recorded (#68).
+                // that makes the continuation work becomes unusable the moment it is recorded.
                 Add(cmd, "@a2aInbound", LongRunningOperationKinds.A2AInboundSending);
                 Add(cmd, "@a2aParked", LongRunningOperationRecoveryOutcomes.A2AInboundParkedAwaitingAnswer);
                 Add(cmd, "@now", Format(utcNow));
@@ -823,8 +807,8 @@ internal sealed class LongRunningOperationStore(
     /// synchronized, and folded the renewal into whatever transaction the workload had open — so a
     /// rolled-back unit of work silently took the lease renewal with it and the reconciler could
     /// steal an operation whose owner was still running. <see cref="RenewLeaseAsync"/> already
-    /// opened its own connection for this reason; the two are now one path, and the scoped
-    /// connection is used only when the context is not backed by SQLite at all.
+    /// opened its own connection for this reason; the isolated-heartbeat ordinary lease preserves
+    /// that independent, unpooled lifetime while making admission and physical draining explicit.
     /// </remarks>
     public Task<bool> HeartbeatAsync(
         Guid operationId,
@@ -855,29 +839,22 @@ internal sealed class LongRunningOperationStore(
             async () =>
             {
 
-                if (_heartbeatConnectionString is null)
+                Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+                    .OpenFreshAsync(
+                        GrimoireOrdinaryFreshConnectionKind.IsolatedHeartbeat,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (acquired.IsFailure)
                 {
 
-                    return await RenewOverScopedConnectionAsync(
-                        operationId,
-                        ownerId,
-                        utcNow,
-                        leaseExpiresAt,
-                        cancellationToken).ConfigureAwait(false);
+                    throw new GrimoireMaintenanceUnavailableException();
 
                 }
 
-                await using SqliteConnection connection = new(_heartbeatConnectionString);
+                await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
 
-                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-                // A handle EF never opened gets no interceptor, so policy has to be applied here.
-                // Without it the heartbeat writes at SQLite defaults — secure_delete off, no
-                // busy_timeout, no cipher_version verification, and none of the authorization
-                // functions the schema's guard triggers resolve at prepare time.
-                await SqliteConnectionPragmas
-                    .ApplyAsync(connection, cancellationToken)
-                    .ConfigureAwait(false);
+                SqliteConnection connection = lease.Connection;
 
                 await using SqliteCommand command = connection.CreateCommand();
 
@@ -911,40 +888,6 @@ internal sealed class LongRunningOperationStore(
             cancellationToken);
 
     }
-
-    /// <summary>
-    /// The renewal over the context's own connection, for a provider this store cannot open itself.
-    /// </summary>
-    /// <remarks>
-    /// Reached only when the context is not backed by SQLite, so there is no connection string to
-    /// open a second handle from. It carries the scoped connection's hazards by necessity, not by
-    /// choice, and no shipping composition takes this path.
-    /// </remarks>
-    private Task<bool> RenewOverScopedConnectionAsync(
-        Guid operationId,
-        string ownerId,
-        DateTimeOffset utcNow,
-        DateTimeOffset leaseExpiresAt,
-        CancellationToken cancellationToken) =>
-        ExecuteUpdateAsync(
-            """
-            UPDATE "LongRunningOperations"
-            SET "HeartbeatAt" = @now, "LeaseExpiresAt" = @lease, "Revision" = "Revision" + 1
-            WHERE "Id" = @id AND "LeaseOwner" = @owner
-              AND "State" IN (@running, @waiting, @cancelling)
-              AND "LeaseExpiresAt" > @now
-            """,
-            cmd =>
-            {
-                Add(cmd, "@id", Format(operationId));
-                Add(cmd, "@owner", Bound(ownerId, MaxOwnerLength));
-                Add(cmd, "@now", Format(utcNow));
-                Add(cmd, "@lease", Format(leaseExpiresAt));
-                Add(cmd, "@running", (int)LongRunningOperationState.Running);
-                Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
-                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
-            },
-            cancellationToken);
 
     public Task<bool> SaveCheckpointAsync(
         Guid operationId,
@@ -1205,7 +1148,13 @@ internal sealed class LongRunningOperationStore(
     private static DateTimeOffset? ReadDate(DbDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : ParseDate(reader.GetString(ordinal));
 
-    private static Guid ParseGuid(string value) => Guid.ParseExact(value, "N");
+    // Guid.Parse rather than Guid.ParseExact(value, "N"): SessionId, RunId, and InferenceRunId are
+    // written through FormatReference in the "D" spelling, while every other identity here - Id,
+    // RootOperationId, ParentOperationId, BudgetReservationId, IdempotencyClaimId - stays in
+    // Format's "N" spelling. One column-agnostic reader has to accept both, since which format a
+    // given row holds depends on which column it came from rather than on anything the reader can
+    // see ahead of time.
+    private static Guid ParseGuid(string value) => Guid.Parse(value);
 
     private static DateTimeOffset ParseDate(string value) =>
         DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
@@ -1213,6 +1162,29 @@ internal sealed class LongRunningOperationStore(
     private static string Format(Guid value) => value.ToString("N");
 
     private static object? FormatNullable(Guid? value) => value is null ? null : Format(value.Value);
+
+    /// <summary>
+    /// The spelling shared by the three columns that are not this table's own identity:
+    /// <c>SessionId</c>, <c>RunId</c> and <c>InferenceRunId</c>.
+    /// </summary>
+    /// <remarks>
+    /// Only <c>SessionId</c> is a cross-table reference, and it is the one this spelling exists for:
+    /// EF's SQLite value binder renders every primary key it writes uppercase-dashed,
+    /// unconditionally, so a <c>SessionId</c> written through <see cref="Format"/> instead would
+    /// hold the same identity in a spelling <c>Sessions</c> never does, and a join written the
+    /// obvious way - without a <c>lower(replace(...))</c> normalization on both sides - would always
+    /// come back empty.
+    ///
+    /// <para><c>RunId</c> and <c>InferenceRunId</c> share the spelling for uniformity, not because
+    /// either one currently names a row anywhere else. <c>SubagentRunner</c> mints the only
+    /// <c>RunId</c> production writes, fresh, for the operation it is starting, and no production
+    /// caller supplies an <c>InferenceRunId</c> at all. Keeping all three alike is what lets the
+    /// column-agnostic reader stay a two-way rule rather than a per-column table.</para>
+    /// </remarks>
+    private static string FormatReference(Guid value) => value.ToString("D").ToUpperInvariant();
+
+    private static object? FormatReferenceNullable(Guid? value) =>
+        value is null ? null : FormatReference(value.Value);
 
     private static string Format(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);

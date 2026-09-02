@@ -2,12 +2,14 @@ using System.Data;
 using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -21,8 +23,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 public sealed class EmbeddingsResetService(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
+    IServiceProvider serviceProvider,
     ICovenantSensitiveArtifactPurger? purger = null)
 {
+
+    private readonly IGrimoireOrdinaryConnectionFactory _connections =
+        serviceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
     private static readonly IReadOnlyList<string> EntryTables =
     [
@@ -172,77 +178,104 @@ public sealed class EmbeddingsResetService(
 
             List<(Guid ArtifactId, string LabelId)> page = [];
 
-            DbConnection connection = db.Database.GetDbConnection();
-
-            if (connection.State is not ConnectionState.Open)
             {
 
-                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
+                {
+                    throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
 
-            }
+                }
 
-            await using (DbCommand command = connection.CreateCommand())
-            {
+                Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+                    .AcquireScopedAsync(
+                        scopedConnection,
+                        CovenantSqliteConnectionMode.ReadOnly,
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
-                command.CommandText = """
-                    SELECT ArtifactId, LabelId
-                    FROM artifact_sensitivity
-                    WHERE ArtifactKindCode = $kind AND LabelId > $after
-                    ORDER BY LabelId
-                    LIMIT $limit;
-                    """;
-
-                DbParameter kindParameter = command.CreateParameter();
-
-                kindParameter.ParameterName = "$kind";
-
-                kindParameter.Value = (int)kind;
-
-                command.Parameters.Add(kindParameter);
-
-                DbParameter afterParameter = command.CreateParameter();
-
-                afterParameter.ParameterName = "$after";
-
-                afterParameter.Value = cursor;
-
-                command.Parameters.Add(afterParameter);
-
-                DbParameter limitParameter = command.CreateParameter();
-
-                limitParameter.ParameterName = "$limit";
-
-                limitParameter.Value = PageSize;
-
-                command.Parameters.Add(limitParameter);
-
-                try
+                if (acquired.IsFailure)
                 {
 
-                    await using DbDataReader reader = await command
-                        .ExecuteReaderAsync(cancellationToken)
-                        .ConfigureAwait(false);
+                    return acquired.Error;
 
-                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                }
+
+                await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+                DbConnection connection = lease.Connection;
+
+                await using (DbCommand command = connection.CreateCommand())
+                {
+
+                    command.CommandText = """
+                        SELECT ArtifactId, LabelId
+                        FROM artifact_sensitivity
+                        WHERE ArtifactKindCode = $kind AND LabelId > $after
+                        ORDER BY LabelId
+                        LIMIT $limit;
+                        """;
+
+                    DbParameter kindParameter = command.CreateParameter();
+
+                    kindParameter.ParameterName = "$kind";
+
+                    kindParameter.Value = (int)kind;
+
+                    command.Parameters.Add(kindParameter);
+
+                    DbParameter afterParameter = command.CreateParameter();
+
+                    afterParameter.ParameterName = "$after";
+
+                    afterParameter.Value = cursor;
+
+                    command.Parameters.Add(afterParameter);
+
+                    DbParameter limitParameter = command.CreateParameter();
+
+                    limitParameter.ParameterName = "$limit";
+
+                    limitParameter.Value = PageSize;
+
+                    command.Parameters.Add(limitParameter);
+
+                    try
                     {
 
-                        if (Guid.TryParse(reader.GetString(0), out Guid artifactId))
+                        await using DbDataReader reader = await command
+                            .ExecuteReaderAsync(cancellationToken)
+                            .ConfigureAwait(false);
+
+                        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                         {
 
-                            page.Add((artifactId, reader.GetString(1)));
+                            if (Guid.TryParse(reader.GetString(0), out Guid artifactId))
+                            {
+
+                                page.Add((artifactId, reader.GetString(1)));
+
+                            }
 
                         }
 
+                        await GrimoireScopedConsumerTestSeam
+                            .PauseAsync(
+                                "EmbeddingsResetService.PurgeLabeledKindAsync",
+                                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+                                page.Count,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+
                     }
+                    catch (SqliteException)
+                    {
 
-                }
-                catch (SqliteException)
-                {
+                        // No label table on this installation: there is nothing protected to dispatch and
+                        // the ordinary reset below is the whole operation.
+                        return Result<CovenantSensitivePurgeOutcome>.Success(
+                            new CovenantSensitivePurgeOutcome(results, progress));
 
-                    // No label table on this installation: there is nothing protected to dispatch and
-                    // the ordinary reset below is the whole operation.
-                    return Result<CovenantSensitivePurgeOutcome>.Success(
-                        new CovenantSensitivePurgeOutcome(results, progress));
+                    }
 
                 }
 

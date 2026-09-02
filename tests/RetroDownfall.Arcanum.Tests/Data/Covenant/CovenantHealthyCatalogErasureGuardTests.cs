@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
@@ -125,9 +127,9 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         CovenantHealthyCatalogErasureGuard guard = new(
-            new WrongKeyMaintenanceFactory(database.DatabasePath),
-            CovenantSqliteConnectionInitializer.Instance,
-            new CovenantConnectionDrain(),
+            new RecordingFreshOrdinaryConnectionFactory(
+                database.Connection.ConnectionString,
+                overridePassphrase: "definitely-the-wrong-key"),
             Inspector());
 
         AssertRefused(await guard.RequireHealthyAsync(Token), database);
@@ -157,20 +159,16 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
     }
 
     [Fact]
-    public async Task Owning_proof_enrolls_before_one_ReadOnly_initialization_then_closes_disposes_and_unregisters()
+    public async Task Owning_proof_opens_one_read_only_ordinary_lease_and_releases_it()
     {
 
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
-        RecordingMaintenanceConnectionFactory connections =
-            new(database.MaintenanceConnections());
-
-        RecordingConnectionDrain drain = new();
-
-        RecordingInitializer initializer = new(drain);
+        RecordingFreshOrdinaryConnectionFactory connections =
+            new(database.Connection.ConnectionString);
 
         CovenantHealthyCatalogErasureGuard guard =
-            new(connections, initializer, drain, Inspector());
+            new(connections, Inspector());
 
         Result result = await guard.RequireHealthyAsync(Token);
 
@@ -178,13 +176,92 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
 
         SqliteConnection candidate = Assert.Single(connections.Opened);
 
-        Assert.Equal([CovenantSqliteConnectionMode.ReadOnly], initializer.Modes);
-
-        Assert.True(initializer.SawEnrolledConnection);
+        Assert.Equal(
+            [GrimoireOrdinaryFreshConnectionKind.ReadOnly],
+            connections.Kinds);
 
         Assert.Equal(ConnectionState.Closed, candidate.State);
 
-        Assert.Equal(0, drain.ActiveRegistrations);
+        Assert.Equal(0, connections.LiveLeaseCount);
+
+    }
+
+    [Fact]
+    public async Task Owning_proof_holds_one_fresh_read_only_ordinary_lease_through_final_read()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
+
+        await using SqliteConnection template = await database.MaintenanceConnections()
+            .OpenReadOnlyAsync(Token);
+
+        string connectionString = template.ConnectionString;
+
+        await template.CloseAsync();
+
+        RecordingFreshOrdinaryConnectionFactory connections = new(connectionString);
+
+        System.Reflection.ConstructorInfo? constructor =
+            typeof(CovenantHealthyCatalogErasureGuard)
+                .GetConstructors(System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic)
+                .SingleOrDefault(candidate =>
+                    candidate.GetParameters() is
+                    [
+                        { ParameterType: var factoryType },
+                        { ParameterType: var inspectorType },
+                    ]
+                    && factoryType == typeof(IGrimoireOrdinaryConnectionFactory)
+                    && inspectorType == typeof(GrimoireSchemaManifestInspector));
+
+        Assert.NotNull(constructor);
+
+        CovenantHealthyCatalogErasureGuard guard =
+            (CovenantHealthyCatalogErasureGuard)constructor.Invoke(
+                [connections, Inspector()]);
+
+        using ScopedConsumerPause pause = new(
+            "CovenantHealthyCatalogErasureGuard.RequireHealthyAsync");
+
+        Task<Result> reading = guard.RequireHealthyAsync(Token);
+
+        Task entered = pause.WaitUntilEnteredAsync();
+
+        try
+        {
+
+            Task first = await Task.WhenAny(entered, reading);
+
+            Assert.Same(entered, first);
+
+            await entered;
+
+            Assert.Equal(1, connections.LiveLeaseCount);
+
+            Assert.Equal(
+                [GrimoireOrdinaryFreshConnectionKind.ReadOnly],
+                connections.Kinds);
+
+            Assert.Equal(ConnectionState.Open, connections.LastConnection!.State);
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await reading.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
+
+        Result result = await reading;
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(0, connections.LiveLeaseCount);
+
+        Assert.Equal(ConnectionState.Closed, connections.LastConnection!.State);
 
     }
 
@@ -196,22 +273,18 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
 
         await database.ExecuteAsync("DROP TRIGGER covenant_entries_guard_delete;", Token);
 
-        RecordingMaintenanceConnectionFactory connections =
-            new(database.MaintenanceConnections());
-
-        RecordingConnectionDrain drain = new();
+        RecordingFreshOrdinaryConnectionFactory connections =
+            new(database.Connection.ConnectionString);
 
         CovenantHealthyCatalogErasureGuard guard = new(
             connections,
-            CovenantSqliteConnectionInitializer.Instance,
-            drain,
             Inspector());
 
         AssertRefused(await guard.RequireHealthyAsync(Token), database);
 
         Assert.Equal(ConnectionState.Closed, Assert.Single(connections.Opened).State);
 
-        Assert.Equal(0, drain.ActiveRegistrations);
+        Assert.Equal(0, connections.LiveLeaseCount);
 
     }
 
@@ -221,25 +294,23 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
 
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
-        RecordingMaintenanceConnectionFactory connections =
-            new(database.MaintenanceConnections());
-
-        RecordingConnectionDrain drain = new();
-
         using CancellationTokenSource cancellation = new();
+
+        cancellation.Cancel();
+
+        RecordingFreshOrdinaryConnectionFactory connections =
+            new(database.Connection.ConnectionString);
 
         CovenantHealthyCatalogErasureGuard guard = new(
             connections,
-            new CancellingInitializer(cancellation),
-            drain,
             Inspector());
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => guard.RequireHealthyAsync(cancellation.Token));
 
-        Assert.Equal(ConnectionState.Closed, Assert.Single(connections.Opened).State);
+        Assert.Empty(connections.Opened);
 
-        Assert.Equal(0, drain.ActiveRegistrations);
+        Assert.Equal(0, connections.LiveLeaseCount);
 
     }
 
@@ -250,9 +321,7 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         CovenantHealthyCatalogErasureGuard guard = new(
-            new UnreachableMaintenanceConnectionFactory(),
-            new UnreachableInitializer(),
-            new UnreachableConnectionDrain(),
+            new UnreachableOrdinaryConnectionFactory(),
             Inspector());
 
         await using SqliteTransaction transaction =
@@ -306,9 +375,8 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
     private static CovenantHealthyCatalogErasureGuard Guard(
         CovenantSchemaScratchDatabase database) =>
         new(
-            database.MaintenanceConnections(),
-            CovenantSqliteConnectionInitializer.Instance,
-            new CovenantConnectionDrain(),
+            new RecordingFreshOrdinaryConnectionFactory(
+                database.Connection.ConnectionString),
             Inspector());
 
     private static GrimoireSchemaManifestInspector Inspector() =>
@@ -508,274 +576,19 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
 
     }
 
-    private sealed class RecordingMaintenanceConnectionFactory(
-        ICovenantMaintenanceConnectionFactory inner) : ICovenantMaintenanceConnectionFactory
+    private sealed class UnreachableOrdinaryConnectionFactory
+        : IGrimoireOrdinaryConnectionFactory
     {
 
-        private readonly List<SqliteConnection> _opened = [];
-
-        internal IReadOnlyList<SqliteConnection> Opened => _opened;
-
-        public string DatabasePath => inner.DatabasePath;
-
-        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public async Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)
-        {
-
-            SqliteConnection connection = await inner.OpenReadOnlyAsync(cancellationToken);
-
-            _opened.Add(connection);
-
-            return connection;
-
-        }
-
-        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenSideFileAsync(
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task AttachSideFileAsync(
-            SqliteConnection connection,
-            string alias,
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-    }
-
-    private sealed class WrongKeyMaintenanceFactory(string databasePath)
-        : ICovenantMaintenanceConnectionFactory
-    {
-
-        public string DatabasePath { get; } = databasePath;
-
-        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public async Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)
-        {
-
-            SqliteConnection connection = new(
-                CovenantMaintenanceConnectionFactory.ReadOnly(DatabasePath, "definitely-the-wrong-key").ToString());
-
-            try
-            {
-
-                await connection.OpenAsync(cancellationToken);
-
-                return connection;
-
-            }
-            catch
-            {
-
-                await connection.DisposeAsync();
-
-                throw;
-
-            }
-
-        }
-
-        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenSideFileAsync(
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task AttachSideFileAsync(
-            SqliteConnection connection,
-            string alias,
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-    }
-
-    private sealed class RecordingConnectionDrain : ICovenantConnectionDrain
-    {
-
-        private readonly CovenantConnectionDrain _inner = new();
-
-        private int _active;
-
-        internal int ActiveRegistrations => Volatile.Read(ref _active);
-
-        public IDisposable Register(SqliteConnection connection)
-        {
-
-            IDisposable inner = _inner.Register(connection);
-
-            _ = Interlocked.Increment(ref _active);
-
-            return new Registration(inner, this);
-
-        }
-
-        public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
-            _inner.DrainAsync(cancellationToken);
-
-        private sealed class Registration(
-            IDisposable inner,
-            RecordingConnectionDrain owner) : IDisposable
-        {
-
-            private int _disposed;
-
-            public void Dispose()
-            {
-
-                if (Interlocked.Exchange(ref _disposed, 1) != 0)
-                {
-
-                    return;
-
-                }
-
-                inner.Dispose();
-
-                _ = Interlocked.Decrement(ref owner._active);
-
-            }
-
-        }
-
-    }
-
-    private sealed class RecordingInitializer(RecordingConnectionDrain drain)
-        : ICovenantSqliteConnectionInitializer
-    {
-
-        private readonly List<CovenantSqliteConnectionMode> _modes = [];
-
-        internal IReadOnlyList<CovenantSqliteConnectionMode> Modes => _modes;
-
-        internal bool SawEnrolledConnection { get; private set; }
-
-        public async ValueTask InitializeAsync(
-            SqliteConnection connection,
-            CovenantSqliteConnectionMode mode,
-            CancellationToken cancellationToken)
-        {
-
-            SawEnrolledConnection = drain.ActiveRegistrations == 1;
-
-            _modes.Add(mode);
-
-            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
-                connection,
-                mode,
-                cancellationToken);
-
-        }
-
-        public CovenantSqliteAuthorizationScope Authorize(
-            SqliteConnection connection,
-            CovenantSqliteAuthorizationKind kind) =>
-            CovenantSqliteConnectionInitializer.Instance.Authorize(connection, kind);
-
-        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
-            RestoreStagingManagedAuthoritySanitizationCapability authority,
-            RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
-            CovenantSqliteConnectionInitializer.Instance
-                .AuthorizeRestoreStagingManagedAuthoritySanitization(authority, runIdentity);
-
-    }
-
-    private sealed class CancellingInitializer(CancellationTokenSource cancellation)
-        : ICovenantSqliteConnectionInitializer
-    {
-
-        public ValueTask InitializeAsync(
-            SqliteConnection connection,
-            CovenantSqliteConnectionMode mode,
-            CancellationToken cancellationToken)
-        {
-
-            cancellation.Cancel();
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            throw new InvalidOperationException("The cancellation token did not cancel.");
-
-        }
-
-        public CovenantSqliteAuthorizationScope Authorize(
-            SqliteConnection connection,
-            CovenantSqliteAuthorizationKind kind) =>
-            throw new NotSupportedException();
-
-        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
-            RestoreStagingManagedAuthoritySanitizationCapability authority,
-            RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
-            throw new NotSupportedException();
-
-    }
-
-    private sealed class UnreachableMaintenanceConnectionFactory : ICovenantMaintenanceConnectionFactory
-    {
-
-        public string DatabasePath => throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenSideFileAsync(
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task AttachSideFileAsync(
-            SqliteConnection connection,
-            string alias,
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-    }
-
-    private sealed class UnreachableInitializer : ICovenantSqliteConnectionInitializer
-    {
-
-        public ValueTask InitializeAsync(
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
             SqliteConnection connection,
             CovenantSqliteConnectionMode mode,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public CovenantSqliteAuthorizationScope Authorize(
-            SqliteConnection connection,
-            CovenantSqliteAuthorizationKind kind) =>
-            throw new NotSupportedException();
-
-        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
-            RestoreStagingManagedAuthoritySanitizationCapability authority,
-            RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
-            throw new NotSupportedException();
-
-    }
-
-    private sealed class UnreachableConnectionDrain : ICovenantConnectionDrain
-    {
-
-        public IDisposable Register(SqliteConnection connection) =>
-            throw new NotSupportedException();
-
-        public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind kind,
+            CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
     }

@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 5 and declares four steps, Covenant canonical is at version 2 and declares one,
+/// Core is at version 6 and declares five steps, Covenant canonical is at version 3 and declares two,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -14,6 +14,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// tier's <c>Transitions/V&lt;n&gt;/</c> folder, the tier's version constant here, and the pin for
 /// the version the step leaves. The pin must be copied from the tier's <i>currently published</i>
 /// fingerprint before any object file is edited, because nothing can recompute it afterwards.</para>
+///
+/// <para>Every pin below was taken with <see cref="GrimoireSchemaCatalog.ComputeRawSourceFingerprint"/>,
+/// which is what an installation at that version actually recorded. Core moved its published value to
+/// the normalized computation at version 6 and the two Covenant tiers have not moved theirs, so a tier
+/// authoring its next step still pins the raw value it published, and may switch its own published
+/// computation only in that same change - a tier whose head fingerprint moved at a version it is not
+/// leaving would refuse every installation sitting at that version.</para>
 /// </remarks>
 internal static class GrimoireSchemaVersionChains
 {
@@ -41,8 +48,18 @@ internal static class GrimoireSchemaVersionChains
     /// It also installs the write-time guards that keep the form once it is settled: one
     /// <c>BEFORE INSERT</c> per governed identity column, and one <c>BEFORE UPDATE OF</c> that column
     /// wherever the table does not already refuse every update.</para>
+    ///
+    /// <para>Version 6 is the step the tier's published fingerprint changes under, and it carries three
+    /// unrelated pieces of work that all need one. It settles <c>LongRunningOperations</c>' three
+    /// reference columns on the spelling their store now writes, so a column cannot hold two eras of
+    /// rendering; it adds the expression indexes the retention sweep's normalized identity predicates
+    /// need, since SQLite cannot answer <c>lower(replace(col, '-', ''))</c> from an ordinary column
+    /// index and every one of those predicates was a full scan; and it gives
+    /// <c>workspace_file_chunks</c> a <c>FileLength</c> column, because mtime equality alone cannot
+    /// tell a rewritten file from an unchanged one when a filesystem hands back the timestamp it
+    /// started with.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 5;
+    internal const int CoreSchemaVersion = 6;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -93,6 +110,17 @@ internal static class GrimoireSchemaVersionChains
             // the objects it names.
             [(GrimoireSchemaTransactionTier.Core, 5)] =
                 "35B3B5AD90B8BE3571516C88CB0FDF4F8E61712F86F8D1134D07D92B3F980AC1",
+
+            // Read out of the Core head tree before any object file was edited for
+            // version 6 and before the tier's published computation moved to the normalized one. It is
+            // therefore a raw value, like every pin above it and unlike the head fingerprint Core
+            // publishes from version 6 onward, and that is not an inconsistency: this is the number a
+            // version-5 installation wrote into grimoire_feature_schemas, so it is the only number that
+            // can recognize one. CoreSchemaVersionFiveFixture reconstructs that tree and a test hashes
+            // it raw, so a wrong value here fails there rather than against every operator's version-5
+            // installation.
+            [(GrimoireSchemaTransactionTier.Core, 6)] =
+                "EFD0E3F2981B3462337E83BAAD2BE696AD3279452E85A11903CA6B636AC1B6F9",
 
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture

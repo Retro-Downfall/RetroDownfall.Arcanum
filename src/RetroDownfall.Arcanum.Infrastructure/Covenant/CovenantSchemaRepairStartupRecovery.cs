@@ -138,10 +138,10 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
             return PreparationFailure();
 
         }
-        catch (ArgumentException)
+        catch (ArgumentException refused)
         {
 
-            return PreparationFailure();
+            return PreparationFailure(refused.Message);
 
         }
 
@@ -429,10 +429,19 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
             CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed);
 
-    private static Result<CovenantSchemaRepairStartupRecoveryPreparation> PreparationFailure() =>
+    /// <summary>
+    /// <paramref name="refusedInvariant"/> is the message of the ArgumentException the durable owner
+    /// or its scope classification refused with, when one is available - an operator refused at
+    /// startup otherwise sees only "could not be reconstructed safely" with no way to tell a malformed
+    /// owner apart from a scope-classification disagreement.
+    /// </summary>
+    private static Result<CovenantSchemaRepairStartupRecoveryPreparation> PreparationFailure(
+        string? refusedInvariant = null) =>
         Result<CovenantSchemaRepairStartupRecoveryPreparation>.Failure(
             new Error(
                 ErrorCodes.Covenant.MaintenanceFailed,
-                "Covenant schema-repair ownership could not be reconstructed safely."));
+                refusedInvariant is null
+                    ? "Covenant schema-repair ownership could not be reconstructed safely."
+                    : $"Covenant schema-repair ownership could not be reconstructed safely: {refusedInvariant}"));
 
 }

@@ -188,6 +188,110 @@ public sealed class FileEncryptionKeyProviderTests
             () => provider.RetireAsync(current.KeyId));
     }
 
+    /// <summary>
+    /// TryFindKey used to allocate two ASCII byte[] per candidate key on every read, so an
+    /// unknown key id — the shape every miss takes, order-independent of dictionary enumeration —
+    /// walked and allocated across the whole ring. A dictionary lookup does not; this asserts the
+    /// allocation a five-key ring's read pays does not scale past a one-key ring's.
+    /// </summary>
+    [Fact]
+    public async Task GetForReadAsync_lookup_allocation_does_not_scale_with_ring_size()
+    {
+
+        const int Repetitions = 100;
+
+        const string UnknownKeyId = "does-not-exist-in-the-ring";
+
+        FileEncryptionKeyProvider oneKeyRing = new(
+            new RecordingSecretStore(
+                SecretStoreReadResult.Ok(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)))));
+
+        _ = await oneKeyRing.GetForWriteAsync();
+
+        FileEncryptionKeyProvider fiveKeyRing = new(
+            new RecordingSecretStore(
+                SecretStoreReadResult.Ok(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)))));
+
+        _ = await fiveKeyRing.GetForWriteAsync();
+
+        for (int i = 0; i < 4; i++)
+        {
+
+            _ = await fiveKeyRing.RotateAsync();
+
+        }
+
+        // Warm up: JIT the lookup and the exception path on both providers before measuring
+        // either, so first-call JIT cost never lands inside the measured window.
+        await MissRepeatedlyAsync(oneKeyRing, UnknownKeyId, repetitions: 5);
+
+        await MissRepeatedlyAsync(fiveKeyRing, UnknownKeyId, repetitions: 5);
+
+        long oneKeyBytes = await MeasureMissAllocationAsync(oneKeyRing, UnknownKeyId, Repetitions);
+
+        long fiveKeyBytes = await MeasureMissAllocationAsync(fiveKeyRing, UnknownKeyId, Repetitions);
+
+        long deltaBytes = fiveKeyBytes - oneKeyBytes;
+
+        // The old per-candidate array-allocating scan cost roughly 8 extra arrays (2 per each of
+        // the 4 additional candidates) per repetition here — tens of thousands of bytes over 100
+        // repetitions. The threshold sits far below that and comfortably above GC/JIT jitter.
+        Assert.True(
+            deltaBytes < Repetitions * 200,
+            $"oneKeyRing={oneKeyBytes}; fiveKeyRing={fiveKeyBytes}; delta={deltaBytes}; "
+                + $"repetitions={Repetitions}");
+
+    }
+
+    private static async Task MissRepeatedlyAsync(
+        FileEncryptionKeyProvider provider,
+        string unknownKeyId,
+        int repetitions)
+    {
+
+        for (int i = 0; i < repetitions; i++)
+        {
+
+            try
+            {
+
+                _ = await provider.GetForReadAsync(unknownKeyId);
+
+            }
+            catch (EncryptedBlobKeyException)
+            {
+
+            }
+
+        }
+
+    }
+
+    private static async Task<long> MeasureMissAllocationAsync(
+        FileEncryptionKeyProvider provider,
+        string unknownKeyId,
+        int repetitions)
+    {
+
+        int managedThreadId = System.Environment.CurrentManagedThreadId;
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        await MissRepeatedlyAsync(provider, unknownKeyId, repetitions);
+
+        long allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        if (System.Environment.CurrentManagedThreadId != managedThreadId)
+        {
+
+            throw new InvalidOperationException("Allocation measurement changed managed threads.");
+
+        }
+
+        return allocatedBytes;
+
+    }
+
     private sealed class RecordingSecretStore(SecretStoreReadResult readResult) : ISecretStore
     {
         public int SaveCount { get; private set; }

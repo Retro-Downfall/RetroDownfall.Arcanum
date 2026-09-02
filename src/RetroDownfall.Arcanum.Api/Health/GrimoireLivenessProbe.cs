@@ -1,9 +1,12 @@
 using System.Data;
 using System.Data.Common;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Api.Health;
 
@@ -86,18 +89,47 @@ public sealed class GrimoireLivenessProbe(IServiceScopeFactory scopeFactory) : I
             await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
             ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
-            DbConnection connection = db.Database.GetDbConnection();
-            if (connection.State != ConnectionState.Open)
+            IGrimoireOrdinaryConnectionFactory connections =
+                scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+            if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
             {
-                await connection.OpenAsync(timeoutCts.Token).ConfigureAwait(false);
+                throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
             }
+
+            Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
+                .AcquireScopedAsync(
+                    scopedConnection,
+                    CovenantSqliteConnectionMode.ReadOnly,
+                    timeoutCts.Token)
+                .ConfigureAwait(false);
+
+            if (acquired.IsFailure)
+            {
+                throw new GrimoireMaintenanceUnavailableException();
+            }
+
+            await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+            DbConnection connection = lease.Connection;
 
             await using DbCommand command = connection.CreateCommand();
             command.CommandText = "SELECT 1;";
             command.CommandTimeout = Math.Max(1, (int)Math.Ceiling(_probeTimeout.TotalSeconds));
 
             object? scalar = await command.ExecuteScalarAsync(timeoutCts.Token).ConfigureAwait(false);
-            if (scalar is null || Convert.ToInt32(scalar) != 1)
+
+            int scalarValue = scalar is null ? 0 : Convert.ToInt32(scalar);
+
+            await GrimoireScopedConsumerTestSeam
+                .PauseAsync(
+                    "GrimoireLivenessProbe.ExecuteProbeAsync",
+                    GrimoireScopedConsumerFinalUseKind.ScalarConverted,
+                    scalarValue,
+                    timeoutCts.Token)
+                .ConfigureAwait(false);
+
+            if (scalar is null || scalarValue != 1)
             {
                 return (false, "Grimoire live probe did not return 1.");
             }

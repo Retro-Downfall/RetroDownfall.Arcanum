@@ -738,20 +738,24 @@ public sealed class TrustedMcpWorkspaceStoreTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TrustAsync_applies_owner_only_permissions()
     {
+
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only call below.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
 
         using TrustedMcpWorkspaceStore store = new();
 
         await store.TrustAsync(_workspace.Root);
-
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
 
         UnixFileMode mode = File.GetUnixFileMode(_storePath);
 

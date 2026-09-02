@@ -26,6 +26,8 @@ SELECTED_RID=""
 
 FAILURES=0
 
+UNVERIFIED=0
+
 LF="
 "
 
@@ -52,6 +54,17 @@ fail() {
 pass() {
 
   echo "  ok: $*"
+
+}
+
+# A property this script has no way to check on this host or in this job -- distinct from both a
+# proven "ok" and a proven "FAIL". Printed rather than silently passed, because a claim nobody
+# checked is not the same evidence as a claim that was checked and held.
+unverified() {
+
+  echo "  UNVERIFIED: $*"
+
+  UNVERIFIED=$((UNVERIFIED + 1))
 
 }
 
@@ -552,7 +565,14 @@ verify_rid_symbols() {
 
     win-*)
 
-      pass "${rid} symbol inspection is performed by the Windows native job"
+      # No job in verify-native-sqlcipher.yml runs dumpbin /EXPORTS (or any equivalent) against
+      # the checked-in win-* binary, so this script cannot claim the symbol table was inspected.
+      # The construction-time guarantee is real -- build-native-sqlcipher.ps1 builds the .def
+      # export list from dumpbin /symbols filtered to sqlite3_* and links with /DEF, so a leaked
+      # export is not possible from this build path -- but that is a property of the build script,
+      # not something this verification step checked, so it is reported as such rather than as a
+      # pass.
+      unverified "${rid} symbol table is not inspected by any job (see build-native-sqlcipher.ps1's /DEF export list for the construction-time guarantee)"
 
       ;;
 
@@ -610,17 +630,58 @@ verify_rid_dependencies() {
 
     osx-*)
 
-      local allowed actual dependency
+      local allowed self_id actual dependency otool_status=0
 
       allowed="$(echo "${record}" | jq -r '.dynamicDependencies[]')"
 
-      actual="$(otool -L "${file}" | tail -n +2 | awk '{print $1}' | grep -v "^@rpath/" || true)"
+      # `|| true` used to swallow a missing/failing otool along with a genuinely empty result,
+      # and both read as "no dependencies to complain about" -- the exact shape of a build that
+      # accidentally linked OpenSSL dynamically. Capture the pipeline's own exit status instead
+      # (set -o pipefail makes it otool's, not tail's or awk's) and treat an empty result as a
+      # failure: a Mach-O dylib always imports at least libSystem, so empty means the tool did
+      # not run rather than that there is nothing to report.
+      actual="$(otool -L "${file}" | tail -n +2 | awk '{print $1}')" || otool_status=$?
+
+      if [ "${otool_status}" -ne 0 ]; then
+
+        fail "${rid}: otool -L exited ${otool_status} against ${file}; cannot verify dynamic dependencies"
+
+        return
+
+      fi
+
+      if [ -z "${actual}" ]; then
+
+        fail "${rid}: otool -L reported no dynamic dependencies for ${file}; a Mach-O dylib always imports at least libSystem"
+
+        return
+
+      fi
+
+      # otool -L's first entry after the header is the dylib's own LC_ID_DYLIB self-reference
+      # (this asset's is @rpath/libe_sqlcipher.dylib), not a dependency; otool -D returns exactly
+      # that one line. Excluding only this entry -- rather than every @rpath/ entry, as before --
+      # keeps a genuine @rpath/ dependency (a dynamically linked libcrypto, say) visible to the
+      # comparison below instead of discarding it unseen. Same status-capture reasoning as the
+      # otool -L call above: without it, a failing otool -D aborts the whole script under set -e,
+      # with no FAIL line and no summary, instead of reporting the failure honestly.
+      self_id="$(otool -D "${file}" | tail -n +2)" || otool_status=$?
+
+      if [ "${otool_status}" -ne 0 ]; then
+
+        fail "${rid}: otool -D exited ${otool_status} against ${file}; cannot verify dynamic dependencies"
+
+        return
+
+      fi
 
       local unexpected=0
 
       while IFS= read -r dependency; do
 
         [ -z "${dependency}" ] && continue
+
+        [ "${dependency}" = "${self_id}" ] && continue
 
         if ! contains_line "${allowed}" "${dependency}"; then
 
@@ -642,7 +703,13 @@ verify_rid_dependencies() {
 
     win-*)
 
-      pass "${rid} import table is checked by the Windows native job"
+      # No job in verify-native-sqlcipher.yml runs dumpbin /DEPENDENTS (or any equivalent) against
+      # the checked-in win-* binary, so nothing compares its import table to the manifest's
+      # declared dynamicDependencies (ADVAPI32.dll, KERNEL32.dll, bcrypt.dll) even though
+      # build-native-sqlcipher.ps1 also links ws2_32.lib, crypt32.lib and user32.lib. Unlike the
+      # symbol table, there is no construction-time guarantee standing in for this check, so an
+      # unlisted import would ship undetected until an import-table step exists in the Windows job.
+      unverified "${rid} import table is not checked by any job; the manifest's dynamicDependencies are unverified against the built binary"
 
       ;;
 
@@ -769,6 +836,16 @@ case "${MODE}" in
 
     done < <(jq -r '.assets[].rid' "${MANIFEST}")
 
+    # --all's own contract, in the usage banner above, is "every shipping RID", never skipped. An
+    # UNVERIFIED report from any RID's checks is exactly the skip that contract rules out, so it
+    # fails the run here -- even though --rid and --manifest-only, which is what CI actually
+    # invokes, leave the same report non-failing.
+    if [ "${UNVERIFIED}" -ne 0 ]; then
+
+      fail "--all found ${UNVERIFIED} unverified check(s) above; --all never skips, and an unverified check is not a pass"
+
+    fi
+
     ;;
 
 esac
@@ -783,4 +860,12 @@ if [ "${FAILURES}" -ne 0 ]; then
 
 fi
 
-echo "verify-native-sqlcipher: all checks passed."
+if [ "${UNVERIFIED}" -ne 0 ]; then
+
+  echo "verify-native-sqlcipher: all checks passed (${UNVERIFIED} unverified)."
+
+else
+
+  echo "verify-native-sqlcipher: all checks passed."
+
+fi

@@ -31,6 +31,12 @@ internal interface IInstallationResetLockedService
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default);
 
+    Task<Result<InstallationResetResult>> ApplyFreshUnderMaintenanceLockAsync(
+        InstallationResetPlanRequest request,
+        StoppedHostInstallationResetPlan confirmedPlan,
+        ArcanumMaintenanceLock heldInstallationLock,
+        CancellationToken cancellationToken = default);
+
 }
 
 internal interface IInstallationResetActiveWriter
@@ -208,10 +214,14 @@ internal sealed class InstallationResetService(
     IInstallationResetHostProcessToolsPairReader? pairReader = null,
     IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null,
     Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null,
-    Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null)
+    Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null,
+    IInstallationResetStoppedHostDataService? stoppedHostDataService = null,
+    IInstallationResetStoppedHostProcessToolsPairReader? stoppedHostPairReader = null,
+    string? canonicalDatabasePath = null)
     : IInstallationResetService,
       IInstallationResetOnlineDataHandoff,
-      IInstallationResetLockedService
+      IInstallationResetLockedService,
+      IInstallationResetStoppedHostPlanner
 {
 
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -225,6 +235,16 @@ internal sealed class InstallationResetService(
     private readonly IInstallationResetHostProcessToolsPairReader _pairReader =
         pairReader ?? throw new ArgumentNullException(nameof(pairReader));
 
+    private readonly IInstallationResetStoppedHostDataService? _stoppedHostDataService =
+        stoppedHostDataService ?? dataService as IInstallationResetStoppedHostDataService;
+
+    private readonly IInstallationResetStoppedHostProcessToolsPairReader?
+        _stoppedHostPairReader = stoppedHostPairReader
+            ?? pairReader as IInstallationResetStoppedHostProcessToolsPairReader;
+
+    private readonly string _canonicalDatabasePath = Path.GetFullPath(
+        canonicalDatabasePath ?? ArcanumPaths.GrimoireDatabaseFile);
+
     private readonly ConcurrentDictionary<string, DataRetentionPlan> _localDataPlans =
         new(StringComparer.Ordinal);
 
@@ -233,9 +253,92 @@ internal sealed class InstallationResetService(
 
     internal string GuardedRoot => activeStore.GuardedRoot;
 
-    public async Task<Result<InstallationResetPlan>> PlanAsync(
+    public Task<Result<InstallationResetPlan>> PlanAsync(
         InstallationResetPlanRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        PlanCoreAsync(
+            request,
+            issuer: null,
+            cancellationToken);
+
+    public async Task<Result<StoppedHostInstallationResetPlan>>
+        PlanUnderStoppedHostLockAsync(
+            InstallationResetPlanRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        ArgumentNullException.ThrowIfNull(issuer);
+
+        if (_stoppedHostDataService is null
+            || _stoppedHostPairReader is null)
+        {
+
+            return Result<StoppedHostInstallationResetPlan>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The stopped-host installation-reset planning path is unavailable."));
+
+        }
+
+        Result<Guid> installation = await _stoppedHostDataService
+            .ReadIdentityUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken).ConfigureAwait(false);
+
+        if (installation.IsFailure || installation.Value == Guid.Empty)
+        {
+
+            return Result<StoppedHostInstallationResetPlan>.Failure(
+                installation.IsFailure
+                    ? installation.Error
+                    : new Error(
+                        ErrorCodes.Data.ControlPathUnavailable,
+                        "The installation identity is unavailable."));
+
+        }
+
+        Result<InstallationResetPlan> planned = await PlanCoreAsync(
+            request,
+            issuer,
+            cancellationToken).ConfigureAwait(false);
+
+        if (planned.IsFailure)
+        {
+
+            return Result<StoppedHostInstallationResetPlan>.Failure(planned.Error);
+
+        }
+
+        DataRetentionPlan? dataPlan = _localDataPlans.GetValueOrDefault(
+            planned.Value.PlanId);
+
+        DataRetentionCovenantInventory? disclosure = dataPlan?.Covenant;
+
+        if ((request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
+            && disclosure is null)
+        {
+
+            return Result<StoppedHostInstallationResetPlan>.Failure(new Error(
+                ErrorCodes.Data.InventoryUnavailable,
+                "The local Covenant inventory is unavailable."));
+
+        }
+
+        return Result<StoppedHostInstallationResetPlan>.Success(
+            new StoppedHostInstallationResetPlan(
+                planned.Value,
+                request.Scope is InstallationResetScope.Workspace
+                    ? null
+                    : disclosure));
+
+    }
+
+    private async Task<Result<InstallationResetPlan>> PlanCoreAsync(
+        InstallationResetPlanRequest request,
+        IStoppedHostGrimoireAuthorityIssuer? issuer,
+        CancellationToken cancellationToken)
     {
 
         ArgumentNullException.ThrowIfNull(request);
@@ -247,7 +350,8 @@ internal sealed class InstallationResetService(
         if (request.Scope is InstallationResetScope.Workspace or InstallationResetScope.All)
         {
 
-            if (workspaceResolver is null)
+            if (issuer is null && workspaceResolver is null
+                || issuer is not null && _stoppedHostDataService is null)
             {
 
                 return Result<InstallationResetPlan>.Failure(new Error(
@@ -256,9 +360,15 @@ internal sealed class InstallationResetService(
 
             }
 
-            Result<InstallationResetWorkspaceResolution> resolved = await workspaceResolver
-                .ResolveAsync(request.InvocationDirectory, cancellationToken)
-                .ConfigureAwait(false);
+            Result<InstallationResetWorkspaceResolution> resolved = issuer is null
+                ? await workspaceResolver!
+                    .ResolveAsync(request.InvocationDirectory, cancellationToken)
+                    .ConfigureAwait(false)
+                : await _stoppedHostDataService!
+                    .ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+                        request.InvocationDirectory,
+                        issuer,
+                        cancellationToken).ConfigureAwait(false);
 
             if (resolved.IsFailure)
             {
@@ -282,9 +392,15 @@ internal sealed class InstallationResetService(
                 workspace),
         };
 
-        Result<DataRetentionPlan> dataPlan = await dataService
-            .PlanAsync(dataRequest, cancellationToken)
-            .ConfigureAwait(false);
+        Result<DataRetentionPlan> dataPlan = issuer is null
+            ? await dataService
+                .PlanAsync(dataRequest, cancellationToken)
+                .ConfigureAwait(false)
+            : await _stoppedHostDataService!
+                .PlanUnderStoppedHostAuthorityAsync(
+                    dataRequest,
+                    issuer,
+                    cancellationToken).ConfigureAwait(false);
 
         bool dataInventoryAvailable = dataPlan.IsSuccess;
 
@@ -311,8 +427,13 @@ internal sealed class InstallationResetService(
         if (request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
 
-            Result<HostProcessToolsMarkerPairJoinResult> pair = await _pairReader
-                .ReadAsync(cancellationToken).ConfigureAwait(false);
+            Result<HostProcessToolsMarkerPairJoinResult> pair = issuer is null
+                ? await _pairReader
+                    .ReadAsync(cancellationToken).ConfigureAwait(false)
+                : await _stoppedHostPairReader!
+                    .ReadUnderStoppedHostAuthorityAsync(
+                        issuer,
+                        cancellationToken).ConfigureAwait(false);
 
             externalRemediationRequired = pair.IsFailure
                 || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean;
@@ -679,11 +800,17 @@ internal sealed class InstallationResetService(
 
         heldInstallationLock.AssertHeldFor(activeStore.GuardedRoot);
 
+        StoppedHostGrimoireAuthorityIssuer issuer =
+            CreateInstallationResetStoppedHostIssuer(heldInstallationLock);
+
         IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
             identityReader
             ?? activeStore as IInstallationResetDatabaseIdentityReader;
 
-        if (effectiveIdentityReader is null || remediationVerifier is null)
+        if (effectiveIdentityReader is null
+            || remediationVerifier is null
+            || _stoppedHostDataService is null
+            || _stoppedHostPairReader is null)
         {
 
             return Result<InstallationResetResult>.Failure(new Error(
@@ -692,8 +819,10 @@ internal sealed class InstallationResetService(
 
         }
 
-        Result<HostProcessToolsMarkerPairJoinResult> pair = await _pairReader
-            .ReadAsync(cancellationToken).ConfigureAwait(false);
+        Result<HostProcessToolsMarkerPairJoinResult> pair =
+            await _stoppedHostPairReader.ReadUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken).ConfigureAwait(false);
 
         if (pair.IsFailure
             || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.TaintedMatched
@@ -704,8 +833,10 @@ internal sealed class InstallationResetService(
 
         }
 
-        Result<Guid> installation = await effectiveIdentityReader
-            .ReadAsync(cancellationToken).ConfigureAwait(false);
+        Result<Guid> installation = await _stoppedHostDataService
+            .ReadIdentityUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken).ConfigureAwait(false);
 
         if (installation.IsFailure || installation.Value == Guid.Empty)
         {
@@ -746,7 +877,9 @@ internal sealed class InstallationResetService(
         {
 
             Result<HostProcessToolsMatchedPair> retryPair =
-                await ReadCurrentTaintedMatchedPairAsync(cancellationToken)
+                await ReadCurrentTaintedMatchedPairAsync(
+                    issuer,
+                    cancellationToken)
                     .ConfigureAwait(false);
 
             if (retryPair.IsFailure)
@@ -821,7 +954,9 @@ internal sealed class InstallationResetService(
         }
 
         Result<HostProcessToolsMatchedPair> admissionPair =
-            await ReadCurrentTaintedMatchedPairAsync(cancellationToken)
+            await ReadCurrentTaintedMatchedPairAsync(
+                issuer,
+                cancellationToken)
                 .ConfigureAwait(false);
 
         if (admissionPair.IsFailure)
@@ -1047,6 +1182,222 @@ internal sealed class InstallationResetService(
 
     }
 
+    public async Task<Result<InstallationResetResult>>
+        ApplyFreshUnderMaintenanceLockAsync(
+            InstallationResetPlanRequest request,
+            StoppedHostInstallationResetPlan confirmedPlan,
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        ArgumentNullException.ThrowIfNull(confirmedPlan);
+
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        heldInstallationLock.AssertHeldFor(activeStore.GuardedRoot);
+
+        if (_stoppedHostDataService is null || _stoppedHostPairReader is null)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The stopped-host installation-reset data path is unavailable."));
+
+        }
+
+        if (confirmedPlan.Plan.Scope != request.Scope
+            || (request.Scope is InstallationResetScope.Workspace
+                && confirmedPlan.CovenantDisclosure is not null)
+            || (request.Scope is InstallationResetScope.Global or InstallationResetScope.All
+                && confirmedPlan.CovenantDisclosure is null))
+        {
+
+            return PlanChanged<InstallationResetResult>();
+
+        }
+
+        Result<InstallationResetActiveRecoveryState> recovered = await activeStore
+            .RecoverAsync(heldInstallationLock, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recovered.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(recovered.Error);
+
+        }
+
+        if (recovered.Value.Outcome
+                is not InstallationResetActiveRecoveryOutcome.NoActiveRecord
+            || recovered.Value.Publication is not null
+            || recovered.Value.LegacyRecord is not null)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ResetInProgress,
+                "An existing installation reset must resume through its authenticated recovery path."));
+
+        }
+
+        StoppedHostGrimoireAuthorityIssuer issuer =
+            CreateInstallationResetStoppedHostIssuer(heldInstallationLock);
+
+        if (request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
+        {
+
+            Result<HostProcessToolsMarkerPairJoinResult> pair =
+                await _stoppedHostPairReader.ReadUnderStoppedHostAuthorityAsync(
+                    issuer,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (pair.IsFailure
+                || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean)
+            {
+
+                return ExternalRemediationRequired<InstallationResetResult>();
+
+            }
+
+        }
+
+        Result<Guid> installation = await _stoppedHostDataService
+            .ReadIdentityUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken).ConfigureAwait(false);
+
+        if (installation.IsFailure || installation.Value == Guid.Empty)
+        {
+
+            return Result<InstallationResetResult>.Failure(
+                installation.IsFailure
+                    ? installation.Error
+                    : new Error(
+                        ErrorCodes.Data.ControlPathUnavailable,
+                        "The installation identity is unavailable."));
+
+        }
+
+        Result<StoppedHostInstallationResetPlan> replanned =
+            await PlanUnderStoppedHostLockAsync(
+                request,
+                issuer,
+                cancellationToken).ConfigureAwait(false);
+
+        if (replanned.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(replanned.Error);
+
+        }
+
+        if (!string.Equals(
+                confirmedPlan.Plan.PlanId,
+                replanned.Value.Plan.PlanId,
+                StringComparison.Ordinal)
+            || !Equals(
+                confirmedPlan.CovenantDisclosure,
+                replanned.Value.CovenantDisclosure))
+        {
+
+            return PlanChanged<InstallationResetResult>();
+
+        }
+
+        InstallationResetPlan plan = replanned.Value.Plan;
+
+        if (!plan.CredentialInventoryAvailable)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.CredentialInventoryUnavailable,
+                "The accepted credential inventory is unavailable."));
+
+        }
+
+        if (plan.Blockers.Length > 0)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.Blocked,
+                plan.Blockers[0].Message));
+
+        }
+
+        AuthenticatedActiveWriter writer = new(
+            activeStore,
+            heldInstallationLock,
+            activeStore.GuardedRoot,
+            installation.Value,
+            publication: null);
+
+        InstallationResetActiveRecord active = new(
+            InstallationResetActiveStore.CurrentVersion,
+            Guid.NewGuid(),
+            plan.PlanId,
+            plan.Scope,
+            plan.Workspace,
+            plan.AcceptedBinding,
+            InstallationResetPhase.Prepared,
+            PointOfNoReturn: false,
+            RowsDeleted: 0,
+            FilesDeleted: 0,
+            EstimatedBytesDeleted: 0,
+            CredentialResults: [],
+            LastErrorCode: null);
+
+        Result published = await writer.WriteAsync(active, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (published.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(published.Error);
+
+        }
+
+        InstallationResetApplyProgress progress = new(active);
+
+        try
+        {
+
+            return await ContinueApplyAsync(
+                writer,
+                progress,
+                plan,
+                cancellationToken,
+                stoppedHostIssuer: issuer).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            InstallationResetActiveRecord current = progress.Active;
+
+            InstallationResetActiveRecord cancelled = current with
+            {
+                PointOfNoReturn = current.PointOfNoReturn
+                    || current.Phase is not InstallationResetPhase.Prepared,
+                LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            };
+
+            Result checkpoint = await writer.WriteAsync(
+                cancelled,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return checkpoint.IsFailure
+                ? Resumable(cancelled, checkpoint.Error)
+                : Resumable(
+                    cancelled,
+                    new Error(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "Installation reset was cancelled after its active record was published."));
+
+        }
+
+    }
+
     public async Task<Result<InstallationResetResult>> ApplyUnderMaintenanceLockAsync(
         InstallationResetApplyRequest request,
         ArcanumMaintenanceLock heldInstallationLock,
@@ -1059,8 +1410,24 @@ internal sealed class InstallationResetService(
 
         heldInstallationLock.AssertHeldFor(activeStore.GuardedRoot);
 
-        Result<HostProcessToolsMarkerPairJoinResult> pair = await _pairReader
-            .ReadAsync(cancellationToken).ConfigureAwait(false);
+        StoppedHostGrimoireAuthorityIssuer issuer = new(
+            heldInstallationLock,
+            activeStore.GuardedRoot,
+            _canonicalDatabasePath);
+
+        if (_stoppedHostDataService is null || _stoppedHostPairReader is null)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The stopped-host installation-reset data path is unavailable."));
+
+        }
+
+        Result<HostProcessToolsMarkerPairJoinResult> pair =
+            await _stoppedHostPairReader.ReadUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken).ConfigureAwait(false);
 
         if (pair.IsFailure
             || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean)
@@ -1083,9 +1450,10 @@ internal sealed class InstallationResetService(
 
         }
 
-        Result<Guid> installation = await effectiveIdentityReader
-            .ReadAsync(cancellationToken)
-            .ConfigureAwait(false);
+        Result<Guid> installation = await _stoppedHostDataService
+            .ReadIdentityUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken).ConfigureAwait(false);
 
         if (installation.IsFailure)
         {
@@ -1285,6 +1653,22 @@ internal sealed class InstallationResetService(
 
     }
 
+    private StoppedHostGrimoireAuthorityIssuer
+        CreateInstallationResetStoppedHostIssuer(
+            ArcanumMaintenanceLock heldInstallationLock)
+    {
+
+        heldInstallationLock.AssertHeldFor(activeStore.GuardedRoot);
+
+        StoppedHostGrimoireAuthorityIssuer issuer = new(
+            heldInstallationLock,
+            activeStore.GuardedRoot,
+            _canonicalDatabasePath);
+
+        return issuer;
+
+    }
+
     /// <param name="terminalGate">
     /// An extra step the attested full-reset arm inserts between offline cleanup and verification.
     /// Null for every ordinary reset, which has nothing to do there.
@@ -1298,7 +1682,8 @@ internal sealed class InstallationResetService(
         InstallationResetApplyProgress progress,
         InstallationResetPlan plan,
         CancellationToken cancellationToken,
-        Func<CancellationToken, Task<Result<InstallationResetActiveRecord>>>? terminalGate = null)
+        Func<CancellationToken, Task<Result<InstallationResetActiveRecord>>>? terminalGate = null,
+        IStoppedHostGrimoireAuthorityIssuer? stoppedHostIssuer = null)
     {
 
         InstallationResetActiveRecord active = progress.Active;
@@ -1400,9 +1785,20 @@ internal sealed class InstallationResetService(
                             Workspace: active.Workspace)
                         : new DataRetentionRequest(DataRetentionOperation.FactoryReset);
 
-                    Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
-                        new DataRetentionApplyRequest(dataRequest, dataPlanId),
-                        cancellationToken).ConfigureAwait(false);
+                    DataRetentionApplyRequest dataApplyRequest = new(
+                        dataRequest,
+                        dataPlanId);
+
+                    Result<DataRetentionApplyResult> applied =
+                        stoppedHostIssuer is null
+                            ? await dataService.ApplyAsync(
+                                dataApplyRequest,
+                                cancellationToken).ConfigureAwait(false)
+                            : await _stoppedHostDataService!
+                                .ApplyUnderStoppedHostAuthorityAsync(
+                                    dataApplyRequest,
+                                    stoppedHostIssuer,
+                                    cancellationToken).ConfigureAwait(false);
 
                     if (applied.IsFailure)
                     {
@@ -2243,11 +2639,21 @@ internal sealed class InstallationResetService(
 
     private async Task<Result<HostProcessToolsMatchedPair>>
         ReadCurrentTaintedMatchedPairAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken)
     {
 
-        Result<HostProcessToolsMarkerPairJoinResult> pair = await _pairReader
-            .ReadAsync(cancellationToken).ConfigureAwait(false);
+        if (_stoppedHostPairReader is null)
+        {
+
+            return ExternalRemediationRequired<HostProcessToolsMatchedPair>();
+
+        }
+
+        Result<HostProcessToolsMarkerPairJoinResult> pair =
+            await _stoppedHostPairReader.ReadUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken).ConfigureAwait(false);
 
         return pair.IsSuccess
             && pair.Value.Disposition

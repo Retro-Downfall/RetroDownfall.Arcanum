@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using SdkMcpClient = ModelContextProtocol.Client.McpClient;
 
@@ -13,7 +14,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// Owns one SDK client session over a caller-supplied <see cref="IClientTransport"/> (stdio, Streamable
 /// HTTP, or the in-process <see cref="ChannelClientTransport"/>), follows <c>tools/list</c> pagination
 /// until completion with cursor-cycle detection, and lets <c>tools/call</c> run until completion or
-/// caller cancellation unless a caller explicitly supplies a request policy.
+/// caller cancellation unless a caller explicitly supplies a request policy. Every <c>tools/call</c>
+/// enters the calling turn's live emitter into the connection's <see cref="McpElicitationSink"/> so a
+/// server-initiated elicitation during the call can reach the operator.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: thin adapter over the ModelContextProtocol SDK client; covered via SdkMcpClientWrapperTests using an in-memory transport.
 internal sealed class SdkMcpClientWrapper : IMcpClient
@@ -29,6 +32,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
     private readonly int _maxToolsTotalBytes;
 
     private readonly long _toolOutputCapBytes;
+
+    private readonly McpElicitationSink _elicitationSink;
 
     /// <summary>
     /// How many consecutive <c>tools/list</c> pages may contribute no accounted tool metadata before
@@ -69,11 +74,14 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         TimeSpan initializationTimeout,
         long toolOutputCapBytes,
         int maxToolsTotalBytes,
+        McpElicitationSink elicitationSink,
         ILoggerFactory? loggerFactory = null)
     {
         ArgumentNullException.ThrowIfNull(clientTransport);
 
         ArgumentNullException.ThrowIfNull(clientOptions);
+
+        ArgumentNullException.ThrowIfNull(elicitationSink);
 
         if (initializationTimeout <= TimeSpan.Zero)
         {
@@ -99,6 +107,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         _maxToolsTotalBytes = maxToolsTotalBytes;
 
         _toolOutputCapBytes = toolOutputCapBytes;
+
+        _elicitationSink = elicitationSink;
 
         _loggerFactory = loggerFactory;
     }
@@ -285,6 +295,11 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
                 cancellationToken,
                 timeoutCts.Token,
                 _completionCts.Token);
+
+        // The calling turn's emitter is readable here, on the caller's own execution context; the
+        // connection's elicitation handler runs elsewhere and resolves it from the sink for as long
+        // as this call is in flight.
+        using IDisposable elicitationScope = _elicitationSink.Enter(HumanPromptLiveEmitterAmbient.Current);
 
         try
         {

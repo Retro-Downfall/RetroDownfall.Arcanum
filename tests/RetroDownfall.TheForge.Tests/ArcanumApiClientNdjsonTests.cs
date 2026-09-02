@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.TheForge.Core.Models;
@@ -196,6 +197,79 @@ public sealed class ArcanumApiClientNdjsonTests
             static message => message.Contains("maximum line size", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task PostNdjsonStreamAsync_NonSuccessStatusCode_ThrowsInsteadOfYieldingNothing()
+    {
+        ListLogger<ArcanumApiClient> logger = new();
+        ArcanumApiClient client = CreateClient(new StatusCodeHandler(HttpStatusCode.Unauthorized), logger);
+
+        async Task DrainAsync()
+        {
+            await foreach (IntelligenceEvent evt in client.PostNdjsonStreamAsync(
+                               "/api/spells/test/execute-stream",
+                               new PingRequest("hello"),
+                               TheForgeJsonContext.Default.PingRequest,
+                               TheForgeJsonContext.Default.IntelligenceEvent,
+                               CancellationToken.None))
+            {
+                _ = evt;
+            }
+        }
+
+        HttpRequestException ex = await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
+        Assert.Equal(HttpStatusCode.Unauthorized, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task PostNdjsonStreamAsync_EmptyBaseUrl_ThrowsInsteadOfYieldingNothing()
+    {
+        ArcanumApiClient client = CreateClient(
+            new NdjsonHandler(string.Empty),
+            NullLogger<ArcanumApiClient>.Instance,
+            baseUrl: string.Empty);
+
+        async Task DrainAsync()
+        {
+            await foreach (IntelligenceEvent evt in client.PostNdjsonStreamAsync(
+                               "/api/intelligence/ping-stream",
+                               new PingRequest("hello"),
+                               TheForgeJsonContext.Default.PingRequest,
+                               TheForgeJsonContext.Default.IntelligenceEvent,
+                               CancellationToken.None))
+            {
+                _ = evt;
+            }
+        }
+
+        // Same class of silent failure as a non-2xx response: a malformed BaseUrl must not
+        // read as "stream completed with zero frames".
+        await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
+    }
+
+    [Fact]
+    public async Task PostNdjsonStreamAsync_MissingApiKey_ThrowsInsteadOfYieldingNothing()
+    {
+        ArcanumApiClient client = CreateClient(
+            new NdjsonHandler(string.Empty),
+            NullLogger<ArcanumApiClient>.Instance,
+            apiKey: string.Empty);
+
+        async Task DrainAsync()
+        {
+            await foreach (IntelligenceEvent evt in client.PostNdjsonStreamAsync(
+                               "/api/intelligence/ping-stream",
+                               new PingRequest("hello"),
+                               TheForgeJsonContext.Default.PingRequest,
+                               TheForgeJsonContext.Default.IntelligenceEvent,
+                               CancellationToken.None))
+            {
+                _ = evt;
+            }
+        }
+
+        await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
+    }
+
     private static ArcanumApiClient CreateClient(
         string ndjson,
         ILogger<ArcanumApiClient> logger) =>
@@ -203,22 +277,24 @@ public sealed class ArcanumApiClientNdjsonTests
 
     private static ArcanumApiClient CreateClient(
         HttpMessageHandler handler,
-        ILogger<ArcanumApiClient> logger) =>
+        ILogger<ArcanumApiClient> logger,
+        string baseUrl = "http://localhost:5001",
+        string apiKey = "test-key") =>
         new(
             new StaticHttpClientFactory(handler),
             new StaticTheForgeSettingsMonitor(new TheForgeSettings
             {
-                BaseUrl = "http://localhost:5001",
+                BaseUrl = baseUrl,
             }),
-            new StaticApiKeyProvider(),
+            new StaticApiKeyProvider(apiKey),
             logger);
 
-    private sealed class StaticApiKeyProvider : ITheForgeApiKeyProvider
+    private sealed class StaticApiKeyProvider(string apiKey) : ITheForgeApiKeyProvider
     {
         public Task<string?> GetApiKeyAsync(CancellationToken cancellationToken) =>
-            Task.FromResult<string?>("test-key");
+            Task.FromResult<string?>(apiKey);
 
-        public Task PersistPastedKeyAsync(string apiKey, CancellationToken cancellationToken) =>
+        public Task PersistPastedKeyAsync(string key, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
         public void ClearPasteDecline()
@@ -253,6 +329,17 @@ public sealed class ArcanumApiClientNdjsonTests
                 new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-ndjson");
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class StatusCodeHandler(HttpStatusCode statusCode) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent(string.Empty),
+            });
     }
 
     private sealed class FragmentingResponseStream(byte[] payload, int maxChunkBytes) : Stream

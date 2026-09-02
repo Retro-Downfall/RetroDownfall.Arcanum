@@ -1433,7 +1433,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         public async ValueTask DisposeAsync()
         {
             DisposeStarted.TrySetResult();
-            await AllowDispose.Task;
+            await AllowDispose.Task.WaitAsync(TimeSpan.FromSeconds(30));
             DisposeCompleted.TrySetResult();
         }
     }

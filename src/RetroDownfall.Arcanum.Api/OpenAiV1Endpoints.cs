@@ -665,7 +665,14 @@ internal static partial class OpenAiV1Endpoints
                                         ev.Message),
                                     ct).ConfigureAwait(false);
                                 streamErrored = true;
-                                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
+                                // This is a failure frame, not a completed
+                                // response — marking it idempotency-terminal cached it as a
+                                // permanently replayable "success." PersistClaimAsync's own
+                                // buffered/aborted fallback would still treat a non-empty,
+                                // non-aborted body as terminal even without this call, so the
+                                // never-cache marker is required, not merely the absence of the
+                                // terminal one.
+                                TurnContextGuards.MarkIdempotencyNeverCache(httpContext);
                                 return Results.Empty;
 
                             case IntelligenceEventType.Status:
@@ -742,6 +749,13 @@ internal static partial class OpenAiV1Endpoints
                 "Unhandled exception while streaming OpenAI chat completion {CompletionId}; exception type {ExceptionType}.",
                 completionId,
                 ex.GetType().FullName);
+
+            // A client still connected here (the common case for a
+            // provider-side fault) leaves PersistClaimAsync's own buffered/aborted fallback free to
+            // treat whatever this writes as a terminal, replayable body — this arm never called
+            // MarkIdempotencyTerminal, but omitting it is not the same as excluding the claim, so
+            // say so explicitly.
+            TurnContextGuards.MarkIdempotencyNeverCache(httpContext);
 
             try
             {

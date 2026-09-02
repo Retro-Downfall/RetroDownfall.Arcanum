@@ -24,7 +24,9 @@ internal enum HostToolsDatabaseMarkerRecoveryObservation : byte
 internal interface IHostToolsMarkerPairResetDatabase
 {
 
-    Task<Result<HostToolsMarkerPairResetDatabaseSession>> OpenAsync(
+    Task<Result<HostToolsMarkerPairResetDatabaseSession>>
+        OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+        IStoppedHostGrimoireConnectionAuthority authority,
         CancellationToken cancellationToken);
 
 }
@@ -243,6 +245,8 @@ internal sealed class HostToolsMarkerPairResetDatabaseSession : IAsyncDisposable
 
     private readonly SqliteConnection _connection;
 
+    private readonly IStoppedHostGrimoireConnectionLease _lease;
+
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private readonly IHostToolsMarkerPairResetDatabaseTestSeam _testSeam;
@@ -258,14 +262,16 @@ internal sealed class HostToolsMarkerPairResetDatabaseSession : IAsyncDisposable
     private bool _transactionActive;
 
     internal HostToolsMarkerPairResetDatabaseSession(
-        SqliteConnection connection,
+        IStoppedHostGrimoireConnectionLease lease,
         HostToolsMarkerPairResetDatabase owner,
         IHostToolsMarkerPairResetDatabaseTestSeam testSeam,
         TimeSpan checkpointTimeout,
         object creationTicket)
     {
 
-        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(lease);
+
+        SqliteConnection connection = lease.Connection;
 
         ArgumentNullException.ThrowIfNull(owner);
 
@@ -288,6 +294,8 @@ internal sealed class HostToolsMarkerPairResetDatabaseSession : IAsyncDisposable
                 "The host-tools database marker session is unavailable.");
 
         }
+
+        _lease = lease;
 
         _connection = connection;
 
@@ -378,7 +386,7 @@ internal sealed class HostToolsMarkerPairResetDatabaseSession : IAsyncDisposable
             try
             {
 
-                await _connection.DisposeAsync().ConfigureAwait(false);
+                await _lease.DisposeAsync().ConfigureAwait(false);
 
             }
             catch (Exception)

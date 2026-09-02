@@ -1143,7 +1143,9 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
-            new CovenantMutationKernel());
+            new CovenantMutationKernel(),
+            FixtureOrdinaryConnectionFactory.For(_db!),
+            FixtureLabeledArtifactGuard.For(_db!));
 
     private SqliteConnection Connection()
     {

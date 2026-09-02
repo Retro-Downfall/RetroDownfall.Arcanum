@@ -1,7 +1,9 @@
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -129,8 +131,14 @@ public sealed class CampaignCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
     IConsoleDispatcher dispatcher,
+    IConfirmationPrompt confirmationPrompt,
+    IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
+
+    private void WriteError(Error error) =>
+        CliErrorOutput.WriteMarkupLine(
+            themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
 
     /// <summary>
     /// List registered campaigns (GET /api/campaigns).
@@ -149,7 +157,7 @@ public sealed class CampaignCommands(
                 CliErrorOutput.WriteMarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape("--type must be one of: spell, campaign, data, custom.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             workspaceType = parsed;
@@ -160,9 +168,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         CampaignDto[] campaigns = result.Value.Items;
@@ -235,9 +243,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         CampaignCommandSupport.WriteCampaignDetailPanel(result.Value, themePalette);
@@ -265,14 +273,14 @@ public sealed class CampaignCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrWhiteSpace(path))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--path is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         string typeText = string.IsNullOrWhiteSpace(type) ? "campaign" : type;
@@ -282,7 +290,7 @@ public sealed class CampaignCommands(
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("--type must be one of: spell, campaign, data, custom.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         RegisterCampaignRequest request = new(name.Trim(), path.Trim(), workspaceType, description);
@@ -291,9 +299,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
@@ -322,9 +330,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
@@ -344,13 +352,22 @@ public sealed class CampaignCommands(
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete campaign {campaignId:D}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            dispatcher.WriteDiagnostic("Campaign deletion cancelled.");
+
+            return 0;
+        }
+
         Result result = await apiClient.DeleteCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Campaign removed.")));
@@ -374,9 +391,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         string json = System.Text.Json.JsonSerializer.Serialize(
@@ -423,7 +440,7 @@ public sealed class CampaignCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         string json;
@@ -458,7 +475,7 @@ public sealed class CampaignCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Campaign export JSON parsed to an empty payload.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         CampaignImportRequest request = new("merge", payload);
@@ -467,9 +484,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         CampaignImportResultDto imported = result.Value;
@@ -512,9 +529,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         SpellCommandSupport.WriteSpellSummaryTable(result.Value, themePalette);
@@ -545,9 +562,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         PromptSummaryDto[] prompts = result.Value.Items;
@@ -623,7 +640,7 @@ public sealed class CampaignCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--before-updated-at must be a valid timestamp.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             beforeUpdatedAtParsed = parsed;
@@ -636,9 +653,9 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         SessionSummaryDto[] sessions = result.Value.Summaries;
@@ -731,8 +748,14 @@ public sealed class CampaignCommands(
 public sealed class CampaignCodexCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
+    IConfirmationPrompt confirmationPrompt,
+    IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
+
+    private void WriteError(Error error) =>
+        CliErrorOutput.WriteMarkupLine(
+            themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
 
     /// <summary>
     /// Print CODEX.md (GET /api/campaigns/{id}/codex).
@@ -748,9 +771,9 @@ public sealed class CampaignCodexCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         if (!result.Value.Exists)
@@ -781,7 +804,7 @@ public sealed class CampaignCodexCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile($"@{file}", out string content, out string? readError))
@@ -795,9 +818,9 @@ public sealed class CampaignCodexCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("CODEX.md updated.")));
@@ -816,13 +839,22 @@ public sealed class CampaignCodexCommands(
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete CODEX.md for campaign {campaignId:D}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("CODEX.md deletion cancelled.")));
+
+            return 0;
+        }
+
         Result result = await apiClient.DeleteCampaignCodexAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("CODEX.md removed.")));

@@ -1144,18 +1144,13 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Search_rejects_files_with_multiple_hard_links()
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux()
-            && !OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows(),
+            "Hard-link detection is only proven on a recognized platform.");
 
         string target = _workspace.WriteFile("linked.txt", "needle");
 

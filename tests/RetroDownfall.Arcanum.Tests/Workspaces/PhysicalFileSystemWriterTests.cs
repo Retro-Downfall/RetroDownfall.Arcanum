@@ -97,14 +97,13 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task WriteFileAsync_rejects_symlink_escape()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-escape containment is exercised on Unix hosts.");
 
         string outsideDir = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}");
 
@@ -149,14 +148,13 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     /// symlinks in the path prefix, and creating them first leaves an orphaned directory tree outside
     /// the workspace even though the write itself is rejected.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public async Task WriteFileAsync_does_not_create_parent_directories_outside_workspace_through_a_symlinked_ancestor()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-escape containment is exercised on Unix hosts.");
 
         string outsideDir = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}");
 
@@ -424,13 +422,21 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ReplaceTextBlockAsync_write_failure_leaves_no_temp_file_and_original_content_intact()
     {
 
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Unix owner-only mode bits are what makes the directory unreadable here.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
+
             return;
+
         }
 
         string subdir = _workspace.CreateSubdir("readonly-dir");
@@ -549,14 +555,13 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task DeleteAsync_recursive_skips_symlinks_that_escape_workspace()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-escape containment is exercised on Unix hosts.");
 
         string outsideDir = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}");
 
@@ -741,13 +746,21 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task WriteFileAsync_UnauthorizedAccessException_maps_to_AccessDenied()
     {
 
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Unix owner-only mode bits are what makes the directory unreadable here.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
+
             return;
+
         }
 
         string subdir = _workspace.CreateSubdir("locked-dir");

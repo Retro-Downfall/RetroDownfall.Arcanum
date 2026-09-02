@@ -55,11 +55,22 @@ internal static class SandboxedFileIo
         if (!FileHandleIdentityInterop.TryGetPathMetadata(
                 identityPath,
                 out FileHandleMetadata expectedMetadata)
-            || expectedMetadata.Kind != FileSystemObjectKind.RegularFile
-            || expectedMetadata.HardLinkCount != 1)
+            || expectedMetadata.Kind != FileSystemObjectKind.RegularFile)
         {
 
             error = ToolError(PathEscapesSandboxMessage);
+
+            return false;
+
+        }
+
+        // Distinct from the containment rejection above: a hard-linked file is genuinely inside the
+        // sandbox at every one of its names, so "use a path relative to the workspace root" is not a
+        // remediation the model can act on -- no spelling of this path has a hard link count of 1.
+        if (expectedMetadata.HardLinkCount != 1)
+        {
+
+            error = ToolError(HardLinkAliasingMessage);
 
             return false;
 
@@ -457,6 +468,9 @@ internal static class SandboxedFileIo
 
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
+
+    private const string HardLinkAliasingMessage =
+        "This file has more than one hard link and cannot be read or written through the sandbox.";
 
     private static readonly string[] OpenErrorMessages =
     [

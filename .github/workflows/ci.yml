@@ -249,8 +249,9 @@ jobs:
     # shipping Windows architectures, so this lane covers x64 and windows-arm64-suite below covers
     # the other one; what arm64 adds beyond a second copy is written there.
     #
-    # The bare name is left alone on purpose. This is the lane the Beta release gate names, and any
-    # required-check configuration that refers to a Windows lane refers to it by this string.
+    # The bare name is left alone on purpose. A repository's required-status-check configuration
+    # refers to a workflow lane by this exact string, external to this file, so renaming it would
+    # silently break whatever branch protection names it.
     name: Windows test suite
     # The hermetic SQLCipher targets refuse to build a RID whose asset is not verified (ARCSQLC002)
     # long before the first test executes. Gate on the manifest so a lane in that state skips
@@ -345,8 +346,8 @@ jobs:
     if: needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified'
     # A whole job rather than a matrix leg of windows-suite, deliberately, for two reasons that both
     # fail silently. `needs:` names a job id and waits for every leg of that job's matrix, so folding
-    # arm64 into windows-suite would have added it to the Beta release gate below without anyone
-    # choosing that -- and this lane has never run, so its real failure list is unknown. And a
+    # arm64 into windows-suite would put this lane behind anything that gates on that job id, without
+    # anyone choosing that -- and this lane has never run, so its real failure list is unknown. And a
     # job-level `if:` cannot read the `matrix` context at all, so a matrix could not carry the
     # per-RID manifest gate above without rebuilding it as a dynamically generated matrix. Please do
     # not "simplify" the duplication away without answering both.
@@ -529,81 +530,3 @@ jobs:
         run: |
           set -euo pipefail
           "$(go env GOPATH)/bin/actionlint"
-
-  shippable-change:
-    # Whether this push changed anything a build would carry. A doc edit, a workflow edit, or a test
-    # edit still runs every gate above -- they are how the tree is kept honest -- but cutting a beta
-    # for one means the releases page records builds that are byte-for-byte the previous build, and
-    # each one costs three platforms and an Apple notarization.
-    name: Does this push change anything shippable
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    outputs:
-      shippable: ${{ steps.paths.outputs.shippable }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          # The whole history, because this diffs against the commit the branch was on before.
-          fetch-depth: 0
-
-      - name: Compare the push range
-        id: paths
-        env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # A force-push, a first push, or a squashed history leaves no reachable previous commit.
-          # Answer "shippable" there rather than guessing: a missed beta is a silent gap in the
-          # stream, and a spurious one is only a wasted run.
-          if [[ -z "${BEFORE:-}" ]] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            echo "no reachable previous commit (before=${BEFORE:-unset}); treating the push as shippable"
-            echo "shippable=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CHANGED="$(git diff --name-only "$BEFORE" "$AFTER")"
-          echo "changed in this push:"
-          echo "$CHANGED"
-          # Directory.Build.props is in the list because it carries <Version>: editing it is how an
-          # operator asks for a specific version, and that request must reach a build.
-          if printf '%s\n' "$CHANGED" | grep -qE '^(src/|scripts/packaging/|Directory\.Build\.props$|Directory\.Packages\.props$|RetroDownfall\.Arcanum\.slnx$)'; then
-            echo "shippable=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "shippable=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Nothing shippable changed in this push, so the gates ran and no beta was cut."
-          fi
-
-  beta:
-    # The single automatic build, after every gate above has passed. `needs` is the whole gate list on
-    # purpose: naming a subset would be choosing which failures are allowed to ship, and a job added
-    # later would default to not blocking it. A skipped gate blocks this too, which is the answer we
-    # want -- a lane that could not run has not passed.
-    #
-    # windows-arm64-suite is the one deliberate exception, and it is named here so its absence reads
-    # as a decision rather than as the oversight the paragraph above warns about. That suite has
-    # never executed on arm64: nobody has seen its failure list, and a first run is far more likely
-    # to be red for test-side reasons than to have found a shipping defect. Gating every release on
-    # an unknown would stop releases without telling anyone anything. So the lane reports and does
-    # not block. Promoting it into this list is a follow-up decision, to be taken once its real
-    # failure list is known and worked down -- and it is a promotion somebody must make on purpose,
-    # because until then win-arm64 ships on evidence this workflow gathers but does not enforce.
-    #
-    # No version is passed. The release derives it from Directory.Build.props: a bare channel there
-    # means "next beta", and a fully written version means exactly that version. Editing that one
-    # line and pushing is the manual path.
-    name: Beta release
-    needs:
-      - native-sqlcipher-assets
-      - build-test
-      - macos-workspace-check
-      - windows-suite
-      - aot-il
-      - static-analysis
-      - shippable-change
-    if: needs.shippable-change.outputs.shippable == 'true'
-    permissions:
-      actions: read
-      contents: write
-    uses: ./.github/workflows/release.yml
-    secrets: inherit

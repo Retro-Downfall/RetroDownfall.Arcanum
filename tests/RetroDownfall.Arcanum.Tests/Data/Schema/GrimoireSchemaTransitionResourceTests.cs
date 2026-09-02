@@ -121,6 +121,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.Core, 3),
                         (GrimoireSchemaTransactionTier.Core, 4),
                         (GrimoireSchemaTransactionTier.Core, 5),
+                        (GrimoireSchemaTransactionTier.Core, 6),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 2),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 3),
                     ]);
@@ -201,6 +202,14 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "saga_memories_CampaignId_guard_identity_update",
                 "saga_retirement_suppressions_CampaignId_guard_identity_insert",
                 "saga_retirement_suppressions_CampaignId_guard_identity_update",
+                "LongRunningOperations_SessionId_spelling",
+                "LongRunningOperations_RunId_spelling",
+                "LongRunningOperations_InferenceRunId_spelling",
+                "Entries_SessionId_norm_index",
+                "entry_embeddings_EntryId_norm_index",
+                "SessionAttachments_SessionId_norm_index",
+                "SessionAttachments_Id_norm_index",
+                "workspace_file_chunks_file_length",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",
@@ -293,13 +302,15 @@ public sealed class GrimoireSchemaTransitionResourceTests
             GrimoireSchemaCatalog.CoreSchemaFingerprint,
             GrimoireSchemaCatalog.ComputeSourceFingerprint(GrimoireSchemaCatalog.CoreObjects));
 
+        // Both Covenant tiers still publish the raw computation: neither is leaving its version in
+        // this change, and a tier's fingerprint may only switch in the change that raises its version.
         Assert.Equal(
             GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
-            GrimoireSchemaCatalog.ComputeSourceFingerprint(GrimoireSchemaCatalog.CovenantCanonicalObjects));
+            GrimoireSchemaCatalog.ComputeRawSourceFingerprint(GrimoireSchemaCatalog.CovenantCanonicalObjects));
 
         Assert.Equal(
             GrimoireSchemaCatalog.CovenantAcceleratorSchemaFingerprint,
-            GrimoireSchemaCatalog.ComputeSourceFingerprint(GrimoireSchemaCatalog.CovenantAcceleratorObjects));
+            GrimoireSchemaCatalog.ComputeRawSourceFingerprint(GrimoireSchemaCatalog.CovenantAcceleratorObjects));
 
     }
 

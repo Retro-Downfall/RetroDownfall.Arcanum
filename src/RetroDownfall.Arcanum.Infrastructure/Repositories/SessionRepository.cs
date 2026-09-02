@@ -15,10 +15,21 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
-public sealed class SessionRepository(
+/// <summary>
+/// Persists Sessions and their Entries: creation, paging, full-text search, forking, and export.
+/// </summary>
+/// <remarks>
+/// Internal, unlike the <see cref="ISessionRepository" /> it implements. The connection factory
+/// this type's constructor requires, <see cref="IGrimoireOrdinaryConnectionFactory" />, is an
+/// Infrastructure implementation detail, so a primary constructor that requires it cannot sit on a
+/// public type without putting that factory on the assembly's public surface. The type's
+/// accessibility follows the constructor's requirement, not the other way around.
+/// </remarks>
+internal sealed class SessionRepository(
     ArcanumDbContext db,
     ISessionAttachmentStore attachments,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    IGrimoireOrdinaryConnectionFactory connections,
     ISessionAttachmentIndexQueue? attachmentIndexQueue = null) : ISessionRepository
 {
 
@@ -36,7 +47,7 @@ public sealed class SessionRepository(
 
     private const int ForkEntryBatchSize = 256;
 
-    private readonly SessionEntryPersistence _entryPersistence = new(db);
+    private readonly SessionEntryPersistence _entryPersistence = new(db, connections);
 
     public async Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct)
     {
@@ -1094,5 +1105,4 @@ public sealed class SessionRepository(
         int AssistantEntries,
         int ToolEntries,
         int SystemEntries);
-
 }

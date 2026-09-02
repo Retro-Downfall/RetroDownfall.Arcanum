@@ -12,7 +12,10 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -162,7 +165,9 @@ public sealed class WorkspaceDivinationEndpointTests
 
         FakeWeaveService weave = new();
 
-        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(weave);
+        FixtureOrdinaryConnectionFactory connections = new();
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(weave, connections);
 
         HttpClient client = enabled.CreateAuthenticatedClient();
 
@@ -186,7 +191,35 @@ public sealed class WorkspaceDivinationEndpointTests
             content: "public class Baz {}",
             vector: [1f, 0f, 0f]);
 
-        HttpResponseMessage response = await PostDivineAsync(client, targetWorkspace.Id, new WorkspaceSemanticSearchRequest("how does Foo work?"));
+        using ScopedConsumerPause pause = new("WorkspaceDivinationEndpoints.GetTotalChunksByPathAsync");
+
+        Task<HttpResponseMessage> searching = PostDivineAsync(
+            client,
+            targetWorkspace.Id,
+            new WorkspaceSemanticSearchRequest("how does Foo work?"));
+
+        try
+        {
+
+            await pause.WaitUntilEnteredAsync();
+
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
+
+            Assert.Equal(1, pause.FinalUse.Observation);
+
+            Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await searching.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
+
+        HttpResponseMessage response = await searching;
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -197,6 +230,10 @@ public sealed class WorkspaceDivinationEndpointTests
         Assert.Equal("src/Foo.cs", hit.RelativePath);
 
         Assert.Contains("public class Foo", hit.ContentPreview, StringComparison.Ordinal);
+
+        Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
+
+        Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
 
     }
 
@@ -257,7 +294,9 @@ public sealed class WorkspaceDivinationEndpointTests
 
     }
 
-    private static ArcanumWebApplicationFactory CreateEnabledFactory(IWeaveService weaveService) =>
+    private static ArcanumWebApplicationFactory CreateEnabledFactory(
+        IWeaveService weaveService,
+        FixtureOrdinaryConnectionFactory? connections = null) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -281,6 +320,15 @@ public sealed class WorkspaceDivinationEndpointTests
                 services.RemoveAll<IWeaveService>();
 
                 services.AddSingleton(weaveService);
+
+                if (connections is not null)
+                {
+
+                    // Appended rather than substituted: the last registration is what
+                    // GetRequiredService returns, so the production descriptor stays composed.
+                    services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
+
+                }
 
             },
         };

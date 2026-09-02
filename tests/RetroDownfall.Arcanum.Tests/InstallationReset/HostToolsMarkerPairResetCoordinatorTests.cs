@@ -429,7 +429,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     }
 
     [Fact]
-    public async Task Begin_opens_and_retains_the_os_capability_before_opening_or_reading_the_database()
+    public async Task Begin_binds_isolated_guarded_database_path_before_opening_the_database()
     {
 
         await using CovenantSchemaScratchDatabase database =
@@ -459,10 +459,14 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     OsEvidence(),
                     capability));
 
-            ICovenantMaintenanceConnectionFactory connections =
+            IDesignTimeGrimoireConnectionFactory connections =
                 new RecordingMaintenanceConnections(
                     database.MaintenanceConnections(),
                     events);
+
+            string canonicalDatabasePath = Path.Combine(
+                guardedRoot,
+                "grimoire.db");
 
             HostToolsMarkerPairResetCoordinator subject = new(
                 new RecordingActiveStore(guardedRoot, current),
@@ -473,7 +477,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new HostProcessToolsMarkerPairJoiner(),
                 new RejectingVerifier(),
                 new FakeCampaignPathMarkerLifecycle(),
-                os);
+                os,
+                canonicalDatabasePath: canonicalDatabasePath);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -5214,7 +5219,9 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     private sealed class FailingOpenDatabase : IHostToolsMarkerPairResetDatabase
     {
 
-        public Task<Result<HostToolsMarkerPairResetDatabaseSession>> OpenAsync(
+        public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
+            OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+            IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<HostToolsMarkerPairResetDatabaseSession>.Failure(
                 new Error(
@@ -5226,7 +5233,9 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     private sealed class ThrowingDatabase : IHostToolsMarkerPairResetDatabase
     {
 
-        public Task<Result<HostToolsMarkerPairResetDatabaseSession>> OpenAsync(
+        public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
+            OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+            IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "The database sentinel diagnostic must not escape.");
@@ -5373,9 +5382,9 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     }
 
     private sealed class RecordingMaintenanceConnections(
-        ICovenantMaintenanceConnectionFactory inner,
+        IDesignTimeGrimoireConnectionFactory inner,
         List<string> events)
-        : ICovenantMaintenanceConnectionFactory
+        : IDesignTimeGrimoireConnectionFactory
     {
 
         public string DatabasePath => inner.DatabasePath;

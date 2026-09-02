@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.CommLink;
@@ -177,7 +178,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Minutes must be a positive integer (>= 1).")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
@@ -228,7 +229,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
                 themePalette.ErrorMarkup(
                     Markup.Escape("A non-empty message is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
@@ -240,7 +241,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
                     Markup.Escape("--severity"),
                     Markup.Escape("must be one of: Info, Warning, Critical.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 

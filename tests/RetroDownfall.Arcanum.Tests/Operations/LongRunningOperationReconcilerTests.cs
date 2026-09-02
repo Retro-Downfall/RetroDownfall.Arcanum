@@ -208,6 +208,32 @@ public sealed class LongRunningOperationReconcilerTests
     }
 
     /// <summary>
+    /// BackupCreate is AbandonSafely, so a registration regression that drops its handler out of
+    /// a resolved scope must still be visible in the ledger. Before this fix the row closed as
+    /// Abandoned with a null TerminalErrorCode and no log line — indistinguishable from a successful
+    /// recovery; the non-AbandonSafely arm two lines below already names the same condition.
+    /// </summary>
+    [Fact]
+    public async Task AbandonSafely_kind_with_no_handler_is_abandoned_with_a_named_error_code()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        LongRunningOperation seeded = store.Seed(
+            LongRunningOperationKinds.BackupCreate,
+            LongRunningOperationRecoveryPolicy.AbandonSafely);
+
+        LongRunningOperationReconciler reconciler = CreateReconciler(store, time);
+        _ = await reconciler.ReconcileNowAsync("test-owner");
+
+        LongRunningOperation recovered = Assert.Single(
+            store.Operations,
+            operation => operation.Id == seeded.Id);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, recovered.State);
+        Assert.Equal(LongRunningOperationErrorCodes.RecoveryHandlerMissing, recovered.TerminalErrorCode);
+    }
+
+    /// <summary>
     /// Acceptance: repeated reconciliation must not repeat external work. A terminal operation is
     /// no longer expired, so a second pass must not reach the handler again.
     /// </summary>
@@ -309,4 +335,207 @@ public sealed class LongRunningOperationReconcilerTests
         Assert.Equal(8, scopes.Created);
         Assert.Equal(8, scopes.Disposed);
     }
+
+    /// <summary>
+    /// Once a handler has returned an outcome, persisting it is compensation — the pass token
+    /// is often the very reason compensation is running (a startup budget expiring, a background pass
+    /// whose host is shutting down), so recording the result must not be lost because that same token
+    /// is now cancelled. A handler that cancels the pass token immediately before returning
+    /// <c>Completed</c> stands in for the startup budget expiring at the exact moment recovery
+    /// finishes. The pass itself is still allowed to surface the cancellation to its caller — the
+    /// startup host already has a deferred-recovery branch for that — but the outcome the handler
+    /// already produced must be durable by the time it does.
+    /// </summary>
+    [Fact]
+    public async Task Outcome_is_persisted_even_when_the_handler_cancels_the_pass_token()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        CancellationTokenSource cts = new();
+
+        RecordingRecoveryHandler handler = new(
+            LongRunningOperationKinds.Batch,
+            supportedCheckpointVersion: 0,
+            _ =>
+            {
+                cts.Cancel();
+
+                return LongRunningOperationRecoveryResult.Completed();
+            });
+
+        LongRunningOperation seeded = store.Seed(
+            LongRunningOperationKinds.Batch,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+
+        LongRunningOperationReconciler reconciler = new(
+            new CancelsOnCompensationOperationStore(store),
+            [handler],
+            time,
+            NullLogger<LongRunningOperationReconciler>.Instance);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => reconciler.ReconcileAsync(
+                time.GetUtcNow(),
+                "test-owner",
+                maxOperations: 100,
+                maxConcurrency: 1,
+                cts.Token));
+
+        LongRunningOperation recovered = Assert.Single(
+            store.Operations,
+            operation => operation.Id == seeded.Id);
+
+        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+    }
+
+    /// <summary>
+    /// The registry exists so an operator can learn what recovery does without reading the
+    /// handler's source (registry header comment). <see cref="WorkspaceIndexRecoveryHandler"/> closes
+    /// the row and re-enumerates nothing, deferring to the next background tick — the descriptor's
+    /// operator-facing text has to say that, not its opposite, and has to name the service that
+    /// actually owns the kind (<c>WorkspaceIndexingService</c>, not <c>WorkspaceIndexService</c>).
+    /// <see cref="LongRunningOperationReconciler"/> is what consumes this registry at startup priority
+    /// and checkpoint-window resolution, so its descriptor content is exercised here.
+    /// </summary>
+    [Fact]
+    public void WorkspaceIndex_recovery_intent_matches_the_handler_it_describes()
+    {
+        LongRunningOperationRecoveryDescriptor descriptor =
+            LongRunningOperationRecoveryRegistry.Find(LongRunningOperationKinds.WorkspaceIndex)!;
+
+        Assert.Contains("close", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("background tick", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("re-enumerate", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("WorkspaceIndexingService", descriptor.Owner);
+    }
+}
+
+/// <summary>
+/// Wraps <see cref="FakeLongRunningOperationStore"/> so <c>GetAsync</c> and <c>TryTransitionAsync</c> —
+/// the two calls a reconciled outcome is persisted through — observe cancellation the way the real
+/// SQLite-backed store does: both
+/// open their connection on the supplied token (LongRunningOperationStore.cs), so a caller whose token
+/// is already cancelled faults before either reaches the database. Every other member is outside
+/// <see cref="LongRunningOperationReconciler.ReconcileAsync"/>'s call shape for a single-page,
+/// unscoped pass and throws if that shape ever changes to reach it.
+/// </summary>
+internal sealed class CancelsOnCompensationOperationStore(FakeLongRunningOperationStore inner)
+    : ILongRunningOperationStore
+{
+    public Task<LongRunningOperation> CreateAsync(
+        LongRunningOperationCreateRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+        LongRunningOperationCreateRequest request,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return inner.GetAsync(operationId, cancellationToken);
+    }
+
+    public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
+        Guid operationId,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+        Guid requestedOperationId,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
+        LongRunningOperationQuery query,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        inner.FindExpiredAsync(utcNow, limit, cancellationToken);
+
+    public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        inner.TryAcquireLeaseAsync(operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken);
+
+    public Task<bool> HeartbeatAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<bool> SaveCheckpointAsync(
+        Guid operationId,
+        string ownerId,
+        int expectedCheckpointVersion,
+        int checkpointVersion,
+        byte[]? checkpointPayload,
+        string? checkpointReference,
+        string publicSummary,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<bool> TryTransitionAsync(
+        Guid operationId,
+        long expectedRevision,
+        string? ownerId,
+        LongRunningOperationState state,
+        DateTimeOffset utcNow,
+        string? terminalErrorCode = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return inner.TryTransitionAsync(
+            operationId,
+            expectedRevision,
+            ownerId,
+            state,
+            utcNow,
+            terminalErrorCode,
+            cancellationToken);
+    }
+
+    public Task<bool> RequestCancellationAsync(
+        Guid operationId,
+        long expectedRevision,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<bool> ResetForRetryAsync(
+        Guid operationId,
+        long expectedRevision,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
+        CancellationToken cancellationToken = default) =>
+        throw NotUsedByReconcile();
+
+    private static InvalidOperationException NotUsedByReconcile() =>
+        new("Not reached by LongRunningOperationReconciler.ReconcileAsync for a single-page, unscoped pass.");
 }

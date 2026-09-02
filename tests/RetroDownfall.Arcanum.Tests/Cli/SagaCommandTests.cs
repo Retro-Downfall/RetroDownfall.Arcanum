@@ -82,7 +82,7 @@ public sealed class SagaCommandTests
 
         CliTestResult result = RunCommand(handler, ["saga", "list", "--session", "not-a-guid"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 
@@ -152,7 +152,7 @@ public sealed class SagaCommandTests
 
         CliTestResult result = RunCommand(handler, ["saga", "divine", "   "]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 
@@ -182,7 +182,7 @@ public sealed class SagaCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CliTestResult result = RunCommand(handler, ["saga", "delete", "mem-1"]);
+        CliTestResult result = RunCommand(handler, ["--yes", "saga", "delete", "mem-1"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -191,6 +191,27 @@ public sealed class SagaCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/saga/mem-1", request.RequestUri!.AbsolutePath);
+
+    }
+
+    /// <summary>
+    /// An irreversible delete must ask before it acts. Without <c>--yes</c> and with stdout
+    /// redirected (as it always is under this harness), <see cref="ConfirmationPrompt"/> fails closed
+    /// rather than silently deleting the named memory.
+    /// </summary>
+    [Fact]
+    public void Saga_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(handler, ["saga", "delete", "mem-1"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
 
     }
 
@@ -203,7 +224,7 @@ public sealed class SagaCommandTests
             ArcanumJsonContext.Default.ApiResponseString,
             HttpStatusCode.NotFound));
 
-        CliTestResult result = RunCommand(handler, ["saga", "delete", "missing-id"]);
+        CliTestResult result = RunCommand(handler, ["--yes", "saga", "delete", "missing-id"]);
 
         Assert.Equal(1, result.ExitCode);
 

@@ -18,9 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// one content-free operator remedy.
 /// </remarks>
 internal sealed class CovenantHealthyCatalogErasureGuard(
-    ICovenantMaintenanceConnectionFactory connections,
-    ICovenantSqliteConnectionInitializer initializer,
-    ICovenantConnectionDrain drain,
+    IGrimoireOrdinaryConnectionFactory connections,
     GrimoireSchemaManifestInspector inspector)
 {
 
@@ -29,14 +27,8 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         "Healthy-catalog Covenant erasure requires an intact catalog. Restore a known-good backup, "
             + "run Covenant-family reinitialize, or perform a full installation reset.");
 
-    private readonly ICovenantMaintenanceConnectionFactory _connections =
+    private readonly IGrimoireOrdinaryConnectionFactory _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
-
-    private readonly ICovenantSqliteConnectionInitializer _initializer =
-        initializer ?? throw new ArgumentNullException(nameof(initializer));
-
-    private readonly ICovenantConnectionDrain _drain =
-        drain ?? throw new ArgumentNullException(nameof(drain));
 
     private readonly GrimoireSchemaManifestInspector _inspector =
         inspector ?? throw new ArgumentNullException(nameof(inspector));
@@ -48,9 +40,7 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
     internal async Task<Result> RequireHealthyAsync(CancellationToken cancellationToken)
     {
 
-        SqliteConnection? connection = null;
-
-        IDisposable? enrollment = null;
+        IGrimoireOrdinaryConnectionLease? lease = null;
 
         SqliteTransaction? transaction = null;
 
@@ -59,22 +49,34 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         try
         {
 
-            connection = await _connections.OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+            Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+                .OpenFreshAsync(
+                    GrimoireOrdinaryFreshConnectionKind.ReadOnly,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-            // Registration is the first synchronous act after open. No initialization, transaction,
-            // or proof can run through a live handle the process-wide drain cannot name.
-            enrollment = _drain.Register(connection);
+            if (acquired.IsFailure)
+            {
 
-            await _initializer.InitializeAsync(
-                connection,
-                CovenantSqliteConnectionMode.ReadOnly,
-                cancellationToken).ConfigureAwait(false);
+                return Result.Failure(UnsafeCatalog);
+
+            }
+
+            lease = acquired.Value;
+
+            SqliteConnection connection = lease.Connection;
 
             transaction = (SqliteTransaction)await connection
                 .BeginTransactionAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             result = await ProveAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+            await GrimoireScopedConsumerTestSeam.PauseAsync(
+                "CovenantHealthyCatalogErasureGuard.RequireHealthyAsync",
+                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+                result.IsSuccess ? 1 : 0,
+                cancellationToken).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -91,7 +93,7 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
 
         }
 
-        bool cleaned = await CleanupOwnedAsync(transaction, connection, enrollment).ConfigureAwait(false);
+        bool cleaned = await CleanupOwnedAsync(transaction, lease).ConfigureAwait(false);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -352,8 +354,7 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
 
     private static async Task<bool> CleanupOwnedAsync(
         SqliteTransaction? transaction,
-        SqliteConnection? connection,
-        IDisposable? enrollment)
+        IGrimoireOrdinaryConnectionLease? lease)
     {
 
         bool clean = true;
@@ -376,13 +377,13 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
 
         }
 
-        if (connection is not null)
+        if (lease is not null)
         {
 
             try
             {
 
-                await connection.CloseAsync().ConfigureAwait(false);
+                await lease.DisposeAsync().ConfigureAwait(false);
 
             }
             catch
@@ -391,32 +392,6 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
                 clean = false;
 
             }
-
-            try
-            {
-
-                await connection.DisposeAsync().ConfigureAwait(false);
-
-            }
-            catch
-            {
-
-                clean = false;
-
-            }
-
-        }
-
-        try
-        {
-
-            enrollment?.Dispose();
-
-        }
-        catch
-        {
-
-            clean = false;
 
         }
 

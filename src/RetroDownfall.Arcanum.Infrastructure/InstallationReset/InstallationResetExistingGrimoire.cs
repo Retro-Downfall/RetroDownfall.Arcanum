@@ -23,6 +23,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 
@@ -34,8 +35,12 @@ internal sealed class InstallationResetExistingGrimoire(
     DataProtectionSecretStore secretStore,
     ArcanumSettings settings,
     TimeProvider timeProvider,
-    ILoggerFactory loggerFactory)
+    ILoggerFactory loggerFactory,
+    IGrimoireOrdinaryConnectionFactory ordinaryConnections,
+    IGrimoireDbPassphraseSource passphraseSource,
+    IStoppedHostGrimoireConnectionFactory stoppedHostConnections)
     : IInstallationResetDataService,
+      IInstallationResetStoppedHostDataService,
       IInstallationResetWorkspaceResolver,
       IInstallationResetDatabaseIdentityReader,
       IInstallationResetHostProcessToolsDatabaseEvidenceReader
@@ -70,8 +75,33 @@ internal sealed class InstallationResetExistingGrimoire(
 
         }
 
-        return ExecuteAsync(
-            writable: false,
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Unavailable<DataRetentionPlan>());
+
+    }
+
+    public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
+        InstallationResetDataPlanRequest request,
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+
+        DataRetentionRequest? dataRequest = ToDataRequest(request);
+
+        if (dataRequest is null)
+        {
+
+            return Task.FromResult(InvalidDataPlan());
+
+        }
+
+        return ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetPlanReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetPlanReadAsync(authority, token),
             async (retention, _, _, token) =>
             {
 
@@ -93,8 +123,26 @@ internal sealed class InstallationResetExistingGrimoire(
 
         ArgumentNullException.ThrowIfNull(request);
 
-        return ExecuteAsync(
-            writable: true,
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Unavailable<DataRetentionApplyResult>());
+
+    }
+
+    public Task<Result<DataRetentionApplyResult>> ApplyUnderStoppedHostAuthorityAsync(
+        DataRetentionApplyRequest request,
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        return ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetApplyAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetApplyAsync(authority, token),
             async (retention, operations, _, token) =>
             {
 
@@ -162,9 +210,28 @@ internal sealed class InstallationResetExistingGrimoire(
 
     public Task<Result<InstallationResetWorkspaceResolution>> ResolveAsync(
         string invocationDirectory,
-        CancellationToken cancellationToken) =>
-        ExecuteAsync(
-            writable: false,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Unavailable<InstallationResetWorkspaceResolution>());
+
+    }
+
+    public Task<Result<InstallationResetWorkspaceResolution>>
+        ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+            string invocationDirectory,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+        ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetWorkspaceResolutionAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetWorkspaceResolutionAsync(
+                    authority,
+                    token),
             async (_, _, context, token) =>
             {
 
@@ -182,9 +249,24 @@ internal sealed class InstallationResetExistingGrimoire(
             cancellationToken);
 
     public Task<Result<Guid>> ReadAsync(
-        CancellationToken cancellationToken = default) =>
-        ExecuteAsync(
-            writable: false,
+        CancellationToken cancellationToken = default)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Unavailable<Guid>());
+
+    }
+
+    public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken) =>
+        ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetIdentityReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetIdentityReadAsync(authority, token),
             static async (_, _, context, token) =>
                 await InstallationResetDatabaseIdentityReader
                     .ReadOpenConnectionAsync(
@@ -195,9 +277,27 @@ internal sealed class InstallationResetExistingGrimoire(
 
     Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
         IInstallationResetHostProcessToolsDatabaseEvidenceReader.ReadMarkerEvidenceAsync(
+            CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(HostProcessToolsEvidenceUnavailable());
+
+    }
+
+    public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
+        ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken) =>
-        ExecuteAsync(
-            writable: false,
+        ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetHostToolsEvidenceReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(
+                    authority,
+                    token),
             static async (_, _, context, token) =>
             {
 
@@ -215,8 +315,16 @@ internal sealed class InstallationResetExistingGrimoire(
             },
             cancellationToken);
 
-    private async Task<Result<T>> ExecuteAsync<T>(
-        bool writable,
+    private async Task<Result<T>> ExecuteUnderStoppedHostAuthorityAsync<T>(
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        Func<
+            IStoppedHostGrimoireAuthorityIssuer,
+            Result<IStoppedHostGrimoireConnectionAuthority>> issue,
+        Func<
+            IStoppedHostGrimoireConnectionFactory,
+            IStoppedHostGrimoireConnectionAuthority,
+            CancellationToken,
+            Task<Result<IStoppedHostGrimoireConnectionLease>>> open,
         Func<
             DataRetentionService,
             LongRunningOperationStore,
@@ -225,6 +333,8 @@ internal sealed class InstallationResetExistingGrimoire(
             Task<Result<T>>> action,
         CancellationToken cancellationToken)
     {
+
+        ArgumentNullException.ThrowIfNull(issuer);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -260,23 +370,39 @@ internal sealed class InstallationResetExistingGrimoire(
                     secret.Value,
                     sidecar.GetSaltBytes());
 
-            SqliteNativeRuntime.Instance.Initialize();
-
-            GrimoireDbPassphraseSource passphraseSource = new();
-
             passphraseSource.SetPassphrase(passphrase);
+
+            Result<IStoppedHostGrimoireConnectionAuthority> issued = issue(issuer);
+
+            if (issued.IsFailure)
+            {
+
+                return Result<T>.Failure(issued.Error);
+
+            }
+
+            await using IStoppedHostGrimoireConnectionAuthority authority =
+                issued.Value;
+
+            Result<IStoppedHostGrimoireConnectionLease> opened = await open(
+                stoppedHostConnections,
+                authority,
+                cancellationToken).ConfigureAwait(false);
+
+            if (opened.IsFailure)
+            {
+
+                return Result<T>.Failure(opened.Error);
+
+            }
+
+            await using IStoppedHostGrimoireConnectionLease lease = opened.Value;
 
             DbContextOptions<ArcanumDbContext> options =
                 new DbContextOptionsBuilder<ArcanumDbContext>()
-                    .UseSqlite(new SqliteConnectionStringBuilder
-                    {
-                        DataSource = databasePath,
-                        Password = passphrase,
-                        Pooling = false,
-                        Mode = writable
-                            ? SqliteOpenMode.ReadWrite
-                            : SqliteOpenMode.ReadOnly,
-                    }.ToString())
+                    .UseSqlite(
+                        lease.Connection,
+                        contextOwnsConnection: false)
                     .UseModel(ArcanumDbContextModel.Instance)
                     .Options;
 
@@ -285,37 +411,25 @@ internal sealed class InstallationResetExistingGrimoire(
                 secretStore,
                 passphraseSource);
 
-            await context.Database.OpenConnectionAsync(cancellationToken)
-                .ConfigureAwait(false);
+            LongRunningOperationStore operations = new(
+                context,
+                ordinaryConnections);
 
-            SqliteConnection connection = (SqliteConnection)context.Database
-                .GetDbConnection();
-
-            if (writable)
-            {
-
-                await SqliteConnectionPragmas.ApplyAsync(
-                    connection,
-                    cancellationToken).ConfigureAwait(false);
-
-            }
-            else
-            {
-
-                await ApplyReadOnlyPragmasAsync(
-                    connection,
-                    cancellationToken).ConfigureAwait(false);
-
-            }
-
-            LongRunningOperationStore operations = new(context);
+            // The stopped-host reset deletes the same labelled artifacts the serving host refuses to
+            // remove outside the purge boundary, so it asks the same guard. It is built here rather
+            // than injected because this path runs with no container: the host is stopped, and the
+            // context above is composed over a maintenance lease this method owns.
+            StoppedHostCovenantConnectionSource covenantConnections = new(lease.Connection);
 
             DataRetentionService retention = new(
                 context,
                 _settings,
                 operations,
                 timeProvider,
-                loggerFactory.CreateLogger<DataRetentionService>());
+                loggerFactory.CreateLogger<DataRetentionService>(),
+                new CovenantLabeledArtifactGuard(
+                    new ArtifactSensitivityLedger(covenantConnections),
+                    covenantConnections));
 
             return await action(
                 retention,
@@ -889,6 +1003,57 @@ internal sealed class InstallationResetExistingGrimoire(
         public IDisposable OnChange(
             Action<ArcanumSettings, string?> listener) =>
             NoopDisposable.Instance;
+
+    }
+
+    /// <summary>
+    /// The Covenant connection source for a stopped host: the maintenance lease's own open connection.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="CovenantConnectionSource"/> cannot serve this path, and the reason is a property
+    /// worth keeping rather than a defect to route around. That source asks
+    /// <see cref="IGrimoireOrdinaryConnectionFactory.AcquireScopedAsync" /> to admit the connection,
+    /// which either borrows an admission the ordinary lifecycle already recorded or opens a closed
+    /// connection itself. A stopped-host lease is neither: it was opened directly by
+    /// <c>StoppedHostGrimoireConnectionFactory</c> under a maintenance authority, so the lifecycle has
+    /// no registration to lend and the connection is already open. The factory refuses, and the
+    /// refusal used to surface as a durable "requires operator review" reconciliation failure on a
+    /// retention operation that should simply have been told no.
+    ///
+    /// <para>Admitting the lease through the ordinary factory would have been the other way to fix
+    /// this, and it is the wrong one: ordinary admission exists so that serving connections are the
+    /// only ones the drain can account for, and teaching it to adopt a foreign already-open handle
+    /// would cost exactly that. This source adds no reachability instead — it hands back the one
+    /// connection the caller already holds, over the database file the reset validated before it
+    /// opened anything.</para>
+    ///
+    /// <para>It latches <see cref="CovenantProcessResidence"/> on the canonical read for the same
+    /// reason the ordinary source does: this process really did hold Covenant material, and the latch
+    /// only ever makes the offline host-tools transition more forbidden.</para>
+    /// </remarks>
+    private sealed class StoppedHostCovenantConnectionSource(SqliteConnection connection)
+        : ICovenantConnectionSource
+    {
+
+        public ValueTask<SqliteConnection> GetOpenConnectionAsync(
+            CancellationToken cancellationToken)
+        {
+
+            CovenantProcessResidence.MarkOpened();
+
+            return GetOpenCoreConnectionAsync(cancellationToken);
+
+        }
+
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(connection);
+
+        }
 
     }
 

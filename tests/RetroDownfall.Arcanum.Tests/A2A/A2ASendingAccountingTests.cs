@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Operations;
 
@@ -75,7 +76,9 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
 
         await ledger.SettleOutboundAsync(entry, A2ARemoteCost.Known(1_500, 0.42m));
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = (await store.GetAsync(entry.OperationId))!;
 
@@ -103,7 +106,9 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
 
         await ledger.SettleOutboundAsync(entry, A2ARemoteCost.Unknown);
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         A2ASendingRecord record = A2ASendingLedger.TryRead((await store.GetAsync(entry.OperationId))!)!;
 
@@ -156,7 +161,9 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
 
         await ledger.SettleOutboundAsync(yesterday, A2ARemoteCost.Known(10, 5m));
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation settled = (await store.GetAsync(yesterday.OperationId))!;
 
@@ -209,7 +216,9 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
         A2ASendingLedgerEntry entry = await CreateLedger()
             .RegisterOutboundAsync("remote-linked", "https://peer.example.test/", reservationId);
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         // Without the link, an operator looking at a reservation cannot see the delegated work it paid for.
         Assert.Equal(reservationId, (await store.GetAsync(entry.OperationId))!.BudgetReservationId);
@@ -225,7 +234,9 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
         A2ASendingLedgerEntry entry = await CreateLedger()
             .RegisterOutboundAsync("remote-unlinked", "https://peer.example.test/");
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         Assert.Null((await store.GetAsync(entry.OperationId))!.BudgetReservationId);
 
@@ -320,7 +331,9 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
 
     private IA2ASendingLedger CreateLedger() =>
         new A2ASendingLedger(
-            new LongRunningOperationStore(_db!),
+            new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)),
             TimeProvider.System,
             NullLogger<A2ASendingLedger>.Instance);
 

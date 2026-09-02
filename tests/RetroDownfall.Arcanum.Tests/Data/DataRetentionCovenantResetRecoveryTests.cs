@@ -78,7 +78,9 @@ public sealed partial class DataRetentionServiceTests
         RecoveryTimeProvider clock = new(
             new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
             operations,
@@ -207,7 +209,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
             operations,
@@ -312,7 +316,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations, phase);
 
@@ -363,7 +369,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations, phase);
 
@@ -398,7 +406,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -442,7 +452,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -477,7 +489,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -513,7 +527,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -544,7 +560,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await operations.CreateAsync(
             new LongRunningOperationCreateRequest(
@@ -578,7 +596,9 @@ public sealed partial class DataRetentionServiceTests
 
         _ = await SeedSessionAsync(pinned: false);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -630,7 +650,9 @@ public sealed partial class DataRetentionServiceTests
 
         _ = await SeedSessionAsync(pinned: false);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -700,7 +722,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(
             operations,
@@ -728,7 +752,9 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
@@ -925,6 +951,7 @@ public sealed partial class DataRetentionServiceTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 disposition == RecoveryDisposition.KeepClosed
@@ -937,19 +964,20 @@ public sealed partial class DataRetentionServiceTests
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<CovenantVerifiedCandidateState>.Success(Candidate()));
 
@@ -1310,6 +1338,7 @@ public sealed partial class DataRetentionServiceTests
                     dueAt = dueAt.Add(Period);
 
                 }
+
                 while (dueAt <= now);
 
                 DueAt = dueAt;

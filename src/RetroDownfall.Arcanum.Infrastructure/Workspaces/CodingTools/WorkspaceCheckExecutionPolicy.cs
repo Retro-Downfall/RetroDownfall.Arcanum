@@ -86,7 +86,54 @@ internal static class WorkspaceCheckExecutionPolicy
             ExplicitRiskReason);
     }
 
+    /// <summary>Test hook: count of real sandbox-exec probe evaluations since the last reset. The
+    /// process-lifetime cache in <see cref="IsMandatoryJailAvailableForCurrentHost"/> keeps this at 1
+    /// across repeated calls.</summary>
+    internal static int MandatoryJailProbeCountForTests { get; private set; }
+
+    private static readonly Lock s_mandatoryJailGate = new();
+
+    private static bool? s_mandatoryJailAvailable;
+
+    /// <summary>Test seam: restore the mandatory-jail probe cache and its counter to production
+    /// defaults. Call from test teardown to avoid cross-test leakage.</summary>
+    internal static void ResetTestSeams()
+    {
+
+        lock (s_mandatoryJailGate)
+        {
+
+            s_mandatoryJailAvailable = null;
+
+            MandatoryJailProbeCountForTests = 0;
+
+        }
+
+    }
+
     internal static bool IsMandatoryJailAvailableForCurrentHost()
+    {
+
+        lock (s_mandatoryJailGate)
+        {
+
+            if (s_mandatoryJailAvailable is { } cached)
+            {
+
+                return cached;
+            }
+
+            MandatoryJailProbeCountForTests++;
+
+            s_mandatoryJailAvailable = ProbeMandatoryJail();
+
+            return s_mandatoryJailAvailable.Value;
+
+        }
+
+    }
+
+    private static bool ProbeMandatoryJail()
     {
 
         if (!OperatingSystem.IsMacOS()

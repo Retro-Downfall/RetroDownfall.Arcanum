@@ -143,6 +143,40 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A shutdown concurrent with an in-flight read must not turn into an
+    /// ObjectDisposedException thrown out of the read's own finally block, replacing whatever the
+    /// operation was actually doing.
+    /// </summary>
+    /// <remarks>
+    /// The read already holds its per-account gate by the time Dispose runs — Dispose must not
+    /// pull that gate out from under it.
+    /// </remarks>
+    [Fact]
+    public async Task Dispose_concurrent_with_an_in_flight_read_completes_without_ObjectDisposedException()
+    {
+
+        using BlockingOsCredentialStore os = new();
+
+        ProviderCredentialStore store = CreateStore(os);
+
+        Task<SecretStoreReadResult> reading = Task.Run(
+            () => store.GetApiKeyReadResultAsync("openai"));
+
+        os.WaitForEntry();
+
+        store.Dispose();
+
+        os.Release();
+
+        SecretStoreReadResult result = await reading;
+
+        Assert.Equal(SecretStoreReadStatus.Ok, result.Status);
+
+        Assert.Equal("blocked-value", result.Value);
+
+    }
+
     [Fact]
     public async Task Providers_are_isolated_from_each_other()
     {
@@ -789,6 +823,49 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Unavailable("unavailable");
+
+    }
+
+    /// <summary>A backend whose TryGet parks inside the read until the test lets it finish.</summary>
+    private sealed class BlockingOsCredentialStore : IOsCredentialStore, IDisposable
+    {
+
+        private readonly ManualResetEventSlim _entered = new(false);
+
+        private readonly ManualResetEventSlim _release = new(false);
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+
+            _entered.Set();
+
+            _ = _release.Wait(TimeSpan.FromSeconds(30));
+
+            return OsCredentialStoreResult.Ok("blocked-value");
+
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Ok(secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.Ok(string.Empty);
+
+        internal void WaitForEntry() =>
+            Assert.True(_entered.Wait(TimeSpan.FromSeconds(10)));
+
+        internal void Release() => _release.Set();
+
+        public void Dispose()
+        {
+
+            _entered.Dispose();
+
+            _release.Dispose();
+
+        }
 
     }
 

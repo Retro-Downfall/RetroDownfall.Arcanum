@@ -800,7 +800,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             sp.GetRequiredService<ArcanumDbContext>(),
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(disabledSettings)));
+            new TestOptionsSnapshot<ArcanumSettings>(disabledSettings),
+            attachmentIndex: null,
+            covenantKernel: null,
+            FixtureOrdinaryConnectionFactory.For(sp.GetRequiredService<ArcanumDbContext>()),
+            FixtureLabeledArtifactGuard.For(sp.GetRequiredService<ArcanumDbContext>())));
 
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
@@ -885,6 +889,216 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             await hosted.StopAsync(CancellationToken.None);
 
         }
+
+    }
+
+    [SkippableFact]
+    public async Task ExecuteAsync_RetryBackoffForOneSession_DoesNotBlockAnotherSessionsFirstAttempt()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid firstSessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(firstSessionId, "content this extraction model can never parse");
+
+        Guid secondSessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(secondSessionId, "content this extraction model can never parse");
+
+        FakeWeaveService weave = new();
+
+        // Every attempt fails identically, forever, for both sessions - the only thing under test is
+        // whether the second session's first attempt has to wait behind the first session's retry
+        // backoff, not whether either one succeeds. ExpectedCallCount/WaitForExpectedCallsAsync
+        // waits deterministically for the second call instead of polling within a wall-clock margin
+        // against a comparable-duration backoff, which a loaded machine could miss.
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "not valid json at all",
+            ExpectedCallCount = 2,
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance)
+        {
+
+            // Clamps to MaximumAutomaticRetryDelay (5 minutes) - comfortably longer than the wait
+            // below, so the first session's own retry cannot possibly fire during this test and a
+            // second call is unambiguously the second session's first attempt.
+            RetryBaseDelayForTests = TimeSpan.FromMinutes(10),
+
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+
+            service.EnqueueExtraction(firstSessionId);
+
+            service.EnqueueExtraction(secondSessionId);
+
+            // A single-reader loop that awaits its own retry backoff inline starves every other
+            // queued session for the whole delay. Reaching two calls at all inside this bound - let
+            // alone the five seconds allowed - proves the second session's first attempt did not
+            // queue behind the first session's five-minute-plus wait.
+            await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(2, intelligence.CallCount);
+
+        }
+        finally
+        {
+
+            await hosted.StopAsync(CancellationToken.None);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public async Task EnqueueExtraction_ArrivingWhileTheSameSessionIsInFlight_MergesInsteadOfDuplicating()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content worth extracting");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            Entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+            Gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance);
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+
+            Guid firstAttachmentId = Guid.NewGuid();
+
+            Guid secondAttachmentId = Guid.NewGuid();
+
+            AttachmentMemoryProvenance firstProvenance = new(
+                sessionId,
+                firstAttachmentId,
+                "logical-key-one",
+                1,
+                "hash-one",
+                DateTimeOffset.UtcNow,
+                "note",
+                AttachmentSourceAvailability.Available);
+
+            service.EnqueueExtraction(new SagaExtractionRequest(sessionId, [firstProvenance], HadUnprovenancedAttachmentContent: false));
+
+            await intelligence.Entered!.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // The first attempt is now blocked mid-flight on Gate. A second arrival for the same
+            // session must merge into the still-reserved dedup key instead of racing a duplicate
+            // channel write for the same session: dequeuing used to remove the key immediately,
+            // so a concurrent enqueue found nothing to merge into and queued a second, separate entry.
+            AttachmentMemoryProvenance secondProvenance = new(
+                sessionId,
+                secondAttachmentId,
+                "logical-key-two",
+                1,
+                "hash-two",
+                DateTimeOffset.UtcNow,
+                "note",
+                AttachmentSourceAvailability.Available);
+
+            service.EnqueueExtraction(new SagaExtractionRequest(sessionId, [secondProvenance], HadUnprovenancedAttachmentContent: false));
+
+            SagaExtractionRequest pending = Assert.Single(service.PendingRequestsForTests);
+
+            Assert.Equal(sessionId, pending.SessionId);
+
+            Assert.Contains(pending.MaterializedAttachments, item => item.AttachmentId == firstAttachmentId);
+
+            Assert.Contains(pending.MaterializedAttachments, item => item.AttachmentId == secondAttachmentId);
+
+        }
+        finally
+        {
+
+            // Unconditionally, even if an assertion above threw: the fake is parked on Gate with no
+            // cancellation wiring of its own, and StopAsync(CancellationToken.None) waits for
+            // ExecuteAsync to finish, so a still-held gate would hang the test forever instead of
+            // reporting the assertion failure.
+            intelligence.Gate!.TrySetResult(true);
+
+            await hosted.StopAsync(CancellationToken.None);
+
+        }
+
+    }
+
+    /// <summary>
+    /// The dedup key survives dequeue (peeked, not removed), but
+    /// the shutdown-cancellation return path did not release it, unlike the disabled-skip branch a few
+    /// lines above it - a session mid-attempt when the host stops would stay in <c>_pending</c> forever
+    /// with no channel entry left to ever read it back out.
+    /// </summary>
+    [SkippableFact]
+    public async Task StopAsync_duringAnInFlightAttempt_releasesTheDedupKey()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content worth extracting");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            Entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+            Gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance);
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        service.EnqueueExtraction(sessionId);
+
+        await intelligence.Entered!.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The attempt is now blocked mid-flight, awaiting Gate on the service's own stoppingToken.
+        // StopAsync cancels that token immediately, so the gated call throws OperationCanceledException
+        // instead of ever completing - exercising ExecuteAsync's shutdown-cancellation return path
+        // while the dedup key is still held.
+        await hosted.StopAsync(CancellationToken.None);
+
+        Assert.Empty(service.PendingRequestsForTests);
 
     }
 
@@ -1018,7 +1232,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             _db!,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(settings));
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            attachmentIndex: null,
+            covenantKernel: null,
+            FixtureOrdinaryConnectionFactory.For(_db!),
+            FixtureLabeledArtifactGuard.For(_db!));
 
     private static AttachmentMemoryProvenance CreateProvenance(
         Guid sessionId,
@@ -1317,7 +1535,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public List<string> StatelessUserContents { get; } = [];
 
-        public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
+        /// <summary>Signaled the moment a call enters <see cref="ExecutePromptAsync"/>, before <see cref="Gate"/> is awaited. Null unless a test needs to observe a call as in-flight.</summary>
+        public TaskCompletionSource<bool>? Entered { get; set; }
+
+        /// <summary>When set, held calls block here until the test completes it, so a test can inspect state while an extraction is in flight.</summary>
+        public TaskCompletionSource<bool>? Gate { get; set; }
+
+        public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
         {
 
             int callCount = Interlocked.Increment(ref _callCount);
@@ -1335,14 +1559,26 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             }
 
-            if (NextFailure is { } failure)
+            Entered?.TrySetResult(true);
+
+            if (Gate is { } gate)
             {
 
-                return Task.FromResult(Result<PromptTurnResult>.Failure(failure));
+                // Honors the caller's token: a test can hold a call open and prove that cancelling
+                // stoppingToken (e.g. via StopAsync) unblocks it with OperationCanceledException,
+                // rather than needing to release Gate itself.
+                await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             }
 
-            return Task.FromResult(Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null)));
+            if (NextFailure is { } failure)
+            {
+
+                return Result<PromptTurnResult>.Failure(failure);
+
+            }
+
+            return Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null));
 
         }
 

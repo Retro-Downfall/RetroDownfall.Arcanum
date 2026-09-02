@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -17,6 +18,30 @@ public sealed class CovenantErasureTransitionTests
 {
 
     [Fact]
+    public void Storage_transition_requires_exact_v3_capabilities()
+    {
+
+        Assert.Equal(
+            [typeof(CovenantExclusiveOperation), typeof(CovenantV3MaintenanceCapability), typeof(CancellationToken)],
+            typeof(ICovenantErasureTransition).GetMethod(nameof(ICovenantErasureTransition.ApplyCanonicalErasureAsync))!
+                .GetParameters()
+                .Select(static parameter => parameter.ParameterType));
+
+        Assert.Equal(
+            [typeof(CovenantV3MaintenanceCapability), typeof(CancellationToken)],
+            typeof(ICovenantErasureTransition).GetMethod(nameof(ICovenantErasureTransition.TruncateWalAsync))!
+                .GetParameters()
+                .Select(static parameter => parameter.ParameterType));
+
+        Assert.Equal(
+            [typeof(CovenantV3CompactionCapabilities), typeof(CancellationToken)],
+            typeof(ICovenantErasureTransition).GetMethod(nameof(ICovenantErasureTransition.CompactAsync))!
+                .GetParameters()
+                .Select(static parameter => parameter.ParameterType));
+
+    }
+
+    [Fact]
     public async Task Storage_operations_delegate_once_and_verification_returns_the_exact_candidate()
     {
 
@@ -24,20 +49,33 @@ public sealed class CovenantErasureTransitionTests
 
         Assert.True((await harness.Subject.ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation.CovenantReset,
+            harness.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             CancellationToken.None)).IsSuccess);
 
         Assert.True((await harness.Subject.CloseHandlesAsync(CancellationToken.None)).IsSuccess);
 
-        Assert.True((await harness.Subject.TruncateWalAsync(CancellationToken.None)).IsSuccess);
+        Assert.True((await harness.Subject.TruncateWalAsync(
+            harness.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            CancellationToken.None)).IsSuccess);
 
-        Assert.True((await harness.Subject.CompactAsync(CancellationToken.None)).IsSuccess);
+        Assert.True((await harness.Subject.CompactAsync(
+            new CovenantV3CompactionCapabilities(
+                harness.Mint(CovenantV3MaintenancePurpose.CompactionVacuum),
+                harness.Mint(CovenantV3MaintenancePurpose.CompactionExport),
+                harness.Mint(CovenantV3MaintenancePurpose.CompactionExportVerification),
+                harness.Mint(CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore)),
+            CancellationToken.None)).IsSuccess);
 
-        Assert.True((await harness.Subject.InitializeAcceleratorAsync(CancellationToken.None)).IsSuccess);
+        Assert.True((await harness.Subject.InitializeAcceleratorAsync(
+            harness.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization),
+            CancellationToken.None)).IsSuccess);
 
         Assert.True((await harness.Subject.VerifySidecarAbsenceAsync(CancellationToken.None)).IsSuccess);
 
         Result<CovenantVerifiedCandidateState> verified =
-            await harness.Subject.VerifyReopenAsync(CancellationToken.None);
+            await harness.Subject.VerifyReopenAsync(
+                harness.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification),
+                CancellationToken.None);
 
         Assert.True(verified.IsSuccess);
 
@@ -497,6 +535,10 @@ public sealed class CovenantErasureTransitionTests
 
         internal ICovenantExclusiveOperationLease Lease { get; } = new NullExclusiveLease();
 
+        internal CovenantV3MaintenanceCapability Mint(CovenantV3MaintenancePurpose purpose) =>
+            CovenantV3MaintenanceCapability.MintAsync(Lease, purpose, CancellationToken.None)
+                .AsTask().GetAwaiter().GetResult().Value;
+
         public void Dispose() => Runtime.Dispose();
 
         internal static CovenantVerifiedCandidateState CandidateState() =>
@@ -565,6 +607,7 @@ public sealed class CovenantErasureTransitionTests
 
         public Task<Result<Guid>> ApplyAsync(
             CovenantExclusiveOperation operation,
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken)
         {
 
@@ -595,19 +638,20 @@ public sealed class CovenantErasureTransitionTests
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
             Record(() => CloseCalls++);
 
-        public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Record(() => TruncateCalls++);
 
-        public Task<Result> CompactAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
             Record(() => CompactCalls++);
 
-        public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
             Record(() => InitializeCalls++);
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Record(() => AbsenceCalls++);
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+            CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken)
         {
 
@@ -690,7 +734,25 @@ public sealed class CovenantErasureTransitionTests
     private sealed class NullExclusiveLease : ICovenantExclusiveOperationLease
     {
 
-        public CovenantOperationLeaseSnapshot Snapshot => throw new NotSupportedException();
+        public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
+            Guid.NewGuid(),
+            1,
+            CovenantLeaseKind.Exclusive,
+            CovenantLeaseCoverage.Installation,
+            null,
+            Guid.NewGuid(),
+            1,
+            1,
+            0,
+            null,
+            null,
+            null,
+            null,
+            new CovenantExclusiveRecoveryOwner(
+                Guid.NewGuid(),
+                CovenantExclusiveOperation.CovenantReset,
+                new CovenantDigest([.. Enumerable.Repeat((byte)0x31, CovenantLimits.DigestBytes)])),
+            false);
 
         public CancellationToken Revocation => CancellationToken.None;
 

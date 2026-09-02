@@ -5,8 +5,10 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -65,7 +67,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         // MATCH that found something first proves the later zero meant anything.
         Assert.Equal(1, await fixture.ScalarLongAsync(IndexedTokenQuery, Token));
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -95,7 +97,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         Guid? before = await fixture.ReadDatasetGenerationAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -155,7 +157,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             """,
             Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -184,7 +186,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -230,7 +232,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -272,7 +274,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         CovenantRetainedEvidenceSnapshot before = await fixture.CaptureRetainedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -293,7 +295,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         CovenantRetainedEvidenceSnapshot before = await fixture.CaptureRetainedAsync(Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -319,7 +321,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.SeedAsync(Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -357,7 +359,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -376,6 +378,117 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
+    /// <summary>
+    /// The exclusive acquisition has no <see cref="SqliteBusyRetry"/> wrap, so any handle the
+    /// drain could not close turns the erasure into a hard refusal after the first attempt's own
+    /// busy budget elapses. <see cref="CovenantDisclosureJournal"/> wraps its identical
+    /// <c>BEGIN IMMEDIATE</c> in the retry helper; this transaction did not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Rollback alone does not free the lock this test needs to race. <see cref="ApplyAsync"/>'s own
+    /// remarks say why: "an exclusive maintenance handle cannot take its lock while any other handle
+    /// holds the same database open." <c>ExclusiveMaintenance</c> connections run
+    /// <c>PRAGMA locking_mode=EXCLUSIVE</c>, so the erasure's acquisition is blocked by any other
+    /// connection that is merely open, independent of whether that connection has an active
+    /// transaction. The holder below therefore closes - the "racing handle finishing its own close"
+    /// <see cref="ApplyOnConnectionAsync"/>'s remarks describe - rather than only rolling back; the
+    /// connection string turns pooling off first, or <c>Close()</c> would return the still-open
+    /// sqlite3 handle to the pool instead of releasing it, which is exactly why
+    /// <see cref="CovenantConnectionDrain"/> carries its own <c>ClearExactPoolAfterClose</c>.
+    /// </para>
+    /// <para>
+    /// The bound one attempt can spend blocked inside <c>BeginTransaction(deferred: false)</c> is not
+    /// the 5000 ms <c>CovenantSqliteConnectionInitializer.BusyTimeoutMs</c> PRAGMA - that only governs
+    /// SQLite's own native busy-handler. <c>Microsoft.Data.Sqlite</c> layers a second, longer wait on
+    /// top, bounded by <see cref="SqliteConnection.DefaultTimeout"/> (30 s by default), so a real
+    /// racing holder can take up to 30 real seconds to surface as SQLITE_BUSY at all. Waiting that out
+    /// on every test run would make this suite unusable, so <see cref="ThrottledV3ConnectionFactory"/>
+    /// lowers both bounds - the same two settings <c>CampaignRepository.AddAsync</c> already lowers
+    /// for its own <c>BEGIN IMMEDIATE</c> - on the erasure's connection only, and only after the real
+    /// factory's <c>InitializeAsync</c> has already verified the production 5000 ms policy.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ApplyAsync_retries_a_racing_exclusive_acquisition_rather_than_failing_on_the_first_busy()
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        string holderConnectionString = new SqliteConnectionStringBuilder(fixture.Connection.ConnectionString)
+        {
+            Pooling = false,
+        }.ToString();
+
+        // Disposed explicitly at the release point below, not just rolled back - see the remarks
+        // above for why an open connection blocks the erasure regardless of its transaction state.
+        // Kept as "await using" too: disposing an already-disposed connection/transaction is a safe
+        // no-op, and this way the holder still closes if an assertion above the release point throws.
+        await using SqliteConnection holder = new(holderConnectionString);
+
+        await holder.OpenAsync(Token);
+
+        await using SqliteTransaction holderTransaction = holder.BeginTransaction(deferred: false);
+
+        CovenantCanonicalErasureTransaction service = new(
+            new ThrottledV3ConnectionFactory(fixture.V3Connections()),
+            CovenantSqliteConnectionInitializer.Instance,
+            fixture.Drain,
+            TimeProvider.System);
+
+        // IsSuccess alone cannot tell a genuine retry from a holder that happened to
+        // release before the erasure's first attempt ever ran - this suite would pass vacuously
+        // either way. RetryingForTesting is invoked once per busy exception SqliteBusyRetry actually
+        // caught, so counting its calls (Interlocked, since it runs on the Task.Run thread below) and
+        // inspecting what it was called with is the only way to assert a retry happened at all.
+        int retryCount = 0;
+
+        service.RetryingForTesting = (attempt, exception, retryingToken) =>
+        {
+
+            _ = Interlocked.Increment(ref retryCount);
+
+            Assert.True(attempt >= 1, $"Expected a positive attempt number; observed {attempt}.");
+
+            SqliteException busy = Assert.IsType<SqliteException>(exception);
+
+            Assert.True(
+                busy.SqliteErrorCode is 5 or 6,
+                $"Expected the retried exception to be SQLITE_BUSY/LOCKED; observed code {busy.SqliteErrorCode}.");
+
+            return ValueTask.CompletedTask;
+
+        };
+
+        // Task.Run, not a bare call: ApplyAsync's prefix (drain, connection open, the secure-delete
+        // read-back) can complete synchronously all the way into the blocking BeginTransaction call,
+        // which would otherwise run inline on this thread and only return control here after the
+        // whole throttled busy wait had already elapsed - starving the Task.Delay below of any chance
+        // to race it at all.
+        Task<Result<Guid>> applying = Task.Run(() => service.ApplyAsync(
+            CovenantExclusiveOperation.CovenantReset,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            Token));
+
+        // The throttled per-attempt bound is ~1s (ThrottledV3ConnectionFactory); holding past it
+        // before closing the holder proves the C# retry - not the first attempt's own wait - is what
+        // makes a later attempt succeed.
+        await Task.Delay(TimeSpan.FromMilliseconds(1_800), Token);
+
+        await holderTransaction.RollbackAsync(Token);
+
+        await holderTransaction.DisposeAsync();
+
+        await holder.DisposeAsync();
+
+        Result<Guid> applied = await applying;
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        Assert.True(retryCount >= 1, "Expected at least one retry; the holder may have released before the first attempt ever raced it.");
+
+    }
+
     [Fact]
     public async Task A_reset_refuses_when_the_canonical_singleton_is_absent()
     {
@@ -388,7 +501,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         // A reset reseeds nothing. Minting a singleton for a catalog that lost one would answer schema
         // damage by inventing a dataset identity nothing else in the installation agrees with.
@@ -415,7 +528,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -441,7 +554,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(operation, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(operation, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -460,12 +573,12 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.SeedAsync(Token);
 
         CovenantCanonicalErasureTransaction service = new(
-            fixture.Connections(),
+            new CovenantV3MaintenanceTestConnectionFactory(fixture.Connections(), new UnprovenSecureDeleteInitializer()),
             new UnprovenSecureDeleteInitializer(),
             fixture.Drain,
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -492,12 +605,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
         List<string> steps = [];
 
         CovenantCanonicalErasureTransaction service = new(
-            new RecordingConnectionFactory(fixture.Connections(), steps),
+            new CovenantV3MaintenanceTestConnectionFactory(
+                new RecordingConnectionFactory(fixture.Connections(), steps),
+                CovenantSqliteConnectionInitializer.Instance),
             CovenantSqliteConnectionInitializer.Instance,
             new RecordingConnectionDrain(fixture.Drain, steps),
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -519,12 +634,12 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.SeedAsync(Token);
 
         CovenantCanonicalErasureTransaction service = new(
-            fixture.Connections(),
+            fixture.V3Connections(),
             CovenantSqliteConnectionInitializer.Instance,
             new FailingConnectionDrain(),
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -549,7 +664,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             "UPDATE covenant_state SET AcceleratorEpoch = 9223372036854775807 WHERE StateKey = 1;",
             Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -568,7 +683,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     private static CovenantCanonicalErasureTransaction CreateService(CovenantCanonicalErasureFixture fixture) =>
         new(
-            fixture.Connections(),
+            fixture.V3Connections(),
             CovenantSqliteConnectionInitializer.Instance,
             fixture.Drain,
             TimeProvider.System);
@@ -612,8 +727,8 @@ public sealed class CovenantCanonicalErasureTransactionTests
     }
 
     private sealed class RecordingConnectionFactory(
-        ICovenantMaintenanceConnectionFactory inner,
-        List<string> steps) : ICovenantMaintenanceConnectionFactory
+        IDesignTimeGrimoireConnectionFactory inner,
+        List<string> steps) : IDesignTimeGrimoireConnectionFactory
     {
 
         public string DatabasePath => inner.DatabasePath;
@@ -655,6 +770,9 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         public IDisposable Register(SqliteConnection connection) => inner.Register(connection);
 
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            inner.ClearExactPoolAfterClose(connection);
+
         public Task<Result> DrainAsync(CancellationToken cancellationToken)
         {
 
@@ -671,12 +789,82 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         public IDisposable Register(SqliteConnection connection) => throw new NotSupportedException();
 
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            throw new NotSupportedException();
+
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result.Failure(
                     new Error(
                         ErrorCodes.Covenant.MaintenanceFailed,
                         "A Covenant connection handle did not close.")));
+
+    }
+
+    /// <summary>
+    /// Lowers <see cref="SqliteConnection.DefaultTimeout"/> and <c>busy_timeout</c> on the canonical
+    /// erasure's connection only, and only after the real factory's own <c>InitializeAsync</c> has
+    /// already opened, policed, and verified it - so a racing holder resolves inside a test-sized
+    /// window instead of the real 30 second per-attempt bound
+    /// <see cref="ApplyAsync_retries_a_racing_exclusive_acquisition_rather_than_failing_on_the_first_busy"/>
+    /// would otherwise have to wait out.
+    /// </summary>
+    private sealed class ThrottledV3ConnectionFactory(ICovenantV3MaintenanceConnectionFactory inner)
+        : ICovenantV3MaintenanceConnectionFactory
+    {
+
+        public async Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3CanonicalErasureAsync(
+            CovenantV3MaintenanceCapability capability,
+            CancellationToken cancellationToken)
+        {
+
+            Result<ICovenantV3MaintenanceConnectionLease> opened =
+                await inner.OpenV3CanonicalErasureAsync(capability, cancellationToken).ConfigureAwait(false);
+
+            if (opened.IsFailure)
+            {
+
+                return opened;
+
+            }
+
+            SqliteConnection connection = opened.Value.Connection;
+
+            connection.DefaultTimeout = 1;
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText = "PRAGMA busy_timeout=1000;";
+
+            _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            return opened;
+
+        }
+
+        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3WalTruncationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.OpenV3WalTruncationAsync(capability, cancellationToken);
+
+        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3VacuumAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.OpenV3VacuumAsync(capability, cancellationToken);
+
+        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3ExportSourceAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.OpenV3ExportSourceAsync(capability, cancellationToken);
+
+        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3ExportVerificationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.OpenV3ExportVerificationAsync(capability, cancellationToken);
+
+        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3PostReplaceJournalRestoreAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.OpenV3PostReplaceJournalRestoreAsync(capability, cancellationToken);
+
+        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3AcceleratorInitializationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.OpenV3AcceleratorInitializationAsync(capability, cancellationToken);
+
+        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3CandidateReopenVerificationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            inner.OpenV3CandidateReopenVerificationAsync(capability, cancellationToken);
+
+        public Task<Result> AttachV3ExportStagingAsync(ICovenantV3MaintenanceConnectionLease exportLease, CancellationToken cancellationToken) =>
+            inner.AttachV3ExportStagingAsync(exportLease, cancellationToken);
 
     }
 

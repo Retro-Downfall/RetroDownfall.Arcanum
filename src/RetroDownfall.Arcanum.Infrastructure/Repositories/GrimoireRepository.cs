@@ -28,6 +28,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
     private readonly SessionEntryPersistence _entryPersistence;
 
+    private readonly IGrimoireOrdinaryConnectionFactory _connections;
+
     private readonly ISessionAttachmentStore _attachments;
 
     private readonly ILogger<GrimoireRepository> _logger;
@@ -46,7 +48,17 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     /// </remarks>
     private readonly CovenantMutationKernel? _covenantKernel;
 
-    private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard;
+    /// <summary>
+    /// The labelled-artifact check every raw delete on this repository passes first.
+    /// </summary>
+    /// <remarks>
+    /// Required, unlike the Covenant kernel above it. It was optional once, and both factory
+    /// registrations then simply stopped short of supplying it, so the refusal in
+    /// <see cref="DeleteEntryAsync" /> was unreachable in every composed host while the design
+    /// documented it as live. A guard whose absence is representable is a guard some composition will
+    /// eventually be missing, and nothing about that composition will look wrong.
+    /// </remarks>
+    private readonly ICovenantLabeledArtifactGuard _labeledArtifactGuard;
 
     /// <summary>
     /// The durable finalization-guard capacity ledger.
@@ -63,25 +75,20 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     internal Func<Guid, CancellationToken, ValueTask>? AfterRollupRemainingCountedForTesting { get; set; }
 
     /// <summary>
-    /// Lowers the code-owned summarization ceiling so overflow recovery can be exercised without
-    /// seeding a production-sized session.
+    /// The only composition. Internal because both the Covenant mutation kernel and the
+    /// ordinary-connection factory are Infrastructure implementation details: public parameters of
+    /// those types would put the canonical write path and connection admission on the assembly's
+    /// public surface.
     /// </summary>
-    public GrimoireRepository(
-        ArcanumDbContext db,
-        ISessionAttachmentStore attachments,
-        ILogger<GrimoireRepository> logger,
-        IOptionsSnapshot<ArcanumSettings> arcOptions,
-        ISessionAttachmentIndexMaintenance? attachmentIndex = null,
-        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
-        : this(db, attachments, logger, arcOptions, attachmentIndex, covenantKernel: null, labeledArtifactGuard)
-    {
-    }
-
-    /// <summary>
-    /// The composed constructor. Internal because the Covenant mutation kernel is an Infrastructure
-    /// implementation detail: a public parameter of that type would put the canonical write path on
-    /// the assembly's public surface.
-    /// </summary>
+    /// <remarks>
+    /// There is deliberately no constructor that omits <paramref name="connections" /> or
+    /// <paramref name="labeledArtifactGuard" />, and none that resolves either from an
+    /// <see cref="IServiceProvider" />. The pair that did — a public one with an
+    /// optional provider, and an internal one that hard-coded a refusing stand-in — meant a caller
+    /// that named neither received a factory that refused every acquisition, so once the turn-commit
+    /// path began acquiring, every such construction became a run-time refusal at the commit instead
+    /// of a compile error at the call site. Naming the dependency is now the only way to build one.
+    /// </remarks>
     internal GrimoireRepository(
         ArcanumDbContext db,
         ISessionAttachmentStore attachments,
@@ -89,11 +96,14 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         IOptionsSnapshot<ArcanumSettings> arcOptions,
         ISessionAttachmentIndexMaintenance? attachmentIndex,
         CovenantMutationKernel? covenantKernel,
-        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
+        IGrimoireOrdinaryConnectionFactory connections,
+        ICovenantLabeledArtifactGuard labeledArtifactGuard)
     {
         _db = db;
 
-        _entryPersistence = new SessionEntryPersistence(db);
+        _connections = connections;
+
+        _entryPersistence = new SessionEntryPersistence(db, connections);
 
         _attachments = attachments;
 
@@ -183,7 +193,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             }
             catch
             {
-                await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
                 throw;
             }
@@ -327,7 +337,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
         }
@@ -400,7 +410,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
     }
@@ -487,7 +497,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
     }
@@ -794,19 +804,14 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         // that skipped the sensitivity purge boundary would remove a labelled Entry without appending
         // its erasure receipt — leaving a finalization guard pointing at nothing, which is the one
         // integrity state that cannot be told apart from data loss (§10.20.2).
-        if (_labeledArtifactGuard is { } guard)
+        Result unlabeled = await _labeledArtifactGuard
+            .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (unlabeled.IsFailure)
         {
 
-            Result unlabeled = await guard
-                .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (unlabeled.IsFailure)
-            {
-
-                throw new InvalidOperationException(unlabeled.Error.Message);
-
-            }
+            throw new InvalidOperationException(unlabeled.Error.Message);
 
         }
 
@@ -865,7 +870,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
         }
@@ -1451,7 +1456,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
         }

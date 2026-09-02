@@ -214,7 +214,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             },
             initializationTimeout: TimeSpan.FromSeconds(10),
             toolOutputCapBytes: 65536,
-            maxToolsTotalBytes: maxToolsTotalBytes);
+            maxToolsTotalBytes: maxToolsTotalBytes,
+            elicitationSink: new McpElicitationSink());
 
         await client.InitializeAsync();
 
@@ -354,7 +355,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             },
             initializationTimeout: TimeSpan.FromSeconds(10),
             toolOutputCapBytes: 65536,
-            maxToolsTotalBytes: 1_048_576);
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
 
         await client.InitializeAsync();
 

@@ -1,12 +1,16 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Tower;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Tower;
 
@@ -76,30 +80,6 @@ public sealed class PromptExecuteFlowTests
   }
 
   [Fact]
-  public async Task WriteBufferedAsync_InferenceFailure_Returns500Envelope()
-  {
-    DefaultHttpContext ctx = new();
-
-    ctx.Response.Body = new MemoryStream();
-
-    PingRequest ping = new(Prompt: "hello", SkipSpellRouting: true);
-
-    await InferenceExecuteWriter.WriteBufferedAsync(
-      ctx,
-      new FailingIntelligenceProvider(),
-      ping,
-      CancellationToken.None);
-
-    Assert.Equal(StatusCodes.Status500InternalServerError, ctx.Response.StatusCode);
-
-    ctx.Response.Body.Position = 0;
-
-    using JsonDocument doc = await JsonDocument.ParseAsync(ctx.Response.Body);
-
-    Assert.False(doc.RootElement.GetProperty("isSuccess").GetBoolean());
-  }
-
-  [Fact]
   public async Task WriteStreamAsync_InferenceFailure_EmitsErrorNdjsonFrame()
   {
     DefaultHttpContext ctx = new();
@@ -132,24 +112,6 @@ public sealed class PromptExecuteFlowTests
 
   }
 
-  private sealed class FailingIntelligenceProvider : IArcanumIntelligenceProvider
-  {
-
-    public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) =>
-      Task.FromResult(Result<PromptTurnResult>.Failure(new Error("Hub.Error", "inference failed")));
-
-    public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) =>
-      EmptyStream();
-
-    private static async IAsyncEnumerable<IntelligenceEvent> EmptyStream()
-    {
-      await Task.CompletedTask;
-
-      yield break;
-    }
-
-  }
-
   private sealed class FailingStreamIntelligenceProvider : IArcanumIntelligenceProvider
   {
 
@@ -174,6 +136,95 @@ public sealed class PromptExecuteFlowTests
       yield break;
 #pragma warning restore CS0162
     }
+
+  }
+
+}
+
+/// <summary>
+/// POST /api/prompts/{id}/execute through the real host — the buffered failure-envelope
+/// contract this route builds inline, replacing the deleted InferenceExecuteWriter.WriteBufferedAsync
+/// (no production caller) and the dead test that exercised it.
+/// </summary>
+[Collection("ApiHost")]
+public sealed class PromptExecuteHandlerFlowTests
+{
+
+  private readonly ArcanumWebApplicationFactory _factory;
+
+  public PromptExecuteHandlerFlowTests(ArcanumWebApplicationFactory factory)
+  {
+
+    _factory = factory;
+
+  }
+
+  private static async Task<Guid> CreatePromptAsync(HttpClient client, string name)
+  {
+
+    CreatePromptRequest request = new(
+      name,
+      "1.0.0",
+      "Hello {{name}}",
+      "PromptExecuteHandlerFlowTests fixture prompt",
+      [],
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null);
+
+    string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.CreatePromptRequest);
+
+    HttpResponseMessage response = await client.PostAsync(
+      "/api/prompts",
+      new StringContent(payload, Encoding.UTF8, "application/json"));
+
+    Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+    string json = await response.Content.ReadAsStringAsync();
+
+    ApiResponse<PromptDetailDto>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponsePromptDetailDto);
+
+    return body!.Data!.Id;
+
+  }
+
+  [SkippableFact]
+  public async Task PostPromptExecute_InferenceFailure_ReturnsMappedStatusAndFailureEnvelope()
+  {
+
+    Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+    HttpClient client = _factory.CreateAuthenticatedClient();
+
+    Guid promptId = await CreatePromptAsync(client, $"execute-failure-{Guid.NewGuid():N}");
+
+    // Connection.Unreachable maps to 503, not the mapper's 500 fallback — picked deliberately so
+    // this test cannot pass against a handler that hardcodes a status instead of routing through
+    // ArcanumErrorMapper.
+    _factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Connection.Unreachable, "provider unreachable");
+
+    PromptExecuteRequest execute = new(UserMessage: "run it");
+
+    string payload = JsonSerializer.Serialize(execute, ArcanumJsonContext.Default.PromptExecuteRequest);
+
+    HttpResponseMessage response = await client.PostAsync(
+      $"/api/prompts/{promptId}/execute",
+      new StringContent(payload, Encoding.UTF8, "application/json"));
+
+    Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+    string body = await response.Content.ReadAsStringAsync();
+
+    using JsonDocument doc = JsonDocument.Parse(body);
+
+    Assert.False(doc.RootElement.GetProperty("isSuccess").GetBoolean());
+
+    _factory.FakeIntelligence.NextFailure = null;
 
   }
 

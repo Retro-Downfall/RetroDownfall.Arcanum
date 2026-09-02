@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -214,6 +215,178 @@ public sealed class CliSurfaceTests
             CliSurfaceWriter.ToJson(BuildMap()));
 
     }
+
+    /// <summary>
+    /// Every command spelling the reference prints as a table row resolves in the live tree, unless
+    /// the row says out loud that it does not.
+    /// </summary>
+    /// <remarks>
+    /// <para>The reference is the document the agent orientation file calls the complete CLI surface,
+    /// so a row that reads like every other row reads as a shipped verb. Six were not: a
+    /// <c>doctor</c> branch, two Campaign-path rows, two Session-binding rows, and a
+    /// <c>security host-process-tools enable</c> row a startup failure used to send operators to.
+    /// One prose sentence above the table named some of them, and a reader who scans a table does not
+    /// read the prose above it, which is why the marker belongs in the row.</para>
+    /// <para>The "Removed spellings" section is skipped wholesale: every spelling there is one that
+    /// must fail to parse, and the section says so in its own heading.</para>
+    /// </remarks>
+    [Fact]
+    public void Every_documented_command_row_resolves_or_declares_itself_unregistered()
+    {
+
+        HashSet<string> registered = new(
+            Walk(BuildMap()).Select(static command => command.Path),
+            StringComparer.Ordinal);
+
+        List<(int Number, string Cell)> rows = [.. CommandReferenceRows()];
+
+        // A table the reader found no rows in satisfies the loop below vacuously - every documented
+        // row resolves when there are none - and reports green having checked nothing. A moved file,
+        // a renamed "Removed spellings" heading that now matches the first line, or a table rewritten
+        // without pipes would all land here, so the count is asserted before the contents are.
+        Assert.NotEmpty(rows);
+
+        List<string> offenders = [];
+
+        foreach ((int Number, string Cell) row in rows)
+        {
+
+            Match match = DocumentedCommandCell.Match(row.Cell);
+
+            if (!match.Success
+                || match.Groups["unregistered"].Success)
+            {
+
+                continue;
+
+            }
+
+            string path = VerbPath(match.Groups["spelling"].Value);
+
+            if (path.Length == 0
+                || registered.Contains(path))
+            {
+
+                continue;
+
+            }
+
+            offenders.Add($"line {row.Number}: arcanum {path}");
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A command-reference row names a verb the command tree does not register. Register it, or"
+                + " mark the row unregistered:"
+                + global::System.Environment.NewLine
+                + string.Join(global::System.Environment.NewLine, offenders));
+
+    }
+
+    /// <summary>
+    /// The dedicated-Covenant heading states a count, and a count is a claim.
+    /// </summary>
+    /// <remarks>
+    /// An operator who scans headings and reads "four registered" never tries <c>pin</c>,
+    /// <c>unpin</c>, <c>mask</c>, or <c>unmask</c>. The heading's count is taken from the tree rather
+    /// than written as a literal, so registering a tenth verb reds this instead of leaving the heading
+    /// one behind. The separate pin on nine is deliberate and not a duplicate of that: without it the
+    /// two halves could drift together and still agree, and the point is that a change to this family
+    /// is read by someone rather than absorbed.
+    /// </remarks>
+    [Fact]
+    public void The_covenant_heading_states_the_number_of_verbs_the_tree_registers()
+    {
+
+        int registered = Walk(BuildMap())
+            .Count(static command =>
+                command.Path.StartsWith("memory covenant ", StringComparison.Ordinal));
+
+        string reference = File.ReadAllText(CommandReferencePath());
+
+        Assert.Equal(9, registered);
+
+        Assert.Contains(
+            $"#### Dedicated Covenant management commands ({NumberWord(registered)} registered, the rest contract-frozen)",
+            reference,
+            StringComparison.Ordinal);
+
+    }
+
+    private static readonly Regex DocumentedCommandCell = new(
+        @"^(?<unregistered>\*\*\(not registered\)\*\* )?`arcanum (?<spelling>[^`]*)`",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>Splits a markdown row on its real cell boundaries, keeping escaped pipes inside a cell.</summary>
+    private static readonly Regex UnescapedPipe = new(
+        @"(?<!\\)\|",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>The first cell of every table row above the removed-spellings section.</summary>
+    private static IEnumerable<(int Number, string Cell)> CommandReferenceRows()
+    {
+
+        int number = 0;
+
+        foreach (string line in File.ReadLines(CommandReferencePath()))
+        {
+
+            number++;
+
+            if (line.StartsWith("## Removed spellings", StringComparison.Ordinal))
+            {
+
+                yield break;
+
+            }
+
+            if (!line.StartsWith('|'))
+            {
+
+                continue;
+
+            }
+
+            string[] cells = UnescapedPipe.Split(line);
+
+            if (cells.Length < 2)
+            {
+
+                continue;
+
+            }
+
+            yield return (number, cells[1].Replace("\\|", "|", StringComparison.Ordinal).Trim());
+
+        }
+
+    }
+
+    /// <summary>The verb path of a spelling, stopping at its first argument, option, or alternation.</summary>
+    private static string VerbPath(string spelling) =>
+        string.Join(
+            ' ',
+            spelling
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .TakeWhile(static token => !"<[-(|".Contains(token[0])));
+
+    private static string NumberWord(int value) =>
+        value switch
+        {
+            4 => "four",
+
+            9 => "nine",
+
+            10 => "ten",
+
+            _ => value.ToString(global::System.Globalization.CultureInfo.InvariantCulture),
+        };
+
+    private static string CommandReferencePath() =>
+        Path.Combine(
+            Path.GetDirectoryName(CommandMapPath())!,
+            "Arcanum.Command.Reference.md");
 
     internal static CliSurfaceMap BuildMap()
     {

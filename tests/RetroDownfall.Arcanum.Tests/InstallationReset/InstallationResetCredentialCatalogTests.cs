@@ -25,6 +25,12 @@ public sealed class InstallationResetCredentialCatalogTests
 
         string anchorAccount = ArcanumCredentialIdentity.InstallationResetActiveAnchorAccount(profileSuffix);
 
+        string transitionKeyAccount =
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(profileSuffix);
+
+        string transitionAnchorAccount =
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(profileSuffix);
+
         Assert.Equal("installation-reset-active-key-" + profileSuffix, keyAccount);
 
         Assert.Equal("installation-reset-active-anchor-" + profileSuffix, anchorAccount);
@@ -32,6 +38,14 @@ public sealed class InstallationResetCredentialCatalogTests
         Assert.True(ArcanumCredentialIdentity.IsInstallationResetActiveAccount(keyAccount));
 
         Assert.True(ArcanumCredentialIdentity.IsInstallationResetActiveAccount(anchorAccount));
+
+        Assert.Equal("grimoire-transition-journal-key-" + profileSuffix, transitionKeyAccount);
+
+        Assert.Equal("grimoire-transition-journal-anchor-" + profileSuffix, transitionAnchorAccount);
+
+        Assert.True(ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(transitionKeyAccount));
+
+        Assert.True(ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(transitionAnchorAccount));
 
         Assert.NotEqual(
             keyAccount,
@@ -51,6 +65,9 @@ public sealed class InstallationResetCredentialCatalogTests
                      ArcanumCredentialIdentity.InstallationResetActiveAnchorAccountPrefix
                          + new string('g', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength),
                      ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount(profileSuffix),
+                     ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+                     ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccountPrefix
+                         + profileSuffix.ToUpperInvariant(),
                  ])
         {
 
@@ -68,6 +85,13 @@ public sealed class InstallationResetCredentialCatalogTests
         _ = Assert.Throws<ArgumentException>(
             () => ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(
                 ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(otherProfileSuffix)));
+
+        _ = Assert.Throws<ArgumentException>(
+            () => ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount("too-short"));
+
+        _ = Assert.Throws<ArgumentException>(
+            () => ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(
+                profileSuffix.ToUpperInvariant()));
 
     }
 
@@ -144,6 +168,23 @@ public sealed class InstallationResetCredentialCatalogTests
             Directory.Delete(mirrorRoot, recursive: true);
 
         }
+
+    }
+
+    [Fact]
+    public void Ordinary_account_filter_rejects_actual_transition_key_and_anchor_accounts()
+    {
+
+        string suffix = new('a', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength);
+
+        string[] retained = InstallationResetCredentialCatalog.CollectOrdinaryAccounts(
+            [
+                ArcanumCredentialIdentity.MasterApiKeyAccount,
+                ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(suffix),
+                ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(suffix),
+            ]);
+
+        Assert.Equal([ArcanumCredentialIdentity.MasterApiKeyAccount], retained);
 
     }
 

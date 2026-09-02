@@ -653,7 +653,10 @@ internal sealed class BackupRestoreCovenantCoordinator
         if (reconciled.IsFailure)
         {
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            // Compensation, so it runs on no token. RollbackAsync issued on a cancelled one returns a
+            // cancelled task without rolling anything back, and the line below - the one that carries
+            // the reason this restore stopped - never runs, leaving the operator a bare cancellation.
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return reconciled.Error;
 
@@ -670,7 +673,7 @@ internal sealed class BackupRestoreCovenantCoordinator
         if (prepared.IsFailure)
         {
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return prepared.Error;
 

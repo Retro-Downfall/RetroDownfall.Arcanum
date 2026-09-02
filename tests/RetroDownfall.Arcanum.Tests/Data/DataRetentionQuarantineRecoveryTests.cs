@@ -52,7 +52,9 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(seeded.CandidateId, Assert.Single(plan.CandidateIds));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -181,7 +183,9 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionService service = CreateService();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -281,7 +285,9 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionService service = CreateService();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -379,7 +385,9 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionService service = CreateService();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -481,7 +489,9 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionService service = CreateService();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -564,7 +574,9 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(1, await CountAllAsync("saga_suppression_key"));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedMemoryResetJournalAsync(
             operations,
@@ -606,7 +618,9 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(1, await CountSagaAsync(ownedByA));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedMemoryResetJournalAsync(
             operations,
@@ -660,7 +674,9 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(2, await CountLexiconFtsMatchesAsync("config"));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedMemoryResetJournalAsync(
             operations,
@@ -703,7 +719,9 @@ public sealed partial class DataRetentionServiceTests
             1,
             await CountAsync("lexicon_entries", "ScopeCampaignId", ResetCampaignA.ToString()));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await SeedMemoryResetJournalAsync(
             operations,
@@ -795,7 +813,9 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionService service = CreateService();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -861,7 +881,9 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionService service = CreateService();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 

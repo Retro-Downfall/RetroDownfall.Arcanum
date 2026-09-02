@@ -639,6 +639,11 @@ public sealed class BackupArchiveCodec
 
         bool extracted = false;
 
+        // Cleared exactly once, on the one exit that hands the caller a materialized tree. Everything
+        // else - every refusal, every exception, enumerated or not - leaves this false and the finally
+        // empties the destination, which is what the summary above promises without qualification.
+        bool materialized = false;
+
         try
         {
 
@@ -668,6 +673,8 @@ public sealed class BackupArchiveCodec
                 payload.Path,
                 fullDestination,
                 cancellationToken).ConfigureAwait(false);
+
+            RefuseCaseCollidingEntries(contents.Entries.Keys);
 
             ValidateManifest(
                 contents.Manifest,
@@ -706,8 +713,6 @@ public sealed class BackupArchiveCodec
             if (issues.Length > 0)
             {
 
-                ClearDirectoryContents(fullDestination);
-
                 return new BackupArchiveExtraction(
                     Manifest: null,
                     formatVersion,
@@ -718,6 +723,8 @@ public sealed class BackupArchiveCodec
 
             }
 
+            materialized = true;
+
             return new BackupArchiveExtraction(
                 contents.Manifest,
                 formatVersion,
@@ -727,23 +734,8 @@ public sealed class BackupArchiveCodec
                 Issues: []);
 
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-
-            if (extracted)
-            {
-
-                ClearDirectoryContents(fullDestination);
-
-            }
-
-            throw;
-
-        }
         catch (CryptographicException)
         {
-
-            ClearDirectoryContents(fullDestination);
 
             return BackupArchiveExtraction.Failed(
                 formatVersion,
@@ -761,8 +753,6 @@ public sealed class BackupArchiveCodec
                 or UnauthorizedAccessException)
         {
 
-            ClearDirectoryContents(fullDestination);
-
             return BackupArchiveExtraction.Failed(
                 formatVersion,
                 new BackupVerifyIssue(
@@ -773,12 +763,65 @@ public sealed class BackupArchiveCodec
         finally
         {
 
+            // The destination cleanup used to be duplicated across the enumerated catches, so it held
+            // for a list of exception types rather than for every exit - and what an unenumerated exit
+            // left behind was decrypted plaintext under a root the caller had been told was empty.
+            if (extracted && !materialized)
+            {
+
+                ClearDirectoryContents(fullDestination);
+
+            }
+
             if (payload is not null)
             {
 
                 _options.BeforeTemporaryPayloadCleanupForTests?.Invoke(payload.Path);
 
                 _ = payload.TryDelete();
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Refuses an archive whose entries cannot each become their own file on the destination.
+    /// </summary>
+    /// <remarks>
+    /// The entry dictionary is keyed ordinally, because the protocol's identity for an entry is its
+    /// exact bytes and the manifest is compared under that identity. This is the second question,
+    /// which the ordinal key cannot answer: two entry paths that differ only in case are two entries
+    /// in the manifest and one file on a case-insensitive volume, where the second write truncates the
+    /// first. Nothing downstream would notice — the manifest comparison verifies against hashes taken
+    /// from the decrypted stream rather than from the files on disk, and staging tests only that each
+    /// referenced path exists — so the restore would report completed with one entry silently carrying
+    /// the other's bytes.
+    ///
+    /// <para>Refused on every platform rather than only where the volume folds the two together.
+    /// Whether the collision materialises is a property of the machine the archive lands on, and this
+    /// format exists to be carried between machines: an entry set that only some destinations can
+    /// represent is not one a restore may lay down on any of them.</para>
+    ///
+    /// <para>Placement, not integrity: <see cref="VerifyAsync"/> answers whether an archive is
+    /// authentic and its checksums hold, which this archive's do, and it stays that question.</para>
+    /// </remarks>
+    private static void RefuseCaseCollidingEntries(IEnumerable<string> archivePaths)
+    {
+
+        // Already normalized to form C: a record whose path is not its own canonical rendering is
+        // refused as it is read.
+        HashSet<string> folded = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string archivePath in archivePaths)
+        {
+
+            if (!folded.Add(archivePath))
+            {
+
+                throw new InvalidDataException(
+                    "Backup archive entry paths collide when compared without case.");
 
             }
 
@@ -1977,7 +2020,7 @@ public sealed class BackupArchiveCodec
 
     }
 
-    private static async Task<ExtractedPayload> ExtractPayloadAsync(
+    private async Task<ExtractedPayload> ExtractPayloadAsync(
         string payloadPath,
         string extractionRoot,
         CancellationToken cancellationToken)
@@ -2103,6 +2146,8 @@ public sealed class BackupArchiveCodec
                     new ObservedEntry(
                         record.Length,
                         Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()));
+
+                _options.AfterExtractedEntryForTests?.Invoke(record.Path);
 
             }
 

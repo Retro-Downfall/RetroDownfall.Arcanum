@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -16,6 +18,36 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class LoreCommandBindingTests
 {
+
+    /// <summary>
+    /// Every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
+    /// server-down failure was indistinguishable from a real domain failure. Routed through
+    /// <c>CliFailureExit</c>, a <c>Connection.*</c> failure now exits 3 and names the address tried.
+    /// This is the literal repro the finding named: <c>lore list</c> with the server down. A
+    /// non-default port is configured (rather than asserting the harness's own default address) so
+    /// the assertion is load-bearing on <c>LoreCommands.WriteError</c> actually reading
+    /// <c>Arcanum:Host</c>, not just coinciding with a hardcoded default.
+    /// </summary>
+    [Fact]
+    public void Lore_list_reports_a_network_failure_and_names_the_configured_base_address()
+    {
+
+        const int ConfiguredPort = 19999;
+
+        RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["lore", "list"],
+            configureServices: services => services.Configure<ArcanumSettings>(s => s.Host.Port = ConfiguredPort));
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
+
+        Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
+
+    }
 
     [Fact]
     public void Lore_set_binds_key_and_value_arguments()
@@ -120,7 +152,7 @@ public sealed class LoreCommandBindingTests
 
         RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
 
-        CliTestResult result = RunCommand(handler, ["lore", "delete", "ward.color"]);
+        CliTestResult result = RunCommand(handler, ["--yes", "lore", "delete", "ward.color"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -129,6 +161,23 @@ public sealed class LoreCommandBindingTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/lore/ward.color", request.RequestUri!.AbsolutePath);
+
+    }
+
+    /// <summary>An irreversible delete must ask before it acts.</summary>
+    [Fact]
+    public void Lore_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
+
+        CliTestResult result = RunCommand(handler, ["lore", "delete", "ward.color"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
 
     }
 
@@ -192,7 +241,10 @@ public sealed class LoreCommandBindingTests
             true,
             null)));
 
-    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(
+        RecordingHandler handler,
+        string[] args,
+        Action<ServiceCollection>? configureServices = null)
     {
 
         ServiceCollection services = new();
@@ -208,6 +260,8 @@ public sealed class LoreCommandBindingTests
         services.RemoveAll<ISecretStore>();
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
+
+        configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
 

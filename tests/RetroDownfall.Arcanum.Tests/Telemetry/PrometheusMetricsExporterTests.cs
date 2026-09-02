@@ -1,6 +1,7 @@
 using System.Diagnostics.Metrics;
 using System.Globalization;
 
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 
 namespace RetroDownfall.Arcanum.Tests.Telemetry;
@@ -183,7 +184,6 @@ public sealed class PrometheusMetricsExporterTests
 
     }
 
-
     /// <summary>
     /// The exporter is a process-lifetime singleton that never evicts a series, so an unbounded label
     /// value would grow both RSS and the scrape body until the host dies. Unauthenticated 404 traffic
@@ -211,6 +211,42 @@ public sealed class PrometheusMetricsExporterTests
         int seriesCount = result
             .Split('\n')
             .Count(line => line.StartsWith("arcanum_test_cardinality_total{", StringComparison.Ordinal));
+
+        Assert.InRange(seriesCount, 1, 2100);
+
+        Assert.Contains("# TYPE arcanum_metrics_series_dropped_total counter", result, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("arcanum_metrics_series_dropped_total 0\n", result, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// RegisterManualGauge is the path RenderMetricsAsync uses for the arcanum_operations gauge
+    /// fed by <c>operationCounts</c> straight from the database (MetricsEndpoints.cs -&gt;
+    /// LongRunningOperationStore.GetCountsAsync). A legacy, restored, or hand-edited row carrying a
+    /// Kind outside the registered catalog mints a new label set here; unlike every other recording
+    /// path, this one must also respect the series ceiling and count what it refuses.
+    /// </summary>
+    [Fact]
+    public async Task RenderMetrics_caps_manual_gauge_series_and_counts_the_drops()
+    {
+
+        PrometheusMetricsExporter exporter = new();
+
+        LongRunningOperationCount[] operationCounts =
+        [
+            .. Enumerable.Range(0, 2500).Select(
+                static i => new LongRunningOperationCount(
+                    "unregistered-kind-" + i.ToString(CultureInfo.InvariantCulture),
+                    LongRunningOperationState.Running,
+                    1)),
+        ];
+
+        string result = await exporter.RenderMetricsAsync(operationCounts: operationCounts);
+
+        int seriesCount = result
+            .Split('\n')
+            .Count(line => line.StartsWith("arcanum_operations{", StringComparison.Ordinal));
 
         Assert.InRange(seriesCount, 1, 2100);
 

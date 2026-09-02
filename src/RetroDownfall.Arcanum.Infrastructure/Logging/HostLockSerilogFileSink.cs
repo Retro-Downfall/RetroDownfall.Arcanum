@@ -30,6 +30,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 internal sealed class HostLockSerilogFileSink : ILogEventSink, IDisposable
 {
 
+    /// <summary>
+    /// Default per-file cap, matching Serilog's own default value but paired with
+    /// <c>rollOnFileSizeLimit: true</c> below - without an explicit limit, Serilog's default is the
+    /// same 1 GiB ceiling but with rolling off, so an event past it is silently dropped rather than
+    /// written to a new file. Naming this rather than relying on the library default keeps the
+    /// behavior stable if that default ever changes upstream; it is a constructor parameter, not a
+    /// hard-coded value, so a test can exercise the roll-instead-of-drop behavior without writing a
+    /// gigabyte of log data first.
+    /// </summary>
+    internal const long DefaultFileSizeLimitBytes = 1L * 1024L * 1024L * 1024L;
+
     private readonly string _guardedRoot;
 
     private readonly string _logDirectory;
@@ -37,6 +48,8 @@ internal sealed class HostLockSerilogFileSink : ILogEventSink, IDisposable
     private readonly string _logFilePath;
 
     private readonly int _retainedFileCountLimit;
+
+    private readonly long _fileSizeLimitBytes;
 
     private readonly bool _enabled;
 
@@ -50,7 +63,8 @@ internal sealed class HostLockSerilogFileSink : ILogEventSink, IDisposable
         string guardedRoot,
         string logDirectory,
         int retainedFileCountLimit,
-        bool enabled)
+        bool enabled,
+        long fileSizeLimitBytes = DefaultFileSizeLimitBytes)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedRoot);
@@ -64,6 +78,8 @@ internal sealed class HostLockSerilogFileSink : ILogEventSink, IDisposable
         _logFilePath = Path.Combine(_logDirectory, "arcanum-api-.json");
 
         _retainedFileCountLimit = retainedFileCountLimit;
+
+        _fileSizeLimitBytes = fileSizeLimitBytes;
 
         _enabled = enabled;
 
@@ -140,6 +156,8 @@ internal sealed class HostLockSerilogFileSink : ILogEventSink, IDisposable
                             _logFilePath,
                             rollingInterval: RollingInterval.Day,
                             retainedFileCountLimit: _retainedFileCountLimit,
+                            fileSizeLimitBytes: _fileSizeLimitBytes,
+                            rollOnFileSizeLimit: true,
                             hooks: new SecureSerilogFileHooks())
                         .CreateLogger();
 

@@ -1558,6 +1558,12 @@ public sealed class BackupService : IBackupService
         CancellationToken cancellationToken)
     {
 
+        // This opener builds its own connection string rather than going through
+        // BackupRestoreDatabaseWorker, so the provider installation it would have inherited has to be
+        // made here: the SQLCipher provider this project references carries no bundle and no
+        // auto-initialization, and a cached read is what this costs.
+        SqliteNativeRuntime.Instance.Initialize();
+
         await using SqliteConnection connection = new(
             new SqliteConnectionStringBuilder
             {
@@ -1584,6 +1590,8 @@ public sealed class BackupService : IBackupService
         Guid operationId,
         CancellationToken cancellationToken)
     {
+
+        SqliteNativeRuntime.Instance.Initialize();
 
         await using SqliteConnection connection = new(
             new SqliteConnectionStringBuilder

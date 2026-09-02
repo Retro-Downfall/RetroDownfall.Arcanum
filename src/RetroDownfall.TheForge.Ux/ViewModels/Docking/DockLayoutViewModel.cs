@@ -22,6 +22,8 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
 
     private readonly TimeSpan _persistDebounce;
 
+    private readonly TimeSpan _shutdownFlushTimeout;
+
     private CancellationTokenSource? _persistCts;
 
     private bool _suppressPersist;
@@ -38,7 +40,8 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
         ITheForgeSettingsStore? settingsStore = null,
         string? layoutState = null,
         TimeSpan? persistDebounce = null,
-        ILogger<DockLayoutViewModel>? logger = null)
+        ILogger<DockLayoutViewModel>? logger = null,
+        TimeSpan? shutdownFlushTimeout = null)
     {
 
         _settingsStore = settingsStore;
@@ -46,6 +49,8 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
         _logger = logger;
 
         _persistDebounce = persistDebounce ?? TimeSpan.FromMilliseconds(400);
+
+        _shutdownFlushTimeout = shutdownFlushTimeout ?? TimeSpan.FromSeconds(2);
 
         Left = new DockGroupViewModel(DockRegion.Left, DockLayoutDefaults.DefaultLeftWidth);
 
@@ -485,7 +490,25 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
         if (hadPendingPersist)
         {
 
-            _ = FlushPersistAsync();
+            // Dispose runs synchronously on the shutdown path (App.axaml.cs's MainWindow.Closed ->
+            // MainViewModel.Dispose), and nothing downstream awaits it before the process exits
+            // (Program.cs disposes the container and Main returns) — an unawaited flush here is
+            // therefore abandoned mid-write more often than not. Block on a thread-pool task instead
+            // of awaiting in place: FlushPersistAsync's chain is ConfigureAwait(false) throughout, so
+            // this cannot deadlock even if Dispose runs on a thread with a synchronization context.
+            // Bounded rather than unbounded: a debounce-triggered write that started a moment before
+            // the window closed must not hang UI shutdown indefinitely on a stalled disk or a huge
+            // payload — FlushPersistAsync itself still runs to completion on the thread pool with
+            // CancellationToken.None (an interrupted write must not strand a partial temp file), only
+            // Dispose's wait for it is bounded.
+            if (!Task.Run(FlushPersistAsync).Wait(_shutdownFlushTimeout))
+            {
+
+                _logger?.LogWarning(
+                    "Dock layout shutdown flush did not complete within {Timeout}; continuing shutdown without waiting further.",
+                    _shutdownFlushTimeout);
+
+            }
 
         }
 
@@ -702,6 +725,38 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
         {
 
             _logger?.LogWarning(ex, "Failed to persist dock layout state.");
+
+        }
+        finally
+        {
+
+            // Only clear the field if it is still ours: a newer SchedulePersist call may already
+            // have replaced it with its own CTS (the OperationCanceledException path above), and
+            // nulling that out here would make Dispose think there is nothing pending for it.
+            // Clearing on a completed debounce (success or logged failure) is the point of this
+            // finally: without it, _persistCts stays non-null for the rest of the session the
+            // instant any layout change is ever made, so Dispose's hadPendingPersist check pays a
+            // synchronous flush on every close, even when the debounced write landed on disk
+            // seconds ago.
+            //
+            // Interlocked.CompareExchange, not a check-then-set: this method runs on the thread
+            // pool (the continuation after Task.Delay(...).ConfigureAwait(false)) while
+            // SchedulePersist runs on the UI thread. A plain `if (ReferenceEquals(_persistCts,
+            // cts)) { _persistCts = null; }` has a window between the read and the write — a
+            // SchedulePersist call landing in that window installs its own fresh
+            // CancellationTokenSource, which this line would then null out from under it, leaving
+            // Dispose believing nothing is pending while a debounce is genuinely in flight.
+            // CompareExchange makes the compare-and-clear one atomic step; it swaps (and this is
+            // the only place that then disposes cts, since nothing else holds a reference to it
+            // once the field no longer does) only when _persistCts still is cts. If a newer
+            // SchedulePersist already replaced it, this is a safe no-op — cts is left for that
+            // newer run's own eventual completion, or Dispose, to cancel and dispose instead.
+            if (Interlocked.CompareExchange(ref _persistCts, null, cts) == cts)
+            {
+
+                cts.Dispose();
+
+            }
 
         }
 

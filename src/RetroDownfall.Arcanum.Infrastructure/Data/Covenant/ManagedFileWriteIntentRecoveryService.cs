@@ -479,7 +479,7 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
         catch (SqliteException exception)
         {
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return Result.Failure(
                 new Error(ErrorCodes.Covenant.ManualArtifactErasureRequired, exception.Message));

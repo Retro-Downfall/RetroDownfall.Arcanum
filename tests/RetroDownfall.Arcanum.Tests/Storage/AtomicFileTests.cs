@@ -361,13 +361,10 @@ public sealed class AtomicFileTests : IDisposable
                 ".arcanum-bak-*"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ReplaceAsync_retains_backup_path_replacement_swapped_during_handle_capture()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.If(OperatingSystem.IsWindows(), "The handle-metadata capture seam is exercised on Unix hosts.");
 
         string destination = Path.Combine(
             _root,
@@ -765,10 +762,14 @@ public sealed class AtomicFileTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ReplaceAsync_preserves_existing_unix_mode_and_changes_mtime()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -806,16 +807,13 @@ public sealed class AtomicFileTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ReplaceAsync_rejects_existing_file_with_multiple_hard_links()
     {
 
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Hard-link detection is only proven on a recognized platform.");
 
         string destination = Path.Combine(_root, "linked.txt");
 

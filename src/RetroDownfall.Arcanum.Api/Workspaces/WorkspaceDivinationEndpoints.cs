@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -14,10 +15,12 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.Workspaces;
@@ -51,6 +54,7 @@ internal static class WorkspaceDivinationEndpoints
                 IWeaveService weaveService,
                 IDivinationService divinationService,
                 ArcanumDbContext db,
+                IGrimoireOrdinaryConnectionFactory connections,
                 IOptionsMonitor<ArcanumSettings> options,
                 HttpContext ctx) =>
             {
@@ -153,6 +157,7 @@ internal static class WorkspaceDivinationEndpoints
 
                 WorkspaceSearchResult[] joined = await JoinWorkspaceChunksAsync(
                     db,
+                    connections,
                     searchResult.Value,
                     workspace.Path,
                     limit,
@@ -267,6 +272,7 @@ internal static class WorkspaceDivinationEndpoints
     /// </summary>
     private static async Task<WorkspaceSearchResult[]> JoinWorkspaceChunksAsync(
         ArcanumDbContext db,
+        IGrimoireOrdinaryConnectionFactory connections,
         DivinationResult[] hits,
         string workspacePath,
         int limit,
@@ -289,14 +295,29 @@ internal static class WorkspaceDivinationEndpoints
 
         }
 
-        DbConnection connection = db.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
+        if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
         {
-
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
 
         }
+
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
+            .AcquireScopedAsync(
+                scopedConnection,
+                CovenantSqliteConnectionMode.ReadOnly,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
+        {
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
+
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+        DbConnection connection = lease.Connection;
 
         List<(string ChunkId, string RelativePath, int ChunkIndex, string Content)> rows = [];
 
@@ -430,6 +451,14 @@ internal static class WorkspaceDivinationEndpoints
             result[reader.GetString(0)] = reader.GetInt32(1);
 
         }
+
+        await GrimoireScopedConsumerTestSeam
+            .PauseAsync(
+                "WorkspaceDivinationEndpoints.GetTotalChunksByPathAsync",
+                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
+                result.Count,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         return result;
 

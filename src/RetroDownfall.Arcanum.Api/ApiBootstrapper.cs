@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
@@ -488,7 +489,7 @@ public static class ApiBootstrapper
         services.AddSingleton<IBatchRecoveryService, BatchRecoveryService>();
 
         // The batch kind's recovery handler lives here rather than in Infrastructure because the
-        // reconciliation it delegates to is owned by Api (#40).
+        // reconciliation it delegates to is owned by Api.
         services.AddScoped<ILongRunningOperationRecoveryHandler, BatchOperationRecoveryHandler>();
 
         services.AddInstallationResetRecoveryAwareHostedService<BatchProcessingService>();
@@ -542,6 +543,20 @@ public static class ApiBootstrapper
     {
         if (IsRateLimitEnabled(app.Configuration))
         {
+            // The limiter's partition key is Connection.RemoteIpAddress
+            // (ResolveRateLimitPartitionKey below), and ListenAny — the only bind that turns this
+            // limiter on — is documented above as the "behind a reverse proxy that terminates TLS"
+            // topology. Without this, every caller behind that proxy collapses into the proxy's own
+            // address: one partition, one noisy client 429s everyone else. Framework defaults (no
+            // explicit KnownProxies/KnownIPNetworks override) trust only a loopback-adjacent proxy —
+            // the same-host case — which is the improvement this can make without a new configuration
+            // surface or risking IP-spoofing from an untrusted hop; a proxy on a different host still
+            // needs its address added explicitly, which is not yet exposed as an Arcanum setting.
+            app.UseForwardedHeaders(new ForwardedHeadersOptions
+            {
+                ForwardedHeaders = ForwardedHeaders.XForwardedFor,
+            });
+
             app.UseRateLimiter();
         }
     }
@@ -1071,9 +1086,22 @@ public static class ApiBootstrapper
 
                     if (!response.Headers.ContainsKey("Content-Security-Policy"))
                     {
+                        // Scalar's rendered page ships one inline, src-less <script type="module">
+                        // bootstrap alongside its same-origin embedded bundle — script-src 'self' alone
+                        // satisfies the bundle but blocks the inline script, so the page renders an
+                        // empty <div id="app">. WithNonce() below makes Scalar emit a fresh
+                        // per-request nonce on every script tag, including the inline one, and stash it
+                        // on HttpContext.Items under NonceHttpContextItemKey for exactly this middleware
+                        // to read, so the CSP's nonce source matches what the page actually emits.
+                        string? nonce = context.HttpContext.Items[ScalarOptions.NonceHttpContextItemKey] as string;
+
+                        string scriptSrc = string.IsNullOrEmpty(nonce)
+                            ? "'self'"
+                            : $"'self' 'nonce-{nonce}'";
+
                         response.Headers.Append(
                             "Content-Security-Policy",
-                            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+                            $"default-src 'self'; script-src {scriptSrc}; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'");
                     }
 
                     if (!response.Headers.ContainsKey("X-Content-Type-Options"))
@@ -1084,7 +1112,7 @@ public static class ApiBootstrapper
                     return result;
                 });
 
-            scalarGroup.MapScalarApiReference();
+            scalarGroup.MapScalarApiReference(static options => options.WithNonce());
         }
 
         apiGroup.MapHealthEndpoints();

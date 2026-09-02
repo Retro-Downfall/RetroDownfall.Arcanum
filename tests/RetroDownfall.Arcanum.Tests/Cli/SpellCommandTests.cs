@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
@@ -45,6 +46,35 @@ public sealed class SpellCommandTests
         Assert.Equal("/api/spells", request.RequestUri!.AbsolutePath);
 
         Assert.Contains("workspace=", request.RequestUri!.Query, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
+    /// server-down failure was indistinguishable from a real domain failure. Routed through
+    /// <c>CliFailureExit</c>, a <c>Connection.*</c> failure now exits 3 and names the address tried.
+    /// A non-default port is configured (rather than asserting the harness's own default address)
+    /// so the assertion is load-bearing on <c>SpellCommands.WriteError</c> actually reading
+    /// <c>Arcanum:Host</c>, not just coinciding with a hardcoded default.
+    /// </summary>
+    [Fact]
+    public void Spell_list_reports_a_network_failure_and_names_the_configured_base_address()
+    {
+
+        const int ConfiguredPort = 19999;
+
+        RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["spell", "list"],
+            configureServices: services => services.Configure<ArcanumSettings>(s => s.Host.Port = ConfiguredPort));
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
+
+        Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
 
     }
 
@@ -252,9 +282,46 @@ public sealed class SpellCommandTests
 
         CliTestResult result = RunCommand(handler, ["spell", "delete", "greet"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
+
+    }
+
+    /// <summary>An irreversible delete must ask before it acts.</summary>
+    [Fact]
+    public void Spell_delete_requires_confirmation_before_sending_request()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["spell", "delete", "greet", "--workspace", "/tmp/demo"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Spell_delete_binds_name_when_confirmed()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["--yes", "spell", "delete", "greet", "--workspace", "/tmp/demo"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Delete, request.Method);
+
+        Assert.Equal("/api/spells/greet", request.RequestUri!.AbsolutePath);
 
     }
 
@@ -328,6 +395,22 @@ public sealed class SpellCommandTests
 
     }
 
+    [Fact]
+    public void Spell_search_rejects_an_undocumented_source_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["spell", "search", "--source", "bogus"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--source", result.Error, StringComparison.Ordinal);
+
+    }
+
     /// <summary>
     /// The body preview is capped at 800 characters. An astral-plane character straddling that
     /// boundary must be dropped whole rather than halved into an unpaired surrogate.
@@ -381,7 +464,8 @@ public sealed class SpellCommandTests
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,
-        ICliResourceCatalog? resourceCatalog = null)
+        ICliResourceCatalog? resourceCatalog = null,
+        Action<ServiceCollection>? configureServices = null)
     {
 
         ServiceCollection services = new();
@@ -406,6 +490,8 @@ public sealed class SpellCommandTests
             services.AddSingleton(resourceCatalog);
 
         }
+
+        configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
 

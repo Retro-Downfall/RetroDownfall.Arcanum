@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
-/// Durable-ledger entry point for batch recovery (#40).
+/// Durable-ledger entry point for batch recovery.
 /// </summary>
 /// <remarks>
 /// The reconciliation itself is <see cref="IBatchRecoveryService.ReconcileStrandedAsync"/>, which

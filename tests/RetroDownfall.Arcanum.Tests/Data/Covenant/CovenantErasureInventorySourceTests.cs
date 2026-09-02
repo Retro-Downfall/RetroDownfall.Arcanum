@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
@@ -99,6 +100,7 @@ public sealed class CovenantErasureInventorySourceTests
             }
 
         }
+
         while (true);
 
         Assert.Equal(4, databaseCalls);
@@ -145,6 +147,7 @@ public sealed class CovenantErasureInventorySourceTests
             }
 
         }
+
         while (true);
 
         Assert.Equal(4, managedCalls);
@@ -163,20 +166,29 @@ public sealed class CovenantErasureInventorySourceTests
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
 
-        Assert.Equal(1, fixture.Drain.MaximumActiveCount);
+        Assert.Equal(0, fixture.Drain.MaximumActiveCount);
 
-        Assert.Equal(9, fixture.Factory.ReadOnlyOpenCount);
+        Assert.Equal(9, fixture.OrdinaryConnections.Opened.Count);
+
+        Assert.All(
+            fixture.OrdinaryConnections.Kinds,
+            static kind => Assert.Equal(GrimoireOrdinaryFreshConnectionKind.ReadOnly, kind));
+
+        Assert.Equal(0, fixture.OrdinaryConnections.LiveLeaseCount);
 
         await fixture.ClosePrimaryConnectionAsync();
 
         CovenantCanonicalErasureTransaction canonical = new(
-            fixture.Factory,
+            new CovenantV3MaintenanceTestConnectionFactory(
+                fixture.Factory,
+                CovenantSqliteConnectionInitializer.Instance),
             CovenantSqliteConnectionInitializer.Instance,
             fixture.Drain,
             TimeProvider.System);
 
         Result<Guid> applied = await canonical.ApplyAsync(
             CovenantExclusiveOperation.CovenantReset,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             CancellationToken.None);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
@@ -206,9 +218,11 @@ public sealed class CovenantErasureInventorySourceTests
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
 
-        Assert.Equal(1, fixture.Factory.ReadOnlyOpenCount);
+        _ = Assert.Single(fixture.OrdinaryConnections.Opened);
 
-        Assert.Equal(ConnectionState.Closed, fixture.Factory.LastReadOnlyConnection!.State);
+        Assert.Equal(
+            ConnectionState.Closed,
+            fixture.OrdinaryConnections.LastConnection!.State);
 
     }
 
@@ -252,9 +266,9 @@ public sealed class CovenantErasureInventorySourceTests
 
         Assert.True(preflight.IsSuccess, preflight.IsFailure ? preflight.Error.Message : null);
 
-        Assert.Equal(1, fixture.Factory.ReadOnlyOpenCount);
+        _ = Assert.Single(fixture.OrdinaryConnections.Opened);
 
-        Assert.Equal(1, fixture.Drain.MaximumActiveCount);
+        Assert.Equal(0, fixture.Drain.MaximumActiveCount);
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
 
@@ -376,23 +390,94 @@ public sealed class CovenantErasureInventorySourceTests
 
         using CancellationTokenSource cancellation = new();
 
-        CancelingInitializer initializer = new(cancellation);
+        fixture.OrdinaryConnections.BlockNextOpen();
 
-        CovenantErasureInventorySource source = fixture.CreateSource(initializer);
+        CovenantErasureInventorySource source = fixture.CreateSource();
 
-        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => source.PreflightBeforeCanonicalAsync(
+        Task<Result<CovenantErasureInventorySummary>> reading =
+            source.PreflightBeforeCanonicalAsync(
                 CovenantExclusiveOperation.CovenantReset,
                 Guid.NewGuid(),
-                cancellation.Token));
+                cancellation.Token);
 
-        Assert.Equal(1, initializer.Calls);
+        await fixture.OrdinaryConnections.OpenBlocked;
+
+        cancellation.Cancel();
+
+        fixture.OrdinaryConnections.AllowOpen();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading);
+
+        _ = Assert.Single(fixture.OrdinaryConnections.Opened);
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
 
-        Assert.Equal(1, fixture.Factory.ReadOnlyOpenCount);
+        Assert.Equal(0, fixture.OrdinaryConnections.LiveLeaseCount);
 
-        Assert.Equal(ConnectionState.Closed, fixture.Factory.LastReadOnlyConnection!.State);
+        Assert.Equal(
+            ConnectionState.Closed,
+            fixture.OrdinaryConnections.LastConnection!.State);
+
+    }
+
+    [Fact]
+    public async Task Owning_snapshot_holds_one_fresh_read_only_ordinary_lease_through_final_read()
+    {
+
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SeedInterleavedLabelsAsync(1, includeExistingWorkItem: false);
+
+        RecordingFreshOrdinaryConnectionFactory connections =
+            await fixture.CreateOrdinaryConnectionsAsync();
+
+        CovenantErasureInventorySource source = fixture.CreateOrdinarySource(connections);
+
+        using ScopedConsumerPause pause = new(
+            "CovenantErasureInventorySource.WithOwnedSnapshotAsync");
+
+        Task<Result<CovenantErasureInventorySummary>> reading = source
+            .PreflightBeforeCanonicalAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                await fixture.ReadDatasetGenerationAsync(),
+                CancellationToken.None);
+
+        Task entered = pause.WaitUntilEnteredAsync();
+
+        try
+        {
+
+            Task first = await Task.WhenAny(entered, reading);
+
+            Assert.Same(entered, first);
+
+            await entered;
+
+            Assert.Equal(1, connections.LiveLeaseCount);
+
+            Assert.Equal(
+                [GrimoireOrdinaryFreshConnectionKind.ReadOnly],
+                connections.Kinds);
+
+            Assert.Equal(ConnectionState.Open, connections.LastConnection!.State);
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            _ = await reading.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
+
+        Result<CovenantErasureInventorySummary> result = await reading;
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(0, connections.LiveLeaseCount);
+
+        Assert.Equal(ConnectionState.Closed, connections.LastConnection!.State);
 
     }
 
@@ -420,7 +505,8 @@ public sealed class CovenantErasureInventorySourceTests
         private InventoryFixture(
             CovenantSchemaScratchDatabase database,
             CountingConnectionFactory factory,
-            TrackingConnectionDrain drain)
+            TrackingConnectionDrain drain,
+            RecordingFreshOrdinaryConnectionFactory ordinaryConnections)
         {
 
             _database = database;
@@ -429,11 +515,15 @@ public sealed class CovenantErasureInventorySourceTests
 
             Drain = drain;
 
+            OrdinaryConnections = ordinaryConnections;
+
         }
 
         internal CountingConnectionFactory Factory { get; }
 
         internal TrackingConnectionDrain Drain { get; }
+
+        internal RecordingFreshOrdinaryConnectionFactory OrdinaryConnections { get; }
 
         internal static async Task<InventoryFixture> CreateAsync(bool healthyCatalog)
         {
@@ -473,7 +563,10 @@ public sealed class CovenantErasureInventorySourceTests
 
                 TrackingConnectionDrain drain = new(new CovenantConnectionDrain());
 
-                return new InventoryFixture(database, factory, drain);
+                RecordingFreshOrdinaryConnectionFactory ordinaryConnections =
+                    new(database.Connection.ConnectionString);
+
+                return new InventoryFixture(database, factory, drain, ordinaryConnections);
 
             }
             catch
@@ -489,28 +582,46 @@ public sealed class CovenantErasureInventorySourceTests
 
         internal CovenantHealthyCatalogErasureGuard CreateGuard() =>
             new(
-                Factory,
-                CovenantSqliteConnectionInitializer.Instance,
-                Drain,
+                OrdinaryConnections,
                 new GrimoireSchemaManifestInspector(
                     GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
 
-        internal CovenantErasureInventorySource CreateSource(
-            ICovenantSqliteConnectionInitializer? initializer = null)
-        {
-
-            ICovenantSqliteConnectionInitializer selected =
-                initializer ?? CovenantSqliteConnectionInitializer.Instance;
-
-            return new CovenantErasureInventorySource(
-                Factory,
-                selected,
-                Drain,
+        internal CovenantErasureInventorySource CreateSource() =>
+            new(
+                OrdinaryConnections,
                 CreateGuard(),
                 new CovenantManagedFileErasureRequestReader(),
                 new CovenantDisclosureExposureReader());
 
+        internal async Task<RecordingFreshOrdinaryConnectionFactory>
+            CreateOrdinaryConnectionsAsync()
+        {
+
+            await using SqliteConnection template = await Factory.OpenReadOnlyAsync(
+                CancellationToken.None);
+
+            string connectionString = template.ConnectionString;
+
+            await template.CloseAsync();
+
+            return new RecordingFreshOrdinaryConnectionFactory(connectionString);
+
         }
+
+        internal CovenantErasureInventorySource CreateOrdinarySource(
+            RecordingFreshOrdinaryConnectionFactory connections) =>
+            new(
+                connections,
+                CreateOrdinaryGuard(connections),
+                new CovenantManagedFileErasureRequestReader(),
+                new CovenantDisclosureExposureReader());
+
+        private CovenantHealthyCatalogErasureGuard CreateOrdinaryGuard(
+            RecordingFreshOrdinaryConnectionFactory connections) =>
+            new(
+                connections,
+                new GrimoireSchemaManifestInspector(
+                    GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
 
         internal async Task SeedInterleavedLabelsAsync(
             int count,
@@ -857,42 +968,8 @@ public sealed class CovenantErasureInventorySourceTests
 
     }
 
-    private sealed class CancelingInitializer(CancellationTokenSource cancellation)
-        : ICovenantSqliteConnectionInitializer
-    {
-
-        internal int Calls { get; private set; }
-
-        public ValueTask InitializeAsync(
-            SqliteConnection connection,
-            CovenantSqliteConnectionMode mode,
-            CancellationToken cancellationToken)
-        {
-
-            Calls++;
-
-            cancellation.Cancel();
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            return ValueTask.CompletedTask;
-
-        }
-
-        public CovenantSqliteAuthorizationScope Authorize(
-            SqliteConnection connection,
-            CovenantSqliteAuthorizationKind kind) =>
-            throw new NotSupportedException();
-
-        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
-            RestoreStagingManagedAuthoritySanitizationCapability authority,
-            RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
-            throw new NotSupportedException();
-
-    }
-
-    internal sealed class CountingConnectionFactory(ICovenantMaintenanceConnectionFactory inner)
-        : ICovenantMaintenanceConnectionFactory
+    internal sealed class CountingConnectionFactory(IDesignTimeGrimoireConnectionFactory inner)
+        : IDesignTimeGrimoireConnectionFactory
     {
 
         private int _readOnlyOpenCount;
@@ -970,6 +1047,7 @@ public sealed class CovenantErasureInventorySourceTests
                 }
 
             }
+
             while (Interlocked.CompareExchange(ref _maximumActiveCount, active, maximum) != maximum);
 
             return new TrackingEnrollment(this, enrollment);
@@ -978,6 +1056,9 @@ public sealed class CovenantErasureInventorySourceTests
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             inner.DrainAsync(cancellationToken);
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            inner.ClearExactPoolAfterClose(connection);
 
         private sealed class TrackingEnrollment(
             TrackingConnectionDrain owner,

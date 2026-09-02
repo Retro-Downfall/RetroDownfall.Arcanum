@@ -1,3 +1,7 @@
+using System.Runtime.CompilerServices;
+using RetroDownfall.Arcanum.Core.Logging;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.TheForge.Ux.Services.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using Xunit;
 
@@ -50,6 +54,56 @@ public sealed class FoundryFloorViewModelTests
         Assert.Equal(string.Empty, viewModel.LatestLine);
 
         viewModel.Dispose();
+
+    }
+
+    [Fact]
+    public void LogStream_EndingWithoutCancellation_AppendsATerminalNotice()
+    {
+
+        FoundryFloorViewModel viewModel = new(new TwoFrameThenCompleteLogService());
+
+        viewModel.IsVisible = true;
+
+        Assert.Contains("Log stream ended.", viewModel.Lines);
+
+        viewModel.Dispose();
+
+    }
+
+    private sealed class TwoFrameThenCompleteLogService : ILogService
+    {
+
+        public Task<ApiResponse<LogQueryResult>?> QueryAsync(
+            LogLevel? minLevel,
+            string? category,
+            string? search,
+            int? limit,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<ApiResponse<LogQueryResult>?>(null);
+
+        public async IAsyncEnumerable<LogEntry> StreamLogsAsync(
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+
+            await Task.CompletedTask;
+
+            yield return NewEntry("first");
+
+            yield return NewEntry("second");
+
+        }
+
+        private static LogEntry NewEntry(string message) => new(
+            Sequence: 0,
+            Timestamp: DateTimeOffset.UnixEpoch,
+            Level: LogLevel.Information,
+            Category: "test",
+            Message: message,
+            Exception: null,
+            CorrelationId: null,
+            TraceId: null,
+            Properties: []);
 
     }
 

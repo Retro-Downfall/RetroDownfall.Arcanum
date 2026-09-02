@@ -94,7 +94,7 @@ public sealed class ArcanumClientMutationBoundaryTests : IDisposable
 
             });
 
-        await entered.Task;
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(
             ArcanumClientMutationLockAcquisitionDisposition.Contended,

@@ -22,11 +22,22 @@ internal interface IInstallationResetHostProcessToolsPairReader
 
 }
 
+internal interface IInstallationResetStoppedHostProcessToolsPairReader
+{
+
+    Task<Result<HostProcessToolsMarkerPairJoinResult>>
+        ReadUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken = default);
+
+}
+
 internal sealed class InstallationResetHostProcessToolsPairReader(
     IHostProcessToolsMarkerStore markerStore,
     IInstallationResetHostProcessToolsDatabaseEvidenceReader databaseEvidenceReader,
     IHostProcessToolsMarkerPairJoiner joiner)
-    : IInstallationResetHostProcessToolsPairReader
+    : IInstallationResetHostProcessToolsPairReader,
+      IInstallationResetStoppedHostProcessToolsPairReader
 {
 
     public async Task<Result<HostProcessToolsMarkerPairJoinResult>> ReadAsync(
@@ -34,6 +45,62 @@ internal sealed class InstallationResetHostProcessToolsPairReader(
     {
 
         cancellationToken.ThrowIfCancellationRequested();
+
+        Result<HostProcessToolsOsMarkerEvidence?> osEvidence = ReadOsEvidence();
+
+        if (osEvidence.IsFailure)
+        {
+
+            return Unavailable();
+
+        }
+
+        if (databaseEvidenceReader is IInstallationResetStoppedHostDataService)
+        {
+
+            return Unavailable();
+
+        }
+
+        return await ReadAndJoinAsync(
+            osEvidence.Value,
+            databaseEvidenceReader.ReadMarkerEvidenceAsync,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<HostProcessToolsMarkerPairJoinResult>>
+        ReadUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(issuer);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<HostProcessToolsOsMarkerEvidence?> osEvidence = ReadOsEvidence();
+
+        if (osEvidence.IsFailure
+            || databaseEvidenceReader is not IInstallationResetStoppedHostDataService
+                stoppedHostData)
+        {
+
+            return Unavailable();
+
+        }
+
+        return await ReadAndJoinAsync(
+            osEvidence.Value,
+            token => stoppedHostData.ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+                issuer,
+                token),
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private Result<HostProcessToolsOsMarkerEvidence?> ReadOsEvidence()
+    {
 
         HostProcessToolsMarkerReadResult markerRead;
 
@@ -46,14 +113,14 @@ internal sealed class InstallationResetHostProcessToolsPairReader(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
 
-            return Unavailable();
+            return OsUnavailable();
 
         }
 
         if (markerRead is null)
         {
 
-            return Unavailable();
+            return OsUnavailable();
 
         }
 
@@ -77,16 +144,27 @@ internal sealed class InstallationResetHostProcessToolsPairReader(
 
             default:
 
-                return Unavailable();
+                return OsUnavailable();
         }
+
+        return Result<HostProcessToolsOsMarkerEvidence?>.Success(osMarker);
+
+    }
+
+    private async Task<Result<HostProcessToolsMarkerPairJoinResult>> ReadAndJoinAsync(
+        HostProcessToolsOsMarkerEvidence? osMarker,
+        Func<
+            CancellationToken,
+            Task<Result<HostProcessToolsDatabaseMarkerEvidence>>> readDatabase,
+        CancellationToken cancellationToken)
+    {
 
         Result<HostProcessToolsDatabaseMarkerEvidence> database;
 
         try
         {
 
-            database = await databaseEvidenceReader
-                .ReadMarkerEvidenceAsync(cancellationToken).ConfigureAwait(false);
+            database = await readDatabase(cancellationToken).ConfigureAwait(false);
 
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -127,5 +205,10 @@ internal sealed class InstallationResetHostProcessToolsPairReader(
         Result<HostProcessToolsMarkerPairJoinResult>.Failure(new Error(
             ErrorCodes.Data.ExternalRemediationRequired,
             "The host-process-tools marker pair requires external remediation."));
+
+    private static Result<HostProcessToolsOsMarkerEvidence?> OsUnavailable() =>
+        Result<HostProcessToolsOsMarkerEvidence?>.Failure(new Error(
+            ErrorCodes.Data.ExternalRemediationRequired,
+            "The host-process-tools operating-system marker evidence is unavailable."));
 
 }

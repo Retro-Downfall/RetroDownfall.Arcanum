@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 using Xunit;
 
@@ -70,6 +71,45 @@ public class ChatMessageViewModelTruncationTests
         message.CompleteStreamingContent();
 
         AssertNoLoneSurrogate(message.Content);
+
+    }
+
+    [Fact]
+    public void AppendContent_ManyNewlineTerminatedChunks_PublishesFarFewerTimesThanChunks()
+    {
+
+        ChatMessageViewModel message = new("assistant", string.Empty);
+
+        int publishCount = 0;
+
+        message.PropertyChanged += (object? _, PropertyChangedEventArgs e) =>
+        {
+
+            if (e.PropertyName == nameof(ChatMessageViewModel.Content))
+            {
+
+                publishCount++;
+
+            }
+
+        };
+
+        // A code-heavy streamed response: every chunk is short and newline-terminated, the shape the
+        // old per-newline publish trigger turned into roughly one publish per chunk.
+        const int chunkCount = 6_250;
+
+        for (int i = 0; i < chunkCount; i++)
+        {
+
+            message.AppendContent("x\n");
+
+        }
+
+        message.CompleteStreamingContent();
+
+        Assert.True(
+            publishCount <= chunkCount / 16,
+            $"expected far fewer than {chunkCount} Content publishes, got {publishCount}.");
 
     }
 

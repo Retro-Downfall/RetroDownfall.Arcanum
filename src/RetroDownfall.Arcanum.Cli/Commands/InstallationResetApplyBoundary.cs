@@ -335,6 +335,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                     : await ApplyOfflineAsync(
                         request,
                         handoff,
+                        confirmedPlan: null,
                         cancellationToken).ConfigureAwait(false);
 
             }
@@ -348,6 +349,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         return await ApplyOfflineAsync(
                 request,
                 handoff: null,
+                confirmedPlan: null,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -355,7 +357,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
     public async Task<Result<InstallationResetResult>> ApplyFreshAsync(
         InstallationResetPlanRequest request,
-        InstallationResetPlan confirmedPlan,
+        StoppedHostInstallationResetPlan confirmedPlan,
         CancellationToken cancellationToken)
     {
 
@@ -365,87 +367,25 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
         InstallationResetApplyRequest applyRequest = new(
             request,
-            confirmedPlan.PlanId);
+            confirmedPlan.Plan.PlanId);
 
-        if (request.Scope is InstallationResetScope.Workspace)
+        if (confirmedPlan.Plan.Scope != request.Scope
+            || (request.Scope is InstallationResetScope.Workspace
+                && confirmedPlan.CovenantDisclosure is not null)
+            || (request.Scope is InstallationResetScope.Global or InstallationResetScope.All
+                && confirmedPlan.CovenantDisclosure is null))
         {
 
-            return await ApplyOfflineAsync(
-                    applyRequest,
-                    handoff: null,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-        }
-
-        Result cleanPair = await RequireCleanPairAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (cleanPair.IsFailure)
-        {
-
-            return Result<InstallationResetResult>.Failure(cleanPair.Error);
-
-        }
-
-        Result<IInstallationResetClientCoordinationLease> coordinated =
-            await _acquireClientCoordination(
-                    request.Scope,
-                    confirmedPlan.PlanId,
-                    operationId: null,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-        if (coordinated.IsFailure)
-        {
-
-            return Result<InstallationResetResult>.Failure(coordinated.Error);
-
-        }
-
-        Result<InstallationResetHostHandoff> created = _createHostHandoff(
-            applyRequest,
-            confirmedPlan);
-
-        if (created.IsFailure)
-        {
-
-            await using IInstallationResetClientCoordinationLease failedLease =
-                coordinated.Value;
-
-            Result removed = await failedLease
-                .RemoveBlockerIfSafeAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            return Result<InstallationResetResult>.Failure(
-                removed.IsFailure ? removed.Error : created.Error);
-
-        }
-
-        InstallationResetHostHandoff handoff = created.Value;
-
-        await using (IInstallationResetClientCoordinationLease coordinationLease =
-                     coordinated.Value)
-        {
-
-            Result online = await CompleteOnlineDataResetAsync(
-                    handoff,
-                    coordinationLease,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (online.IsFailure)
-            {
-
-                return Result<InstallationResetResult>.Failure(online.Error);
-
-            }
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.PlanChanged,
+                "The stopped-host installation reset plan changed after confirmation."));
 
         }
 
         return await ApplyOfflineAsync(
                 applyRequest,
-                handoff,
+                handoff: null,
+                confirmedPlan: confirmedPlan,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -518,6 +458,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
     private async Task<Result<InstallationResetResult>> ApplyOfflineAsync(
         InstallationResetApplyRequest request,
         InstallationResetHostHandoff? handoff,
+        StoppedHostInstallationResetPlan? confirmedPlan,
         CancellationToken cancellationToken)
     {
 
@@ -567,11 +508,18 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         if (request.Request.Scope is InstallationResetScope.Workspace)
         {
 
-            return await _resetService.ApplyUnderMaintenanceLockAsync(
-                    request,
-                    maintenanceLock,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            return confirmedPlan is null
+                ? await _resetService.ApplyUnderMaintenanceLockAsync(
+                        request,
+                        maintenanceLock,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : await _resetService.ApplyFreshUnderMaintenanceLockAsync(
+                        request.Request,
+                        confirmedPlan,
+                        maintenanceLock,
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
         }
 
@@ -593,22 +541,65 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         await using IInstallationResetClientCoordinationLease coordinationLease =
             coordinated.Value;
 
-        Result<InstallationResetResult> applied = await _resetService
-            .ApplyUnderMaintenanceLockAsync(
-                request,
-                maintenanceLock,
-                cancellationToken)
-            .ConfigureAwait(false);
+        Result<InstallationResetResult> applied;
+
+        try
+        {
+
+            applied = confirmedPlan is null
+                ? await _resetService.ApplyUnderMaintenanceLockAsync(
+                        request,
+                        maintenanceLock,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : await _resetService.ApplyFreshUnderMaintenanceLockAsync(
+                        request.Request,
+                        confirmedPlan,
+                        maintenanceLock,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (confirmedPlan is not null)
+        {
+
+            _ = await coordinationLease
+                .RemoveBlockerIfSafeAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+
+            throw;
+
+        }
 
         if (applied.IsFailure)
         {
+
+            if (confirmedPlan is not null)
+            {
+
+                Result removedAfterFreshFailure = await coordinationLease
+                    .RemoveBlockerIfSafeAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                if (removedAfterFreshFailure.IsFailure)
+                {
+
+                    return Result<InstallationResetResult>.Failure(
+                        removedAfterFreshFailure.Error);
+
+                }
+
+            }
 
             return applied;
 
         }
 
         Result removed = await coordinationLease
-            .RemoveBlockerIfSafeAsync(cancellationToken)
+            .RemoveBlockerIfSafeAsync(
+                confirmedPlan is null
+                    ? cancellationToken
+                    : CancellationToken.None)
             .ConfigureAwait(false);
 
         return removed.IsSuccess

@@ -122,9 +122,12 @@ public sealed class DataRetentionDefaultLogRootTests(GrimoireFixture fixture)
             DataRetentionService service = new(
                 db,
                 new TestOptionsMonitor<ArcanumSettings>(CreateSettings()),
-                new LongRunningOperationStore(db),
+                new LongRunningOperationStore(
+                    db,
+                    TestOrdinaryConnectionFactory.For(db)),
                 timeProvider,
                 NullLogger<DataRetentionService>.Instance,
+                FixtureLabeledArtifactGuard.For(db),
                 attachmentsRoot,
                 filesRoot,
                 logsRootOverride: null);

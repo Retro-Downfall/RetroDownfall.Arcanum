@@ -50,7 +50,11 @@ internal static class SessionBindingWriters
             db,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            attachmentIndex: null,
+            covenantKernel: null,
+            FixtureOrdinaryConnectionFactory.For(db),
+            FixtureLabeledArtifactGuard.For(db));
 
         Result<Guid> created = await repository.CreateBoundSessionAsync(
             CanonicalCampaignContext.Create(

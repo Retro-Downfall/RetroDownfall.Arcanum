@@ -934,7 +934,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             BackupVerifyIssue[] placement = ComposeStagedTree(
                 extraction.Manifest,
                 extractRoot,
-                stagedRoot);
+                stagedRoot,
+                cancellationToken);
 
             if (placement.Length > 0)
             {
@@ -1215,7 +1216,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 request,
                 effectivePlan.DestinationRoot,
                 staged.GrimoireSecret,
-                staged.EmbeddingsRebuilt,
+                staged.EmbeddingsToRebuild,
                 staged.PendingOperationsCleared,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1771,16 +1772,31 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     /// Lays every archive entry down under the staged root using the closed layout table. An entry
     /// the table does not recognize aborts staging rather than being dropped.
     /// </summary>
-    private static BackupVerifyIssue[] ComposeStagedTree(
+    /// <remarks>
+    /// This is the second full-size write of the restored generation — everything the extraction
+    /// already wrote, copied again — so for a large Grimoire it is minutes of blocking work inside one
+    /// phase. The token is observed between entries because nothing else in that window can be: with
+    /// no check here the operator's cancellation is not seen until the whole tree has been copied.
+    ///
+    /// <para>Copied rather than moved, deliberately. The extraction root is read after this returns —
+    /// the portable recovery material for the staged secret and the file-encryption key merge both
+    /// come out of it — so moving the tree away would take those reads' inputs with it.</para>
+    /// </remarks>
+    private BackupVerifyIssue[] ComposeStagedTree(
         BackupManifest manifest,
         string extractRoot,
-        string stagedRoot)
+        string stagedRoot,
+        CancellationToken cancellationToken)
     {
 
         List<BackupVerifyIssue> issues = [];
 
         foreach (BackupManifestEntry entry in manifest.Entries)
         {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _options.BeforeStagedEntryComposeForTests?.Invoke(entry.Path);
 
             if (!BackupRestoreLayout.TryResolve(entry.Path, out BackupRestorePlacementDecision? decision))
             {
@@ -2079,7 +2095,12 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         if (import.Issues.Length > 0)
         {
 
-            return Rejected(operationId, plan, phases, import.Issues);
+            // Rejected means the destination was never mutated, so it is only available while nothing
+            // committed. A protected import commits Session by Session, and once one has landed the
+            // truthful outcome is a committed installation that still needs an operator.
+            return import.Committed.Length == 0
+                ? Rejected(operationId, plan, phases, import.Issues)
+                : PartiallyImported(operationId, request, plan, phases, import);
 
         }
 
@@ -2094,7 +2115,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             import.Attachments,
             UploadedFiles: 0,
             BatchFiles: 0,
-            EmbeddingsRebuilt: 0,
+            EmbeddingsToRebuild: 0,
             PendingOperationsCleared: 0,
             Issues: []);
 
@@ -2120,6 +2141,79 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
     }
 
+    /// <summary>
+    /// The outcome when a selective import was refused after earlier Sessions had already committed.
+    /// </summary>
+    /// <remarks>
+    /// Everything here exists because the alternative was <see cref="BackupRestoreStatus.Rejected"/>,
+    /// whose whole meaning is that the destination was not mutated — reported over an installation
+    /// that had gained Sessions, with a null reconciliation that carried no count at all.
+    ///
+    /// <para>The committed Sessions are named by both identities. A protected import mints the
+    /// destination identity per run, so nothing the operator already has can be matched to the
+    /// selection they asked for without being told the pairing, and nothing about a re-run is safe:
+    /// the store's replay guard is keyed to an operation identity this restore will never present
+    /// again, so the same selection imports the same Sessions a second time under new identities. The
+    /// issue says so rather than leaving the operator to discover it.</para>
+    /// </remarks>
+    private static BackupRestoreResult PartiallyImported(
+        Guid operationId,
+        BackupRestoreRequest request,
+        BackupRestorePlan plan,
+        List<BackupRestorePhaseRecord> phases,
+        BackupSessionImportResult import)
+    {
+
+        string pairs = string.Join(
+            ", ",
+            import.Committed.Select(
+                static committed =>
+                    $"{committed.SourceSessionId:D} as {committed.DestinationSessionId:D}"));
+
+        Record(
+            phases,
+            BackupRestorePhase.Commit,
+            $"Imported {import.Sessions} Sessions, {import.Entries} entries, and "
+            + $"{import.Attachments} attachments before the import was refused; the destination holds "
+            + pairs + ".");
+
+        Record(
+            phases,
+            BackupRestorePhase.Reconcile,
+            "The import stopped partway, so this installation needs an operator: it holds the "
+            + "Sessions named above and none of the ones after them.");
+
+        return new BackupRestoreResult(
+            BackupRestoreStatus.ReconciliationRequired,
+            plan.ArchivePath,
+            operationId,
+            request.ConflictMode,
+            plan.DestinationRoot,
+            SafetyBackupPath: null,
+            plan,
+            Manifest: null,
+            new BackupRestoreReconciliation(
+                import.Attachments,
+                import.Attachments,
+                UploadedFiles: 0,
+                BatchFiles: 0,
+                EmbeddingsToRebuild: 0,
+                PendingOperationsCleared: 0,
+                Issues: []),
+            [.. phases],
+            [
+                .. import.Issues,
+                new BackupVerifyIssue(
+                    "backup.restore_import_partially_committed",
+                    $"{import.Sessions} Sessions were already imported into this installation before "
+                    + $"the refusal above: {pairs}. Do not re-run this import as it stands — every run "
+                    + "mints new identities, so the same selection would import them a second time. "
+                    + "Remove the imported Sessions, or re-run naming only the Sessions that did not "
+                    + "land."),
+            ]);
+
+    }
+
     private static string ReadStagedSecret(string extractRoot) =>
         BackupPortableRecoveryReader.TryReadGrimoireSecret(
             Path.Combine(
@@ -2133,7 +2227,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         BackupRestoreRequest request,
         string destinationRoot,
         string grimoireSecret,
-        long embeddingsRebuilt,
+        long embeddingsToRebuild,
         long pendingCleared,
         CancellationToken cancellationToken)
     {
@@ -2144,7 +2238,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             || !File.Exists(databasePath))
         {
 
-            return new BackupRestoreReconciliation(0, 0, 0, 0, embeddingsRebuilt, pendingCleared, []);
+            return new BackupRestoreReconciliation(0, 0, 0, 0, embeddingsToRebuild, pendingCleared, []);
 
         }
 
@@ -2164,7 +2258,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 counts.StaleAttachmentSources,
                 counts.UploadedFiles,
                 counts.BatchFiles,
-                embeddingsRebuilt,
+                embeddingsToRebuild,
                 pendingCleared,
                 []);
 
@@ -2181,7 +2275,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 0,
                 0,
                 0,
-                embeddingsRebuilt,
+                embeddingsToRebuild,
                 pendingCleared,
                 [
                     "The restored generation is committed but could not be re-opened for "
@@ -2621,7 +2715,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     private sealed record StageResult(
         BackupRestorePlan Plan,
         string GrimoireSecret,
-        long EmbeddingsRebuilt,
+        long EmbeddingsToRebuild,
         long PendingOperationsCleared,
         BackupVerifyIssue[] Issues)
     {

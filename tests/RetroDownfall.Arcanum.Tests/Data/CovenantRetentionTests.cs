@@ -1279,9 +1279,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         new(
             _db!,
             new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings()),
-            new LongRunningOperationStore(_db!),
+            new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)),
             TimeProvider.System,
             NullLogger<DataRetentionService>.Instance,
+            FixtureLabeledArtifactGuard.For(_db!),
             Path.Combine(_root, "attachments"),
             Path.Combine(_root, "files"),
             Path.Combine(_root, "logs"),

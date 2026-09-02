@@ -174,4 +174,8 @@ if [[ ! -x "$EXECUTABLE" ]]; then
 
 fi
 
-"$EXECUTABLE" "${host_args[@]}"
+# macOS ships bash 3.2, which has no way to expand an empty array under `set -u` other than this
+# guard: "${host_args[@]}" alone raises "host_args[@]: unbound variable" when no flag added an
+# element, which is the documented no-argument invocation (see the usage line above). Same pattern
+# as scripts/packaging/macos/common.sh:274 and .github/workflows/release-macos-arm64.yml:338.
+"$EXECUTABLE" ${host_args[@]+"${host_args[@]}"}

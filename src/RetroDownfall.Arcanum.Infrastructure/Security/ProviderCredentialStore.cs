@@ -40,6 +40,8 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates =
         new(StringComparer.Ordinal);
 
+    private bool _disposed;
+
     public ProviderCredentialStore(
         IOsCredentialStore osStore,
         IDataProtectionProvider dataProtectionProvider,
@@ -56,17 +58,18 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
     }
 
+    /// <summary>
+    /// Marks the store disposed without disposing any per-account gate. None of these
+    /// semaphores ever has its AvailableWaitHandle observed, so none needs disposal — and
+    /// disposing one out from under an in-flight caller turned that caller's own
+    /// <c>finally { gate.Release(); }</c> into an ObjectDisposedException that replaced whatever
+    /// the operation actually returned. Gates therefore live for the process; only callers that
+    /// arrive after Dispose are refused, in <see cref="Gate"/> below.
+    /// </summary>
     public void Dispose()
     {
 
-        foreach (SemaphoreSlim gate in _gates.Values)
-        {
-
-            gate.Dispose();
-
-        }
-
-        _gates.Clear();
+        _disposed = true;
 
     }
 
@@ -362,8 +365,14 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
     }
 
-    private SemaphoreSlim Gate(string account) =>
-        _gates.GetOrAdd(account, static _ => new SemaphoreSlim(1, 1));
+    private SemaphoreSlim Gate(string account)
+    {
+
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return _gates.GetOrAdd(account, static _ => new SemaphoreSlim(1, 1));
+
+    }
 
     /// <summary>
     /// Reads prefer the OS credential over the mirror, so a failed OS write has to take the

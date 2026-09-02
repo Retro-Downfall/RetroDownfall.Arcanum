@@ -411,6 +411,26 @@ count_il_violations() {
 
   while IFS= read -r line; do
     if [[ "$line" =~ warning\ IL[0-9]{4}|ILC\ :\ (warning\ )?IL[0-9]{4} ]]; then
+      # A real first-party source location (a `.cs(` origin) decides ownership on its own --
+      # il_warning_is_first_party reads only the path there, never the message, so it cannot be
+      # fooled by an ALLOWED token that happens to appear in the message (a first-party call into
+      # an EF Core API, say). A .cs origin outside RetroDownfall. -- a generated file, or a
+      # source-included package compiled into one of these projects -- is not automatically someone
+      # else's problem, so it falls through to ALLOWED rather than being dropped: the gate has to
+      # fail closed on an origin it cannot attribute. ALLOWED is otherwise consulted only for
+      # origins with no source location (ILC :, or a bare project file), where the trailing
+      # "[...csproj]" is the only ownership signal there is and the message is what actually names
+      # the owning component.
+      local origin
+      origin="$(il_warning_origin "$line")"
+      if [[ "$origin" == *".cs("* ]]; then
+        if il_warning_is_first_party "$line" || ! il_warning_is_allowed "$line"; then
+          echo "$line" >&2
+          violations=$((violations + 1))
+        fi
+        continue
+      fi
+
       if il_warning_is_allowed "$line"; then
         continue
       fi

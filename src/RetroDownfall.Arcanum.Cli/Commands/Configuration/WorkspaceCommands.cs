@@ -168,7 +168,7 @@ public sealed class WorkspaceCommands(
                 themePalette.ErrorMarkup(
                     "--type must be one of: spell, campaign, data, custom."));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 

@@ -46,6 +46,10 @@ internal static class ServiceCollectionConfigurator
 
         // The only thing Compendium asks the host for. Configuration persistence stays exactly as it
         // is — direct, atomic, transactional writes through ArcanumConfigurationStore.
+        // Named so the socket handler this creates is pooled and reused across probes instead of a
+        // fresh SocketsHttpHandler (and TCP+TLS handshake) per click.
+        services.AddHttpClient(nameof(FamiliarProbeClient));
+
         services.AddSingleton<IFamiliarProbeClient, FamiliarProbeClient>();
 
         services.AddSingleton<ConfigurationViewModel>();

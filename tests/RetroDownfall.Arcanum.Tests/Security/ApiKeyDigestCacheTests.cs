@@ -20,7 +20,12 @@ public sealed class ApiKeyDigestCacheTests
 
         Assert.True(found);
 
-        Assert.Same(digest, result);
+        // TryGetDigest hands out a defensive copy, never the live cached array — a caller
+        // that zeroes or otherwise writes into what it gets back must not corrupt the digest every
+        // subsequent authentication compares against.
+        Assert.NotSame(digest, result);
+
+        Assert.Equal(digest, result);
 
     }
 
@@ -40,7 +45,9 @@ public sealed class ApiKeyDigestCacheTests
 
         Assert.True(found);
 
-        Assert.Same(digest, result);
+        Assert.NotSame(digest, result);
+
+        Assert.Equal(digest, result);
 
     }
 
@@ -106,7 +113,70 @@ public sealed class ApiKeyDigestCacheTests
 
         Assert.True(found);
 
-        Assert.Same(second, result);
+        Assert.NotSame(second, result);
+
+        Assert.Equal(second, result);
+
+    }
+
+    // TryGetDigest hands out the live shared byte[] holding the expected digest, so any
+    // consumer that writes into what it gets back — the natural instinct in this codebase, where
+    // every other secret buffer is zeroed in a finally — silently rewrites the digest every
+    // subsequent authentication compares against. StoreDigest aliases the caller's array the same
+    // way, so a caller that keeps its own reference after storing can corrupt the cache too. Both
+    // directions need their own copy.
+
+    [Fact]
+    public void TryGetDigest_MutatingTheReturnedArray_DoesNotChangeTheCachedDigest()
+    {
+
+        FakeTimeProvider timeProvider = new();
+
+        ApiKeyDigestCache cache = new(timeProvider);
+
+        byte[] original = [10, 20, 30, 40];
+
+        byte[] stored = (byte[])original.Clone();
+
+        cache.StoreDigest(stored, ttlSeconds: 60);
+
+        bool foundFirst = cache.TryGetDigest(out byte[]? first);
+
+        Assert.True(foundFirst);
+
+        Assert.NotNull(first);
+
+        Array.Clear(first);
+
+        bool foundSecond = cache.TryGetDigest(out byte[]? second);
+
+        Assert.True(foundSecond);
+
+        Assert.Equal(original, second);
+
+    }
+
+    [Fact]
+    public void StoreDigest_MutatingTheCallerArrayAfterStoring_DoesNotChangeTheCachedDigest()
+    {
+
+        FakeTimeProvider timeProvider = new();
+
+        ApiKeyDigestCache cache = new(timeProvider);
+
+        byte[] original = [50, 60, 70, 80];
+
+        byte[] callerOwned = (byte[])original.Clone();
+
+        cache.StoreDigest(callerOwned, ttlSeconds: 60);
+
+        Array.Clear(callerOwned);
+
+        bool found = cache.TryGetDigest(out byte[]? result);
+
+        Assert.True(found);
+
+        Assert.Equal(original, result);
 
     }
 

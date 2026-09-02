@@ -1,5 +1,9 @@
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -10,6 +14,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// under the wrong chapter or a table broken mid-body survives every review because the source still
 /// reads correctly line by line.
 /// </summary>
+[Collection("ApiHost")]
 public sealed class DocumentationStructureTests
 {
 
@@ -221,6 +226,184 @@ public sealed class DocumentationStructureTests
             StringComparison.Ordinal);
 
     }
+
+    /// <summary>
+    /// Every endpoint the host registers has a row in the API reference's route table.
+    /// </summary>
+    /// <remarks>
+    /// <para>The reference calls itself the source of truth for the native HTTP API and heads its
+    /// first section "Complete API surface", so a live authenticated route with no row is not an
+    /// omission a reader can detect — there is nothing to read. It found exactly that: a registered
+    /// <c>POST /api/perception/chronosync</c> that took a body, persisted a baseline, and appeared in
+    /// no document in the repository.</para>
+    /// <para>Nested inside the structural tests so it runs under the same filter, and filed in the
+    /// API host collection because the only exact inventory of what is mapped is the endpoint data
+    /// source of a host that ran <c>MapArcanumEndpoints</c>. A source scan cannot stand in for it: the
+    /// chronosync registration wraps its <c>MapPost(</c> across two lines and escapes a
+    /// single-line pattern.</para>
+    /// <para>Its reach is what this configuration registers, which is the limit worth stating: a route
+    /// behind a feature flag this host leaves off is invisible to it. Exactly one is — the Scalar UI,
+    /// whose flag defaults off — and every other family, Conclave and A2A and Saga and Lexicon
+    /// included, is mapped here and therefore checked.</para>
+    /// </remarks>
+    [Collection("ApiHost")]
+    public sealed class ApiReferenceRouteTable(ArcanumWebApplicationFactory factory)
+    {
+
+        /// <summary>
+        /// The one route deliberately outside the route table, with the reason it is not a row.
+        /// </summary>
+        /// <remarks>
+        /// The OpenAPI document is a documentation surface rather than an application endpoint: it
+        /// emits no <c>ApiResponse</c> envelope, carries no error code, and the reference describes it
+        /// alongside the Scalar UI in its own "not application `ApiResponse`" line rather than as a
+        /// method/path row.
+        /// </remarks>
+        private static readonly string[] NotRouteTableRows =
+        [
+            "GET /api/openapi/{documentName}.json",
+        ];
+
+        [Fact]
+        public void Every_registered_endpoint_has_a_row_in_the_api_reference()
+        {
+
+            _ = factory.CreateAuthenticatedClient();
+
+            EndpointDataSource endpoints = factory.Services.GetRequiredService<EndpointDataSource>();
+
+            HashSet<string> documented = ReadDocumentedRoutes();
+
+            List<string> undocumented = [];
+
+            foreach (RouteEndpoint endpoint in endpoints.Endpoints.OfType<RouteEndpoint>())
+            {
+
+                string path = NormalizeRoutePattern(endpoint.RoutePattern.RawText ?? string.Empty);
+
+                foreach (string method in endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? [])
+                {
+
+                    string registered = $"{method} {path}";
+
+                    if (documented.Contains(registered)
+                        || NotRouteTableRows.Contains(registered, StringComparer.Ordinal))
+                    {
+
+                        continue;
+
+                    }
+
+                    undocumented.Add(registered);
+
+                }
+
+            }
+
+            Assert.True(
+                undocumented.Count == 0,
+                "A registered endpoint has no row in docs/Arcanum.API.md:"
+                    + global::System.Environment.NewLine
+                    + string.Join(
+                        global::System.Environment.NewLine,
+                        undocumented.Order(StringComparer.Ordinal)));
+
+        }
+
+        /// <summary>
+        /// Every method/path pair the reference states as a table row, in either of the two row
+        /// shapes it uses: the route table's separate method and path columns, and the Covenant
+        /// contract table's single backticked method-and-path cell.
+        /// </summary>
+        private static HashSet<string> ReadDocumentedRoutes()
+        {
+
+            HashSet<string> routes = new(StringComparer.Ordinal);
+
+            foreach (string line in ReadDocumentLines("Arcanum.API.md"))
+            {
+
+                Match match = DocumentedRouteRow.Match(line);
+
+                if (!match.Success)
+                {
+
+                    match = DocumentedRouteCell.Match(line);
+
+                }
+
+                if (!match.Success)
+                {
+
+                    continue;
+
+                }
+
+                foreach (string path in ExpandOptionalSegment(match.Groups["path"].Value))
+                {
+
+                    routes.Add($"{match.Groups["method"].Value} {NormalizeRoutePattern(path)}");
+
+                }
+
+            }
+
+            return routes;
+
+        }
+
+        /// <summary>
+        /// One documented path with an optional trailing segment stands for two registered routes.
+        /// </summary>
+        /// <remarks>
+        /// The reference writes the pair as <c>/api/memory/explain[/{sessionId}]</c> — one row for one
+        /// contract, which is how a reader wants to read it, and two <c>MapGet</c> calls in the host.
+        /// </remarks>
+        private static IEnumerable<string> ExpandOptionalSegment(string path)
+        {
+
+            int open = path.IndexOf('[', StringComparison.Ordinal);
+
+            int close = path.IndexOf(']', StringComparison.Ordinal);
+
+            if (open < 0 || close < open)
+            {
+
+                yield return path;
+
+                yield break;
+
+            }
+
+            yield return path[..open] + path[(close + 1)..];
+
+            yield return path[..open] + path[(open + 1)..close] + path[(close + 1)..];
+
+        }
+
+        /// <summary>Drops route constraints and catch-all markers, which the reference does not spell.</summary>
+        private static string NormalizeRoutePattern(string pattern) =>
+            RouteParameterConstraint
+                .Replace(RouteCatchAll.Replace(pattern, "{${name}}"), "{${name}}")
+                .TrimEnd('/');
+
+    }
+
+    private static readonly Regex DocumentedRouteRow = new(
+        @"^\|\s*(?<method>GET|POST|PUT|DELETE|PATCH|HEAD)\s*\|\s*`(?<path>/[^`]*)`\s*\|",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex DocumentedRouteCell = new(
+        @"^\|\s*`(?<method>GET|POST|PUT|DELETE|PATCH|HEAD) (?<path>/[^`]*)`\s*\|",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RouteParameterConstraint = new(
+        @"\{(?<name>[^{}:?=*]+)[:?=][^{}]*\}",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RouteCatchAll = new(
+        @"\{\*{1,2}(?<name>[^{}]+)\}",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static string[] ReadDocumentLines(string fileName) =>
         File

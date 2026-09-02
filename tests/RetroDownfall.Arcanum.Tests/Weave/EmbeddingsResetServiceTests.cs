@@ -1,11 +1,18 @@
 using System.Data.Common;
 
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Weave;
@@ -59,7 +66,15 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
                     },
                 }));
 
-        _resetService = new EmbeddingsResetService(_db, availability);
+        ServiceCollection services = new();
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+            new RecordingScopedOrdinaryConnectionFactory());
+
+        _resetService = new EmbeddingsResetService(
+            _db,
+            availability,
+            services.BuildServiceProvider());
 
         return Task.CompletedTask;
 
@@ -79,6 +94,173 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         {
 
             File.Delete(_dbPath);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public async Task Purge_releases_page_owner_before_dispatching_the_scoped_purger()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid artifactId = Guid.NewGuid();
+
+        await SeedLabelAsync(SensitiveArtifactKind.Saga, artifactId, CancellationToken.None);
+
+        await _db!.Database.CloseConnectionAsync();
+
+        RecordingScopedOrdinaryConnectionFactory connections = new();
+
+        TaskCompletionSource purgeEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource allowPurge = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        ScopedConnectionPurger scopedPurger = new(
+            _db,
+            connections,
+            purgeEntered,
+            allowPurge);
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
+
+        EmbeddingsResetService service = new(
+            _db,
+            new WeaveIndexAvailability(),
+            services.BuildServiceProvider(),
+            scopedPurger);
+
+        using ScopedConsumerPause pause = new("EmbeddingsResetService.PurgeLabeledKindAsync");
+
+        using CancellationTokenSource resetCts = new(TimeSpan.FromSeconds(20));
+
+        Task<EmbeddingsResetResult> resetting = service.ResetAsync(
+            EmbeddingsResetScope.Saga,
+            resetCts.Token);
+
+        try
+        {
+
+            await pause.WaitUntilEnteredAsync();
+
+            Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
+
+            Assert.Equal(1, pause.FinalUse.Observation);
+
+            Assert.Equal(1, connections.LiveOwnerLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+            Assert.Equal(0, connections.LiveBorrowLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+            pause.Release();
+
+            await purgeEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(0, connections.LiveOwnerLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+            Assert.Equal(0, connections.LiveBorrowLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
+
+            Assert.Equal(1, connections.LiveOwnerLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+
+            Assert.Equal(0, connections.LiveBorrowLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+            allowPurge.TrySetResult();
+
+            _ = await resetting.WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
+
+        Assert.Equal(0, connections.LiveLeaseCount);
+
+    }
+
+    private async Task SeedLabelAsync(
+        SensitiveArtifactKind kind,
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(cancellationToken);
+
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO artifact_sensitivity (
+                LabelId, ArtifactKindCode, ArtifactId, SensitivityCode, ProvenanceModeCode,
+                ExactGenerationIds, GenerationBloom, SessionId, CampaignId, TurnId,
+                ArtifactRevision, ArtifactContentDigest, SensitivityDigest, ProducingPlanDigest,
+                ProducingAdmissionDigest, ProducingMaintenanceReceiptDigest, ArtifactLabelDigest,
+                CreatedAtUtc)
+            VALUES ($label, $kind, $artifact, 1, 1, $generations, NULL, NULL, NULL, NULL,
+                    1, zeroblob(32), zeroblob(32), NULL, NULL, NULL, zeroblob(32), $now);
+            """;
+
+        _ = command.Parameters.AddWithValue("$label", Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+        _ = command.Parameters.AddWithValue("$kind", (int)kind);
+
+        _ = command.Parameters.AddWithValue("$artifact", artifactId.ToString("D").ToUpperInvariant());
+
+        _ = command.Parameters.AddWithValue("$generations", Enumerable.Repeat((byte)7, 16).ToArray());
+
+        _ = command.Parameters.AddWithValue("$now", "2026-01-01T00:00:00.0000000Z");
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    private sealed class ScopedConnectionPurger(
+        ArcanumDbContext db,
+        RecordingScopedOrdinaryConnectionFactory connections,
+        TaskCompletionSource entered,
+        TaskCompletionSource release) : ICovenantSensitiveArtifactPurger
+    {
+
+        public async ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
+            IReadOnlyList<CovenantSensitivePurgeTarget> targets,
+            CancellationToken cancellationToken = default)
+        {
+
+            SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+            Result<IGrimoireOrdinaryConnectionLease> acquired = await connections.AcquireScopedAsync(
+                connection,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken);
+
+            Assert.True(acquired.IsSuccess);
+
+            await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+            entered.SetResult();
+
+            await release.Task.WaitAsync(cancellationToken);
+
+            return Result<CovenantSensitivePurgeOutcome>.Success(
+                new CovenantSensitivePurgeOutcome(
+                    [
+                        .. targets.Select(target => new CovenantSensitivePurgeResult(
+                            target.ArtifactId,
+                            target.Kind,
+                            CovenantSensitivePurgeDisposition.Unlabeled,
+                            CovenantErasureBlocker.None)),
+                    ],
+                    CovenantArtifactErasureProgress.Empty));
 
         }
 

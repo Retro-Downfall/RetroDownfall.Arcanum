@@ -143,6 +143,21 @@ public sealed class MemoryCommandTests
 
     [Fact]
 
+    public void Memory_search_rejects_empty_query_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "   "]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+    }
+
+    [Fact]
+
     public void Memory_lexicon_delete_is_explicit_and_calls_item_scoped_endpoint_after_yes()
     {
 

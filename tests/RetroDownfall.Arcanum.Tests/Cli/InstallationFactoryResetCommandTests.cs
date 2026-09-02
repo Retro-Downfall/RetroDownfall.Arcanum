@@ -28,6 +28,10 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("GlobalConsole")]
@@ -264,7 +268,45 @@ public sealed class InstallationFactoryResetCommandTests
     }
 
     [Fact]
-    public void Global_dry_run_outputs_only_the_plan_rebound_to_the_authenticated_inventory()
+    public void Fresh_global_dry_run_uses_stopped_host_planning_without_online_seams()
+    {
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
+
+        DataRetentionCovenantInventory disclosure = CreateOnlinePlan().Covenant!;
+
+        RecordingStoppedHostPlanner planner = new(
+            Result<StoppedHostInstallationResetPlan>.Success(
+                new StoppedHostInstallationResetPlan(plan, disclosure)));
+
+        ThrowingOnlinePlanValidator validator = new();
+
+        FakeInstallationResetOnlineDataHandoff handoff = new();
+
+        CliTestResult result = RunCommand(
+            new FakeInstallationResetService(
+                Result<InstallationResetPlan>.Failure(new Error(
+                    "Test.PublicPlanMustNotRun",
+                    "Fresh planning must use stopped-host authority."))),
+            ["--json", "data", "factory-reset", "--global", "--dry-run"],
+            onlinePlanValidator: validator,
+            onlineDataHandoff: handoff,
+            stoppedHostPlanner: planner);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        InstallationResetPlanRequest request = Assert.Single(planner.Requests);
+
+        Assert.Equal(InstallationResetScope.Global, request.Scope);
+
+        Assert.Equal(0, validator.CallCount);
+
+        Assert.Empty(handoff.BindCalls);
+
+    }
+
+    [Fact]
+    public void Global_dry_run_outputs_only_the_stopped_host_local_plan()
     {
 
         InstallationResetPlan localPlan = CreatePlan(InstallationResetScope.Global);
@@ -305,24 +347,20 @@ public sealed class InstallationFactoryResetCommandTests
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
-        OnlineBindCall bind = Assert.Single(handoff.BindCalls);
+        Assert.Empty(handoff.BindCalls);
 
-        Assert.Equal(InstallationResetScope.Global, bind.Request.Scope);
-
-        Assert.Same(localPlan, bind.LocalPlan);
-
-        Assert.Same(onlinePlan, bind.OnlinePlan);
+        Assert.Empty(validator.Plans);
 
         Assert.Empty(boundary.FreshCalls);
 
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
         Assert.Equal(
-            reboundPlan.PlanId,
+            localPlan.PlanId,
             document.RootElement.GetProperty("planId").GetString());
 
         Assert.Equal(
-            onlinePlan.PlanId,
+            localPlan.AcceptedBinding.DataPlanIds[0],
             document.RootElement
                 .GetProperty("acceptedBinding")
                 .GetProperty("dataPlanIds")[0]
@@ -331,7 +369,7 @@ public sealed class InstallationFactoryResetCommandTests
     }
 
     [Fact]
-    public void Global_apply_passes_only_the_rebound_plan_to_the_fresh_boundary()
+    public void Global_apply_passes_the_complete_stopped_host_wrapper_to_the_fresh_boundary()
     {
 
         InstallationResetPlan localPlan = CreatePlan(InstallationResetScope.Global);
@@ -376,14 +414,20 @@ public sealed class InstallationFactoryResetCommandTests
 
         Assert.Equal(InstallationResetScope.Global, fresh.Request.Scope);
 
-        Assert.Same(reboundPlan, fresh.ConfirmedPlan);
+        Assert.Same(localPlan, fresh.ConfirmedPlan.Plan);
+
+        Assert.NotNull(fresh.ConfirmedPlan.CovenantDisclosure);
+
+        Assert.Empty(validator.Plans);
+
+        Assert.Empty(handoff.BindCalls);
 
         Assert.Empty(boundary.Requests);
 
     }
 
     [Fact]
-    public void Binding_failure_stops_before_disclosure_confirmation_or_active_publication()
+    public void Stopped_host_planning_failure_stops_before_disclosure_confirmation_or_publication()
     {
 
         InstallationResetPlan localPlan = CreatePlan(InstallationResetScope.Global);
@@ -422,7 +466,11 @@ public sealed class InstallationFactoryResetCommandTests
                     new InstallationResetOnlinePlanValidation(onlinePlan)),
             },
             onlineDataHandoff: handoff,
-            confirmationPrompt: prompt);
+            confirmationPrompt: prompt,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Failure(new Error(
+                    ErrorCodes.Data.PlanChanged,
+                    "The local candidates changed."))));
 
         Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
 
@@ -482,7 +530,7 @@ public sealed class InstallationFactoryResetCommandTests
     }
 
     [Fact]
-    public void Dry_run_validates_the_canonical_data_plan_through_the_authenticated_host()
+    public void Dry_run_does_not_validate_the_local_plan_through_the_authenticated_host()
     {
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
@@ -497,12 +545,12 @@ public sealed class InstallationFactoryResetCommandTests
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
-        Assert.Equal(plan, Assert.Single(validator.Plans));
+        Assert.Empty(validator.Plans);
 
     }
 
     [Fact]
-    public void Authenticated_host_plan_mismatch_stops_before_confirmation_or_apply()
+    public void Stopped_host_plan_mismatch_stops_before_confirmation_or_apply()
     {
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
@@ -519,11 +567,17 @@ public sealed class InstallationFactoryResetCommandTests
         CliTestResult result = RunCommand(
             service,
             ["--yes", "data", "factory-reset", "--global", "--apply", "--force"],
-            onlinePlanValidator: validator);
+            onlinePlanValidator: validator,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Failure(new Error(
+                    ErrorCodes.Data.PlanChanged,
+                    "The stopped-host plan changed."))));
 
         Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
 
         Assert.Empty(service.ApplyRequests);
+
+        Assert.Empty(validator.Plans);
 
     }
 
@@ -636,7 +690,7 @@ public sealed class InstallationFactoryResetCommandTests
     }
 
     [Fact]
-    public void Automated_global_apply_discloses_the_matching_online_inventory_without_breaking_json()
+    public void Automated_global_apply_discloses_the_matching_local_inventory_without_breaking_json()
     {
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
@@ -663,7 +717,12 @@ public sealed class InstallationFactoryResetCommandTests
         CliTestResult result = RunCommand(
             service,
             ["--json", "--yes", "data", "factory-reset", "--global", "--apply", "--force"],
-            onlinePlanValidator: validator);
+            onlinePlanValidator: validator,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Success(
+                    new StoppedHostInstallationResetPlan(
+                        plan,
+                        onlinePlan.Covenant))));
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
@@ -683,7 +742,7 @@ public sealed class InstallationFactoryResetCommandTests
 
         Assert.True(guide > count);
 
-        Assert.Single(service.PlanRequests);
+        Assert.Empty(validator.Plans);
 
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
@@ -692,7 +751,7 @@ public sealed class InstallationFactoryResetCommandTests
     }
 
     [Fact]
-    public void Automated_all_apply_discloses_the_matching_global_online_inventory()
+    public void Automated_all_apply_discloses_the_matching_global_local_inventory()
     {
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.All);
@@ -719,7 +778,12 @@ public sealed class InstallationFactoryResetCommandTests
         CliTestResult result = RunCommand(
             service,
             ["--json", "--yes", "data", "factory-reset", "--all", "--apply", "--force"],
-            onlinePlanValidator: validator);
+            onlinePlanValidator: validator,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Success(
+                    new StoppedHostInstallationResetPlan(
+                        plan,
+                        onlinePlan.Covenant))));
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
@@ -736,6 +800,8 @@ public sealed class InstallationFactoryResetCommandTests
             StringComparison.Ordinal);
 
         Assert.Single(service.ApplyRequests);
+
+        Assert.Empty(validator.Plans);
 
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
@@ -773,11 +839,18 @@ public sealed class InstallationFactoryResetCommandTests
             ["data", "factory-reset", "--global", "--apply"],
             interactive: true,
             input: "decline\n",
-            onlinePlanValidator: validator);
+            onlinePlanValidator: validator,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Success(
+                    new StoppedHostInstallationResetPlan(
+                        plan,
+                        onlinePlan.Covenant))));
 
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(service.ApplyRequests);
+
+        Assert.Empty(validator.Plans);
 
         int disclosure = result.Error.IndexOf(
             CovenantExternalRetentionDisclosure.DestructiveOperationText,
@@ -831,11 +904,18 @@ public sealed class InstallationFactoryResetCommandTests
             ["data", "factory-reset", "--all", "--apply"],
             interactive: true,
             input: "decline\n",
-            onlinePlanValidator: validator);
+            onlinePlanValidator: validator,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Success(
+                    new StoppedHostInstallationResetPlan(
+                        plan,
+                        onlinePlan.Covenant))));
 
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(service.ApplyRequests);
+
+        Assert.Empty(validator.Plans);
 
         int disclosure = result.Error.IndexOf(
             CovenantExternalRetentionDisclosure.DestructiveOperationText,
@@ -860,7 +940,7 @@ public sealed class InstallationFactoryResetCommandTests
     }
 
     [Fact]
-    public void Global_apply_without_an_authenticated_inventory_stops_before_confirmation_or_apply()
+    public void Global_apply_without_a_local_Covenant_inventory_stops_before_confirmation_or_apply()
     {
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
@@ -882,7 +962,11 @@ public sealed class InstallationFactoryResetCommandTests
                 Result = Result<InstallationResetOnlinePlanValidation>.Success(
                     new InstallationResetOnlinePlanValidation(null)),
             },
-            confirmationPrompt: prompt);
+            confirmationPrompt: prompt,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Failure(new Error(
+                    ErrorCodes.Data.InventoryUnavailable,
+                    "The local Covenant inventory is unavailable."))));
 
         Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
 
@@ -900,7 +984,7 @@ public sealed class InstallationFactoryResetCommandTests
     }
 
     [Fact]
-    public void Global_dry_run_without_a_Covenant_aggregate_fails_before_binding_or_output()
+    public void Global_dry_run_without_a_local_Covenant_aggregate_fails_before_output()
     {
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
@@ -917,7 +1001,11 @@ public sealed class InstallationFactoryResetCommandTests
                     new InstallationResetOnlinePlanValidation(
                         CreateOnlinePlan() with { Covenant = null })),
             },
-            onlineDataHandoff: handoff);
+            onlineDataHandoff: handoff,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Failure(new Error(
+                    ErrorCodes.Data.InventoryUnavailable,
+                    "The local Covenant inventory is unavailable."))));
 
         Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
 
@@ -990,7 +1078,7 @@ public sealed class InstallationFactoryResetCommandTests
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
-        Assert.Equal(plan, Assert.Single(boundary.FreshCalls).ConfirmedPlan);
+        Assert.Equal(plan, Assert.Single(boundary.FreshCalls).ConfirmedPlan.Plan);
 
     }
 
@@ -1310,7 +1398,8 @@ public sealed class InstallationFactoryResetCommandTests
         IInstallationResetOnlineDataHandoff? onlineDataHandoff = null,
         IInstallationResetConfirmationPrompt? confirmationPrompt = null,
         IInstallationStartupProbe? startupProbe = null,
-        IFullInstallationResetAttestationFileReader? attestationReader = null)
+        IFullInstallationResetAttestationFileReader? attestationReader = null,
+        IInstallationResetStoppedHostPlanner? stoppedHostPlanner = null)
     {
 
         ServiceCollection services = new();
@@ -1322,6 +1411,16 @@ public sealed class InstallationFactoryResetCommandTests
         services.RemoveAll<IInstallationResetService>();
 
         services.AddSingleton(service);
+
+        services.RemoveAll<IInstallationResetStoppedHostPlanner>();
+
+        services.AddSingleton(
+            stoppedHostPlanner ?? new DelegatingStoppedHostPlanner(service));
+
+        services.RemoveAll<IGrimoireCliStoppedHostInitialization>();
+
+        services.AddSingleton<IGrimoireCliStoppedHostInitialization>(provider =>
+            new ImmediateStoppedHostInitialization(provider));
 
         services.RemoveAll<IInstallationResetApplyBoundary>();
 
@@ -1422,6 +1521,98 @@ public sealed class InstallationFactoryResetCommandTests
 
     }
 
+    private sealed class RecordingStoppedHostPlanner(
+        Result<StoppedHostInstallationResetPlan> result)
+        : IInstallationResetStoppedHostPlanner
+    {
+
+        public List<InstallationResetPlanRequest> Requests { get; } = [];
+
+        public Task<Result<StoppedHostInstallationResetPlan>>
+            PlanUnderStoppedHostLockAsync(
+                InstallationResetPlanRequest request,
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken)
+        {
+
+            Requests.Add(request);
+
+            return Task.FromResult(result);
+
+        }
+
+    }
+
+    private sealed class DelegatingStoppedHostPlanner(
+        IInstallationResetService service) : IInstallationResetStoppedHostPlanner
+    {
+
+        public async Task<Result<StoppedHostInstallationResetPlan>>
+            PlanUnderStoppedHostLockAsync(
+                InstallationResetPlanRequest request,
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken)
+        {
+
+            Result<InstallationResetPlan> planned = await service
+                .PlanAsync(request, cancellationToken).ConfigureAwait(false);
+
+            return planned.IsFailure
+                ? Result<StoppedHostInstallationResetPlan>.Failure(planned.Error)
+                : Result<StoppedHostInstallationResetPlan>.Success(
+                    new StoppedHostInstallationResetPlan(
+                        planned.Value,
+                        request.Scope is InstallationResetScope.Workspace
+                            ? null
+                            : CreateOnlinePlan().Covenant));
+
+        }
+
+    }
+
+    private sealed class ImmediateStoppedHostInitialization(
+        IServiceProvider provider) : IGrimoireCliStoppedHostInitialization
+    {
+
+        public Task<T> RunAsync<T>(
+            Func<IServiceProvider,
+                IStoppedHostGrimoireAuthorityIssuer,
+                CancellationToken,
+                Task<T>> operation,
+            CancellationToken cancellationToken) =>
+            operation(provider, ThrowingStoppedHostIssuer.Instance, cancellationToken);
+
+    }
+
+    private sealed class ThrowingStoppedHostIssuer : IStoppedHostGrimoireAuthorityIssuer
+    {
+
+        public static ThrowingStoppedHostIssuer Instance { get; } = new();
+
+        public Result<IStoppedHostGrimoireConnectionAuthority>
+            IssueStoppedHostInstallationResetPlanReadAuthority() => Throw();
+
+        public Result<IStoppedHostGrimoireConnectionAuthority>
+            IssueStoppedHostInstallationResetWorkspaceResolutionAuthority() => Throw();
+
+        public Result<IStoppedHostGrimoireConnectionAuthority>
+            IssueStoppedHostInstallationResetIdentityReadAuthority() => Throw();
+
+        public Result<IStoppedHostGrimoireConnectionAuthority>
+            IssueStoppedHostInstallationResetHostToolsEvidenceReadAuthority() => Throw();
+
+        public Result<IStoppedHostGrimoireConnectionAuthority>
+            IssueStoppedHostInstallationResetApplyAuthority() => Throw();
+
+        public Result<IStoppedHostGrimoireConnectionAuthority>
+            IssueStoppedHostMarkerPairResetAuthority() => Throw();
+
+        private static Result<IStoppedHostGrimoireConnectionAuthority> Throw() =>
+            throw new InvalidOperationException(
+                "The planner fake must not mint a database capability.");
+
+    }
+
     private sealed record OnlineBindCall(
         InstallationResetPlanRequest Request,
         InstallationResetPlan LocalPlan,
@@ -1482,7 +1673,7 @@ public sealed class InstallationFactoryResetCommandTests
 
     private sealed record FreshApplyCall(
         InstallationResetPlanRequest Request,
-        InstallationResetPlan ConfirmedPlan);
+        StoppedHostInstallationResetPlan ConfirmedPlan);
 
     private sealed class RecordingApplyBoundary(
         IInstallationResetService service) : IInstallationResetApplyBoundary
@@ -1531,14 +1722,16 @@ public sealed class InstallationFactoryResetCommandTests
 
         public Task<Result<InstallationResetResult>> ApplyFreshAsync(
             InstallationResetPlanRequest request,
-            InstallationResetPlan confirmedPlan,
+            StoppedHostInstallationResetPlan confirmedPlan,
             CancellationToken cancellationToken)
         {
 
             FreshCalls.Add(new FreshApplyCall(request, confirmedPlan));
 
             return service.ApplyAsync(
-                new InstallationResetApplyRequest(request, confirmedPlan.PlanId),
+                new InstallationResetApplyRequest(
+                    request,
+                    confirmedPlan.Plan.PlanId),
                 cancellationToken);
 
         }

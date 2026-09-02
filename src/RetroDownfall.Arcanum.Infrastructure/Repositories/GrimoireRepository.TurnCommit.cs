@@ -75,10 +75,21 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
         }
 
-        if (connection.State != System.Data.ConnectionState.Open)
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+            .AcquireScopedAsync(
+                connection,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            return Result<TurnCommitReceipt>.Failure(acquired.Error);
         }
+
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+        connection = lease.Connection;
 
         await using SqliteTransaction sqliteTransaction = connection.BeginTransaction(deferred: false);
 
@@ -102,6 +113,11 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
                 await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
+                await PauseAfterTurnTransactionAsync(
+                    GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
+                    resolved,
+                    cancellationToken).ConfigureAwait(false);
+
                 return Result<TurnCommitReceipt>.Success(
                     new TurnCommitReceipt(request.AssistantEntryId, resolved, Replayed: true, []));
 
@@ -115,6 +131,11 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             {
 
                 await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                await PauseAfterTurnTransactionAsync(
+                    GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
+                    request.Outcome,
+                    cancellationToken).ConfigureAwait(false);
 
                 return applied.Error;
 
@@ -136,6 +157,11 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
                     await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
+                    await PauseAfterTurnTransactionAsync(
+                        GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
+                        request.Outcome,
+                        cancellationToken).ConfigureAwait(false);
+
                     return published.Error;
 
                 }
@@ -154,6 +180,11 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
                 await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
+                await PauseAfterTurnTransactionAsync(
+                    GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
+                    request.Outcome,
+                    cancellationToken).ConfigureAwait(false);
+
                 return capacity.Error;
 
             }
@@ -169,6 +200,11 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
                 await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
+                await PauseAfterTurnTransactionAsync(
+                    GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
+                    request.Outcome,
+                    cancellationToken).ConfigureAwait(false);
+
                 return labelled.Error;
 
             }
@@ -180,6 +216,11 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 cancellationToken).ConfigureAwait(false);
 
             await efTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            await PauseAfterTurnTransactionAsync(
+                GrimoireScopedConsumerFinalUseKind.TransactionCommitted,
+                request.Outcome,
+                cancellationToken).ConfigureAwait(false);
 
             return Result<TurnCommitReceipt>.Success(
                 new TurnCommitReceipt(
@@ -194,11 +235,26 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             await efTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
+            await PauseAfterTurnTransactionAsync(
+                GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
+                request.Outcome,
+                CancellationToken.None).ConfigureAwait(false);
+
             throw;
 
         }
 
     }
+
+    private static ValueTask PauseAfterTurnTransactionAsync(
+        GrimoireScopedConsumerFinalUseKind kind,
+        AssistantFinalizationOutcome outcome,
+        CancellationToken cancellationToken) =>
+        GrimoireScopedConsumerTestSeam.PauseAsync(
+            "GrimoireRepository.CommitWithinImmediateTransactionAsync",
+            kind,
+            (int)outcome,
+            cancellationToken);
 
     /// <summary>
     /// Writes the assistant entry's information-flow label inside the finalization transaction.

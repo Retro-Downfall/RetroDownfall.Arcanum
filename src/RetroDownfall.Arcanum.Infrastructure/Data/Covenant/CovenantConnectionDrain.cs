@@ -46,6 +46,13 @@ internal interface ICovenantConnectionDrain
     /// </summary>
     IDisposable Register(SqliteConnection connection);
 
+    IDisposable Register(SqliteConnection connection, Action afterPhysicalClose) => Register(connection);
+
+    /// <summary>
+    /// Clears the exact pool of one physically closed handle and observes that it remains closed.
+    /// </summary>
+    Result ClearExactPoolAfterClose(SqliteConnection connection);
+
     /// <summary>
     /// Closes every enrolled direct handle, clears every idle pool, and refuses over any handle it
     /// could not close.
@@ -85,6 +92,8 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 
     private readonly Dictionary<SqliteConnection, int> _handles = [];
 
+    private readonly Dictionary<SqliteConnection, List<Action>> _afterClose = [];
+
     public IDisposable Register(SqliteConnection connection)
     {
 
@@ -100,6 +109,61 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         }
 
         return new Enrolment(this, connection);
+
+    }
+
+    public IDisposable Register(SqliteConnection connection, Action afterPhysicalClose)
+    {
+
+        ArgumentNullException.ThrowIfNull(afterPhysicalClose);
+
+        IDisposable enrolment = Register(connection);
+
+        lock (_gate)
+        {
+
+            if (!_afterClose.TryGetValue(connection, out List<Action>? callbacks))
+            {
+
+                callbacks = [];
+                _afterClose.Add(connection, callbacks);
+
+            }
+
+            callbacks.Add(afterPhysicalClose);
+
+        }
+
+        return new CallbackEnrolment(this, connection, afterPhysicalClose, enrolment);
+
+    }
+
+    public Result ClearExactPoolAfterClose(SqliteConnection connection)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        if (!IsClosed(connection))
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "A Grimoire connection must be physically closed before its exact pool is cleared.");
+
+        }
+
+        SqliteConnection.ClearPool(connection);
+
+        if (!IsClosed(connection))
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "A Grimoire connection reopened while its exact pool was being cleared.");
+
+        }
+
+        return Result.Success();
 
     }
 
@@ -124,6 +188,8 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
                 {
 
                     _ = closed.Add(handle);
+
+                    NotifyPhysicalClose(handle);
 
                 }
 
@@ -172,6 +238,79 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 
         return Result.Success();
 
+    }
+
+    private void NotifyPhysicalClose(SqliteConnection connection)
+    {
+
+        Action[] callbacks;
+
+        lock (_gate)
+        {
+
+            callbacks = _afterClose.TryGetValue(connection, out List<Action>? registered)
+                ? [.. registered]
+                : [];
+
+        }
+
+        foreach (Action callback in callbacks)
+        {
+
+            callback();
+
+        }
+
+    }
+
+    private void UnregisterCallback(SqliteConnection connection, Action callback)
+    {
+
+        lock (_gate)
+        {
+
+            if (_afterClose.TryGetValue(connection, out List<Action>? callbacks))
+            {
+
+                _ = callbacks.Remove(callback);
+
+                if (callbacks.Count == 0)
+                {
+
+                    _ = _afterClose.Remove(connection);
+
+                }
+
+            }
+
+        }
+
+    }
+
+    private sealed class CallbackEnrolment(
+        CovenantConnectionDrain owner,
+        SqliteConnection connection,
+        Action callback,
+        IDisposable inner) : IDisposable
+    {
+        private IDisposable? _inner = inner;
+
+        public void Dispose()
+        {
+
+            IDisposable? current = Interlocked.Exchange(ref _inner, null);
+
+            if (current is null)
+            {
+
+                return;
+
+            }
+
+            owner.UnregisterCallback(connection, callback);
+            current.Dispose();
+
+        }
     }
 
     private static bool IsClosed(SqliteConnection handle)

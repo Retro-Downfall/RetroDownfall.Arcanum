@@ -23,8 +23,8 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.A2A;
 
 /// <summary>
-/// Outbound Sending outcomes: cost attribution (#60), in-flight progress (#61), and continuation of a
-/// remote that stops to ask for something (#64).
+/// Outbound Sending outcomes: cost attribution, in-flight progress, and continuation of a
+/// remote that stops to ask for something.
 /// </summary>
 [Collection("OutboundUrlGuardDns")]
 public sealed class A2ASendingOutcomeTests : IDisposable

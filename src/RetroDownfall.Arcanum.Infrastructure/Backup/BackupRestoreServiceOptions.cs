@@ -69,4 +69,15 @@ internal sealed class BackupRestoreServiceOptions
     /// </summary>
     internal Action? BeforeReversalRenameForTests { get; init; }
 
+    /// <summary>
+    /// Invoked with each archive entry as the staged generation is composed, before that entry is
+    /// laid down.
+    /// </summary>
+    /// <remarks>
+    /// The only seam into the second full-size copy of a restored generation. What happens between two
+    /// entries of that copy - a cancellation, most of all - cannot be reached from a phase hook,
+    /// because the whole composition happens inside one phase.
+    /// </remarks>
+    internal Action<string>? BeforeStagedEntryComposeForTests { get; init; }
+
 }

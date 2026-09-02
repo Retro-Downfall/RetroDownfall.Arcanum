@@ -22,6 +22,14 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 {
 
+    /// <summary>
+    /// Retention bound for <see cref="Messages"/>. A chat bubble is heavier per item than
+    /// <c>ChronicleEntryViewModel</c> (each can hold up to
+    /// <see cref="ChatMessageViewModel.DefaultMaxContentChars"/> characters), so this matches
+    /// <c>ChronicleViewModel.MaxEntries</c> rather than the larger <c>FoundryFloorViewModel.MaxLines</c>.
+    /// </summary>
+    public const int MaxMessages = 2000;
+
     private readonly ITomeDataSource _dataSource;
 
     private readonly INavigationService _navigation;
@@ -181,7 +189,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         InputText = string.Empty;
 
-        Messages.Add(new ChatMessageViewModel("user", prompt));
+        AddMessage(new ChatMessageViewModel("user", prompt));
 
         _streamingAssistant = null;
         _streamingReasoning = null;
@@ -589,6 +597,31 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
     }
 
+    /// <summary>Single gateway every append site funnels through, so the retention cap in
+    /// <see cref="EnforceMessageCap"/> is enforced regardless of which of the many call sites added
+    /// the message — <see cref="Messages"/> has no one natural append method of its own to hang the
+    /// cap on.</summary>
+    private void AddMessage(ChatMessageViewModel message)
+    {
+
+        Messages.Add(message);
+
+        EnforceMessageCap();
+
+    }
+
+    private void EnforceMessageCap()
+    {
+
+        while (Messages.Count > MaxMessages)
+        {
+
+            Messages.RemoveAt(0);
+
+        }
+
+    }
+
     private void StartSessionObservation()
     {
 
@@ -685,7 +718,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
                 break;
 
             case IntelligenceEventType.Status:
-                Messages.Add(new ChatMessageViewModel("status", ev.Message));
+                AddMessage(new ChatMessageViewModel("status", ev.Message));
                 break;
 
             case IntelligenceEventType.SessionBound:
@@ -752,7 +785,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
             _streamingAssistant = new ChatMessageViewModel("assistant", data);
 
-            Messages.Add(_streamingAssistant);
+            AddMessage(_streamingAssistant);
 
             return;
 
@@ -772,7 +805,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         if (_streamingReasoning is null)
         {
             _streamingReasoning = new ChatMessageViewModel("reasoning", data);
-            Messages.Add(_streamingReasoning);
+            AddMessage(_streamingReasoning);
             return;
         }
 
@@ -822,7 +855,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         _toolCardsByCallId[callId] = card;
 
-        Messages.Add(new ChatMessageViewModel("tool", name, card));
+        AddMessage(new ChatMessageViewModel("tool", name, card));
 
     }
 
@@ -842,7 +875,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         }
 
-        Messages.Add(new ChatMessageViewModel("tool", result));
+        AddMessage(new ChatMessageViewModel("tool", result));
 
     }
 
@@ -864,14 +897,14 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         }
 
-        Messages.Add(new ChatMessageViewModel("error", error));
+        AddMessage(new ChatMessageViewModel("error", error));
 
     }
 
     private void AppendInlineError(string message)
     {
 
-        Messages.Add(new ChatMessageViewModel("error", message));
+        AddMessage(new ChatMessageViewModel("error", message));
 
     }
 
@@ -933,13 +966,13 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
             _toolCardsByCallId[callId] = card;
 
-            Messages.Add(new ChatMessageViewModel("tool", entry.ToolName ?? "tool", card, entry.Id, entry.IsPinned));
+            AddMessage(new ChatMessageViewModel("tool", entry.ToolName ?? "tool", card, entry.Id, entry.IsPinned));
 
             return;
 
         }
 
-        Messages.Add(new ChatMessageViewModel(entry.Role, entry.Content, entryId: entry.Id, isPinned: entry.IsPinned));
+        AddMessage(new ChatMessageViewModel(entry.Role, entry.Content, entryId: entry.Id, isPinned: entry.IsPinned));
 
     }
 

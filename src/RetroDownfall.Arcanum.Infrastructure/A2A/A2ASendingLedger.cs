@@ -256,7 +256,7 @@ internal sealed class A2ASendingLedger(
     internal const int CheckpointVersion = 1;
 
     /// <summary>
-    /// A Sending has no whole-operation deadline (#55), so the lease marks ownership rather than sizing
+    /// A Sending has no whole-operation deadline, so the lease marks ownership rather than sizing
     /// the work: <see cref="A2ASendingLeaseRenewer"/> renews it for as long as this process is holding
     /// the Sending, and it lapses when the process does.
     /// </summary>

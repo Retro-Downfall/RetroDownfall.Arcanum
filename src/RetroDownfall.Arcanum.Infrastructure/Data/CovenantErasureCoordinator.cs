@@ -44,6 +44,7 @@ internal interface ICovenantErasureTransition
     /// </remarks>
     Task<Result<Guid>> ApplyCanonicalErasureAsync(
         CovenantExclusiveOperation operation,
+        CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken);
 
     /// <summary>Clears every pool and drains direct handles through the central connection owner.</summary>
@@ -58,16 +59,22 @@ internal interface ICovenantErasureTransition
     /// checkpointer discards its result, which is correct for shutdown and useless as a proof that
     /// erased pages are actually gone.
     /// </remarks>
-    Task<Result> TruncateWalAsync(CancellationToken cancellationToken);
+    Task<Result> TruncateWalAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Inventories sidecars and staging artifacts, then compacts, using a verified SQLCipher
     /// export-and-atomic-replace when <c>VACUUM</c> alone cannot prove the freed pages are gone.
     /// </summary>
-    Task<Result> CompactAsync(CancellationToken cancellationToken);
+    Task<Result> CompactAsync(
+        CovenantV3CompactionCapabilities capabilities,
+        CancellationToken cancellationToken);
 
     /// <summary>Installs the empty accelerator and runs rank-1 integrity over it.</summary>
-    Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken);
+    Task<Result> InitializeAcceleratorAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Clears pools and handles a final time and proves the absence of every sidecar, journal, temp,
@@ -79,7 +86,9 @@ internal interface ICovenantErasureTransition
     /// Reopens read-only on the unpublished candidate state, on a handle that cannot create WAL or
     /// SHM, verifies both tiers, and closes that handle.
     /// </summary>
-    Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(CancellationToken cancellationToken);
+    Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Publishes the committed dataset, master, authority, and capability snapshot while the caller's
@@ -754,6 +763,21 @@ internal sealed class CovenantErasureCoordinator(
                 async (_, token) =>
                 {
 
+                    Result<CovenantV3MaintenanceCapability> minted =
+                        await CovenantV3MaintenanceCapability.MintAsync(
+                            lease,
+                            CovenantV3MaintenancePurpose.CanonicalErasure,
+                            token).ConfigureAwait(false);
+
+                    if (minted.IsFailure)
+                    {
+
+                        return Result.Failure(minted.Error);
+
+                    }
+
+                    await using CovenantV3MaintenanceCapability capability = minted.Value;
+
                     Result erased = await EraseDatabaseArtifactsAsync(
                         datasetGeneration,
                         authority,
@@ -770,7 +794,7 @@ internal sealed class CovenantErasureCoordinator(
                     progress.EffectAttempted = true;
 
                     Result<Guid> applied = await _transition
-                        .ApplyCanonicalErasureAsync(state.Operation, token)
+                        .ApplyCanonicalErasureAsync(state.Operation, capability, token)
                         .ConfigureAwait(false);
 
                     return applied.IsFailure ? Result.Failure(applied.Error) : Result.Success();
@@ -821,7 +845,11 @@ internal sealed class CovenantErasureCoordinator(
                 state,
                 ownerId,
                 CovenantResetPhase.WalTruncated,
-                (_, token) => _transition.TruncateWalAsync(token),
+                async (_, token) => await RunWithV3CapabilityAsync(
+                    lease,
+                    CovenantV3MaintenancePurpose.WalTruncation,
+                    _transition.TruncateWalAsync,
+                    token).ConfigureAwait(false),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -830,7 +858,22 @@ internal sealed class CovenantErasureCoordinator(
                 state,
                 ownerId,
                 CovenantResetPhase.DatabaseCompacted,
-                (_, token) => _transition.CompactAsync(token),
+                async (_, token) =>
+                {
+
+                    Result<CovenantV3CompactionCapabilities> minted =
+                        await MintCompactionCapabilitiesAsync(lease, token).ConfigureAwait(false);
+
+                    if (minted.IsFailure)
+                    {
+
+                        return Result.Failure(minted.Error);
+
+                    }
+
+                    return await _transition.CompactAsync(minted.Value, token).ConfigureAwait(false);
+
+                },
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -839,7 +882,11 @@ internal sealed class CovenantErasureCoordinator(
                 state,
                 ownerId,
                 CovenantResetPhase.AcceleratorInitialized,
-                (_, token) => _transition.InitializeAcceleratorAsync(token),
+                async (_, token) => await RunWithV3CapabilityAsync(
+                    lease,
+                    CovenantV3MaintenancePurpose.AcceleratorInitialization,
+                    _transition.InitializeAcceleratorAsync,
+                    token).ConfigureAwait(false),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -848,7 +895,11 @@ internal sealed class CovenantErasureCoordinator(
                 state,
                 ownerId,
                 CovenantResetPhase.FinalWalTruncated,
-                (_, token) => _transition.TruncateWalAsync(token),
+                async (_, token) => await RunWithV3CapabilityAsync(
+                    lease,
+                    CovenantV3MaintenancePurpose.WalTruncation,
+                    _transition.TruncateWalAsync,
+                    token).ConfigureAwait(false),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -861,8 +912,23 @@ internal sealed class CovenantErasureCoordinator(
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
+            Result<CovenantV3MaintenanceCapability> reopenCapability =
+                await CovenantV3MaintenanceCapability.MintAsync(
+                    lease,
+                    CovenantV3MaintenancePurpose.CandidateReopenVerification,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (reopenCapability.IsFailure)
+            {
+
+                throw new CovenantErasureStepFailedException(reopenCapability.Error);
+
+            }
+
+            await using CovenantV3MaintenanceCapability reopen = reopenCapability.Value;
+
             Result<CovenantVerifiedCandidateState> verified =
-                await _transition.VerifyReopenAsync(cancellationToken).ConfigureAwait(false);
+                await _transition.VerifyReopenAsync(reopen, cancellationToken).ConfigureAwait(false);
 
             if (verified.IsFailure)
             {
@@ -1338,6 +1404,73 @@ internal sealed class CovenantErasureCoordinator(
             cursor = batch.Value.NextCursor;
 
         }
+
+    }
+
+    private static async Task<Result> RunWithV3CapabilityAsync(
+        ICovenantExclusiveOperationLease lease,
+        CovenantV3MaintenancePurpose purpose,
+        Func<CovenantV3MaintenanceCapability, CancellationToken, Task<Result>> work,
+        CancellationToken cancellationToken)
+    {
+
+        Result<CovenantV3MaintenanceCapability> minted =
+            await CovenantV3MaintenanceCapability.MintAsync(lease, purpose, cancellationToken)
+                .ConfigureAwait(false);
+
+        if (minted.IsFailure)
+        {
+
+            return Result.Failure(minted.Error);
+
+        }
+
+        await using CovenantV3MaintenanceCapability capability = minted.Value;
+
+        return await work(capability, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task<Result<CovenantV3CompactionCapabilities>> MintCompactionCapabilitiesAsync(
+        ICovenantExclusiveOperationLease lease,
+        CancellationToken cancellationToken)
+    {
+
+        List<CovenantV3MaintenanceCapability> minted = [];
+
+        foreach (CovenantV3MaintenancePurpose purpose in new[]
+        {
+            CovenantV3MaintenancePurpose.CompactionVacuum,
+            CovenantV3MaintenancePurpose.CompactionExport,
+            CovenantV3MaintenancePurpose.CompactionExportVerification,
+            CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore,
+        })
+        {
+
+            Result<CovenantV3MaintenanceCapability> capability =
+                await CovenantV3MaintenanceCapability.MintAsync(lease, purpose, cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (capability.IsFailure)
+            {
+
+                foreach (CovenantV3MaintenanceCapability previous in minted)
+                {
+
+                    await previous.DisposeAsync().ConfigureAwait(false);
+
+                }
+
+                return Result<CovenantV3CompactionCapabilities>.Failure(capability.Error);
+
+            }
+
+            minted.Add(capability.Value);
+
+        }
+
+        return Result<CovenantV3CompactionCapabilities>.Success(
+            new CovenantV3CompactionCapabilities(minted[0], minted[1], minted[2], minted[3]));
 
     }
 

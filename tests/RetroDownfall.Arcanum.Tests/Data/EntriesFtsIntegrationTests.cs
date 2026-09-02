@@ -99,7 +99,11 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
             _db,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            attachmentIndex: null,
+            covenantKernel: null,
+            FixtureOrdinaryConnectionFactory.For(_db),
+            FixtureLabeledArtifactGuard.For(_db));
 
         string results = await repository.SearchArchivesAsync("moonstone", maxResults: 10, CancellationToken.None);
 
@@ -113,7 +117,11 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(
+            _db!,
+            new NoOpSessionAttachmentStore(),
+            _fixture.CreateOptionsMonitor(),
+            FixtureOrdinaryConnectionFactory.For(_db!));
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Hidden title", CancellationToken.None);
 

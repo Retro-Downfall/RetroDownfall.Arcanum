@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,11 +18,33 @@ internal static class SqliteBusyRetry
 
     private const int BaseDelayMilliseconds = 50;
 
+    /// <summary>
+    /// How long <see cref="ExecuteAsync{T}"/> keeps retrying SQLITE_BUSY/LOCKED before it gives up,
+    /// for a caller that supplies no deadline of its own.
+    /// </summary>
+    /// <remarks>
+    /// The bound a single attempt can consume is not the 5000 ms
+    /// <c>CovenantSqliteConnectionInitializer.BusyTimeoutMs</c> PRAGMA — that only governs the native
+    /// busy-handler inside one step. <c>Microsoft.Data.Sqlite</c> wraps every command, including
+    /// <c>BEGIN IMMEDIATE</c>, in its own retry loop bounded by
+    /// <see cref="Microsoft.Data.Sqlite.SqliteConnection.DefaultTimeout"/>, which defaults to 30
+    /// seconds; <c>CampaignRepository.AddAsync</c> already lowers both <c>DefaultTimeout</c> and
+    /// <c>busy_timeout</c> before its own <c>BeginTransaction(deferred: false)</c> for exactly this
+    /// reason. A deadline set to that same 30 second per-attempt bound would let a single SQLITE_BUSY
+    /// exhaust it before this loop ever retries, so the default has to clear several multiples of it:
+    /// long enough that an ordinary exclusive-maintenance hold still resolves normally on every one of
+    /// the 155 production call sites this default reaches, short enough that a caller with no
+    /// cancellation of its own — an HTTP request the host never put a server-side timeout on — fails
+    /// closed instead of hanging the process forever behind a handle that will not let go.
+    /// </remarks>
+    private static readonly TimeSpan DefaultDeadline = TimeSpan.FromMinutes(2);
+
     public static async Task ExecuteAsync(
         Func<Task> action,
         CancellationToken cancellationToken = default,
         Func<int, Exception, CancellationToken, ValueTask>? retrying = null,
-        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        TimeSpan? deadline = null)
     {
         _ = await ExecuteAsync(
             async () =>
@@ -31,16 +55,22 @@ internal static class SqliteBusyRetry
             },
             cancellationToken,
             retrying,
-            delayAsync).ConfigureAwait(false);
+            delayAsync,
+            deadline).ConfigureAwait(false);
     }
 
     public static async Task<T> ExecuteAsync<T>(
         Func<Task<T>> action,
         CancellationToken cancellationToken = default,
         Func<int, Exception, CancellationToken, ValueTask>? retrying = null,
-        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        TimeSpan? deadline = null)
     {
         int attempt = 1;
+
+        long startedAt = Stopwatch.GetTimestamp();
+
+        TimeSpan bound = deadline ?? DefaultDeadline;
 
         while (true)
         {
@@ -51,6 +81,18 @@ internal static class SqliteBusyRetry
             catch (Exception ex) when (
                 IsBusyOrLocked(ex))
             {
+                // Computed once and reused for both the comparison and the throw below - not
+                // re-measured at the throw site, which would report a slightly later timestamp than
+                // the one this check actually acted on.
+                TimeSpan elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+                if (elapsed >= bound)
+                {
+
+                    throw new GrimoireBusyTimeoutException(attempt, bound, elapsed, ex);
+
+                }
+
                 TimeSpan delay = ComputeDelay(attempt);
 
                 if (retrying is not null)
@@ -122,5 +164,51 @@ internal static class SqliteBusyRetry
 
         return TimeSpan.FromMilliseconds(Math.Min(delayMs, 2_000));
     }
+
+}
+
+/// <summary>
+/// The Grimoire did not become available within <see cref="ExecuteAsync{T}"/>'s deadline — a
+/// connection somewhere is holding an exclusive or reserved lock for longer than any ordinary
+/// maintenance operation should. Distinct from letting the underlying <see cref="SqliteException"/>
+/// propagate forever: an unbounded retry loop never surfaces the contention as anything a caller
+/// can act on, so this bounds the wait and names it.
+///
+/// <para>Only <see cref="Covenant.CovenantCanonicalErasureTransaction"/> catches it today, turning
+/// it into that erasure's own typed refusal. Every other <c>SqliteBusyRetry</c> caller lets it
+/// propagate, so on an HTTP path it reaches <c>ArcanumExceptionHandler</c> and is reported as a
+/// generic <c>500</c>. There is no endpoint mapping from this exception to a
+/// maintenance-unavailable response; adding one is separate work.</para>
+/// </summary>
+internal sealed class GrimoireBusyTimeoutException : Exception
+{
+
+    internal GrimoireBusyTimeoutException(int attempts, TimeSpan deadline, TimeSpan elapsed, Exception lastBusyException)
+        : base(
+            $"The Grimoire did not become available after {attempts} attempt(s) over {elapsed} "
+            + $"(deadline {deadline}); another handle is likely holding an exclusive or reserved lock.",
+            lastBusyException)
+    {
+
+        Attempts = attempts;
+
+        Deadline = deadline;
+
+        Elapsed = elapsed;
+
+    }
+
+    internal int Attempts { get; }
+
+    /// <summary>The configured bound <see cref="ExecuteAsync{T}"/> was given or defaulted to.</summary>
+    internal TimeSpan Deadline { get; }
+
+    /// <summary>
+    /// The real time this retry loop spent, measured once at the point the deadline check fired.
+    /// Not the same number as <see cref="Deadline"/>: the check runs only after an attempt's own
+    /// busy exception is caught, so a single slow attempt can carry the total past the deadline by
+    /// as much as that one attempt's own duration before this loop ever gets to check again.
+    /// </summary>
+    internal TimeSpan Elapsed { get; }
 
 }

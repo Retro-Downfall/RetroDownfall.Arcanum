@@ -56,7 +56,7 @@ internal static partial class OpenAiV1Endpoints
                 StatusCodes.Status400BadRequest);
         }
 
-        Result messageCountBounds = PingRequestBoundsValidator.ValidateOpenApiMessageCount(body.Messages.Count, settings);
+        Result messageCountBounds = PingRequestBoundsValidator.ValidateOpenApiMessageCount(body.Messages.Count);
 
         if (messageCountBounds.IsFailure)
         {
@@ -238,7 +238,7 @@ internal static partial class OpenAiV1Endpoints
             return MapReasoningValidationFailure(reasoningShape.Error);
         }
 
-        Result pingBounds = PingRequestBoundsValidator.Validate(mapped, settings);
+        Result pingBounds = PingRequestBoundsValidator.Validate(mapped);
 
         if (pingBounds.IsFailure)
         {

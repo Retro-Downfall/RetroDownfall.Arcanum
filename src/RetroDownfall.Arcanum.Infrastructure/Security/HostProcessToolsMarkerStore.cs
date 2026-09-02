@@ -216,6 +216,14 @@ internal sealed class HostProcessToolsMarkerResetAdapter : IHostToolsMarkerPairR
     /// <summary>Proves a capability came from this adapter instance and not from another one.</summary>
     private readonly object _mintTicket = new();
 
+    /// <summary>
+    /// Test seam: observes the plaintext copy <see cref="AdoptOrDispose"/> allocates, right after
+    /// allocation and before either ownership transfers to a minted capability or the copy is
+    /// dropped. Lets a test assert the same array instance is zeroed on a path that never returns
+    /// a capability to hold it.
+    /// </summary>
+    internal Action<byte[]>? EncodedBufferObserverForTests { get; set; }
+
     internal HostProcessToolsMarkerResetAdapter(
         IHostProcessToolsMarkerCredentialCapabilitySource slots,
         HostProcessToolsMarkerMutationGate gate)
@@ -334,6 +342,14 @@ internal sealed class HostProcessToolsMarkerResetAdapter : IHostToolsMarkerPairR
 
         byte[] encoded = new byte[capability.EncodedSecretUtf8Length];
 
+        EncodedBufferObserverForTests?.Invoke(encoded);
+
+        // Zeroed in the finally below unless ownership transfers to a minted ResetOsCapability on
+        // the success path: every other exit — decode failure, evidence mismatch, thrown
+        // exception — leaves this the only reference to the plaintext copy, and none of them used
+        // to zero it.
+        byte[]? encodedToZero = encoded;
+
         byte[] payload = new byte[HostProcessToolsMarkerPayload.Length];
 
         try
@@ -370,17 +386,21 @@ internal sealed class HostProcessToolsMarkerResetAdapter : IHostToolsMarkerPairR
 
             }
 
-            return HostToolsMarkerPairResetOsOpenResult.Opened(
-                evidence,
-                new ResetOsCapability(_mintTicket, capability, encoded));
+            ResetOsCapability ownedCapability = new(_mintTicket, capability, encoded);
+
+            // ownedCapability now owns this exact array and zeroes it on its own disposal; the
+            // finally must not zero what the caller now owns. Constructed above, before this
+            // null-out, so a throwing constructor would leave encodedToZero set and the finally
+            // would still zero an array nothing ended up owning.
+            encodedToZero = null;
+
+            return HostToolsMarkerPairResetOsOpenResult.Opened(evidence, ownedCapability);
 
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
 
             capability.Dispose();
-
-            CryptographicOperations.ZeroMemory(encoded);
 
             return HostToolsMarkerPairResetOsOpenResult.Unavailable();
 
@@ -389,6 +409,13 @@ internal sealed class HostProcessToolsMarkerResetAdapter : IHostToolsMarkerPairR
         {
 
             CryptographicOperations.ZeroMemory(payload);
+
+            if (encodedToZero is not null)
+            {
+
+                CryptographicOperations.ZeroMemory(encodedToZero);
+
+            }
 
         }
 

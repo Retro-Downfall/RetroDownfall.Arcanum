@@ -162,7 +162,7 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         Task publish = Task.Run(
             () => _repo!.CreateForOwnedFileAsync(record, CancellationToken.None));
 
-        await captured.Task;
+        await captured.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         File.Delete(path);
 

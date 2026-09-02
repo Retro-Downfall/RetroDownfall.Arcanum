@@ -31,9 +31,7 @@ internal static class PingRequestPreflightValidator
 
         }
 
-        Result bounds = PingRequestBoundsValidator.Validate(
-            request,
-            settings);
+        Result bounds = PingRequestBoundsValidator.Validate(request);
 
         if (bounds.IsFailure)
         {

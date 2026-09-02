@@ -31,6 +31,7 @@ public sealed class EnvironmentCredentialResolverTests : IDisposable
             [
                 nameof(ModelEntry.Name),
                 nameof(ModelEntry.Reasoning),
+                nameof(ModelEntry.SupportsTools),
                 nameof(ModelEntry.SupportsVision),
             ],
             PublicPropertyNames<ModelEntry>());

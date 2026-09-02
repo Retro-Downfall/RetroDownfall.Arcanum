@@ -1,5 +1,7 @@
 using System.Globalization;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
@@ -9,6 +11,10 @@ using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
@@ -40,7 +46,7 @@ internal interface IInstallationResetApplyBoundary
 
     Task<Result<InstallationResetResult>> ApplyFreshAsync(
         InstallationResetPlanRequest request,
-        InstallationResetPlan confirmedPlan,
+        StoppedHostInstallationResetPlan confirmedPlan,
         CancellationToken cancellationToken);
 
 }
@@ -130,7 +136,8 @@ internal sealed class InstallationFactoryResetCommand(
     IInstallationResetOnlinePlanValidator onlinePlanValidator,
     IInstallationResetOnlineDataHandoff onlineDataHandoff,
     IFullInstallationResetAttestationFileReader attestationReader,
-    CovenantExternalRetentionDisclosureWriter disclosureWriter)
+    CovenantExternalRetentionDisclosureWriter disclosureWriter,
+    IGrimoireCliStoppedHostInitialization stoppedHostInitialization)
 {
 
     public async Task<int> Execute(
@@ -297,9 +304,44 @@ internal sealed class InstallationFactoryResetCommand(
 
         }
 
-        Result<InstallationResetPlan> planned = await resetService
-            .PlanAsync(request, cancellationToken)
-            .ConfigureAwait(false);
+        StoppedHostInstallationResetPlan? stoppedHostPlan = null;
+
+        Result<InstallationResetPlan> planned;
+
+        if (externalRemediation is null)
+        {
+
+            Result<StoppedHostInstallationResetPlan> local =
+                await stoppedHostInitialization.RunAsync(
+                    (provider, issuer, token) => provider
+                        .GetRequiredService<IInstallationResetStoppedHostPlanner>()
+                        .PlanUnderStoppedHostLockAsync(
+                            request,
+                            issuer,
+                            token),
+                    cancellationToken).ConfigureAwait(false);
+
+            if (local.IsFailure)
+            {
+
+                return Fail(local.Error);
+
+            }
+
+            stoppedHostPlan = local.Value;
+
+            planned = Result<InstallationResetPlan>.Success(
+                stoppedHostPlan.Plan);
+
+        }
+        else
+        {
+
+            planned = await resetService
+                .PlanAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
 
         if (planned.IsFailure)
         {
@@ -312,7 +354,8 @@ internal sealed class InstallationFactoryResetCommand(
 
         DataRetentionPlan? onlinePlan = null;
 
-        if (plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
+        if (externalRemediation is not null
+            && plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
 
             Result<InstallationResetOnlinePlanValidation> onlineValidation =
@@ -383,7 +426,9 @@ internal sealed class InstallationFactoryResetCommand(
         if (plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
 
-            disclosureWriter.Write(onlinePlan!.Covenant);
+            disclosureWriter.Write(
+                stoppedHostPlan?.CovenantDisclosure
+                    ?? onlinePlan!.Covenant);
 
         }
 
@@ -424,7 +469,7 @@ internal sealed class InstallationFactoryResetCommand(
             ? await applyBoundary
                 .ApplyFreshAsync(
                     request,
-                    plan,
+                    stoppedHostPlan!,
                     cancellationToken)
                 .ConfigureAwait(false)
             : await applyBoundary

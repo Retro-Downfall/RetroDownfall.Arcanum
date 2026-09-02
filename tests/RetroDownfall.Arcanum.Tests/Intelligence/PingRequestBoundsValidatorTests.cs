@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -7,15 +9,39 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class PingRequestBoundsValidatorTests
 {
 
+    // ArcanumSettings has no Intelligence/Sessions member for these bounds to read (Arcanum:
+    // Intelligence is a rejected configuration section -- ConfigurationValidator.cs), so there is
+    // no settings value that could make either method's refusal differ. The durable guard is
+    // therefore a closed-arity pin: both entry points take exactly the request/count they validate
+    // and nothing else, so a settings-shaped parameter cannot be reintroduced unnoticed.
+    [Fact]
+    public void Validate_TakesNoSettingsParameter()
+    {
+
+        MethodInfo method = typeof(PingRequestBoundsValidator).GetMethod(nameof(PingRequestBoundsValidator.Validate))!;
+
+        Assert.Single(method.GetParameters());
+
+    }
+
+    [Fact]
+    public void ValidateOpenApiMessageCount_TakesNoSettingsParameter()
+    {
+
+        MethodInfo method = typeof(PingRequestBoundsValidator).GetMethod(nameof(PingRequestBoundsValidator.ValidateOpenApiMessageCount))!;
+
+        Assert.Single(method.GetParameters());
+
+    }
+
     [Fact]
     public void Validate_RejectsOversizedPrompt()
     {
-        ArcanumSettings settings = new();
         int maxPromptChars = ArcanumSettingClamps.MaxPingPromptChars(
             ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars);
         PingRequest request = new(Prompt: new string('x', maxPromptChars + 1));
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
 
@@ -26,7 +52,6 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_RejectsTooManyStatelessMessages()
     {
-        ArcanumSettings settings = new();
         int maxMessages = ArcanumSettingClamps.MaxStatelessMessages(
             ArcanumRuntimeDefaults.Intelligence.MaxStatelessMessages);
         PingRequest request = new(
@@ -35,7 +60,7 @@ public sealed class PingRequestBoundsValidatorTests
                 .Select(static index => new CoreChatMessage("user", index.ToString()))
                 .ToList());
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
 
@@ -46,14 +71,13 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_RejectsOversizedStatelessMessageContent()
     {
-        ArcanumSettings settings = new();
         int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
             ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
         PingRequest request = new(
             Prompt: string.Empty,
             StatelessMessages: [new CoreChatMessage("user", new string('x', maxEntryBytes + 1))]);
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
 
@@ -64,12 +88,9 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void ValidateOpenApiMessageCount_RejectsExcessMessages()
     {
-        ArcanumSettings settings = new();
         int maxMessages = ArcanumSettingClamps.MaxOpenApiMessages(
             ArcanumRuntimeDefaults.Intelligence.MaxOpenApiMessages);
-        Result result = PingRequestBoundsValidator.ValidateOpenApiMessageCount(
-            maxMessages + 1,
-            settings);
+        Result result = PingRequestBoundsValidator.ValidateOpenApiMessageCount(maxMessages + 1);
 
         Assert.True(result.IsFailure);
 
@@ -80,7 +101,6 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_StatelessContent_MeasuredInUtf8BytesNotChars()
     {
-        ArcanumSettings settings = new();
         int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
             ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
         int characterCount = (maxEntryBytes / 2) + 1;
@@ -88,7 +108,7 @@ public sealed class PingRequestBoundsValidatorTests
             Prompt: string.Empty,
             StatelessMessages: [new CoreChatMessage("user", new string('\u00e9', characterCount))]);
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
 
@@ -99,7 +119,6 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_ToolCallArguments_CountTowardEntryBudget()
     {
-        ArcanumSettings settings = new();
         int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
             ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
         PingRequest request = new(
@@ -118,7 +137,7 @@ public sealed class PingRequestBoundsValidatorTests
                     ]),
             ]);
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
 
@@ -135,7 +154,6 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_ContentAndItsFlattenedParts_AreChargedOnceNotTwice()
     {
-        ArcanumSettings settings = new();
         int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
             ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
 
@@ -152,7 +170,7 @@ public sealed class PingRequestBoundsValidatorTests
                     ContentParts: [new CoreContentPart("text", body, null, null)]),
             ]);
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsSuccess);
 
@@ -167,7 +185,6 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_ToolRoleContent_IsStillMeasuredWhenAPartIsPresent()
     {
-        ArcanumSettings settings = new();
         int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
             ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
 
@@ -182,7 +199,7 @@ public sealed class PingRequestBoundsValidatorTests
                     ContentParts: [new CoreContentPart("text", "tiny", null, null)]),
             ]);
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
 
@@ -193,14 +210,13 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_RejectsOversizedAdditionalSystemPrompt()
     {
-        ArcanumSettings settings = new();
         int maxPromptChars = ArcanumSettingClamps.MaxPingPromptChars(
             ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars);
         PingRequest request = new(
             Prompt: "hi",
             AdditionalSystemPrompt: new string('x', maxPromptChars + 1));
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
 
@@ -214,7 +230,6 @@ public sealed class PingRequestBoundsValidatorTests
 
         // W6.5: the per-message content-part cap (previously only enforced on /v1) now also bounds
         // the native stateless path.
-        ArcanumSettings settings = new();
         int maxContentParts = ArcanumSettingClamps.MaxContentPartsPerMessage(
             ArcanumRuntimeDefaults.Intelligence.MaxContentPartsPerMessage);
 
@@ -231,7 +246,7 @@ public sealed class PingRequestBoundsValidatorTests
                         .ToList()),
             ]);
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
 
@@ -240,22 +255,8 @@ public sealed class PingRequestBoundsValidatorTests
     }
 
     [Fact]
-    public void ValidateOpenApiMessageCount_NullFeatures_DoesNotThrow()
-    {
-
-        ArcanumSettings settings = new() { Features = null! };
-
-        Result result = PingRequestBoundsValidator.ValidateOpenApiMessageCount(1, settings);
-
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
     public void Validate_RejectsReasoningEffortAndBudgetTogether()
     {
-
-        ArcanumSettings settings = SettingsWithReasoning(ReasoningWireDialect.OpenRouter);
 
         PingRequest request = new(
             Prompt: "hello",
@@ -264,7 +265,7 @@ public sealed class PingRequestBoundsValidatorTests
                 BudgetTokens: 4096,
                 Output: null));
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
         Assert.Equal(
@@ -299,13 +300,11 @@ public sealed class PingRequestBoundsValidatorTests
     public void Validate_RejectsReasoningBudgetOutsideGlobalBounds(int budgetTokens)
     {
 
-        ArcanumSettings settings = SettingsWithReasoning(ReasoningWireDialect.OpenRouter);
-
         PingRequest request = new(
             Prompt: "hello",
             Reasoning: new ReasoningRequestOptions(BudgetTokens: budgetTokens));
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Validation.InvalidReasoningBudget, result.Error.Code);
@@ -394,13 +393,11 @@ public sealed class PingRequestBoundsValidatorTests
     public void Validate_AllowsExplicitNoneOutputWithoutReasoningCapability()
     {
 
-        ArcanumSettings settings = SettingsWithReasoning(ReasoningWireDialect.Standard);
-
         PingRequest request = new(
             Prompt: "hello",
             Reasoning: new ReasoningRequestOptions(Output: ReasoningOutputMode.None));
 
-        Result result = PingRequestBoundsValidator.Validate(request, settings);
+        Result result = PingRequestBoundsValidator.Validate(request);
 
         Assert.True(result.IsSuccess);
 
@@ -426,27 +423,4 @@ public sealed class PingRequestBoundsValidatorTests
 
     }
 
-    private static ArcanumSettings SettingsWithReasoning(ReasoningWireDialect? wireDialect) =>
-        new()
-        {
-            DefaultModel = "reasoner",
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "test",
-                    Models =
-                    [
-                        new ModelEntry("reasoner")
-                        {
-                            Reasoning = wireDialect is null
-                                ? null
-                                : new ModelReasoningSettings { WireDialect = wireDialect },
-                        },
-                    ],
-                },
-            ],
-        };
-
 }
-

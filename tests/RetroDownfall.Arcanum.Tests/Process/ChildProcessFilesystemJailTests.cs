@@ -183,16 +183,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void LinuxFilesystemJail_IsUnavailableByDefault_AndDoesNotInvokeHelper()
     {
 
-        if (!OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsLinux(), "The Linux-unavailable-by-default jail path is Linux-only.");
 
         ProcessStartInfo psi = new()
         {
@@ -234,16 +229,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task LinuxFilesystemJail_EscapeHatchRunsUnsandboxedWithWarning()
     {
 
-        if (!OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsLinux(), "The Linux escape-hatch jail path is Linux-only.");
 
         ProcessStartInfo psi = new()
         {
@@ -494,16 +484,13 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MacOsSandbox_DeniesOutsideHomeSecret_WhenSandboxExecAvailable()
     {
 
-        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt denial requires a host where sandbox-exec can apply a profile.");
 
         string outside = Path.Combine(_outsideDir, "secret.txt");
 
@@ -556,16 +543,13 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MacOsSandbox_DeniesSymlinkEscapeFromWorkspace()
     {
 
-        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt denial requires a host where sandbox-exec can apply a profile.");
 
         string linkPath = Path.Combine(_workspace, "escape-link.txt");
 
@@ -629,14 +613,21 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MacOsSandbox_DeniesLaunchServicesBrokerEscape()
     {
 
-        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt denial requires a host where sandbox-exec can apply a profile.");
+
+        // Dead once Skip.IfNot above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only File.SetUnixFileMode call below.
+        if (!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable()))
         {
 
             return;
+
         }
 
         string marker = Path.Combine(
@@ -716,11 +707,17 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MacOsSandbox_AllowsWorkspaceReadWrite()
     {
 
-        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt acceptance requires a host where sandbox-exec can apply a profile.");
+
+        // Dead once Skip.IfNot above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only File.SetUnixFileMode call below.
+        if (!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable()))
         {
 
             return;
@@ -793,11 +790,17 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MacOsSandbox_AllowsSpellScriptReadExecuteButNotWrite()
     {
 
-        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt acceptance requires a host where sandbox-exec can apply a profile.");
+
+        // Dead once Skip.IfNot above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only File.SetUnixFileMode call below.
+        if (!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable()))
         {
 
             return;
@@ -853,16 +856,13 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MacOS_metacharacters_in_args_are_argv_safe()
     {
 
-        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt acceptance requires a host where sandbox-exec can apply a profile.");
 
         ProcessStartInfo psi = new()
         {
@@ -910,11 +910,17 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Workspace_spell_script_runs_under_jail()
     {
 
-        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt acceptance requires a host where sandbox-exec can apply a profile.");
+
+        // Dead once Skip.IfNot above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only File.SetUnixFileMode call below.
+        if (!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable()))
         {
 
             return;
@@ -1079,16 +1085,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Linux_default_fail_closed_returns_expected_denial_end_to_end()
     {
 
-        if (!OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsLinux(), "The Linux default-deny fail-closed path is Linux-only.");
 
         ProcessStartInfo psi = new()
         {

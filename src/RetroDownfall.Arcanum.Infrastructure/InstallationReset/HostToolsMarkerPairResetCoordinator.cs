@@ -4,8 +4,10 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
@@ -15,6 +17,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
     private readonly IInstallationResetActiveStore _activeStore;
 
     private readonly IHostToolsMarkerPairResetDatabase _database;
+
+    private readonly string _canonicalDatabasePath;
 
     private readonly IFullInstallationResetCampaignSchemaReadiness _readiness;
 
@@ -45,12 +49,19 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         IFullInstallationResetRemediationAttestationVerifier verifier,
         ICampaignPathMarkerLifecycle lifecycle,
         IHostToolsMarkerPairResetOsPort os,
-        IFullInstallationResetManagedFileReconciler? managedFiles = null)
+        IFullInstallationResetManagedFileReconciler? managedFiles = null,
+        string? canonicalDatabasePath = null)
     {
 
         _managedFiles = managedFiles;
 
         _activeStore = activeStore ?? throw new ArgumentNullException(nameof(activeStore));
+
+        _canonicalDatabasePath = Path.GetFullPath(
+            canonicalDatabasePath
+            ?? Path.Combine(
+                _activeStore.GuardedRoot,
+                Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile)));
 
         _database = database ?? throw new ArgumentNullException(nameof(database));
 
@@ -163,7 +174,9 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         using IHostToolsMarkerPairResetOsCapability capability = opened.Capability;
 
         Result<HostToolsMarkerPairResetDatabaseSession> databaseOpened =
-            await _database.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await OpenDatabaseAsync(
+                heldInstallationLock,
+                cancellationToken).ConfigureAwait(false);
 
         if (databaseOpened.IsFailure)
         {
@@ -731,7 +744,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             }
 
             Result<HostToolsMarkerPairResetDatabaseSession> databaseOpened =
-                await _database.OpenAsync(
+                await OpenDatabaseAsync(
+                    heldInstallationLock,
                     recoveryCheckpoint.Token).ConfigureAwait(false);
 
             if (databaseOpened.IsFailure)
@@ -1004,7 +1018,9 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
     {
 
         Result<HostToolsMarkerPairResetDatabaseSession> databaseOpened =
-            await _database.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await OpenDatabaseAsync(
+                heldInstallationLock,
+                cancellationToken).ConfigureAwait(false);
 
         if (databaseOpened.IsFailure)
         {
@@ -1180,7 +1196,9 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         }
 
         Result<HostToolsMarkerPairResetDatabaseSession> databaseOpened =
-            await _database.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await OpenDatabaseAsync(
+                heldInstallationLock,
+                cancellationToken).ConfigureAwait(false);
 
         if (databaseOpened.IsFailure)
         {
@@ -1330,6 +1348,39 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
     /// the terminal receipt is durable would drop the only authority that can finish the vector while
     /// finishing it is still possible.</para>
     /// </remarks>
+    [GrimoireConnectionAcquisitionRoute]
+    private async Task<Result<HostToolsMarkerPairResetDatabaseSession>>
+        OpenDatabaseAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken)
+    {
+
+        StoppedHostGrimoireAuthorityIssuer issuer = new(
+            heldInstallationLock,
+            _activeStore.GuardedRoot,
+            _canonicalDatabasePath);
+
+        Result<IStoppedHostGrimoireConnectionAuthority> issued = issuer
+            .IssueStoppedHostMarkerPairResetAuthority();
+
+        if (issued.IsFailure)
+        {
+
+            return Result<HostToolsMarkerPairResetDatabaseSession>.Failure(
+                issued.Error);
+
+        }
+
+        await using IStoppedHostGrimoireConnectionAuthority authority =
+            issued.Value;
+
+        return await _database
+            .OpenHostToolsMarkerPairResetDatabaseSessionAsync(
+                authority,
+                cancellationToken).ConfigureAwait(false);
+
+    }
+
     private async Task<Result<InstallationResetActivePublication>> RunCampaignCleanupAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         InstallationResetActivePublication pairAbsence,

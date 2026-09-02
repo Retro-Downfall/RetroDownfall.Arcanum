@@ -129,6 +129,12 @@ internal sealed partial class ArcanumInternalToolServer
             .GetEffectiveResourceLimitsForWorkspaceAsync(_workspaceRoot, cancellationToken)
             .ConfigureAwait(false);
 
+        // 0 is the documented "unlimited" spelling shared with MaxCpuSeconds/MaxMemoryMb/
+        // MaxFileDescriptors; every other value is the operator's configured wall-clock ceiling.
+        TimeSpan processTimeout = resourceLimits.ProcessTimeoutSeconds > 0
+            ? TimeSpan.FromSeconds(resourceLimits.ProcessTimeoutSeconds)
+            : Timeout.InfiniteTimeSpan;
+
         SanctumChildProcessBoundary? boundary = await sanctumGuard
             .GetChildProcessBoundaryForWorkspaceAsync(_workspaceRoot, cancellationToken)
             .ConfigureAwait(false);
@@ -174,7 +180,7 @@ internal sealed partial class ArcanumInternalToolServer
             psi,
             ChildProcessEnvironmentProfile.ToolExec,
             totalOutputCapBytes,
-            Timeout.InfiniteTimeSpan,
+            processTimeout,
             resourceLimits,
             resourceLimiter,
             cancellationToken,

@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
@@ -18,6 +20,307 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed partial class InstallationResetServiceTests
 {
+
+    [Fact]
+    public async Task Stopped_host_plan_returns_the_exact_local_Covenant_disclosure()
+    {
+
+        DataRetentionCovenantInventory disclosure = new(
+            Rows: 7,
+            ManagedFiles: 5,
+            LocalArtifacts: 3,
+            AffectedSessions: 2,
+            PossibleDisclosures: 1,
+            DisclosureCountKind: CovenantDisclosureCountKind.Exact);
+
+        DataRetentionPlan dataPlan = CreateDataPlan("stopped-host-data") with
+        {
+            Covenant = disclosure,
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(dataPlan),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]));
+
+        IInstallationResetStoppedHostPlanner planner = service;
+
+        Result<StoppedHostInstallationResetPlan> planned =
+            await PlanUnderTestLockAsync(
+                service,
+                planner,
+                new InstallationResetPlanRequest(
+                    InstallationResetScope.Global,
+                    "/invocation"));
+
+        Assert.True(planned.IsSuccess, planned.Error.Message);
+
+        Assert.Equal(disclosure, planned.Value.CovenantDisclosure);
+
+        Assert.Equal("stopped-host-data", Assert.Single(
+            planned.Value.Plan.AcceptedBinding.DataPlanIds));
+
+    }
+
+    [Fact]
+    public async Task Stopped_host_global_plan_requires_a_local_Covenant_disclosure()
+    {
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("missing-disclosure") with
+            {
+                Covenant = null,
+            }),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]));
+
+        Result<StoppedHostInstallationResetPlan> planned =
+            await PlanUnderTestLockAsync(
+                service,
+                service,
+                new InstallationResetPlanRequest(
+                    InstallationResetScope.Global,
+                    "/invocation"));
+
+        Assert.True(planned.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.InventoryUnavailable, planned.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Stopped_host_workspace_plan_permits_no_Covenant_disclosure()
+    {
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("workspace-data") with
+            {
+                Covenant = null,
+            }),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup(),
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/workspace/.arcanum"]));
+
+        Result<StoppedHostInstallationResetPlan> planned =
+            await PlanUnderTestLockAsync(
+                service,
+                service,
+                new InstallationResetPlanRequest(
+                    InstallationResetScope.Workspace,
+                    "/invocation/child"));
+
+        Assert.True(planned.IsSuccess, planned.Error.Message);
+
+        Assert.Null(planned.Value.CovenantDisclosure);
+
+    }
+
+    [Fact]
+    public async Task Fresh_locked_apply_replans_and_uses_only_authority_aware_local_apply()
+    {
+
+        DataRetentionCovenantInventory disclosure = new(
+            Rows: 1,
+            ManagedFiles: 1,
+            LocalArtifacts: 1,
+            AffectedSessions: 1,
+            PossibleDisclosures: 1,
+            DisclosureCountKind: CovenantDisclosureCountKind.Exact);
+
+        DataRetentionPlan dataPlan = CreateDataPlan("fresh-local-data") with
+        {
+            Covenant = disclosure,
+        };
+
+        FakeDataService publicData = new(dataPlan)
+        {
+            ApplyException = new InvalidOperationException(
+                "Fresh apply must not use the issuer-free data service."),
+        };
+
+        SequentialStoppedHostDataService stoppedData = new(dataPlan, dataPlan);
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            publicData,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            stoppedHostDataService: stoppedData,
+            stoppedHostPairReader: new TestStoppedHostPairReader(
+                CleanPairReader()));
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        Result<StoppedHostInstallationResetPlan> confirmed =
+            await PlanUnderTestLockAsync(service, service, request);
+
+        Assert.True(confirmed.IsSuccess, confirmed.Error.Message);
+
+        Result<InstallationResetResult> applied =
+            await ApplyFreshUnderTestLockAsync(
+                service,
+                request,
+                confirmed.Value);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.Empty(publicData.ApplyRequests);
+
+        Assert.Equal(1, stoppedData.ApplyCount);
+
+        Assert.True(active.Retired);
+
+    }
+
+    [Fact]
+    public async Task Fresh_locked_apply_rejects_changed_local_disclosure_before_publication()
+    {
+
+        DataRetentionPlan confirmedData = CreateDataPlan("stable-data") with
+        {
+            Covenant = new DataRetentionCovenantInventory(
+                Rows: 1,
+                ManagedFiles: 1,
+                LocalArtifacts: 1,
+                AffectedSessions: 1,
+                PossibleDisclosures: 1,
+                DisclosureCountKind: CovenantDisclosureCountKind.Exact),
+        };
+
+        DataRetentionPlan changedDisclosure = confirmedData with
+        {
+            Covenant = confirmedData.Covenant! with
+            {
+                PossibleDisclosures = 2,
+            },
+        };
+
+        SequentialStoppedHostDataService stoppedData = new(
+            confirmedData,
+            changedDisclosure);
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(confirmedData),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            stoppedHostDataService: stoppedData,
+            stoppedHostPairReader: new TestStoppedHostPairReader(
+                CleanPairReader()));
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        Result<StoppedHostInstallationResetPlan> confirmed =
+            await PlanUnderTestLockAsync(service, service, request);
+
+        Assert.True(confirmed.IsSuccess, confirmed.Error.Message);
+
+        Result<InstallationResetResult> applied =
+            await ApplyFreshUnderTestLockAsync(
+                service,
+                request,
+                confirmed.Value);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.PlanChanged, applied.Error.Code);
+
+        Assert.Empty(active.Writes);
+
+        Assert.Equal(0, stoppedData.ApplyCount);
+
+    }
+
+    [Theory]
+    [InlineData("dirty-pair")]
+    [InlineData("identity-failure")]
+    public async Task Fresh_locked_apply_rejects_an_existing_active_before_local_evidence(
+        string failingEvidence)
+    {
+
+        DataRetentionPlan dataPlan = CreateDataPlan("existing-active-data") with
+        {
+            Covenant = new DataRetentionCovenantInventory(
+                Rows: 1,
+                ManagedFiles: 1,
+                LocalArtifacts: 1,
+                AffectedSessions: 1,
+                PossibleDisclosures: 1,
+                DisclosureCountKind: CovenantDisclosureCountKind.Exact),
+        };
+
+        FakeActiveStore active = new();
+
+        FakePairReader pairReader = new(
+            JoinResult(HostProcessToolsMarkerPairDisposition.Clean),
+            failingEvidence is "dirty-pair"
+                ? JoinResult(HostProcessToolsMarkerPairDisposition.TaintedMatched)
+                : JoinResult(HostProcessToolsMarkerPairDisposition.Clean));
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(dataPlan),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            stoppedHostPairReader: new TestStoppedHostPairReader(
+                pairReader));
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        Result<StoppedHostInstallationResetPlan> confirmed =
+            await PlanUnderTestLockAsync(service, service, request);
+
+        Assert.True(confirmed.IsSuccess, confirmed.Error.Message);
+
+        int pairReadsBeforeApply = pairReader.ReadCount;
+
+        int identityReadsBeforeApply = active.IdentityReadCount;
+
+        active.IdentityReadResult = Result<Guid>.Failure(new Error(
+            ErrorCodes.Data.ControlPathUnavailable,
+            "Fresh evidence must not mask an existing active reset."));
+
+        active.Seed(CreateActive(
+            confirmed.Value.Plan,
+            InstallationResetPhase.Prepared,
+            pointOfNoReturn: false));
+
+        Result<InstallationResetResult> applied =
+            await ApplyFreshUnderTestLockAsync(
+                service,
+                request,
+                confirmed.Value);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ResetInProgress, applied.Error.Code);
+
+        Assert.Empty(active.Writes);
+
+        Assert.Equal(pairReadsBeforeApply, pairReader.ReadCount);
+
+        Assert.Equal(identityReadsBeforeApply, active.IdentityReadCount);
+
+    }
 
     [Fact]
     public async Task BindOnlineDataPlan_rebinds_only_the_Covenant_aware_data_identity()
@@ -198,7 +501,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(ErrorCodes.Data.PlanChanged, result.Error.Code);
 
     }
-
 
     [Fact]
     public async Task Workspace_apply_preserves_global_daemon_registration()
@@ -1870,7 +2172,6 @@ public sealed partial class InstallationResetServiceTests
 
     }
 
-
     [Theory]
     [InlineData(HostProcessToolsMarkerPairDisposition.PendingBlocked)]
     [InlineData(HostProcessToolsMarkerPairDisposition.TaintedMatched)]
@@ -2573,7 +2874,7 @@ public sealed partial class InstallationResetServiceTests
 
         };
 
-        InstallationResetService restarted = new(
+        InstallationResetService restarted = CreateService(
             retryData,
             new FakeCredentialInventory([]),
             active,
@@ -2773,7 +3074,6 @@ public sealed partial class InstallationResetServiceTests
 
     }
 
-
     private static InstallationResetService CreateService(
         IInstallationResetDataService dataService,
         IInstallationResetCredentialService credentialService,
@@ -2788,8 +3088,19 @@ public sealed partial class InstallationResetServiceTests
         IInstallationResetHostProcessToolsPairReader? pairReader = null,
         IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null,
         Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null,
-        Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null) =>
-        new(
+        Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null,
+        IInstallationResetStoppedHostDataService? stoppedHostDataService = null,
+        IInstallationResetStoppedHostProcessToolsPairReader? stoppedHostPairReader = null)
+    {
+
+        IInstallationResetHostProcessToolsPairReader effectivePairReader =
+            pairReader ?? CleanPairReader();
+
+        IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
+            identityReader
+            ?? activeStore as IInstallationResetDatabaseIdentityReader;
+
+        return new InstallationResetService(
             dataService,
             credentialService,
             activeStore,
@@ -2800,10 +3111,19 @@ public sealed partial class InstallationResetServiceTests
             preDataMutation,
             controlPaths,
             identityReader,
-            pairReader ?? CleanPairReader(),
+            effectivePairReader,
             remediationVerifier,
             markerPairReset,
-            terminalContinuation);
+            terminalContinuation,
+            stoppedHostDataService ?? new TestStoppedHostDataService(
+                    dataService,
+                    workspaceResolver,
+                    effectiveIdentityReader),
+            stoppedHostPairReader ?? new TestStoppedHostPairReader(
+                effectivePairReader),
+            Path.Combine(activeStore.GuardedRoot, "arcanum.db"));
+
+    }
 
     private static async Task<Result<InstallationResetResult>>
         ApplyUnderTestLockAsync(
@@ -2822,6 +3142,52 @@ public sealed partial class InstallationResetServiceTests
             request,
             heldInstallationLock,
             cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task<Result<StoppedHostInstallationResetPlan>>
+        PlanUnderTestLockAsync(
+            InstallationResetService service,
+            IInstallationResetStoppedHostPlanner planner,
+            InstallationResetPlanRequest request)
+    {
+
+        ArcanumMaintenanceLockAcquisitionResult acquired =
+            ArcanumMaintenanceLock.AcquireDetailed(service.GuardedRoot);
+
+        using ArcanumMaintenanceLock heldInstallationLock =
+            acquired.BorrowAcquiredLock();
+
+        StoppedHostGrimoireAuthorityIssuer issuer = new(
+            heldInstallationLock,
+            service.GuardedRoot,
+            Path.Combine(service.GuardedRoot, "arcanum.db"));
+
+        return await planner.PlanUnderStoppedHostLockAsync(
+            request,
+            issuer,
+            CancellationToken.None).ConfigureAwait(false);
+
+    }
+
+    private static async Task<Result<InstallationResetResult>>
+        ApplyFreshUnderTestLockAsync(
+            InstallationResetService service,
+            InstallationResetPlanRequest request,
+            StoppedHostInstallationResetPlan confirmedPlan)
+    {
+
+        ArcanumMaintenanceLockAcquisitionResult acquired =
+            ArcanumMaintenanceLock.AcquireDetailed(service.GuardedRoot);
+
+        using ArcanumMaintenanceLock heldInstallationLock =
+            acquired.BorrowAcquiredLock();
+
+        return await service.ApplyFreshUnderMaintenanceLockAsync(
+            request,
+            confirmedPlan,
+            heldInstallationLock,
+            CancellationToken.None).ConfigureAwait(false);
 
     }
 
@@ -3018,6 +3384,135 @@ public sealed partial class InstallationResetServiceTests
 
             return Task.FromResult(
                 Result<HostProcessToolsMarkerPairJoinResult>.Success(result));
+
+        }
+
+    }
+
+    private sealed class TestStoppedHostPairReader(
+        IInstallationResetHostProcessToolsPairReader inner)
+        : IInstallationResetStoppedHostProcessToolsPairReader
+    {
+
+        public Task<Result<HostProcessToolsMarkerPairJoinResult>>
+            ReadUnderStoppedHostAuthorityAsync(
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken = default) =>
+            inner.ReadAsync(cancellationToken);
+
+    }
+
+    private sealed class TestStoppedHostDataService(
+        IInstallationResetDataService data,
+        IInstallationResetWorkspaceResolver? workspace,
+        IInstallationResetDatabaseIdentityReader? identity)
+        : IInstallationResetStoppedHostDataService
+    {
+
+        public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
+            InstallationResetDataPlanRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            data.PlanAsync(request, cancellationToken);
+
+        public Task<Result<InstallationResetWorkspaceResolution>>
+            ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+                string invocationDirectory,
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken) =>
+            workspace is null
+                ? Task.FromResult(
+                    Result<InstallationResetWorkspaceResolution>.Failure(new Error(
+                        ErrorCodes.Data.InventoryUnavailable,
+                        "The test workspace inventory is unavailable.")))
+                : workspace.ResolveAsync(invocationDirectory, cancellationToken);
+
+        public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            identity is null
+                ? Task.FromResult(Result<Guid>.Failure(new Error(
+                    ErrorCodes.Data.ControlPathUnavailable,
+                    "The test installation identity is unavailable.")))
+                : identity.ReadAsync(cancellationToken);
+
+        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
+            ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<Result<DataRetentionApplyResult>> ApplyUnderStoppedHostAuthorityAsync(
+            DataRetentionApplyRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            data.ApplyAsync(request, cancellationToken);
+
+    }
+
+    private sealed class SequentialStoppedHostDataService(
+        params DataRetentionPlan[] plans) : IInstallationResetStoppedHostDataService
+    {
+
+        private int _planIndex;
+
+        public int ApplyCount { get; private set; }
+
+        public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
+            InstallationResetDataPlanRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken)
+        {
+
+            DataRetentionPlan plan = plans[Math.Min(_planIndex, plans.Length - 1)];
+
+            _planIndex++;
+
+            return Task.FromResult(Result<DataRetentionPlan>.Success(plan));
+
+        }
+
+        public Task<Result<InstallationResetWorkspaceResolution>>
+            ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+                string invocationDirectory,
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "The global reset must not resolve a workspace.");
+
+        public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<Guid>.Success(
+                Guid.Parse("40404040-4040-4040-8040-404040404040")));
+
+        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
+            ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "The pair-reader fake owns marker evidence for this test.");
+
+        public Task<Result<DataRetentionApplyResult>>
+            ApplyUnderStoppedHostAuthorityAsync(
+                DataRetentionApplyRequest request,
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken)
+        {
+
+            ApplyCount++;
+
+            return Task.FromResult(Result<DataRetentionApplyResult>.Success(
+                new DataRetentionApplyResult(
+                    Guid.Parse("41414141-4141-4141-8141-414141414141"),
+                    request.ExpectedPlanId!,
+                    RowsDeleted: 3,
+                    FilesDeleted: 0,
+                    EstimatedBytesDeleted: 0,
+                    DerivedRecordsDeleted: 2,
+                    Reconciled: true,
+                    Blockers: [],
+                    Conflicts: [])));
 
         }
 
@@ -3371,6 +3866,10 @@ public sealed partial class InstallationResetServiceTests
 
         public int IdentityReadCount { get; private set; }
 
+        public Result<Guid> IdentityReadResult { get; set; } =
+            Result<Guid>.Success(
+                Guid.Parse("40404040-4040-4040-8040-404040404040"));
+
         public int RecoverCount { get; private set; }
 
         /// <summary>Settable so a test can seed the durable state a resumed attempt would find.</summary>
@@ -3490,8 +3989,7 @@ public sealed partial class InstallationResetServiceTests
 
             IdentityReadCount++;
 
-            return Task.FromResult(Result<Guid>.Success(
-                Guid.Parse("40404040-4040-4040-8040-404040404040")));
+            return Task.FromResult(IdentityReadResult);
 
         }
 

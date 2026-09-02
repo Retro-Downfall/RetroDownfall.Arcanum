@@ -4,8 +4,10 @@ using System.Reflection;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using System.Runtime.ExceptionServices;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -364,6 +366,149 @@ public sealed class ApiBootstrapperRateLimitTests : IDisposable
         object? result = method.Invoke(null, [configuration]);
 
         return Assert.IsType<bool>(result);
+
+    }
+
+    // UseArcanumRateLimiter's partition key is Connection.RemoteIpAddress
+    // (ResolveRateLimitPartitionKey above), read straight off the connection with no
+    // forwarded-headers processing in front of it. Behind the reverse proxy ListenAny's own remarks
+    // name as the expected topology, that collapses every caller into the proxy's one address. This
+    // builds a minimal host (WebApplication.CreateSlimBuilder + UseTestServer, the same pattern
+    // ApiDomainSplitContractTests.RouteGraph uses) around the real UseArcanumRateLimiter extension
+    // method — the production entry point named by the finding — and asserts that two requests
+    // carrying different X-Forwarded-For values are seen downstream as their own distinct addresses
+    // rather than the one peer address.
+    //
+    // The peer this in-memory TestServer transport reports is not a loopback address — it is null
+    // (confirmed by this finding's own RED-verification: with UseForwardedHeaders removed, the probe
+    // returned "unknown", i.e. Connection.RemoteIpAddress?.ToString() ?? "unknown" hit the fallback).
+    // ForwardedHeadersMiddleware still honors the header in that case, so this test demonstrates the
+    // middleware is correctly wired into the pipeline and processes X-Forwarded-For end-to-end, which
+    // is what the fix required — but it does not exercise the specific default-KnownProxies/
+    // KnownIPNetworks loopback-allowlist check a real reverse-proxy deployment would hit (where
+    // Connection.RemoteIpAddress is a genuine 127.0.0.1), because this harness never populates
+    // Connection.RemoteIpAddress with any address, loopback or otherwise, to check against that list.
+    [Fact]
+    public async Task UseArcanumRateLimiter_UnknownRemotePeer_HonorsForwardedForFromTheDefaultTrustedProxy()
+    {
+
+        // No local restore needed: this class's ctor captures ARCANUM_HOST_ANY and Dispose()
+        // restores it after every test (see the top of this class), the same as every other test
+        // here that touches it.
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", "true");
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        // UseArcanumRateLimiter only requires that AddRateLimiter has been called somewhere; it does
+        // not read or depend on which policy exists, so a no-op probe policy is enough to let
+        // UseRateLimiter() activate without pulling in the full production policy.
+        builder.Services.AddRateLimiter(static options =>
+            options.AddPolicy("probe", static _ => RateLimitPartition.GetNoLimiter("probe")));
+
+        await using WebApplication app = builder.Build();
+
+        app.UseArcanumRateLimiter();
+
+        app.MapGet("/probe", (HttpContext ctx) => ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+
+        await app.StartAsync();
+
+        try
+        {
+
+            HttpClient client = app.GetTestClient();
+
+            HttpRequestMessage first = new(HttpMethod.Get, "/probe");
+
+            first.Headers.Add("X-Forwarded-For", "203.0.113.10");
+
+            string firstIp = await (await client.SendAsync(first)).Content.ReadAsStringAsync();
+
+            HttpRequestMessage second = new(HttpMethod.Get, "/probe");
+
+            second.Headers.Add("X-Forwarded-For", "198.51.100.20");
+
+            string secondIp = await (await client.SendAsync(second)).Content.ReadAsStringAsync();
+
+            Assert.Equal("203.0.113.10", firstIp);
+
+            Assert.Equal("198.51.100.20", secondIp);
+
+            Assert.NotEqual(firstIp, secondIp);
+
+        }
+        finally
+        {
+
+            await app.StopAsync();
+
+        }
+
+    }
+
+    // The test above only proves the middleware is wired in and honors the
+    // header from a null-peer connection (see its own comment) — it never exercises the actual
+    // KnownProxies/KnownIPNetworks membership check, because a null Connection.RemoteIpAddress has
+    // no address to test against those lists in the first place. A reviewer mutation confirmed this:
+    // clearing both lists to empty left the whole class green, including that test. This test drives
+    // a genuine non-loopback peer address (one the default loopback-only lists cannot match) through
+    // app.Use before UseArcanumRateLimiter registers the middleware, and asserts the forwarded header
+    // from that untrusted hop is discarded — Connection.RemoteIpAddress downstream stays the injected
+    // peer address, never the caller-supplied X-Forwarded-For value.
+    [Fact]
+    public async Task UseArcanumRateLimiter_NonLoopbackPeer_DiscardsForwardedForFromTheUntrustedHop()
+    {
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", "true");
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        builder.Services.AddRateLimiter(static options =>
+            options.AddPolicy("probe", static _ => RateLimitPartition.GetNoLimiter("probe")));
+
+        await using WebApplication app = builder.Build();
+
+        app.Use(async (ctx, next) =>
+        {
+
+            ctx.Connection.RemoteIpAddress = IPAddress.Parse("198.51.100.50");
+
+            await next(ctx);
+
+        });
+
+        app.UseArcanumRateLimiter();
+
+        app.MapGet("/probe", (HttpContext ctx) => ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+
+        await app.StartAsync();
+
+        try
+        {
+
+            HttpClient client = app.GetTestClient();
+
+            HttpRequestMessage request = new(HttpMethod.Get, "/probe");
+
+            request.Headers.Add("X-Forwarded-For", "203.0.113.10");
+
+            string observedIp = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+            Assert.Equal("198.51.100.50", observedIp);
+
+            Assert.NotEqual("203.0.113.10", observedIp);
+
+        }
+        finally
+        {
+
+            await app.StopAsync();
+
+        }
 
     }
 

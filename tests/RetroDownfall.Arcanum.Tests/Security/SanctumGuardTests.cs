@@ -420,7 +420,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ValidatePathAsync_UnknownCampaign_Allows()
+    public async Task ValidatePathAsync_UnknownCampaign_Denies()
     {
 
         SanctumResult result = await CreateGuard(new FakeCampaignRepository()).ValidatePathAsync(
@@ -429,7 +429,9 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read",
             "read_file_chunk");
 
-        Assert.True(result.Allowed);
+        Assert.False(result.Allowed);
+
+        Assert.Contains("does not resolve to a known campaign", result.DenyReason, StringComparison.Ordinal);
 
     }
 
@@ -684,7 +686,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ValidateNetworkAsync_UnknownCampaign_Allows()
+    public async Task ValidateNetworkAsync_UnknownCampaign_Denies()
     {
 
         SanctumResult result = await CreateGuard(new FakeCampaignRepository()).ValidateNetworkAsync(
@@ -692,7 +694,9 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "https://example.com",
             "fetch_url");
 
-        Assert.True(result.Allowed);
+        Assert.False(result.Allowed);
+
+        Assert.Contains("does not resolve to a known campaign", result.DenyReason, StringComparison.Ordinal);
 
     }
 
@@ -935,14 +939,20 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ValidateToolAsync_UnknownCampaign_Allows()
+    public async Task ValidateToolAsync_UnknownCampaign_Denies()
     {
 
+        // A well-formed campaign id the repository no longer resolves (e.g. deleted mid-turn) must
+        // deny rather than fall through to full permission — "execute_command" stands in for
+        // whatever this now-gone campaign's DisabledTools would have named; there is no config left
+        // to consult, so denial cannot depend on what the tool name happens to be.
         SanctumResult result = await CreateGuard(new FakeCampaignRepository()).ValidateToolAsync(
             Guid.NewGuid().ToString(),
-            "read_file_chunk");
+            "execute_command");
 
-        Assert.True(result.Allowed);
+        Assert.False(result.Allowed);
+
+        Assert.Contains("does not resolve to a known campaign", result.DenyReason, StringComparison.Ordinal);
 
     }
 

@@ -18,6 +18,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
 
+using RetroDownfall.Arcanum.Tests.Data;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
@@ -282,7 +284,9 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         RequireSqlCipher();
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         _ = await store.CreateAsync(
             new LongRunningOperationCreateRequest(
@@ -397,7 +401,9 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         CovenantResetPhase phase)
     {
 
-        LongRunningOperationStore store = new(_db!);
+        LongRunningOperationStore store = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperationRecoveryPolicy policy = kind
             == LongRunningOperationKinds.DataRetentionMutation

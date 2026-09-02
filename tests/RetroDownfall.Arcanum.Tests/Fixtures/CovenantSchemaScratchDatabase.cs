@@ -3,8 +3,281 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
+
+internal interface IDesignTimeGrimoireConnectionFactory
+    : IStoppedHostGrimoireConnectionFactory
+{
+
+    string DatabasePath { get; }
+
+    Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken);
+
+    Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken);
+
+    Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(
+        CancellationToken cancellationToken);
+
+    Task<SqliteConnection> OpenSideFileAsync(
+        string path,
+        CancellationToken cancellationToken);
+
+    Task AttachSideFileAsync(
+        SqliteConnection connection,
+        string alias,
+        string path,
+        CancellationToken cancellationToken);
+
+    [GrimoireConnectionAcquisitionRoute]
+    async Task<Result<IStoppedHostGrimoireConnectionLease>>
+        IStoppedHostGrimoireConnectionFactory
+            .OpenStoppedHostInstallationResetPlanReadAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+        await OpenStoppedAsync(
+            writable: false,
+            cancellationToken).ConfigureAwait(false);
+
+    [GrimoireConnectionAcquisitionRoute]
+    async Task<Result<IStoppedHostGrimoireConnectionLease>>
+        IStoppedHostGrimoireConnectionFactory
+            .OpenStoppedHostInstallationResetWorkspaceResolutionAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+        await OpenStoppedAsync(
+            writable: false,
+            cancellationToken).ConfigureAwait(false);
+
+    [GrimoireConnectionAcquisitionRoute]
+    async Task<Result<IStoppedHostGrimoireConnectionLease>>
+        IStoppedHostGrimoireConnectionFactory
+            .OpenStoppedHostInstallationResetIdentityReadAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+        await OpenStoppedAsync(
+            writable: false,
+            cancellationToken).ConfigureAwait(false);
+
+    [GrimoireConnectionAcquisitionRoute]
+    async Task<Result<IStoppedHostGrimoireConnectionLease>>
+        IStoppedHostGrimoireConnectionFactory
+            .OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+        await OpenStoppedAsync(
+            writable: false,
+            cancellationToken).ConfigureAwait(false);
+
+    [GrimoireConnectionAcquisitionRoute]
+    async Task<Result<IStoppedHostGrimoireConnectionLease>>
+        IStoppedHostGrimoireConnectionFactory
+            .OpenStoppedHostInstallationResetApplyAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+        await OpenStoppedAsync(
+            writable: true,
+            cancellationToken).ConfigureAwait(false);
+
+    [GrimoireConnectionAcquisitionRoute]
+    async Task<Result<IStoppedHostGrimoireConnectionLease>>
+        IStoppedHostGrimoireConnectionFactory.OpenStoppedHostMarkerPairResetAsync(
+            IStoppedHostGrimoireConnectionAuthority authority,
+            CancellationToken cancellationToken) =>
+        await OpenStoppedAsync(
+            writable: true,
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<Result<IStoppedHostGrimoireConnectionLease>> OpenStoppedAsync(
+        bool writable,
+        CancellationToken cancellationToken)
+    {
+
+        SqliteConnection? connection = null;
+
+        try
+        {
+
+            connection = writable
+                ? await OpenAsync(cancellationToken).ConfigureAwait(false)
+                : await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                connection,
+                writable
+                    ? CovenantSqliteConnectionMode.ReadWrite
+                    : CovenantSqliteConnectionMode.ReadOnly,
+                cancellationToken).ConfigureAwait(false);
+
+            return Result<IStoppedHostGrimoireConnectionLease>.Success(
+                new DesignTimeStoppedHostGrimoireConnectionLease(connection));
+
+        }
+        catch (Exception exception)
+        {
+
+            if (connection is not null)
+            {
+
+                await connection.DisposeAsync().ConfigureAwait(false);
+
+            }
+
+            return Result<IStoppedHostGrimoireConnectionLease>.Failure(new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                exception.Message));
+
+        }
+
+    }
+
+}
+
+internal sealed class DesignTimeStoppedHostGrimoireConnectionLease(
+    SqliteConnection connection) : IStoppedHostGrimoireConnectionLease
+{
+
+    public SqliteConnection Connection { get; } = connection;
+
+    public ValueTask DisposeAsync() => Connection.DisposeAsync();
+
+}
+
+internal sealed class DesignTimeGrimoireConnectionFactory(
+    IGrimoireDbPassphraseSource passphrase,
+    string? databasePath = null) : IDesignTimeGrimoireConnectionFactory
+{
+
+    private readonly string _databasePath = Path.GetFullPath(
+        databasePath ?? ArcanumPaths.GrimoireDatabaseFile);
+
+    public string DatabasePath => _databasePath;
+
+    public Task<SqliteConnection> OpenAsync(
+        CancellationToken cancellationToken) =>
+        OpenCoreAsync(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = DatabasePath,
+
+                Password = passphrase.Passphrase,
+
+                Pooling = false,
+            },
+            cancellationToken);
+
+    public Task<SqliteConnection> OpenReadOnlyAsync(
+        CancellationToken cancellationToken) =>
+        OpenCoreAsync(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = DatabasePath,
+
+                Password = passphrase.Passphrase,
+
+                Pooling = false,
+
+                Mode = SqliteOpenMode.ReadOnly,
+
+                Cache = SqliteCacheMode.Private,
+            },
+            cancellationToken);
+
+    public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(
+        CancellationToken cancellationToken) =>
+        OpenCoreAsync(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = "file:" + DatabasePath + "?immutable=1",
+
+                Password = passphrase.Passphrase,
+
+                Pooling = false,
+
+                Mode = SqliteOpenMode.ReadOnly,
+            },
+            cancellationToken);
+
+    public Task<SqliteConnection> OpenSideFileAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentException.ThrowIfNullOrEmpty(path);
+
+        return OpenCoreAsync(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = path,
+
+                Password = passphrase.Passphrase,
+
+                Pooling = false,
+            },
+            cancellationToken);
+
+    }
+
+    public async Task AttachSideFileAsync(
+        SqliteConnection connection,
+        string alias,
+        string path,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentException.ThrowIfNullOrEmpty(alias);
+
+        ArgumentException.ThrowIfNullOrEmpty(path);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"ATTACH DATABASE $path AS {alias} KEY $key;";
+
+        _ = command.Parameters.AddWithValue("$path", path);
+
+        _ = command.Parameters.AddWithValue("$key", passphrase.Passphrase);
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    private static async Task<SqliteConnection> OpenCoreAsync(
+        SqliteConnectionStringBuilder builder,
+        CancellationToken cancellationToken)
+    {
+
+        SqliteConnection connection = new(builder.ToString());
+
+        try
+        {
+
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            return connection;
+
+        }
+        catch
+        {
+
+            await connection.DisposeAsync().ConfigureAwait(false);
+
+            throw;
+
+        }
+
+    }
+
+}
 
 /// <summary>
 /// One encrypted, file-backed scratch Grimoire that the Covenant canonical and accelerator schema
@@ -304,7 +577,7 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// sidecar. The scratch factory reaches for the production helpers for the last two, so a suite
     /// proving sidecar absence proves it about the connection string production actually opens.
     /// </remarks>
-    internal ICovenantMaintenanceConnectionFactory MaintenanceConnections() => new ScratchMaintenance(this);
+    internal IDesignTimeGrimoireConnectionFactory MaintenanceConnections() => new ScratchMaintenance(this);
 
     /// <summary>
     /// Reopens and reinitializes <see cref="Connection"/> after a maintenance path drained it.
@@ -506,7 +779,7 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// The scratch file's own maintenance factory, keyed exactly as every other handle to it.
     /// </summary>
     private sealed class ScratchMaintenance(CovenantSchemaScratchDatabase database)
-        : ICovenantMaintenanceConnectionFactory
+        : IDesignTimeGrimoireConnectionFactory
     {
 
         public string DatabasePath => database.DatabasePath;
@@ -518,9 +791,18 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         {
 
             SqliteConnection connection = new(
-                CovenantMaintenanceConnectionFactory
-                    .ReadOnly(database.DatabasePath, Passphrase)
-                    .ToString());
+                new SqliteConnectionStringBuilder
+                {
+                    DataSource = database.DatabasePath,
+
+                    Password = Passphrase,
+
+                    Pooling = false,
+
+                    Mode = SqliteOpenMode.ReadOnly,
+
+                    Cache = SqliteCacheMode.Private,
+                }.ToString());
 
             try
             {
@@ -545,9 +827,18 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         {
 
             SqliteConnection connection = new(
-                CovenantMaintenanceConnectionFactory
-                    .SidecarFreeReadOnly(database.DatabasePath, Passphrase)
-                    .ToString());
+                new SqliteConnectionStringBuilder
+                {
+                    DataSource = "file:"
+                        + Path.GetFullPath(database.DatabasePath)
+                        + "?immutable=1",
+
+                    Password = Passphrase,
+
+                    Pooling = false,
+
+                    Mode = SqliteOpenMode.ReadOnly,
+                }.ToString());
 
             try
             {
@@ -600,17 +891,25 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
         }
 
-        public Task AttachSideFileAsync(
+        public async Task AttachSideFileAsync(
             SqliteConnection connection,
             string alias,
             string path,
-            CancellationToken cancellationToken) =>
-            CovenantMaintenanceConnectionFactory.AttachSideFileCoreAsync(
-                connection,
-                alias,
-                path,
-                Passphrase,
-                cancellationToken);
+            CancellationToken cancellationToken)
+        {
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText = $"ATTACH DATABASE $path AS {alias} KEY $key;";
+
+            _ = command.Parameters.AddWithValue("$path", path);
+
+            _ = command.Parameters.AddWithValue("$key", Passphrase);
+
+            _ = await command.ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+        }
 
     }
 

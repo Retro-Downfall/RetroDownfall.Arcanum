@@ -3,10 +3,13 @@
 <plist version="1.0">
 <dict>
   <!--
-    The macOS CLI is a self-contained JIT CoreCLR publish (Cli.csproj disables PublishAot for
-    osx-* RIDs), so the hardened runtime must be told to permit the RWX/MAP_JIT mappings the
-    runtime creates. Without allow-jit the signed binary aborts before Main with
-    "Failed to create CoreCLR, HRESULT: 0x80070008".
+    These entitlements matter on the fallback shape: Cli.csproj enables PublishAot for osx-* RIDs
+    only when ld64.lld is present (its _AppleLldPath condition), and without that linker the
+    publish is a self-contained JIT CoreCLR build instead, whose hardened runtime must be told to
+    permit the RWX/MAP_JIT mappings the JIT creates. Without allow-jit the signed binary aborts
+    before Main with "Failed to create CoreCLR, HRESULT: 0x80070008". A Native AOT publish does
+    not JIT and needs none of the three below; they stay applied to it too because an unused
+    entitlement is permissive rather than breaking (see build-arcanum.sh's signing step).
   -->
   <key>com.apple.security.cs.allow-jit</key>
   <true/>

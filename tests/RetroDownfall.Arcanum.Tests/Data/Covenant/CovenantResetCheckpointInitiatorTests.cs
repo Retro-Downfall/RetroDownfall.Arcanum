@@ -6,9 +6,11 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Operations;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -696,18 +698,25 @@ public sealed class CovenantResetCheckpointInitiatorTests
                     requestedOperationId: null,
                     CancellationToken.None));
 
-        await digests.Entered;
+        await digests.Entered.WaitAsync(TimeSpan.FromSeconds(5));
 
         Task<Result<CovenantExclusiveLease>> replacement = gate.AcquireExclusiveAsync(
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
                 CancellationToken.None)
             .AsTask();
 
-        Assert.False(replacement.IsCompleted);
+        try
+        {
 
-        Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
+            Assert.False(replacement.IsCompleted);
 
-        digests.Release();
+            Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
+
+        }
+        finally
+        {
+            digests.Release();
+        }
 
         Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await preparing;
 
@@ -878,17 +887,14 @@ public sealed class CovenantResetCheckpointInitiatorTests
     private static CovenantHealthyCatalogErasureGuard CatalogGuard(
         CovenantSchemaScratchDatabase database) =>
         new(
-            database.MaintenanceConnections(),
-            CovenantSqliteConnectionInitializer.Instance,
-            new CovenantConnectionDrain(),
+            new RecordingFreshOrdinaryConnectionFactory(
+                database.Connection.ConnectionString),
             new GrimoireSchemaManifestInspector(
                 GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
 
     private static CovenantHealthyCatalogErasureGuard UnusedCatalogGuard() =>
         new(
-            new UnreachableMaintenanceConnectionFactory(),
-            CovenantSqliteConnectionInitializer.Instance,
-            new CovenantConnectionDrain(),
+            new UnreachableOrdinaryConnectionFactory(),
             new GrimoireSchemaManifestInspector(
                 GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
 
@@ -913,6 +919,8 @@ public sealed class CovenantResetCheckpointInitiatorTests
     private sealed class BlockingDigestCalculator : ICovenantErasureEffectDigestCalculator, IDisposable
     {
 
+        private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(30);
+
         private readonly TaskCompletionSource<bool> _entered =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -929,42 +937,41 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
             _ = _entered.TrySetResult(true);
 
-            _release.Wait();
+            // The production caller parks here while it holds its lock. A test that fails before it calls
+            // Release() disposes its harness under that same lock, so an unbounded wait would hang the
+            // whole run; the bound turns that into a red test instead.
+            _release.Wait(ReleaseTimeout);
 
             return _inner.Compute(input);
 
         }
 
-        public void Dispose() => _release.Dispose();
+        public void Dispose()
+        {
+
+            _release.Set();
+
+            _release.Dispose();
+
+        }
 
     }
 
-    private sealed class UnreachableMaintenanceConnectionFactory : ICovenantMaintenanceConnectionFactory
+    private sealed class UnreachableOrdinaryConnectionFactory
+        : IGrimoireOrdinaryConnectionFactory
     {
 
-        public string DatabasePath => throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken) =>
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind kind,
+            CancellationToken cancellationToken) =>
             throw new NotSupportedException(
                 "Covenant memory-reset preparation must not inspect the factory catalog.");
-
-        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<SqliteConnection> OpenSideFileAsync(
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task AttachSideFileAsync(
-            SqliteConnection connection,
-            string alias,
-            string path,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
 
     }
 

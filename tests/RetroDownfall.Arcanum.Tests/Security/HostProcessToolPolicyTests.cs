@@ -1,6 +1,8 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 using SysEnv = System.Environment;
 
@@ -103,6 +105,75 @@ public sealed class HostProcessToolPolicyTests
         finally
         {
             _ = HostProcessToolsEscapeHatchScope.Gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The arm where the two inputs say yes and the gate has already said no.
+    /// </summary>
+    /// <remarks>
+    /// Development plus <c>ARCANUM_ALLOW_HOST_PROCESS_TOOLS</c> is what every other Resolve arm turns
+    /// on, and on an installation with no completed host-process-tools transition it is also exactly
+    /// what the startup gate blocks - so this state is the common one for an operator who read the
+    /// old denial and did what it said. Health has to report it as the gate's refusal: the tools are
+    /// not running, so the process is not Degraded for having them, and an operator told otherwise
+    /// goes looking for a hatch that is shut. The decision comes from a real
+    /// <c>ClassifyAndPublishAsync</c> run rather than a hand-built policy, so a gate that stopped
+    /// blocking this state fails here instead of quietly agreeing with the status.
+    /// </remarks>
+    [Fact]
+    public async Task Resolve_DevelopmentWithEnvButRefusedByTheStartupGate_ReportsTheRefusal()
+    {
+        using HostProcessToolsEscapeHatchScope scope = new();
+
+        FakeHostProcessToolsEnvironmentProbe environment = new()
+        {
+            Edition = ArcanumEdition.Development,
+            EscapeHatchOptIn = true,
+        };
+
+        HostProcessToolsRuntimePolicy published = new();
+
+        HostProcessToolsStartupGate gate = new(
+            new FakeHostProcessToolsMarkerStore(),
+            new FakeHostProcessToolsAuthorityStore(),
+            environment,
+            new HostProcessToolsMarkerPairJoiner(),
+            published);
+
+        Result<HostProcessToolsStartupDecision> classified =
+            await gate.ClassifyAndPublishAsync(CancellationToken.None);
+
+        // The premise, measured: a clean installation started with the hatch armed is refused, and
+        // the refusal is published rather than left for each call site to re-derive.
+        Assert.True(classified.IsFailure);
+
+        Assert.True(published.IsPublished);
+
+        Assert.Equal(HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition, published.Blocker);
+
+        try
+        {
+            HostProcessToolPolicy.BindStartupDecision(published);
+
+            HostProcessToolPolicyStatus status = HostProcessToolPolicy.Resolve(ArcanumEdition.Development);
+
+            // The scope set both inputs, so only the gate's decision can be subtracting here.
+            Assert.True(status.EscapeHatchEnvSet);
+
+            Assert.False(status.Allowed);
+
+            Assert.False(status.IsHealthDegraded);
+
+            Assert.Contains("startup gate refused", status.PublicMessage, StringComparison.Ordinal);
+
+            Assert.False(HostProcessToolPolicy.AreAllowed(ArcanumEdition.Development));
+        }
+        finally
+        {
+            // Process-wide: a test that leaves this bound hands every later test a refusal it never
+            // asked for.
+            HostProcessToolPolicy.SetStartupDecisionForTests(null);
         }
     }
 

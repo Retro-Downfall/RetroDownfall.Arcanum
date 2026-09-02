@@ -97,6 +97,13 @@ public static class GrimoireDatabaseBootstrapper
         try
         {
 
+            // This connection is opened on its own path: a host that shut down without ever opening
+            // the Grimoire has installed no provider, and the checkpoint would fail on the raw
+            // SQLitePCLRaw error rather than the typed unavailability. Inside the try on purpose —
+            // the method is best-effort by contract, and a runtime that will not load belongs in the
+            // same swallowed warning as every other failure here rather than thrown out of shutdown.
+            SqliteNativeRuntime.Instance.Initialize();
+
             string passphrase = passphraseSource.Passphrase;
 
             // Unpooled, or this checkpoint defeats its own purpose. A pooled handle is not closed by
@@ -601,22 +608,21 @@ public static class GrimoireDatabaseBootstrapper
             provisionalPolicy.Blocker);
 
         // One blocked case is not a hard stop yet. `EscapeHatchWithoutTransition` means the durable
-        // state is provably clean and this host merely started with the opt-in armed — the exact
-        // situation the offline enable command exists to resolve, and that command ships with the
-        // operator surfaces in issue #89. Hard-failing today would leave a Development host with no
-        // way to start and no way to complete the transition, so it degrades: the closed decision is
-        // held unpublished until installation identity verification, then becomes the process policy.
-        // Every other blocked disposition means the durable evidence
-        // disagrees with itself, which cannot happen without a transition having been attempted,
-        // and those still stop startup (§10.15).
+        // state is provably clean and this host merely started with the opt-in armed, which is what
+        // the offline transition exists to resolve. Hard-failing today would leave a Development host
+        // with no way to start and no way to complete that transition, so it degrades: the closed
+        // decision is held unpublished until installation identity verification, then becomes the
+        // process policy — and since that published decision is what admits host process tools, the
+        // degraded host advertises none of them. Every other blocked disposition means the durable
+        // evidence disagrees with itself, which cannot happen without a transition having been
+        // attempted, and those still stop startup (§10.15).
         if (blocked.Blocker is HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition)
         {
 
             Log.Warning(
-                "Arcanum started with the host-process-tools escape hatch armed and no completed transition. "
-                + "Covenant stays closed for this process. Run `{Command}` while the host is stopped "
-                + "once that command ships.",
-                HostProcessToolsStartupGate.OfflineCommand);
+                "Arcanum started with the host-process-tools escape hatch armed and no completed "
+                + "transition. Covenant stays closed. {Remediation}",
+                HostProcessToolsStartupGate.EscapeHatchRemediation);
 
             return new DeferredHostProcessToolsDecision(policy, blocked);
 
@@ -719,6 +725,12 @@ public static class GrimoireDatabaseBootstrapper
                 throw new GrimoireDatabaseUnavailableException(publication.Error.Message);
 
             }
+
+            // Advertise and invoke sites reach the policy through a static predicate, which has no
+            // service to inject. Binding the published policy is what makes them read this decision
+            // instead of re-deriving one from the edition and environment the gate has already
+            // refused — the difference between a published decision and a log line (§10.12).
+            HostProcessToolPolicy.BindStartupDecision(hostProcessToolsDecision.ProcessPolicy);
 
         }
 

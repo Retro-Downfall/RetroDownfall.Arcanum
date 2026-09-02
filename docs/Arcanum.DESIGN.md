@@ -41,7 +41,7 @@ A Familiar is a transport, not a managed runtime, and the distinction is load-be
 |------|-----------|
 | **Strict project boundaries** | Keeps compile-time dependencies honest, enables parallel ownership, and avoids the "everything references everything" failure mode. |
 | **Hybrid process model** | One CLI/host entry point reduces deployment and versioning surface; operators choose mode via CLI verbs. |
-| **Native AOT readiness for the host** | Windows and Linux ship one native executable. macOS does too when LLVM `lld` is installed, and otherwise ships a signed folder-based self-contained publish. Secondary benefits are predictable startup and a smaller reflection surface (§9). |
+| **Native AOT readiness for the host** | Windows ships one native executable. macOS does too when LLVM `lld` is installed, and otherwise ships a signed folder-based self-contained publish. Secondary benefits are predictable startup and a smaller reflection surface (§9). |
 | **Minimal API over MVC** | Fewer moving parts, explicit endpoint mapping, and alignment with ASP.NET Core's AOT-oriented request pipeline. |
 | **Source-generated JSON and request delegates** | Required for credible trimming and Native AOT compatibility; avoids runtime reflection. |
 
@@ -3474,7 +3474,7 @@ Collision behavior is fail-closed and provenance-preserving: blocked names remai
 - **Primary constructors on services** for DI injection.
 - **`IDisposable`** on infrastructure services with `SemaphoreSlim` or `ServiceProvider` ownership.
 - **Blank line after each line of C# code** for visual breathing room.
-- **Convention scope (project-specific vs inherited).** The conventions in this section plus the README naming metaphor are **specific to Arcanum**. Organization-wide standards scoped to `Corp.Solution.*`-prefixed solutions — Dapper repositories over SQL Server stored procedures, the `Corp.Lib.*` / `Corp.Api.Configuration.Lib` NuGet stack, and Refit "Service Library" API contracts — **do not apply** here: Arcanum is local-first over its own EF Core + SQLCipher Grimoire (no SQL Server, no stored procedures) and ships its CLI/host as Native AOT on Windows/Linux plus a self-contained macOS fallback. The always-on house rules still hold — one blank line after each C# statement (above), strict CSP with no inline JS/CSS on every web surface, and the documentation contract updated with code (§18).
+- **Convention scope (project-specific vs inherited).** The conventions in this section plus the README naming metaphor are **specific to Arcanum**. Organization-wide standards scoped to `Corp.Solution.*`-prefixed solutions — Dapper repositories over SQL Server stored procedures, the `Corp.Lib.*` / `Corp.Api.Configuration.Lib` NuGet stack, and Refit "Service Library" API contracts — **do not apply** here: Arcanum is local-first over its own EF Core + SQLCipher Grimoire (no SQL Server, no stored procedures) and ships its CLI/host as Native AOT on Windows, and on macOS with `lld` (Linux is not a shipping RID) plus a self-contained macOS fallback. The always-on house rules still hold — one blank line after each C# statement (above), strict CSP with no inline JS/CSS on every web surface, and the documentation contract updated with code (§18).
 
 ---
 

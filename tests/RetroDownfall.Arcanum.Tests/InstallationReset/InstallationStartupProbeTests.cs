@@ -84,6 +84,35 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// An authoritative file already proves the installation non-fresh, so the credential-backed
+    /// active-reset read (which reaches the OS credential store on every ordinary invocation, per the
+    /// finding) must never run for it — checking the cheap, local file state first is what keeps an
+    /// established installation off the credential store's potentially slow or interactive round trip
+    /// on the common `arcanum run` path.
+    /// </summary>
+    [Fact]
+    public void Authoritative_file_state_never_reaches_the_credential_store()
+    {
+
+        string root = _workspace.CreateSubdir("arcanum");
+
+        _ = _workspace.WriteFile("arcanum/arcanum.db", "state");
+
+        RecordingCredentialStore credentials = new(OsCredentialStoreResult.NotFound());
+
+        InstallationStartupProbe probe = CreateProbe(root, credentials);
+
+        Result<bool> result = probe.IsFreshInstallation();
+
+        Assert.True(result.IsSuccess);
+
+        Assert.False(result.Value);
+
+        Assert.Equal(0, credentials.ReadCount);
+
+    }
+
     [Fact]
     public void Fixed_master_credential_makes_the_installation_nonfresh()
     {
@@ -317,10 +346,14 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Inaccessible_ancestor_of_the_guarded_root_fails_closed_without_mutation()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what makes the ancestor inaccessible here.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 

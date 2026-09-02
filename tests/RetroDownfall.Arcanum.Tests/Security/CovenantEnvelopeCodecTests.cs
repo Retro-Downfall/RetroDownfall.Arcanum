@@ -719,10 +719,10 @@ public sealed class CovenantEnvelopeCodecTests
 
             });
 
-        await publicationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
         try
         {
+
+            await publicationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             Task completed = await Task.WhenAny(
                 publication,
@@ -789,10 +789,10 @@ public sealed class CovenantEnvelopeCodecTests
 
             });
 
-        await retirementStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
         try
         {
+
+            await retirementStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             Task completed = await Task.WhenAny(
                 retirement,
@@ -1250,6 +1250,10 @@ public sealed class CovenantEnvelopeCodecTests
         CovenantEnvelopeCodecStep blockedStep) : ICovenantEnvelopeCodecCheckpoint, IDisposable
     {
 
+        private static readonly TimeSpan ReachedTimeout = TimeSpan.FromSeconds(5);
+
+        private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(30);
+
         private readonly ManualResetEventSlim _reached = new();
 
         private readonly ManualResetEventSlim _release = new();
@@ -1266,14 +1270,29 @@ public sealed class CovenantEnvelopeCodecTests
 
             _reached.Set();
 
-            _release.Wait();
+            // The codec parks here while it holds the generation lock. A test that fails before it calls
+            // Release() disposes the harness under that same lock, so an unbounded wait would hang the
+            // whole run; the bound turns that into a red test instead.
+            _release.Wait(ReleaseTimeout);
 
         }
 
         public void Zeroized(CovenantEnvelopeCodecBufferKind kind, bool isZero) =>
             _zeroizations.Add((kind, isZero));
 
-        public void WaitUntilReached() => Assert.True(_reached.Wait(TimeSpan.FromSeconds(5)));
+        public void WaitUntilReached()
+        {
+
+            bool reached = _reached.Wait(ReachedTimeout);
+
+            if (!reached)
+            {
+                _release.Set();
+            }
+
+            Assert.True(reached, $"The codec did not reach {blockedStep} within {ReachedTimeout.TotalSeconds:0} seconds.");
+
+        }
 
         public void Release() => _release.Set();
 
@@ -1290,6 +1309,8 @@ public sealed class CovenantEnvelopeCodecTests
 
         public void Dispose()
         {
+
+            _release.Set();
 
             _reached.Dispose();
 

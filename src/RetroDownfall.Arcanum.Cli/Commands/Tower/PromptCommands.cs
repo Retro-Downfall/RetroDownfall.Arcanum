@@ -1,6 +1,9 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -14,8 +17,14 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 public sealed class PromptCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
+    IConfirmationPrompt confirmationPrompt,
+    IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
+
+    private void WriteError(Error error) =>
+        CliErrorOutput.WriteMarkupLine(
+            themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
 
     /// <summary>
     /// List prompts (GET /api/prompts).
@@ -39,7 +48,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -52,9 +61,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         PromptSummaryDto[] prompts = result.Value.Items;
@@ -127,9 +136,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         PromptDetailDto prompt = result.Value;
@@ -200,7 +209,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -213,9 +222,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         Table table = new();
@@ -262,21 +271,21 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrWhiteSpace(version))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrEmpty(template))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--template is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(template, out string resolvedTemplate, out string? templateError))
@@ -295,7 +304,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -321,9 +330,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
@@ -385,9 +394,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
@@ -407,13 +416,22 @@ public sealed class PromptCommands(
         (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete prompt {promptId:D}?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Prompt deletion cancelled.")));
+
+            return 0;
+        }
+
         Result result = await apiClient.DeletePromptAsync(promptId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Prompt removed.")));
@@ -446,9 +464,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         await Console.Out.WriteLineAsync(result.Value.RenderedText).ConfigureAwait(false);
@@ -478,9 +496,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         await Console.Out.WriteLineAsync(result.Value.AssembledText).ConfigureAwait(false);
@@ -511,7 +529,7 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(input, out string resolvedInput, out string? inputError))
@@ -537,7 +555,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--sessionId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedSessionId = parsed;
@@ -553,9 +571,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         await ExecuteResultRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
@@ -586,7 +604,7 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name and --new-version are required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Guid? parsedCampaignId = null;
@@ -598,7 +616,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsedCampaignId2;
@@ -611,9 +629,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         PromptDetailDto prompt = result.Value;
@@ -679,9 +697,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         string json = JsonSerializer.Serialize(
@@ -757,7 +775,7 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         string json;
@@ -790,7 +808,7 @@ public sealed class PromptCommands(
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Prompt export JSON parsed to an empty payload.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Guid? parsedCampaignId = null;
@@ -802,7 +820,7 @@ public sealed class PromptCommands(
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
@@ -815,9 +833,9 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(

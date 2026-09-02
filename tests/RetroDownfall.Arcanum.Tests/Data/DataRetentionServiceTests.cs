@@ -383,7 +383,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = Assert.Single(
             await operations.ListAsync(
@@ -708,7 +710,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         settings.Retention.SessionEntryEmbeddings = EnabledRule();
 
         HeartbeatCountingOperationStore operations = new(
-            new LongRunningOperationStore(_db!));
+            new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)));
 
         IDataRetentionService service = CreateService(
             settings,
@@ -802,7 +806,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             });
 
         HeartbeatCountingOperationStore operations = new(
-            new LongRunningOperationStore(_db!));
+            new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)));
 
         IDataRetentionService service = CreateService(
             settings,
@@ -880,7 +886,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             END;
             """);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         IDataRetentionService service = CreateService(
             settings,
@@ -1214,7 +1222,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             ("@createdAt", now.ToString("o", CultureInfo.InvariantCulture)),
             ("@updatedAt", now.ToString("o", CultureInfo.InvariantCulture)));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = await operations.CreateAsync(
             new LongRunningOperationCreateRequest(
@@ -1386,7 +1396,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             request,
             CancellationToken.None);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -1437,7 +1449,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             request,
             CancellationToken.None);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -1584,7 +1598,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.False(File.Exists(auditPath));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = Assert.Single(
             await operations.ListAsync(
@@ -1645,7 +1661,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = Assert.Single(
             await operations.ListAsync(
@@ -1734,7 +1752,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = Assert.Single(
             await operations.ListAsync(
@@ -1903,7 +1923,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         string candidate = Assert.Single(plan.CandidateIds);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -2248,7 +2270,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAllAsync("Sessions"));
 
         Assert.Empty(
-            await new LongRunningOperationStore(_db!).ListAsync(
+            await new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!)).ListAsync(
                 new LongRunningOperationQuery(
                     Kind: LongRunningOperationKinds.DataRetentionFactoryReset,
                     Limit: 10)));
@@ -2516,7 +2540,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation operation = Assert.Single(
             await operations.ListAsync(
@@ -2692,7 +2718,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             """,
             ("@at", OldTimestamp));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -3435,7 +3463,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.False(File.Exists(attachment.AbsolutePath));
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation pending = Assert.Single(
             await operations.ListAsync(new LongRunningOperationQuery(Limit: 10)),
@@ -3487,7 +3517,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         DataRetentionService service = CreateService();
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset startedAt = DateTimeOffset.UtcNow.AddMinutes(-10);
 
@@ -3547,7 +3579,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         _ = await SeedSessionAsync(pinned: false);
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         FakeTimeProvider clock = new();
 
@@ -3796,7 +3830,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     {
 
         ILongRunningOperationStore operations = operationStore
-            ?? new LongRunningOperationStore(_db!);
+            ?? new LongRunningOperationStore(
+                _db!,
+                TestOrdinaryConnectionFactory.For(_db!));
 
         return new DataRetentionService(
             _db!,
@@ -3804,6 +3840,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             operations,
             timeProvider ?? TimeProvider.System,
             logger ?? NullLogger<DataRetentionService>.Instance,
+            FixtureLabeledArtifactGuard.For(_db!),
             _attachmentsRoot,
             _filesRoot,
             _logsRoot,
@@ -3820,7 +3857,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             string workerId)
     {
 
-        LongRunningOperationStore operations = new(_db!);
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
 
         DateTimeOffset startedAt = DateTimeOffset.UtcNow.AddMinutes(-10);
 

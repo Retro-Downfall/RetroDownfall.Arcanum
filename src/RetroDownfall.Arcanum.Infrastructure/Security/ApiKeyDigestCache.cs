@@ -34,7 +34,12 @@ public sealed class ApiKeyDigestCache : IApiKeyDigestCache
         if (entry is not null && now < entry.ExpiresAtMilliseconds)
         {
 
-            digest = entry.Digest;
+            // A defensive copy. entry.Digest is the live array every FixedTimeEquals
+            // compares the presented API key against for the rest of the TTL window, and a
+            // caller that zeroes or otherwise writes into what it gets back — the natural
+            // instinct in this codebase, where every other secret buffer is zeroed in a finally —
+            // must never be able to reach that array.
+            digest = entry.Digest.ToArray();
 
             return true;
 
@@ -51,7 +56,11 @@ public sealed class ApiKeyDigestCache : IApiKeyDigestCache
 
         long now = _timeProvider.GetUtcNow().Ticks / TimeSpan.TicksPerMillisecond;
 
-        DigestEntry snapshot = new(digest, now + (ttlSeconds * 1000L));
+        // Owns a copy rather than the caller's array. ApiKeyAuthenticator hands this the
+        // same array it then returns to its own caller on the cache-miss path, so aliasing the
+        // caller's array here would let a write into that returned value corrupt the cached
+        // digest too.
+        DigestEntry snapshot = new(digest.ToArray(), now + (ttlSeconds * 1000L));
 
         Volatile.Write(ref _entry, snapshot);
 

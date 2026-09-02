@@ -71,6 +71,17 @@ internal sealed class WorkspaceIndexingService(
     private static readonly StringComparer CanonicalDirectoryComparer =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
+    /// <summary>
+    /// The <c>FileLength</c> a row carries when no length was recorded for it.
+    /// </summary>
+    /// <remarks>
+    /// Every row an upgrade to Core schema version 6 inherits holds this, and so does every row
+    /// between its insert and the metadata pass that stamps the real value. No file can have a
+    /// negative length, so a row holding it compares unequal to whatever the file now reports and is
+    /// re-indexed once rather than being trusted half-written or unmeasured.
+    /// </remarks>
+    private const long UnrecordedFileLength = -1;
+
     private const int MaxPendingPathsPerWorkspace = 4_096;
 
     private readonly ConcurrentDictionary<string, byte> _knownWorkspaces = new(StringComparer.Ordinal);
@@ -617,6 +628,7 @@ internal sealed class WorkspaceIndexingService(
                 normalizedPath,
                 expectedIdentity,
                 info.LastWriteTimeUtc,
+                info.Length,
                 cancellationToken).ConfigureAwait(false);
 
             if (!indexed)
@@ -1026,10 +1038,10 @@ internal sealed class WorkspaceIndexingService(
         // this set drives orphaned-chunk cleanup after the loop, not just the re-index decision.
         HashSet<string> seenRelativePaths = new(StringComparer.Ordinal);
 
-        // One query per workspace tick: RelativePath → FileLastWriteTime for change detection,
+        // One query per workspace tick: RelativePath → the recorded change-detection signals,
         // instead of a per-file SELECT (N+1 against workspace_file_chunks).
-        Dictionary<string, DateTime> existingLastWriteByRelativePath =
-            await LoadExistingFileLastWriteTimesAsync(db, workspacePath, cancellationToken).ConfigureAwait(false);
+        Dictionary<string, WorkspaceFileSignature> existingSignatureByRelativePath =
+            await LoadExistingFileSignaturesAsync(db, workspacePath, cancellationToken).ConfigureAwait(false);
 
         foreach (string fullPath in candidates)
         {
@@ -1080,8 +1092,17 @@ internal sealed class WorkspaceIndexingService(
 
                 DateTime lastWriteUtc = info.LastWriteTimeUtc;
 
-                if (existingLastWriteByRelativePath.TryGetValue(relativePath, out DateTime existing)
-                    && existing == lastWriteUtc)
+                long fileLength = info.Length;
+
+                // Both signals have to agree before a file is called unchanged. The timestamp alone
+                // cannot say so: a rewrite landing on the recorded value - a coarse-granularity
+                // filesystem, a restored archive, a tool that puts the timestamp back - would be
+                // skipped by every later tick, permanently, because nothing else revisits it. A row
+                // that predates FileLength holds -1, which no file's length can be, so an inherited
+                // row re-indexes once and then carries a real value.
+                if (existingSignatureByRelativePath.TryGetValue(relativePath, out WorkspaceFileSignature existing)
+                    && existing.LastWriteUtc == lastWriteUtc
+                    && existing.FileLength == fileLength)
                 {
 
                     // Unchanged since last index — skip without consuming the per-tick file budget.
@@ -1096,6 +1117,7 @@ internal sealed class WorkspaceIndexingService(
                     fullPath,
                     expectedIdentity,
                     lastWriteUtc,
+                    fileLength,
                     cancellationToken).ConfigureAwait(false);
 
                 if (indexed)
@@ -1424,6 +1446,7 @@ internal sealed class WorkspaceIndexingService(
         string fullPath,
         FileHandleIdentity expectedIdentity,
         DateTime lastWriteUtc,
+        long fileLength,
         CancellationToken cancellationToken)
     {
 
@@ -1646,6 +1669,7 @@ internal sealed class WorkspaceIndexingService(
                                 globalLineOffset + chunk.StartLine,
                                 globalLineOffset + chunk.EndLine,
                                 DateTime.MinValue,
+                                UnrecordedFileLength,
                                 indexedAt,
                                 vectorsByChunkId[indexedChunk.ChunkId],
                                 cancellationToken)
@@ -1689,6 +1713,7 @@ internal sealed class WorkspaceIndexingService(
                     chunk.StartLine,
                     chunk.EndLine,
                     lastWriteUtc,
+                    fileLength,
                     cancellationToken).ConfigureAwait(false);
 
             }
@@ -1835,6 +1860,7 @@ internal sealed class WorkspaceIndexingService(
         int startLine,
         int endLine,
         DateTime fileLastWriteTimeUtc,
+        long fileLength,
         CancellationToken cancellationToken)
     {
 
@@ -1854,7 +1880,8 @@ internal sealed class WorkspaceIndexingService(
                         "CharLength" = @charLength,
                         "StartLine" = @startLine,
                         "EndLine" = @endLine,
-                        "FileLastWriteTime" = @fileLastWriteTime
+                        "FileLastWriteTime" = @fileLastWriteTime,
+                        "FileLength" = @fileLength
                     WHERE "ChunkId" = @chunkId
                     """;
 
@@ -1869,6 +1896,8 @@ internal sealed class WorkspaceIndexingService(
                 AddParameter(cmd, "@endLine", endLine);
 
                 AddParameter(cmd, "@fileLastWriteTime", fileLastWriteTimeUtc.ToString("o", CultureInfo.InvariantCulture));
+
+                AddParameter(cmd, "@fileLength", fileLength);
 
                 AddParameter(cmd, "@chunkId", chunkId);
 
@@ -1926,11 +1955,11 @@ internal sealed class WorkspaceIndexingService(
     }
 
     /// <summary>
-    /// Loads every indexed file's recorded <c>FileLastWriteTime</c> for <paramref name="workspacePath"/>
-    /// in a single query. Used for change detection so a workspace tick does not issue one SELECT per
-    /// candidate file.
+    /// Loads every indexed file's recorded change-detection signals for
+    /// <paramref name="workspacePath"/> in a single query, so a workspace tick does not issue one
+    /// SELECT per candidate file.
     /// </summary>
-    private static Task<Dictionary<string, DateTime>> LoadExistingFileLastWriteTimesAsync(
+    private static Task<Dictionary<string, WorkspaceFileSignature>> LoadExistingFileSignaturesAsync(
         ArcanumDbContext db,
         string workspacePath,
         CancellationToken cancellationToken)
@@ -1944,11 +1973,13 @@ internal sealed class WorkspaceIndexingService(
 
                 await using DbCommand cmd = connection.CreateCommand();
 
-                // All chunks for a given RelativePath share the same FileLastWriteTime (written together
-                // in IndexFileAsync). DISTINCT is enough; if rows somehow diverge, the last value wins.
+                // All chunks for a given RelativePath share both signals - IndexFileAsync stamps them
+                // together in one pass - so MIN and MAX agree and either would do. MIN is the one that
+                // fails safe if they ever diverge: the smaller value is the one least likely to equal
+                // what the file now reports, so a divergent set re-indexes rather than being trusted.
                 cmd.CommandText =
                     """
-                    SELECT "RelativePath", MIN("FileLastWriteTime")
+                    SELECT "RelativePath", MIN("FileLastWriteTime"), MIN("FileLength")
                     FROM "workspace_file_chunks"
                     WHERE "WorkspacePath" = @workspacePath
                     GROUP BY "RelativePath"
@@ -1956,7 +1987,7 @@ internal sealed class WorkspaceIndexingService(
 
                 AddParameter(cmd, "@workspacePath", workspacePath);
 
-                Dictionary<string, DateTime> map = new(StringComparer.Ordinal);
+                Dictionary<string, WorkspaceFileSignature> map = new(StringComparer.Ordinal);
 
                 await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1970,7 +2001,9 @@ internal sealed class WorkspaceIndexingService(
                         CultureInfo.InvariantCulture,
                         DateTimeStyles.RoundtripKind);
 
-                    map[relativePath] = lastWrite;
+                    map[relativePath] = new WorkspaceFileSignature(
+                        lastWrite,
+                        reader.IsDBNull(2) ? UnrecordedFileLength : reader.GetInt64(2));
 
                 }
 
@@ -2064,6 +2097,7 @@ internal sealed class WorkspaceIndexingService(
         int startLine,
         int endLine,
         DateTime fileLastWriteTimeUtc,
+        long fileLength,
         DateTimeOffset indexedAt,
         float[] vector,
         CancellationToken cancellationToken)
@@ -2094,9 +2128,9 @@ internal sealed class WorkspaceIndexingService(
                 chunkCmd.CommandText =
                     """
                     INSERT INTO "workspace_file_chunks"
-                        ("ChunkId", "WorkspacePath", "RelativePath", "ChunkIndex", "Content", "CharOffset", "CharLength", "StartLine", "EndLine", "FileLastWriteTime", "IndexedAt")
+                        ("ChunkId", "WorkspacePath", "RelativePath", "ChunkIndex", "Content", "CharOffset", "CharLength", "StartLine", "EndLine", "FileLastWriteTime", "FileLength", "IndexedAt")
                     VALUES
-                        (@chunkId, @workspacePath, @relativePath, @chunkIndex, @content, @charOffset, @charLength, @startLine, @endLine, @fileLastWriteTime, @indexedAt)
+                        (@chunkId, @workspacePath, @relativePath, @chunkIndex, @content, @charOffset, @charLength, @startLine, @endLine, @fileLastWriteTime, @fileLength, @indexedAt)
                     """;
 
                 AddParameter(chunkCmd, "@chunkId", chunkId);
@@ -2118,6 +2152,8 @@ internal sealed class WorkspaceIndexingService(
                 AddParameter(chunkCmd, "@endLine", endLine);
 
                 AddParameter(chunkCmd, "@fileLastWriteTime", fileLastWriteTimeUtc.ToString("o", CultureInfo.InvariantCulture));
+
+                AddParameter(chunkCmd, "@fileLength", fileLength);
 
                 AddParameter(chunkCmd, "@indexedAt", indexedAt.ToString("o", CultureInfo.InvariantCulture));
 
@@ -2424,6 +2460,16 @@ internal sealed class WorkspaceIndexingService(
         }
 
     }
+
+    /// <summary>
+    /// What a file looked like when it was last indexed: the two signals a tick compares before it
+    /// decides the file is unchanged.
+    /// </summary>
+    /// <remarks>
+    /// A struct rather than a class because the per-tick map holds one per indexed file and nothing
+    /// stores it past the tick, and positional because it is a pair of values with no behaviour.
+    /// </remarks>
+    private readonly record struct WorkspaceFileSignature(DateTime LastWriteUtc, long FileLength);
 
     private sealed record IndexedChunk(
         string ChunkId,

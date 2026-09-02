@@ -1,5 +1,7 @@
 using System.CommandLine;
 using System.Text;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Cli;
 using RetroDownfall.Arcanum.Cli.Commands;
@@ -381,10 +383,14 @@ public sealed class CliOperatorSurfaceTests
     }
 
     /// <summary>
-    /// No parsed verb currently owns Ctrl+C: Command Center is entered before parsing, and the
-    /// frameless REPL that used to claim it is gone. Every parsed command therefore gets the
-    /// standard cooperative-shutdown grace window.
+    /// A command this probe root does not define gets the standard grace window.
     /// </summary>
+    /// <remarks>
+    /// The probe root holds only <c>ask</c> and <c>chat</c>, so these tokens resolve to the root
+    /// itself and nothing claims the keypress. The verbs that really do claim it are pinned against
+    /// the production command tree below, because a name has to resolve to a command before the
+    /// opt-out can see it.
+    /// </remarks>
     [Fact]
     public void ResolveProcessTerminationTimeout_applies_to_every_parsed_command()
     {
@@ -394,6 +400,119 @@ public sealed class CliOperatorSurfaceTests
         Assert.Equal(
             CliApplicationFactory.ProcessTerminationGrace,
             CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
+
+    }
+
+    /// <summary>
+    /// A verb that installs its own Ctrl+C handler is not also torn down by System.CommandLine's.
+    /// </summary>
+    /// <remarks>
+    /// A route that installs its own Ctrl+C handler is not also torn down by System.CommandLine's.
+    ///
+    /// <para><c>run</c> without <c>--research</c> and without <c>--dry-run</c> reaches
+    /// <c>AskCommand</c>, which installs <c>Console.CancelKeyPress</c>; <c>--spell</c> takes the same
+    /// arm. Every <c>watch</c> verb goes through <c>WatchCommands.WithCancellationAsync</c>, which
+    /// installs one too. Both inherited the ten-second termination grace, so a cooperative unwind
+    /// longer than that — the inference cancel path drains the human-in-the-loop queue before
+    /// returning 130 — was torn down by the framework's handler rather than finishing under the
+    /// verb's own contract.</para>
+    ///
+    /// <para>Parsed against the production tree, not a probe root: the opt-out matches a resolved
+    /// command, so a fake root would report the answer for a command that does not exist.</para>
+    /// </remarks>
+    [Theory]
+
+    [InlineData("run hi")]
+
+    [InlineData("run --spell summarize hi")]
+
+    [InlineData("watch session 9f2a1c40-6f4a-4d2b-9a1e-1b2c3d4e5f60")]
+
+    [InlineData("watch logs")]
+
+    public void ResolveProcessTerminationTimeout_is_null_for_a_verb_that_owns_the_keypress(string commandLine)
+    {
+
+        ParseResult parsed = BuildProductionRoot().Parse(commandLine);
+
+        Assert.Null(CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
+
+    }
+
+    /// <summary>
+    /// The two <c>run</c> routes that install no handler of their own keep the grace window.
+    /// </summary>
+    /// <remarks>
+    /// <c>run</c> has three terminal branches and only one of them claims the keypress:
+    /// <c>--dry-run</c> goes to the context preview and <c>--research</c> to the web workflow, neither
+    /// of which installs <c>Console.CancelKeyPress</c>. Opting the whole verb out left those two with
+    /// no handler at all — a Ctrl+C would take the CLR default and terminate immediately, with no
+    /// cooperative unwind and no exit 130, where before they had ten seconds.
+    ///
+    /// <para><c>--dry-run</c> is checked before the route, so the pair together is the same answer as
+    /// either alone. These cases also pin the option spellings the opt-out reads: rename either flag
+    /// without updating it and the verb silently opts out again, which is the drift this whole
+    /// contract exists to prevent.</para>
+    /// </remarks>
+    [Theory]
+
+    [InlineData("run --research hi")]
+
+    [InlineData("run --dry-run hi")]
+
+    [InlineData("run --dry-run --research hi")]
+
+    public void ResolveProcessTerminationTimeout_is_the_grace_for_a_run_route_that_claims_no_keypress(
+        string commandLine)
+    {
+
+        ParseResult parsed = BuildProductionRoot().Parse(commandLine);
+
+        Assert.Equal(
+            CliApplicationFactory.ProcessTerminationGrace,
+            CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
+
+    }
+
+    /// <summary>
+    /// Everything else still gets the grace window, including the other verb spelled <c>run</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>trial run</c> is the control that matters. It shares a bare name with the top-level verb and
+    /// installs no keypress handler of its own, so an opt-out that matched names at any depth would
+    /// silently leave a Ctrl+C there with nothing to answer it.
+    /// </remarks>
+    [Theory]
+
+    [InlineData("trial run")]
+
+    [InlineData("session list")]
+
+    [InlineData("doctor")]
+
+    public void ResolveProcessTerminationTimeout_is_the_grace_for_every_other_verb(string commandLine)
+    {
+
+        ParseResult parsed = BuildProductionRoot().Parse(commandLine);
+
+        Assert.Equal(
+            CliApplicationFactory.ProcessTerminationGrace,
+            CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
+
+    }
+
+    private static RootCommand BuildProductionRoot()
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        return CliCommandTree.Build(provider, out _);
 
     }
 
