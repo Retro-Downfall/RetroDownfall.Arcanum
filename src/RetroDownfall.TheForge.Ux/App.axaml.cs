@@ -20,14 +20,25 @@ public partial class App : Application
 
     private static ApplicationDeepLink? _startupDeepLink;
 
+    private static bool _deepLinkParseFailed;
+
+    /// <summary>
+    /// <paramref name="deepLinkParseFailed"/> is true when the process was launched with a
+    /// <c>--arcanum-deep-link</c> argument that <see cref="TheForgeDeepLinkStartup.Parse"/> could not
+    /// turn into a link (malformed JSON, unsupported schema version, or a target mismatch) — distinct
+    /// from <paramref name="startupDeepLink"/> being null because no such argument was present at all.
+    /// </summary>
     public static void ConfigureServices(
         IServiceProvider services,
-        ApplicationDeepLink? startupDeepLink = null)
+        ApplicationDeepLink? startupDeepLink = null,
+        bool deepLinkParseFailed = false)
     {
 
         _services = services;
 
         _startupDeepLink = startupDeepLink;
+
+        _deepLinkParseFailed = deepLinkParseFailed;
 
     }
 
@@ -90,11 +101,21 @@ public partial class App : Application
 
     }
 
-    private static CancellationTokenSource? StartDeepLinkRouting(IServiceProvider services)
+    internal static CancellationTokenSource? StartDeepLinkRouting(IServiceProvider services)
     {
 
         if (_startupDeepLink is null)
         {
+
+            if (_deepLinkParseFailed)
+            {
+
+                services.GetRequiredService<IWhispersService>().Show(
+                    WhisperSeverity.Error,
+                    "The requested resource could not be opened.",
+                    "Application link");
+
+            }
 
             return null;
 

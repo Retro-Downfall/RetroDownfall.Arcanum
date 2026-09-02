@@ -1,8 +1,11 @@
 using System.ComponentModel;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.TheForge.Core.Models;
+using RetroDownfall.TheForge.Ux;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
@@ -109,6 +112,56 @@ public sealed class ApplicationDeepLinkRouterTests
             Assert.DoesNotContain(privatePayload, startup.AvaloniaArguments);
 
         }
+
+    }
+
+    [Fact]
+    public void StartDeepLinkRouting_WhenTheArgumentFailedToParse_ShowsAnErrorWhisper()
+    {
+
+        FakeWhispersService whispers = new();
+
+        ServiceCollection serviceCollection = new();
+
+        serviceCollection.AddSingleton<IWhispersService>(whispers);
+
+        using ServiceProvider provider = serviceCollection.BuildServiceProvider();
+
+        // A --arcanum-deep-link argument was present (unlike the "no argument at all" case, which
+        // must stay silent) but TheForgeDeepLinkStartup.Parse could not turn it into a link.
+        App.ConfigureServices(provider, startupDeepLink: null, deepLinkParseFailed: true);
+
+        CancellationTokenSource? cancellation = App.StartDeepLinkRouting(provider);
+
+        Assert.Null(cancellation);
+
+        Assert.Contains(
+            whispers.Calls,
+            call => call.Severity == WhisperSeverity.Error
+                && call.Message == "The requested resource could not be opened.");
+
+    }
+
+    [Fact]
+    public void StartDeepLinkRouting_WhenNoArgumentWasPresent_StaysSilent()
+    {
+
+        FakeWhispersService whispers = new();
+
+        ServiceCollection serviceCollection = new();
+
+        serviceCollection.AddSingleton<IWhispersService>(whispers);
+
+        using ServiceProvider provider = serviceCollection.BuildServiceProvider();
+
+        // No --arcanum-deep-link argument at all — an ordinary launch, which must not whisper.
+        App.ConfigureServices(provider, startupDeepLink: null, deepLinkParseFailed: false);
+
+        CancellationTokenSource? cancellation = App.StartDeepLinkRouting(provider);
+
+        Assert.Null(cancellation);
+
+        Assert.Empty(whispers.Calls);
 
     }
 
