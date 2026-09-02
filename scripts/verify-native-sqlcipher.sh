@@ -610,17 +610,48 @@ verify_rid_dependencies() {
 
     osx-*)
 
-      local allowed actual dependency
+      local allowed self_id actual dependency otool_status=0
 
       allowed="$(echo "${record}" | jq -r '.dynamicDependencies[]')"
 
-      actual="$(otool -L "${file}" | tail -n +2 | awk '{print $1}' | grep -v "^@rpath/" || true)"
+      # `|| true` used to swallow a missing/failing otool along with a genuinely empty result,
+      # and both read as "no dependencies to complain about" -- the exact shape of a build that
+      # accidentally linked OpenSSL dynamically. Capture the pipeline's own exit status instead
+      # (set -o pipefail makes it otool's, not tail's or awk's) and treat an empty result as a
+      # failure: a Mach-O dylib always imports at least libSystem, so empty means the tool did
+      # not run rather than that there is nothing to report.
+      actual="$(otool -L "${file}" | tail -n +2 | awk '{print $1}')" || otool_status=$?
+
+      if [ "${otool_status}" -ne 0 ]; then
+
+        fail "${rid}: otool -L exited ${otool_status} against ${file}; cannot verify dynamic dependencies"
+
+        return
+
+      fi
+
+      if [ -z "${actual}" ]; then
+
+        fail "${rid}: otool -L reported no dynamic dependencies for ${file}; a Mach-O dylib always imports at least libSystem"
+
+        return
+
+      fi
+
+      # otool -L's first entry after the header is the dylib's own LC_ID_DYLIB self-reference
+      # (this asset's is @rpath/libe_sqlcipher.dylib), not a dependency; otool -D returns exactly
+      # that one line. Excluding only this entry -- rather than every @rpath/ entry, as before --
+      # keeps a genuine @rpath/ dependency (a dynamically linked libcrypto, say) visible to the
+      # comparison below instead of discarding it unseen.
+      self_id="$(otool -D "${file}" | tail -n +2)"
 
       local unexpected=0
 
       while IFS= read -r dependency; do
 
         [ -z "${dependency}" ] && continue
+
+        [ "${dependency}" = "${self_id}" ] && continue
 
         if ! contains_line "${allowed}" "${dependency}"; then
 
