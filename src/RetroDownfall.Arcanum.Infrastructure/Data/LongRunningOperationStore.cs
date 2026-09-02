@@ -1149,11 +1149,11 @@ internal sealed class LongRunningOperationStore(
         reader.IsDBNull(ordinal) ? null : ParseDate(reader.GetString(ordinal));
 
     // Guid.Parse rather than Guid.ParseExact(value, "N"): SessionId, RunId, and InferenceRunId are
-    // written through FormatReference in the canonical "D" spelling their referenced EF tables use
-    // (W3b-5), while every other identity here - Id, RootOperationId, ParentOperationId,
-    // BudgetReservationId, IdempotencyClaimId - stays in Format's "N" spelling. One column-agnostic
-    // reader has to accept both, since which format a given row holds depends on which column it
-    // came from rather than on anything the reader can see ahead of time.
+    // written through FormatReference in the "D" spelling, while every other identity here - Id,
+    // RootOperationId, ParentOperationId, BudgetReservationId, IdempotencyClaimId - stays in
+    // Format's "N" spelling. One column-agnostic reader has to accept both, since which format a
+    // given row holds depends on which column it came from rather than on anything the reader can
+    // see ahead of time.
     private static Guid ParseGuid(string value) => Guid.Parse(value);
 
     private static DateTimeOffset ParseDate(string value) =>
@@ -1164,14 +1164,22 @@ internal sealed class LongRunningOperationStore(
     private static object? FormatNullable(Guid? value) => value is null ? null : Format(value.Value);
 
     /// <summary>
-    /// The spelling for a column that names a row in another EF-mapped table (<c>SessionId</c>,
-    /// <c>RunId</c>, <c>InferenceRunId</c>) rather than this table's own identity.
+    /// The spelling shared by the three columns that are not this table's own identity:
+    /// <c>SessionId</c>, <c>RunId</c> and <c>InferenceRunId</c>.
     /// </summary>
     /// <remarks>
-    /// EF's SQLite value binder renders every primary key it writes uppercase-dashed, unconditionally.
-    /// A reference column that used <see cref="Format"/> instead would hold the same identity in a
-    /// spelling its own referenced table never does, so a join written the obvious way - without a
-    /// <c>lower(replace(...))</c> normalization on both sides - would always come back empty (W3b-5).
+    /// Only <c>SessionId</c> is a cross-table reference, and it is the one this spelling exists for:
+    /// EF's SQLite value binder renders every primary key it writes uppercase-dashed,
+    /// unconditionally, so a <c>SessionId</c> written through <see cref="Format"/> instead would
+    /// hold the same identity in a spelling <c>Sessions</c> never does, and a join written the
+    /// obvious way - without a <c>lower(replace(...))</c> normalization on both sides - would always
+    /// come back empty.
+    ///
+    /// <para><c>RunId</c> and <c>InferenceRunId</c> share the spelling for uniformity, not because
+    /// either one currently names a row anywhere else. <c>SubagentRunner</c> mints the only
+    /// <c>RunId</c> production writes, fresh, for the operation it is starting, and no production
+    /// caller supplies an <c>InferenceRunId</c> at all. Keeping all three alike is what lets the
+    /// column-agnostic reader stay a two-way rule rather than a per-column table.</para>
     /// </remarks>
     private static string FormatReference(Guid value) => value.ToString("D").ToUpperInvariant();
 
