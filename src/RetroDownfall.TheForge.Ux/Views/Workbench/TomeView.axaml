@@ -38,68 +38,69 @@
                        Height="10"
                        Margin="0,0,0,8" />
 
-    <ScrollViewer Grid.Row="3">
-      <ItemsControl ItemsSource="{Binding Messages}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate x:DataType="vm:ChatMessageViewModel">
-            <Border Margin="0,0,0,10"
-                    Padding="10"
-                    BorderThickness="1"
-                    BorderBrush="{DynamicResource ForgeBorderBrush}">
-              <StackPanel Spacing="6">
-                <DockPanel LastChildFill="False">
-                  <TextBlock DockPanel.Dock="Left"
-                             Text="{Binding Role}"
-                             FontWeight="SemiBold"
-                             Opacity="0.8" />
-                  <TextBlock DockPanel.Dock="Left"
-                             Text="Pinned"
-                             Opacity="0.65"
-                             Margin="8,0,0,0"
-                             IsVisible="{Binding IsPinned}" />
-                  <StackPanel DockPanel.Dock="Right"
-                              Orientation="Horizontal"
-                              Spacing="4"
-                              IsVisible="{Binding HasEntryId}">
-                    <Button Content="Pin"
-                            Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.PinEntryCommand}"
-                            CommandParameter="{Binding}"
-                            IsVisible="{Binding CanPin}"
-                            IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
-                    <Button Content="Unpin"
-                            Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.UnpinEntryCommand}"
-                            CommandParameter="{Binding}"
-                            IsVisible="{Binding CanUnpin}"
-                            IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
-                    <Button Content="Delete"
-                            Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.DeleteEntryCommand}"
-                            CommandParameter="{Binding}"
-                            IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
-                  </StackPanel>
-                </DockPanel>
+    <ListBox Grid.Row="3"
+             ItemsSource="{Binding Messages}"
+             BorderThickness="0"
+             Background="Transparent">
+      <ListBox.ItemTemplate>
+        <DataTemplate x:DataType="vm:ChatMessageViewModel">
+          <Border Margin="0,0,0,10"
+                  Padding="10"
+                  BorderThickness="1"
+                  BorderBrush="{DynamicResource ForgeBorderBrush}">
+            <StackPanel Spacing="6">
+              <DockPanel LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding Role}"
+                           FontWeight="SemiBold"
+                           Opacity="0.8" />
+                <TextBlock DockPanel.Dock="Left"
+                           Text="Pinned"
+                           Opacity="0.65"
+                           Margin="8,0,0,0"
+                           IsVisible="{Binding IsPinned}" />
+                <StackPanel DockPanel.Dock="Right"
+                            Orientation="Horizontal"
+                            Spacing="4"
+                            IsVisible="{Binding HasEntryId}">
+                  <Button Content="Pin"
+                          Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.PinEntryCommand}"
+                          CommandParameter="{Binding}"
+                          IsVisible="{Binding CanPin}"
+                          IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
+                  <Button Content="Unpin"
+                          Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.UnpinEntryCommand}"
+                          CommandParameter="{Binding}"
+                          IsVisible="{Binding CanUnpin}"
+                          IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
+                  <Button Content="Delete"
+                          Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.DeleteEntryCommand}"
+                          CommandParameter="{Binding}"
+                          IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
+                </StackPanel>
+              </DockPanel>
 
-                <TextBlock Text="{Binding Content}"
-                           TextWrapping="Wrap"
-                           IsVisible="{Binding Content, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+              <TextBlock Text="{Binding Content}"
+                         TextWrapping="Wrap"
+                         IsVisible="{Binding Content, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
-                <Expander Header="{Binding ToolCall?.Name}"
-                          IsVisible="{Binding ToolCall, Converter={x:Static ObjectConverters.IsNotNull}}"
-                          Margin="0,4,0,0">
-                  <StackPanel Spacing="6">
-                    <TextBlock Text="{Binding ToolCall?.ArgumentsJson}" TextWrapping="Wrap" Opacity="0.8" />
-                    <TextBlock Text="{Binding ToolCall?.Result}" TextWrapping="Wrap" />
-                    <TextBlock Text="{Binding ToolCall?.ErrorMessage}"
-                               IsVisible="{Binding ToolCall?.HasError}"
-                               Foreground="{DynamicResource ForgeAccentBrush}"
-                               TextWrapping="Wrap" />
-                  </StackPanel>
-                </Expander>
-              </StackPanel>
-            </Border>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
-    </ScrollViewer>
+              <Expander Header="{Binding ToolCall?.Name}"
+                        IsVisible="{Binding ToolCall, Converter={x:Static ObjectConverters.IsNotNull}}"
+                        Margin="0,4,0,0">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="{Binding ToolCall?.ArgumentsJson}" TextWrapping="Wrap" Opacity="0.8" />
+                  <TextBlock Text="{Binding ToolCall?.Result}" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding ToolCall?.ErrorMessage}"
+                             IsVisible="{Binding ToolCall?.HasError}"
+                             Foreground="{DynamicResource ForgeAccentBrush}"
+                             TextWrapping="Wrap" />
+                </StackPanel>
+              </Expander>
+            </StackPanel>
+          </Border>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
 
     <Expander Grid.Row="4" Header="Inference Trace" Margin="0,4,0,4">
       <views:InferenceTraceView DataContext="{Binding Trace}" Height="180" />

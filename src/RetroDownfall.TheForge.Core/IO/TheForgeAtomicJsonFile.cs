@@ -37,13 +37,29 @@ internal static class TheForgeAtomicJsonFile
         try
         {
 
-            await using (FileStream stream = new(
-                tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 4096,
-                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            // See TheForgeSettingsStore.SaveCoreAsync: UnixCreateMode makes owner-only the file's
+            // mode at creation instead of a chmod applied after the write, closing the window where
+            // create-then-chmod leaves the temp file group/other-readable for the write's duration.
+            FileStreamOptions options = new()
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                BufferSize = 4096,
+                Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+            };
+
+            // Windows has no UnixCreateMode equivalent; its owner-only restriction is the ACL
+            // TheForgeOwnerOnlyPermissions.TrySetFile applies below, after the file exists (its own
+            // OperatingSystem.IsWindows() branch calls TryApplyFileAcl there).
+            if (!OperatingSystem.IsWindows())
+            {
+
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+            }
+
+            await using (FileStream stream = new(tempPath, options))
             {
 
                 await JsonSerializer.SerializeAsync(stream, value, typeInfo, cancellationToken).ConfigureAwait(false);

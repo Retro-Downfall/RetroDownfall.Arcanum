@@ -37,7 +37,11 @@ public sealed class AvaloniaApiKeyPrompt : IApiKeyPrompt
                 MinWidth = 360,
             };
 
-            Button ok = new() { Content = "Store in OS keychain", IsDefault = true };
+            // The pasted key is cached in process memory only (TheForgeApiKeyProvider
+            // .PersistPastedKeyAsync) — nothing here or downstream ever calls
+            // IOsCredentialStore.Set, so the label must not promise a keychain write that never
+            // happens.
+            Button ok = new() { Content = "Use for this session", IsDefault = true };
 
             Button cancel = new() { Content = "Cancel", IsCancel = true };
 

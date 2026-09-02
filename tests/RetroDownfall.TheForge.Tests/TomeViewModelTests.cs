@@ -752,6 +752,40 @@ public class TomeViewModelTests
 
     }
 
+    [Fact]
+    public async Task RefreshEntriesAsync_ManyServerEntries_TrimsMessagesToTheDocumentedCap()
+    {
+
+        EntryDto[] entries = Enumerable.Range(0, 5_000)
+            .Select(i => new EntryDto(
+                Guid.NewGuid(),
+                SessionId,
+                i % 2 == 0 ? "user" : "assistant",
+                $"entry-{i}",
+                null,
+                null,
+                DateTimeOffset.UnixEpoch.AddSeconds(i)))
+            .ToArray();
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            Entries = entries,
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.RefreshEntriesAsync(CancellationToken.None);
+
+        Assert.Equal(TomeViewModel.MaxMessages, viewModel.Messages.Count);
+
+        // Newest entries win — the cap drops from the front, oldest first.
+        Assert.Equal("entry-4999", viewModel.Messages[^1].Content);
+
+        Assert.Equal($"entry-{5_000 - TomeViewModel.MaxMessages}", viewModel.Messages[0].Content);
+
+    }
+
     private static TomeViewModel CreateViewModel(
         FakeTomeDataSource dataSource,
         FoundryFloorViewModel? foundryFloor = null,

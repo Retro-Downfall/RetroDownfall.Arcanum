@@ -121,7 +121,7 @@
                               Padding="10">
                         <StackPanel Spacing="8">
 
-                          <Grid ColumnDefinitions="*,Auto,Auto"
+                          <Grid ColumnDefinitions="*,Auto,Auto,Auto"
                                 ColumnSpacing="8">
                             <TextBox Grid.Column="0"
                                      Text="{Binding Name, Mode=TwoWay}"
@@ -136,7 +136,18 @@
                               <ToggleSwitch IsChecked="{Binding SupportsVision, Mode=TwoWay}" />
                             </StackPanel>
 
-                            <Button Grid.Column="2"
+                            <StackPanel Grid.Column="2"
+                                        Orientation="Horizontal"
+                                        Spacing="4"
+                                        VerticalAlignment="Center">
+                              <TextBlock Text="Tools"
+                                         VerticalAlignment="Center" />
+                              <CheckBox IsThreeState="True"
+                                        IsChecked="{Binding SupportsTools, Mode=TwoWay}"
+                                        ToolTip.Tip="Declared tool-calling capability. Indeterminate (default) means unset/undeclared; checked means this model can call tools; unchecked means it explicitly cannot." />
+                            </StackPanel>
+
+                            <Button Grid.Column="3"
                                     Content="Remove"
                                     x:CompileBindings="False"
                                     Command="{Binding $parent[ItemsControl].DataContext.RemoveModelCommand}"

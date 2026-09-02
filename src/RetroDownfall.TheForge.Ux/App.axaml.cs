@@ -20,14 +20,25 @@ public partial class App : Application
 
     private static ApplicationDeepLink? _startupDeepLink;
 
+    private static bool _deepLinkParseFailed;
+
+    /// <summary>
+    /// <paramref name="deepLinkParseFailed"/> is true when the process was launched with a
+    /// <c>--arcanum-deep-link</c> argument that <see cref="TheForgeDeepLinkStartup.Parse"/> could not
+    /// turn into a link (malformed JSON, unsupported schema version, or a target mismatch) — distinct
+    /// from <paramref name="startupDeepLink"/> being null because no such argument was present at all.
+    /// </summary>
     public static void ConfigureServices(
         IServiceProvider services,
-        ApplicationDeepLink? startupDeepLink = null)
+        ApplicationDeepLink? startupDeepLink = null,
+        bool deepLinkParseFailed = false)
     {
 
         _services = services;
 
         _startupDeepLink = startupDeepLink;
+
+        _deepLinkParseFailed = deepLinkParseFailed;
 
     }
 
@@ -90,11 +101,21 @@ public partial class App : Application
 
     }
 
-    private static CancellationTokenSource? StartDeepLinkRouting(IServiceProvider services)
+    internal static CancellationTokenSource? StartDeepLinkRouting(IServiceProvider services)
     {
 
         if (_startupDeepLink is null)
         {
+
+            if (_deepLinkParseFailed)
+            {
+
+                services.GetRequiredService<IWhispersService>().Show(
+                    WhisperSeverity.Error,
+                    "The requested resource could not be opened.",
+                    "Application link");
+
+            }
 
             return null;
 
@@ -139,53 +160,67 @@ public partial class App : Application
     private async void OnAboutClick(object? sender, EventArgs e)
     {
 
-        Window? owner = (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
-
-        if (owner is null)
+        try
         {
 
-            return;
+            Window? owner = (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
 
-        }
-
-        string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-alpha";
-
-        Window dialog = new()
-        {
-            Title = "About The Forge",
-            Width = 420,
-            Height = 160,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false,
-            Content = new StackPanel
+            if (owner is null)
             {
-                Margin = new Thickness(24),
-                Spacing = 8,
-                Children =
+
+                return;
+
+            }
+
+            string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-alpha";
+
+            Window dialog = new()
+            {
+                Title = "About The Forge",
+                Width = 420,
+                Height = 160,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                CanResize = false,
+                Content = new StackPanel
                 {
-                    new TextBlock
+                    Margin = new Thickness(24),
+                    Spacing = 8,
+                    Children =
                     {
-                        Text = "The Forge — Inference IDE",
-                        FontWeight = FontWeight.SemiBold,
-                        FontSize = 16,
-                    },
-                    new TextBlock
-                    {
-                        Text = $"Version {version}",
-                        Opacity = 0.8,
-                    },
-                    new TextBlock
-                    {
-                        Text = "Arcanum HTTP API client for campaigns, spells, sessions, and apprentices.",
-                        TextWrapping = TextWrapping.Wrap,
-                        Opacity = 0.72,
-                        Margin = new Thickness(0, 4, 0, 0),
+                        new TextBlock
+                        {
+                            Text = "The Forge — Inference IDE",
+                            FontWeight = FontWeight.SemiBold,
+                            FontSize = 16,
+                        },
+                        new TextBlock
+                        {
+                            Text = $"Version {version}",
+                            Opacity = 0.8,
+                        },
+                        new TextBlock
+                        {
+                            Text = "Arcanum HTTP API client for campaigns, spells, sessions, and apprentices.",
+                            TextWrapping = TextWrapping.Wrap,
+                            Opacity = 0.72,
+                            Margin = new Thickness(0, 4, 0, 0),
+                        },
                     },
                 },
-            },
-        };
+            };
 
-        await dialog.ShowDialog(owner);
+            await dialog.ShowDialog(owner);
+
+        }
+        catch (Exception)
+        {
+
+            // async void reposts an unhandled throw to the UI synchronization context instead of
+            // returning it to a caller, which crashes the process — a stale owner (window closing or
+            // already torn down) must not take the app down just because the About dialog could not
+            // be shown, and neither must a fault while building the dialog itself. Mirrors
+            // Compendium's App.axaml.cs OnAboutClick.
+        }
 
     }
 

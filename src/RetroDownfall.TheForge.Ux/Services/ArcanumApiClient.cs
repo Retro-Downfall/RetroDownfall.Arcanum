@@ -203,7 +203,7 @@ public sealed class ArcanumApiClient
 
             _logger.LogError(ex, "NDJSON stream POST {Path} aborted: {Code}.", path, ex.Code);
 
-            yield break;
+            throw new HttpRequestException(ex.Message, ex, statusCode: null);
 
         }
         catch (InvalidOperationException ex)
@@ -211,7 +211,7 @@ public sealed class ArcanumApiClient
 
             _logger.LogWarning(ex, "NDJSON stream POST {Path} aborted: missing API key.", path);
 
-            yield break;
+            throw new HttpRequestException(ex.Message, ex, statusCode: null);
 
         }
 
@@ -232,7 +232,10 @@ public sealed class ArcanumApiClient
 
                 _logger.LogWarning("NDJSON stream POST {Path} returned {StatusCode}.", path, (int)response.StatusCode);
 
-                yield break;
+                throw new HttpRequestException(
+                    $"NDJSON stream POST {path} returned {(int)response.StatusCode}.",
+                    inner: null,
+                    response.StatusCode);
 
             }
 
@@ -332,7 +335,7 @@ public sealed class ArcanumApiClient
 
             _logger.LogError(ex, "SSE GET {Path} aborted: {Code}.", path, ex.Code);
 
-            yield break;
+            throw new HttpRequestException(ex.Message, ex, statusCode: null);
 
         }
         catch (InvalidOperationException ex)
@@ -340,7 +343,7 @@ public sealed class ArcanumApiClient
 
             _logger.LogWarning(ex, "SSE GET {Path} aborted: missing API key.", path);
 
-            yield break;
+            throw new HttpRequestException(ex.Message, ex, statusCode: null);
 
         }
 
@@ -358,7 +361,10 @@ public sealed class ArcanumApiClient
 
                 _logger.LogWarning("SSE GET {Path} returned {StatusCode}.", path, (int)response.StatusCode);
 
-                yield break;
+                throw new HttpRequestException(
+                    $"SSE GET {path} returned {(int)response.StatusCode}.",
+                    inner: null,
+                    response.StatusCode);
 
             }
 

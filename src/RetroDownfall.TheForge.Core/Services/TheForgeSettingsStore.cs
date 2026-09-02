@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.TheForge.Core.IO;
 using RetroDownfall.TheForge.Core.Models;
 
 namespace RetroDownfall.TheForge.Core.Services;
@@ -185,7 +186,7 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
 
             Directory.CreateDirectory(directory);
 
-            TrySetUnixDirectoryMode(directory);
+            TheForgeOwnerOnlyPermissions.TrySetDirectory(directory);
 
         }
 
@@ -194,13 +195,31 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         try
         {
 
-            await using (FileStream stream = new(
-                tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 4096,
-                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            // The temp file can carry the full settings payload, including a legacy plaintext
+            // ApiKey (SavePatchAsync round-trips it). Setting UnixCreateMode makes the owner-only
+            // mode part of the file's creation syscall instead of a chmod applied after the write —
+            // create-then-chmod leaves a window where the default (umask-controlled) mode is
+            // group/other-readable for the entire write duration.
+            FileStreamOptions options = new()
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                BufferSize = 4096,
+                Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+            };
+
+            // Windows has no UnixCreateMode equivalent; its owner-only restriction is the ACL
+            // TheForgeOwnerOnlyPermissions.TrySetFile applies below, after the file exists (its own
+            // OperatingSystem.IsWindows() branch calls TryApplyFileAcl there).
+            if (!OperatingSystem.IsWindows())
+            {
+
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+            }
+
+            await using (FileStream stream = new(tempPath, options))
             {
 
                 await JsonSerializer
@@ -211,11 +230,11 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
 
             }
 
-            TrySetUnixFileMode(tempPath);
+            TheForgeOwnerOnlyPermissions.TrySetFile(tempPath);
 
             File.Move(tempPath, SettingsPath, overwrite: true);
 
-            TrySetUnixFileMode(SettingsPath);
+            TheForgeOwnerOnlyPermissions.TrySetFile(SettingsPath);
 
         }
         catch
@@ -247,54 +266,6 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         {
 
             // Best-effort cleanup of temp file.
-        }
-
-    }
-
-    private static void TrySetUnixFileMode(string path)
-    {
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
-
-        try
-        {
-
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-
-            // Best-effort — some filesystems reject chmod.
-        }
-
-    }
-
-    private static void TrySetUnixDirectoryMode(string path)
-    {
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
-
-        try
-        {
-
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-
-            // Best-effort.
         }
 
     }
