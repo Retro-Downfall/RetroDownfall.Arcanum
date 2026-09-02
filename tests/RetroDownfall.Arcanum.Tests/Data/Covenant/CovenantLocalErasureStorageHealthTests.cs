@@ -1036,6 +1036,150 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
     }
 
+    /// <summary>
+    /// W14-6: the compensating <c>DETACH</c> in <c>ExportAsync</c>'s finally block must run on
+    /// <see cref="CancellationToken.None"/>, not the caller's token. When the caller's token is
+    /// already cancelled by the time the finally block runs, rolling back on that token throws a
+    /// fresh <see cref="OperationCanceledException"/> that replaces the real export failure the try
+    /// block already raised, turning a graceful <c>Result.Failure</c> into an unhandled throw.
+    /// </summary>
+    [Fact]
+    public async Task ExportAsync_still_returns_a_failure_result_when_the_token_cancels_before_the_detach()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.DrainAsync(Token);
+
+        using CancellationTokenSource cts = new();
+
+        erased.Health.BeforeExportCommandForTesting = connection =>
+        {
+
+            SqliteException real;
+
+            using (SqliteCommand bad = connection.CreateCommand())
+            {
+
+                bad.CommandText = "SELECT * FROM this_table_does_not_exist_for_the_red_test;";
+
+                try
+                {
+
+                    _ = bad.ExecuteScalar();
+
+                    throw new InvalidOperationException(
+                        "Expected the statement above to raise a genuine SqliteException.");
+
+                }
+                catch (SqliteException capturedFailure)
+                {
+
+                    real = capturedFailure;
+
+                }
+
+            }
+
+            // Cancels exactly where the export command has already failed for a real reason and the
+            // finally block is the only thing left standing between that failure and the caller,
+            // matching the finding's own interleaving.
+            cts.Cancel();
+
+            throw real;
+
+        };
+
+        Result? exported = null;
+
+        Exception? thrown = await Record.ExceptionAsync(async () =>
+        {
+
+            exported = await erased.Health.ExportAsync(
+                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExport),
+                cts.Token);
+
+        });
+
+        Assert.Null(thrown);
+
+        Assert.NotNull(exported);
+
+        Assert.True(exported.IsFailure);
+
+    }
+
+    /// <summary>
+    /// W15-1: <c>InitializeAcceleratorOnConnectionAsync</c>'s catch rolled back on the caller's
+    /// <c>CancellationToken</c> - the same compensation-on-the-wrong-token shape W15-1 fixed
+    /// elsewhere in this file's <c>ExportAsync</c>, found again here on review.
+    /// </summary>
+    [Fact]
+    public async Task InitializeAcceleratorAsync_still_returns_the_integrity_failure_when_the_token_cancels_before_the_rollback()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        using CancellationTokenSource cts = new();
+
+        erased.Health.BeforeAcceleratorInitializationForTesting = connection =>
+        {
+
+            SqliteException real;
+
+            using (SqliteCommand bad = connection.CreateCommand())
+            {
+
+                bad.CommandText = "SELECT * FROM this_table_does_not_exist_for_the_red_test;";
+
+                try
+                {
+
+                    _ = bad.ExecuteScalar();
+
+                    throw new InvalidOperationException(
+                        "Expected the statement above to raise a genuine SqliteException.");
+
+                }
+                catch (SqliteException capturedFailure)
+                {
+
+                    real = capturedFailure;
+
+                }
+
+            }
+
+            // Cancels exactly where the accelerator initializer has already failed for a real reason
+            // and the catch's rollback is the only thing left standing between that failure and the
+            // caller, matching the finding's own interleaving.
+            cts.Cancel();
+
+            throw real;
+
+        };
+
+        Result? initialized = null;
+
+        Exception? thrown = await Record.ExceptionAsync(async () =>
+        {
+
+            initialized = await erased.Health.InitializeAcceleratorAsync(
+                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization),
+                cts.Token);
+
+        });
+
+        Assert.Null(thrown);
+
+        Assert.NotNull(initialized);
+
+        Assert.True(initialized.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, initialized.Error.Code);
+
+    }
+
     [Fact]
     public async Task An_export_that_cannot_be_written_leaves_the_original_in_place()
     {

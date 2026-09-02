@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -89,6 +90,60 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(apply, read.ApplyRequestDigest);
         Assert.Equal(effect, read.EffectDigest);
         Assert.NotEqual(read.ApplyRequestDigest, read.EffectDigest);
+    }
+
+    /// <summary>
+    /// W3b-5: <c>LongRunningOperations.SessionId</c> names a row in <c>Sessions</c>, an EF-mapped
+    /// table whose SQLite value binder writes every identity uppercase-dashed unconditionally. A
+    /// reference column that spelled the same identity any other way would hold a value its own
+    /// referenced table never does, so an ordinary join - without a <c>lower(replace(...))</c>
+    /// normalization on both sides - would always come back empty.
+    /// </summary>
+    [SkippableFact]
+    public async Task CreateAsync_writes_SessionId_in_the_spelling_Sessions_Id_actually_holds()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        Guid sessionId = Guid.NewGuid();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            CreatedAt = now,
+            UpdatedAt = now,
+            Status = "active",
+            Title = "reference spelling test",
+            UnsummarizedEntryCount = 0,
+        });
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        _ = await store.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                Kind: LongRunningOperationKinds.WorkspaceIndex,
+                RecoveryPolicy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                PublicSummary: "Reference spelling test.",
+                CreatedAt: now,
+                SessionId: sessionId),
+            CancellationToken.None);
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        await using SqliteCommand count = connection.CreateCommand();
+
+        count.CommandText = """
+            SELECT COUNT(*)
+            FROM LongRunningOperations o
+            JOIN Sessions s ON s.Id = o.SessionId;
+            """;
+
+        long joined = (long)(await count.ExecuteScalarAsync(CancellationToken.None))!;
+
+        Assert.Equal(1, joined);
     }
 
     /// <summary>

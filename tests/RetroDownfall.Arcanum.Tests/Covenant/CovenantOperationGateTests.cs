@@ -239,13 +239,42 @@ public sealed class CovenantOperationGateTests
 
     }
 
+    /// <summary>
+    /// W8-1: a Campaign the deletion journal has an event for refuses with a different code than one
+    /// that was simply never registered - see
+    /// <see cref="Initial_campaign_exclusive_refuses_an_unregistered_campaign"/>.
+    /// </summary>
     [Fact]
-    public async Task Initial_campaign_exclusive_refuses_a_missing_campaign()
+    public async Task Initial_campaign_exclusive_refuses_a_deleted_campaign()
     {
 
         FakeCovenantCampaignScopeProbe campaigns = new();
 
         campaigns.Set(CovenantOperationGateFixture.CampaignOne, CovenantCampaignScopeState.Deleted);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(campaigns: campaigns);
+
+        Result<CovenantCampaignExclusiveLease> acquired = await gate.AcquireCampaignExclusiveAsync(
+            CovenantOperationGateFixture.CampaignOne,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CampaignDelete),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, acquired.Error.Code);
+
+    }
+
+    /// <summary>
+    /// W8-1: the sibling of <see cref="Initial_campaign_exclusive_refuses_a_deleted_campaign"/> - a
+    /// Campaign the probe cannot place in the deletion journal either, which may be a typo or a stale
+    /// client rather than a real deletion, refuses with the older, less specific code.
+    /// </summary>
+    [Fact]
+    public async Task Initial_campaign_exclusive_refuses_an_unregistered_campaign()
+    {
+
+        FakeCovenantCampaignScopeProbe campaigns = new();
+
+        campaigns.Set(CovenantOperationGateFixture.CampaignOne, CovenantCampaignScopeState.Unknown);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(campaigns: campaigns);
 

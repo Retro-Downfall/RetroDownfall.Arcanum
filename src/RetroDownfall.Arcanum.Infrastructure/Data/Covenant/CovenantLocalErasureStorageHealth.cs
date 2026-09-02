@@ -297,6 +297,21 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     }
 
+    /// <summary>
+    /// Runs, if set, immediately before <see cref="ExportAsync"/> issues the export command — the
+    /// only point a test can put a genuine failure on the connection and control exactly when the
+    /// caller's token goes cancelled relative to the compensating <c>DETACH</c> in the finally below.
+    /// </summary>
+    internal Action<SqliteConnection>? BeforeExportCommandForTesting { get; set; }
+
+    /// <summary>
+    /// Runs, if set, as the first statement inside <see cref="InitializeAcceleratorOnConnectionAsync"/>'s
+    /// try block — the only point a test can put a genuine failure on the connection and control
+    /// exactly when the caller's token goes cancelled relative to the compensating rollback in the
+    /// catch below.
+    /// </summary>
+    internal Action<SqliteConnection>? BeforeAcceleratorInitializationForTesting { get; set; }
+
     public async Task<Result> CloseHandlesAsync(CancellationToken cancellationToken)
     {
 
@@ -595,17 +610,23 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
                     command.CommandText = $"SELECT sqlcipher_export('{ExportAlias}');";
 
+                    BeforeExportCommandForTesting?.Invoke(connection);
+
                     _ = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
                 }
                 finally
                 {
 
+                    // Compensating for whatever the try above did — a detach the export left
+                    // attached — so it runs on CancellationToken.None: skipping it here would mask
+                    // the try's own exception with a fresh OperationCanceledException instead of
+                    // letting the catch below turn it into a graceful Result.Failure.
                     await using SqliteCommand detach = connection.CreateCommand();
 
                     detach.CommandText = $"DETACH DATABASE {ExportAlias};";
 
-                    _ = await detach.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    _ = await detach.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
 
                 }
 
@@ -936,6 +957,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         try
         {
 
+            BeforeAcceleratorInitializationForTesting?.Invoke(connection);
+
             await new CovenantAcceleratorSchemaDataInitializer()
                 .InitializeAsync(
                     connection,
@@ -963,7 +986,11 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                 or ArgumentException)
         {
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            // Compensating for whatever the try above did - a transaction the failed initializer left
+            // open - so it runs on CancellationToken.None: skipping it here would mask the try's own
+            // exception with a fresh OperationCanceledException instead of letting this catch turn it
+            // into the graceful Covenant.IntegrityFailure result below.
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,

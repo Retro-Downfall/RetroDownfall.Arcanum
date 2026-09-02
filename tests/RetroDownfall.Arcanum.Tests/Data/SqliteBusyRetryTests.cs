@@ -105,6 +105,45 @@ public sealed class SqliteBusyRetryTests
 
     }
 
+    /// <summary>
+    /// W3b-4: the loop retried SQLITE_BUSY/LOCKED forever, bounded only by the caller's own
+    /// cancellation token — a caller with no token of its own (an HTTP request the host put no
+    /// server-side timeout on) never got the maintenance-unavailable answer at all.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteAsync_StopsRetryingAfterTheDeadlineElapses()
+    {
+
+        int attempts = 0;
+
+        GrimoireBusyTimeoutException thrown = await Assert.ThrowsAsync<GrimoireBusyTimeoutException>(
+            () => SqliteBusyRetry.ExecuteAsync(
+                () =>
+                {
+
+                    attempts++;
+
+                    throw new SqliteException("busy", 5);
+
+                },
+                CancellationToken.None,
+                deadline: TimeSpan.FromMilliseconds(120)));
+
+        Assert.True(attempts >= 2, $"Expected at least one retry before the deadline; observed {attempts}.");
+
+        Assert.Equal(attempts, thrown.Attempts);
+
+        // Review round 1: the deadline check runs only after an attempt's own busy exception is
+        // caught, so the real elapsed time can carry past the configured deadline by as much as that
+        // one attempt's own duration - Elapsed, not Deadline, is what the exception's message must
+        // report to stay honest about how long the caller actually waited.
+        Assert.True(
+            thrown.Elapsed >= thrown.Deadline,
+            $"Expected the measured elapsed time ({thrown.Elapsed}) to be at least the configured "
+            + $"deadline ({thrown.Deadline}).");
+
+    }
+
     [Fact]
     public async Task ExecuteAsync_RetriesWrappedBusyBeyondFormerAttemptCeiling_ThenSucceeds()
     {
