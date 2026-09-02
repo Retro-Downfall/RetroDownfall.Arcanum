@@ -4,7 +4,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
-using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
@@ -30,54 +29,6 @@ internal static class InferenceExecuteWriter
         PublicInferenceErrorMessages.NativeGenericFailure;
 
     private static readonly byte[] NewlineBytes = "\n"u8.ToArray();
-
-    public static async Task WriteBufferedAsync(
-        HttpContext httpContext,
-        IArcanumIntelligenceProvider intelligence,
-        PingRequest request,
-        CancellationToken cancellationToken,
-        CanonicalCampaignContext? campaign = null)
-    {
-        Result<PromptTurnResult> turn = await intelligence
-            .ExecutePromptAsync(
-                request,
-                ArcanumInvocationContexts.ForTurn(httpContext, request, campaign),
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-        Result<PromptResponseDto> envelopeResult = turn.IsFailure
-            ? Result<PromptResponseDto>.Failure(turn.Error)
-            : Result<PromptResponseDto>.Success(PromptResponseDto.From(turn.Value));
-
-        ApiResponse<PromptResponseDto> response = ApiResponse<PromptResponseDto>.FromResult(envelopeResult, traceId);
-
-        if (turn.IsSuccess)
-        {
-            httpContext.Response.StatusCode = StatusCodes.Status200OK;
-
-            await JsonSerializer.SerializeAsync(
-                httpContext.Response.Body,
-                response,
-                ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-                cancellationToken).ConfigureAwait(false);
-
-            TurnContextGuards.MarkIdempotencyTerminal(httpContext);
-
-            return;
-        }
-
-        httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code);
-
-        await JsonSerializer.SerializeAsync(
-            httpContext.Response.Body,
-            response,
-            ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-            cancellationToken).ConfigureAwait(false);
-
-        TurnContextGuards.MarkIdempotencyTerminal(httpContext);
-    }
 
     public static async Task WriteStreamAsync(
         HttpContext httpContext,
@@ -144,6 +95,20 @@ internal static class InferenceExecuteWriter
                     continue;
                 }
 
+                if (ev.Type == IntelligenceEventType.Error)
+                {
+                    // Fix round 1, item 1: a provider that yields IntelligenceEventType.Error as an
+                    // ordinary element of its own event stream — not by throwing — completes this
+                    // await foreach normally, same as a genuine success. Status stays 200 (headers
+                    // already sent) and the body is non-empty, so without this, PersistClaimAsync's
+                    // own buffered/aborted fallback would cache the failure as a permanently
+                    // replayable "success." Set eagerly, the moment the Error event is seen, rather
+                    // than deferred to after the loop: if the client disconnects or the enumerator
+                    // faults on a later MoveNextAsync, the decision is already made before whichever
+                    // exit path runs.
+                    TurnContextGuards.MarkIdempotencyNeverCache(httpContext);
+                }
+
                 eventBuffer.ResetWrittenCount();
 
                 jsonWriter.Reset();
@@ -197,6 +162,15 @@ internal static class InferenceExecuteWriter
                 return;
             }
 
+            // Fix round 1, item 1: not calling MarkIdempotencyTerminal here (W2-1) is not by itself
+            // enough — PersistClaimAsync's own buffered/aborted fallback treats any non-empty,
+            // non-aborted body as terminal independent of the marker, and a client that is still
+            // connected here (httpContext.RequestAborted is false in every branch that reaches this
+            // point; the three early returns above cover the cases where it is true) leaves that
+            // fallback free to cache this failure frame anyway. Set explicitly and unconditionally,
+            // before the write attempt, so it holds even if the write itself then fails.
+            TurnContextGuards.MarkIdempotencyNeverCache(httpContext);
+
             try
             {
                 IntelligenceEvent cancelEvent = new(
@@ -210,7 +184,6 @@ internal static class InferenceExecuteWriter
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None)
                     .ConfigureAwait(false);
                 await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
             }
             catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
             {
@@ -243,6 +216,13 @@ internal static class InferenceExecuteWriter
                 IntelligenceEventType.Error,
                 PublicStreamFailureMessage);
 
+            // Fix round 1, item 1: see the matching comment in the OperationCanceledException arm
+            // above — a client still connected here (the common case for a provider-side fault)
+            // left PersistClaimAsync's own buffered/aborted fallback free to cache this failure
+            // frame regardless of whether the terminal marker was set, so this has to say so
+            // explicitly.
+            TurnContextGuards.MarkIdempotencyNeverCache(httpContext);
+
             eventBuffer.ResetWrittenCount();
 
             jsonWriter.Reset();
@@ -256,8 +236,6 @@ internal static class InferenceExecuteWriter
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, httpContext.RequestAborted).ConfigureAwait(false);
 
                 await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
-
-                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
             }
             catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
             {

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -104,20 +105,54 @@ public static class IdempotencyEndpointFilters
 
         request.EnableBuffering();
 
-        byte[] bodyBytes;
-
-        using (MemoryStream buffer = new())
-        {
-
-            await request.Body.CopyToAsync(buffer, context.HttpContext.RequestAborted).ConfigureAwait(false);
-
-            bodyBytes = buffer.ToArray();
-
-        }
+        // W2-2: hashed incrementally instead of materialized (no MemoryStream, no ToArray()), so a
+        // large keyed request (up to the 16 MiB route ceiling) retains only a 32-byte digest rather
+        // than 2-3x its own size in managed memory for the whole handler execution. The digest is a
+        // fingerprint-equivalent substitute for the raw bytes — collision-resistant, so folding it
+        // into ComputeFingerprintHash's own prefix+hash construction is exactly as strong a
+        // fingerprint as folding in the body itself.
+        byte[] bodyDigest = await ComputeBodyDigestAsync(request.Body, context.HttpContext.RequestAborted)
+            .ConfigureAwait(false);
 
         request.Body.Position = 0;
 
-        return await InvokeCoreAsync(context, next, key!, bodyBytes).ConfigureAwait(false);
+        return await InvokeCoreAsync(context, next, key!, bodyDigest).ConfigureAwait(false);
+
+    }
+
+    private static async Task<byte[]> ComputeBodyDigestAsync(Stream body, CancellationToken cancellationToken)
+    {
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent(81920);
+
+        try
+        {
+
+            int read;
+
+            while ((read = await body.ReadAsync(rented.AsMemory(0, rented.Length), cancellationToken)
+                    .ConfigureAwait(false))
+                > 0)
+            {
+
+                hash.AppendData(rented.AsSpan(0, read));
+
+            }
+
+        }
+        finally
+        {
+
+            // clearArray: true — this buffer held up to 80 KiB of raw request body bytes; returning
+            // it without clearing would leave that content readable by whatever the pool hands the
+            // buffer to next.
+            ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+
+        }
+
+        return hash.GetHashAndReset();
 
     }
 
@@ -595,13 +630,40 @@ public static class IdempotencyEndpointFilters
             bool withinCap = teeStream.WithinCap;
             byte[] buffered = withinCap ? teeStream.GetBufferedBytes() : [];
             bool aborted = httpContext.RequestAborted.IsCancellationRequested;
+            bool neverCache = TurnContextGuards.IsIdempotencyNeverCache(httpContext);
             bool explicitlyTerminal = TurnContextGuards.IsIdempotencyTerminal(httpContext)
                 || httpContext.Response.StatusCode == StatusCodes.Status204NoContent;
             // Terminal when:
             // - a writer explicitly marked completion (including a zero-byte response),
             // - the endpoint explicitly returned 204 No Content, or
             // - the request was not aborted and we buffered a non-empty in-cap body (buffered IResult paths).
-            bool terminalStreamValid = withinCap
+            //
+            // That last clause is a fallback for writers that never call the explicit marker at all
+            // (buffered IResult paths just return a body), and it means "not marked terminal" is not
+            // by itself enough to keep something out of the cache: a non-empty, non-aborted body is
+            // still treated as terminal. A writer that already knows its own body is a failure frame
+            // — a stream that ended in a provider-reported Error event, or one a thrown exception
+            // aborted — has to say so explicitly via neverCache, checked first and unconditionally,
+            // rather than rely on omitting the terminal marker and hoping this fallback does not
+            // independently decide the buffered bytes look terminal anyway.
+            //
+            // Gated on the response's status class regardless of which of the above applies: a 5xx or
+            // a retryable 4xx (429/408) is never cached as a replayable Completed claim, even when the
+            // writer buffered a full body or marked itself terminal, because DESIGN's "retry with the
+            // same key" contract means a fresh execution, not the frozen failure. A deterministic 4xx
+            // (validation refusal) still caches, since resending the same request would fail the same
+            // way for the same reason.
+            //
+            // Also gated on content type when there is a body to worry about (W2-9): the claim is
+            // stored as a UTF-8 string and replayed by re-encoding it, so any non-UTF-8 byte would
+            // silently become U+FFFD on replay. Every route this filter attaches to today emits JSON,
+            // NDJSON, or SSE — all guaranteed UTF-8 — so this cannot change behavior for a current
+            // caller; it only stops a future non-text route from attaching the filter and getting a
+            // silently corrupted replay. An empty body has nothing to corrupt, so it is exempt.
+            bool terminalStreamValid = !neverCache
+                && withinCap
+                && IsIdempotencyReplayableStatus(httpContext.Response.StatusCode)
+                && (buffered.Length == 0 || IsReplayableContentType(httpContext.Response.ContentType))
                 && (explicitlyTerminal || (buffered.Length > 0 && !aborted));
 
             if (!terminalStreamValid)
@@ -671,6 +733,39 @@ public static class IdempotencyEndpointFilters
     private static bool IsLive(IdempotencyClaim claim, DateTimeOffset now) =>
         claim.State is IdempotencyClaimState.Running or IdempotencyClaimState.Claimed
         && claim.LeaseExpiresAt > now;
+
+    /// <summary>
+    /// Whether a response with this status code is safe to cache as a replayable Completed claim.
+    /// A 5xx is always the installation's own fault, not the caller's request, and 429/408 are the
+    /// two 4xx codes that explicitly mean "the same request would succeed later" rather than "this
+    /// request is invalid" — none of the three should freeze a caller out of retrying with the same
+    /// key for the rest of the claim's TTL. Every other 4xx (validation refusals, 409 conflicts, and
+    /// so on) is deterministic for the same fingerprint and stays cacheable.
+    /// </summary>
+    internal static bool IsIdempotencyReplayableStatus(int statusCode) =>
+        statusCode < StatusCodes.Status500InternalServerError
+        && statusCode != StatusCodes.Status429TooManyRequests
+        && statusCode != StatusCodes.Status408RequestTimeout;
+
+    /// <summary>
+    /// Whether a response with this content type is safe to cache. This is a closed allowlist of
+    /// the three media types production actually emits on a filtered route — plain JSON,
+    /// NDJSON, or SSE, all of which this class's own remarks document as cached the same way — not
+    /// a general test for "is this UTF-8." The claim is stored as a UTF-8 string
+    /// (<see cref="PersistClaimAsync"/>) and replayed by re-encoding it
+    /// (<see cref="IdempotencyReplayResult.ExecuteAsync"/>), so UTF-8 safety is *why* these three are
+    /// admitted, not the rule this predicate checks: it matches on the media type substring, so a
+    /// UTF-8-safe type outside the three — <c>text/plain; charset=utf-8</c>, for example — is
+    /// refused and the request re-executes rather than replaying, even though nothing about it would
+    /// round-trip lossy. That is deliberate: production never emits that shape today, and widening
+    /// the check to "anything UTF-8" would reopen the exact unbounded surface W2-9 narrowed this to
+    /// close, admitting a future non-JSON/NDJSON/SSE route's response the first time someone attaches
+    /// this filter to one, rather than requiring it to be added here explicitly.
+    /// </summary>
+    internal static bool IsReplayableContentType(string? contentType) =>
+        contentType is not null
+        && (contentType.Contains("json", StringComparison.OrdinalIgnoreCase)
+            || contentType.Contains("event-stream", StringComparison.OrdinalIgnoreCase));
 
     internal static string CreateOwnerId() =>
         string.Concat(ProcessInstanceId, ":", Guid.NewGuid().ToString("N"));

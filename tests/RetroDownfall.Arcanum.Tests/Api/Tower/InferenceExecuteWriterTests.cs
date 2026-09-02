@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -475,64 +477,6 @@ public sealed class InferenceExecuteWriterTests
 
     }
 
-    [Fact]
-    public async Task WriteBufferedAsync_ProviderFails_WritesErrorResponse()
-    {
-        ServiceCollection services = new();
-
-        services.AddLogging();
-
-        ServiceProvider provider = services.BuildServiceProvider();
-
-        MemoryStream body = new();
-
-        DefaultHttpContext httpContext = new();
-
-        httpContext.RequestServices = provider;
-
-        httpContext.Response.Body = body;
-
-        FakeIntelligenceProvider intelligence = new();
-
-        intelligence.NextFailure = new Error("Intelligence.Failed", "provider failed");
-
-        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
-
-        await InferenceExecuteWriter.WriteBufferedAsync(httpContext, intelligence, request, CancellationToken.None);
-
-        Assert.True(httpContext.Response.StatusCode >= 400);
-
-    }
-
-    [Fact]
-    public async Task WriteBufferedAsync_ProviderSucceeds_WritesSuccessResponse()
-    {
-        ServiceCollection services = new();
-
-        services.AddLogging();
-
-        ServiceProvider provider = services.BuildServiceProvider();
-
-        MemoryStream body = new();
-
-        DefaultHttpContext httpContext = new();
-
-        httpContext.RequestServices = provider;
-
-        httpContext.Response.Body = body;
-
-        FakeIntelligenceProvider intelligence = new();
-
-        intelligence.NextText = "expected output";
-
-        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
-
-        await InferenceExecuteWriter.WriteBufferedAsync(httpContext, intelligence, request, CancellationToken.None);
-
-        Assert.Equal(200, httpContext.Response.StatusCode);
-
-    }
-
     private sealed class BlockingStreamIntelligenceProvider : IArcanumIntelligenceProvider
     {
         public TaskCompletionSource Entered { get; } =
@@ -679,6 +623,86 @@ public sealed class InferenceExecuteWriterTests
         public List<LogEvent> Events { get; } = [];
 
         public void Emit(LogEvent logEvent) => Events.Add(logEvent);
+    }
+
+}
+
+/// <summary>
+/// POST /api/intelligence/ping through the real host (W2-4) — the buffered failure/success envelope
+/// contract this route builds inline, replacing the deleted InferenceExecuteWriter.WriteBufferedAsync
+/// (no production caller) and the two dead tests that exercised it directly.
+/// </summary>
+[Collection("ApiHost")]
+public sealed class InferenceExecuteWriterBufferedRouteTests
+{
+
+    private readonly ArcanumWebApplicationFactory _factory;
+
+    public InferenceExecuteWriterBufferedRouteTests(ArcanumWebApplicationFactory factory)
+    {
+
+        _factory = factory;
+
+    }
+
+    [SkippableFact]
+    public async Task PostPing_ProviderFails_ReturnsMappedFailureStatusAndEnvelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Connection.Unreachable maps to 503, not the mapper's 500 fallback — deliberately not the
+        // default arm, so this test cannot pass against a handler that hardcodes its failure status.
+        _factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Connection.Unreachable, "provider unreachable");
+
+        PingRequest request = new(Prompt: "buffered failure probe");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/intelligence/ping",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        using JsonDocument doc = JsonDocument.Parse(body);
+
+        Assert.False(doc.RootElement.GetProperty("isSuccess").GetBoolean());
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+    }
+
+    [SkippableFact]
+    public async Task PostPing_ProviderSucceeds_ReturnsOkWithHandlerOutput()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "buffered-success-probe-output";
+
+        PingRequest request = new(Prompt: "buffered success probe");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/intelligence/ping",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("buffered-success-probe-output", body, StringComparison.Ordinal);
+
     }
 
 }

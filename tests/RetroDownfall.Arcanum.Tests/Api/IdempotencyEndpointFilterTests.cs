@@ -876,6 +876,332 @@ public sealed class IdempotencyEndpointFilterTests
 
     }
 
+    [SkippableFact]
+    public async Task PostPing_ProviderUnreachableFirstCall_SecondRequestReExecutesFreshInsteadOfReplaying503()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Connection.Unreachable, "provider unreachable");
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        PingRequest request = new(Prompt: "retry after transient failure");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/intelligence/ping")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, firstResponse.StatusCode);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+        // The provider recovers before the retry; a re-execution must be observably different from
+        // the frozen 503.
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "recovered-response";
+
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/intelligence/ping")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("recovered-response", secondBody, StringComparison.Ordinal);
+
+        // The retry must have re-executed the handler fresh, not replayed the cached 503.
+        Assert.Equal(before + 2, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
+    // Fix round 1, item 1 (spec fail on W2-1's streaming arm). A provider that yields
+    // IntelligenceEvent(Error, ...) as an ordinary element of its own async-enumerable stream — the
+    // reviewer's exact probe shape, and FakeIntelligenceProvider's own NextFailure path — completes
+    // InferenceExecuteWriter.WriteStreamAsync's await foreach normally, the same as a genuine
+    // success: no exception is thrown, so the two catch-block fixes from the first W2-1 round never
+    // ran. Status stays 200 (headers already sent), content type stays NDJSON, and the body is the
+    // non-empty error frame, so this reached the surviving unconditional MarkIdempotencyTerminal call
+    // and cached the failure as a permanently replayable "success" for the claim's whole TTL.
+    [SkippableFact]
+    public async Task PostPingStream_ProviderYieldsErrorEventFirstCall_SecondRequestReExecutesFreshInsteadOfReplayingTheErrorFrame()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Connection.Unreachable, "provider unreachable");
+
+        int before = _factory.FakeIntelligence.StreamPromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        PingRequest request = new(Prompt: "retry a stream after a reported provider error");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/intelligence/ping-stream")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        string firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("provider unreachable", firstBody, StringComparison.Ordinal);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.StreamPromptCallCount);
+
+        // The provider recovers before the retry; a re-execution must be observably different from
+        // the frozen error frame.
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "recovered-stream-response";
+
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/intelligence/ping-stream")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.NotEqual(firstBody, secondBody);
+
+        Assert.Contains("recovered-stream-response", secondBody, StringComparison.Ordinal);
+
+        // The retry must have re-executed the handler fresh, not replayed the cached error frame.
+        Assert.Equal(before + 2, _factory.FakeIntelligence.StreamPromptCallCount);
+
+    }
+
+    // The sibling gap: a provider whose enumerator THROWS (rather than yielding an Error event)
+    // reaches InferenceExecuteWriter's general catch (Exception ex) arm, which already omitted
+    // MarkIdempotencyTerminal after the first W2-1 round — but PersistClaimAsync's buffered/aborted
+    // fallback treats a non-empty, non-aborted body as terminal regardless, so omission alone was
+    // never sufficient here either. This is the same root cause and lever as the test above; kept
+    // separate because it exercises a structurally different path (an exception aborting the
+    // enumerator, not an event flowing through it) through the same fixed writer.
+    [SkippableFact]
+    public async Task PostPingStream_ProviderThrowsFirstCall_SecondRequestReExecutesFreshInsteadOfReplayingTheErrorFrame()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextStreamException = new InvalidOperationException("provider enumerator faulted");
+
+        int before = _factory.FakeIntelligence.StreamPromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        PingRequest request = new(Prompt: "retry a stream after a thrown provider exception");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/intelligence/ping-stream")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        string firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.StreamPromptCallCount);
+
+        _factory.FakeIntelligence.NextStreamException = null;
+
+        _factory.FakeIntelligence.NextText = "recovered-after-thrown-exception";
+
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/intelligence/ping-stream")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.NotEqual(firstBody, secondBody);
+
+        Assert.Contains("recovered-after-thrown-exception", secondBody, StringComparison.Ordinal);
+
+        Assert.Equal(before + 2, _factory.FakeIntelligence.StreamPromptCallCount);
+
+    }
+
+    [SkippableFact]
+    public async Task PostChatCompletions_LargeKeyedBody_DoesNotMaterializeWholeBodyInManagedMemory()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory largeBodyFactory = new();
+
+        largeBodyFactory.FakeIntelligence.NextFailure = null;
+
+        largeBodyFactory.FakeIntelligence.NextText = "large-body-probe-response";
+
+        HttpClient client = largeBodyFactory.CreateAuthenticatedClient();
+
+        const int contentSize = 8 * 1024 * 1024;
+
+        string payload = "{\"model\":\"mistral:latest\",\"messages\":[{\"role\":\"user\",\"content\":\""
+            + new string('a', contentSize)
+            + "\"}]}";
+
+        HttpRequestMessage BuildRequest()
+        {
+
+            HttpRequestMessage req = new(HttpMethod.Post, "/v1/chat/completions")
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+
+            req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, $"large-body-{Guid.NewGuid():N}");
+
+            return req;
+
+        }
+
+        // Warm up the request pipeline (JIT, first-request DI graph construction) on the same shape
+        // of request so the measured call below isolates per-request allocation behavior rather than
+        // one-time host startup cost.
+        HttpRequestMessage warmRequest = BuildRequest();
+
+        HttpRequestMessage measuredRequest = BuildRequest();
+
+        HttpResponseMessage warmResponse = await client.SendAsync(warmRequest);
+
+        _ = await warmResponse.Content.ReadAsStringAsync();
+
+        GC.Collect();
+
+        GC.WaitForPendingFinalizers();
+
+        GC.Collect();
+
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+
+        HttpResponseMessage measuredResponse = await client.SendAsync(measuredRequest);
+
+        _ = await measuredResponse.Content.ReadAsStringAsync();
+
+        long after = GC.GetTotalAllocatedBytes(precise: true);
+
+        long allocated = after - before;
+
+        // Measured directly against this exact test (git stash the fix, rerun): the old ForRawBody
+        // (EnableBuffering's spool, then a doubling-growth MemoryStream, then a final ToArray()) here
+        // allocates ~10.5x the 8 MiB body (~88 MB) on top of whatever TestServer's own in-memory
+        // transport and request/response processing account for; the fix measures ~4.0x (~34 MB) for
+        // the same body — TestServer's own baseline, not this filter. 5x leaves ~20% headroom above
+        // the fix's measured cost and stays well under half the old code's, so it separates a real
+        // regression back to materializing the body from ordinary run-to-run GC noise.
+        Assert.True(
+            allocated < 5L * contentSize,
+            $"Expected allocated bytes well under the old code's ~10x multiple of the 8 MiB body; observed {allocated:N0} bytes for a {contentSize:N0}-byte body.");
+
+    }
+
+    // Fix round 1, item 3: ComputeBodyDigestAsync reads the body through an 80 KiB (81920-byte)
+    // pooled buffer, one ReadAsync per iteration. Nothing pinned that the loop actually consumes
+    // every byte of every chunk rather than, say, only the start of each read — a bug shaped exactly
+    // like that would still pass every existing test, none of which sends a body over one buffer's
+    // worth. Two bodies here share their first 85,000 bytes (past the boilerplate and past the first
+    // 81920-byte chunk boundary, so both chunks' starts fall inside the shared region) and then
+    // diverge in a short distinct tail. The shared block lives inside the JSON "content" string's
+    // value so both bodies stay valid, so a digest that only sampled each chunk's leading bytes would
+    // still see byte-identical input from both requests and treat the second as a replay of the
+    // first. The real, correct loop hashes every byte, so the two full bodies produce different
+    // digests, different fingerprints, and Security.IdempotencyConflict (409) under the same key.
+    [SkippableFact]
+    public async Task PostChatCompletions_TwoLargeBodiesSharingAnEightyKibPrefix_SecondRequestConflictsInsteadOfReplaying()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "shared-prefix-probe-response";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        const int sharedPrefixLength = 85_000;
+
+        const string boilerplate = "{\"model\":\"mistral:latest\",\"messages\":[{\"role\":\"user\",\"content\":\"";
+
+        string sharedPadding = new string('a', sharedPrefixLength);
+
+        string key = $"shared-prefix-{Guid.NewGuid():N}";
+
+        async Task<HttpResponseMessage> SendAsync(string distinctTail)
+        {
+
+            string payload = boilerplate + sharedPadding + distinctTail + "\"}]}";
+
+            HttpRequestMessage request = new(HttpMethod.Post, "/v1/chat/completions")
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+
+            request.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+            return await client.SendAsync(request);
+
+        }
+
+        HttpResponseMessage firstResponse = await SendAsync("-body-one-tail");
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        HttpResponseMessage secondResponse = await SendAsync("-body-two-tail-differs-here");
+
+        Assert.Equal(HttpStatusCode.Conflict, secondResponse.StatusCode);
+
+    }
+
 }
 
 public sealed class IdempotencyEndpointFilterOwnershipTests
@@ -901,6 +1227,26 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(
             first[..first.IndexOf(':')],
             second[..second.IndexOf(':')]);
+
+    }
+
+    [Theory]
+    [InlineData("application/json", true)]
+    [InlineData("application/json; charset=utf-8", true)]
+    [InlineData("application/x-ndjson; charset=utf-8", true)]
+    [InlineData("text/event-stream", true)]
+    [InlineData("text/event-stream; charset=utf-8", true)]
+    [InlineData("application/octet-stream", false)]
+    [InlineData("image/png", false)]
+    [InlineData("text/plain", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsReplayableContentType_AllowsOnlyTheTextShapesThisFilterActuallyCaches(
+        string? contentType,
+        bool expected)
+    {
+
+        Assert.Equal(expected, IdempotencyEndpointFilters.IsReplayableContentType(contentType));
 
     }
 
@@ -2235,6 +2581,12 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         httpContext.Request.Headers[ArcanumApiHeaders.IdempotencyKey] = key;
 
+        // Every fake handler built on this context writes a JSON-shaped body directly via
+        // Response.WriteAsync, bypassing Results.Json (which would set this for a real handler) --
+        // matching that here keeps IsReplayableContentType's W2-9 gate from seeing an untyped
+        // response and treating a genuinely-JSON test body as unsafe to cache.
+        httpContext.Response.ContentType = "application/json";
+
         httpContext.Response.Body = new MemoryStream();
 
         return (
@@ -2672,6 +3024,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         dueAt = dueAt.Add(Period);
 
                     }
+
                     while (dueAt <= now);
 
                     DueAt = dueAt;

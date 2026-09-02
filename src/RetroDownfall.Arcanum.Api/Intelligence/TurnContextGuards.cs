@@ -18,6 +18,17 @@ internal static class TurnContextGuards
 
     public const string IdempotencyTerminalItemKey = "Arcanum.IdempotencyTerminal";
 
+    /// <summary>
+    /// A response that must never be cached as a replayable claim, independent of
+    /// <see cref="IdempotencyTerminalItemKey"/> or anything <c>PersistClaimAsync</c> can infer from
+    /// the buffered bytes themselves. Needed because that inference has its own fallback — a
+    /// non-empty, non-aborted buffered body is treated as terminal even when nothing marked it so —
+    /// so a writer that already knows its own body is a failure frame (a stream that ended in a
+    /// provider-reported <c>Error</c> event, or one aborted by a thrown exception) has to say so
+    /// explicitly rather than rely on simply omitting the terminal marker.
+    /// </summary>
+    public const string IdempotencyNeverCacheItemKey = "Arcanum.IdempotencyNeverCache";
+
     public static bool IsToolCallEntry(Entry entry) =>
         entry.Role == MessageRole.Assistant
         && (!string.IsNullOrEmpty(entry.ToolName)
@@ -217,5 +228,11 @@ internal static class TurnContextGuards
 
     public static bool IsIdempotencyTerminal(HttpContext httpContext) =>
         httpContext.Items.TryGetValue(IdempotencyTerminalItemKey, out object? value) && value is true;
+
+    public static void MarkIdempotencyNeverCache(HttpContext httpContext) =>
+        httpContext.Items[IdempotencyNeverCacheItemKey] = true;
+
+    public static bool IsIdempotencyNeverCache(HttpContext httpContext) =>
+        httpContext.Items.TryGetValue(IdempotencyNeverCacheItemKey, out object? value) && value is true;
 
 }
