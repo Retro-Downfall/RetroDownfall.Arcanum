@@ -86,6 +86,29 @@ function Assert-StagedNatives {
     Write-Host "==> Verified native sidecars in ${StageDir}: $($Names -join ', ')"
 }
 
+# Cli.csproj enables PublishAot unconditionally for every non-Apple RuntimeIdentifier, so there is
+# no legitimate reason this script should ever produce the self-contained CoreCLR fallback shape
+# (unlike the macOS packager, which accepts the fallback on a host with no ld64.lld). A publish
+# that cannot find the Native AOT toolchain for this RID does not fail -- it degrades silently to
+# that fallback, which still packages, still ships, and is quietly no longer Native AOT (see
+# build-windows.yml's comment on this exact risk). hostfxr.dll exists only in the fallback shape:
+# unlike a raw *.dll count, it is not confused by e_sqlcipher.dll/libonigwrap.dll, which ship
+# beside the host either way.
+function Assert-NativeAotPublish {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StageDir
+    )
+
+    $hostfxr = Join-Path $StageDir "hostfxr.dll"
+    if (Test-Path -LiteralPath $hostfxr) {
+        Get-ChildItem -LiteralPath $StageDir | Format-Table Name, Length | Out-String | Write-Host
+        throw "Staged Arcanum CLI contains hostfxr.dll under $StageDir, so this is a self-contained CoreCLR fallback publish, not Native AOT. Install the missing Native AOT toolchain component (ILCompiler / MSVC linker) for this RID and republish."
+    }
+
+    Write-Host "==> Verified Native AOT publish (no hostfxr.dll in the staged tree)"
+}
+
 try {
     if ($Sign) {
         $certPath = $env:WINDOWS_CERT_PATH
@@ -206,6 +229,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $RepoRoot "README.md") -Destination (Join-Path $stageDir "README.md")
 
         Assert-StagedNatives -StageDir $stageDir -Names @("e_sqlcipher.dll", "libonigwrap.dll")
+        Assert-NativeAotPublish -StageDir $stageDir
 
         if ($Sign) {
             Invoke-StageAuthenticodeSign -StageDir $stageDir
