@@ -88,6 +88,25 @@ public sealed class WatchCommandTests
 
     }
 
+    [Fact]
+
+    public void Watch_session_rejects_an_invalid_since_cursor_without_calling_the_api()
+    {
+
+        ScriptedHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["watch", "session", SessionId.ToString("D"), "--since", "not-a-guid"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--since", result.Error, StringComparison.Ordinal);
+
+    }
+
     public static TheoryData<string[], string, string, string> SseSources => new()
     {
 
