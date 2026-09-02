@@ -1660,6 +1660,162 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     }
 
+    /// <summary>
+    /// A revision publication issues six inspections through the primitives layer (the initial
+    /// evidence check, the final pre-replace validation, the landed check, the retirement's own
+    /// inspection, and two residue-absence proofs), and each inspection performs a full directory
+    /// enumeration; this bounds the total rather than pinning it exactly, so an implementation that
+    /// legitimately trades one inspection for another does not have to touch this test, but a pattern
+    /// that starts re-scanning per file (rather than per inspection) will still trip it.
+    /// </summary>
+    [Fact]
+    public async Task Publication_bounds_the_number_of_directory_enumerations_per_revision()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] firstBytes = Bytes("enumeration-bound-first").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            firstBytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleIdentity firstIdentity;
+
+        using (GrimoireOfflineTransitionJournalFileRead first = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            firstIdentity = first.Metadata.Identity;
+
+        }
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore revising = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value);
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        byte[] secondBytes = Bytes("enumeration-bound-second").ToArray();
+
+        Assert.True((await revising.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.NotNull(recording);
+
+        Assert.True(
+            recording.EnumerateExactChildrenCallCount <= 16,
+            $"observed {recording.EnumerateExactChildrenCallCount} EnumerateExactChildren calls for one revision");
+
+    }
+
+    /// <summary>
+    /// DeleteDurably called ProveAllAbsentAsync twice back to back with nothing between the two calls
+    /// that could change the filesystem state, unlike ProveAbsentDurably's sibling pair which
+    /// interleaves a FlushParent. Pins the exact count of directory enumerations DeleteDurably performs
+    /// so a reintroduced duplicate call reddens this immediately rather than only showing up as slower
+    /// deletes.
+    /// </summary>
+    [Fact]
+    public async Task Deletion_does_not_repeat_the_absence_proof_without_an_intervening_state_change()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("dedup-absence-proof").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleMetadata metadata;
+
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            metadata = current.Metadata;
+
+        }
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore deleting = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value);
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        Assert.True(deleting.DeleteDurably(held, location, metadata, bytes).IsSuccess);
+
+        Assert.NotNull(recording);
+
+        Assert.Equal(5, recording.EnumerateExactChildrenCallCount);
+
+    }
+
     [Fact]
     public void Windows_desired_access_and_share_mode_constants_are_exact()
     {

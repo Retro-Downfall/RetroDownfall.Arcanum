@@ -918,12 +918,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     location,
                     CancellationToken.None)
                 .GetAwaiter()
-                .GetResult()
-                || !ProveAllAbsentAsync(
-                    primitives,
-                    location,
-                    CancellationToken.None)
-                .GetAwaiter()
                 .GetResult())
             {
 
