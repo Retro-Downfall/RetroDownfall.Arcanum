@@ -807,6 +807,29 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Recover_routes_a_corrupt_key_beside_an_absent_anchor_through_key_failure()
+    {
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        _credentials.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(
+                location.ProfileNamespace.AccountSuffix),
+            "not-canonical");
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
+
+    }
+
+    [Fact]
     public async Task Recover_accepts_an_exact_anchor_file_match()
     {
 

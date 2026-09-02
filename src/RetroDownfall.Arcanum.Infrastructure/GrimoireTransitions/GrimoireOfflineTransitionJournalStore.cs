@@ -294,7 +294,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (keyPresentBeforeGenesis.IsFailure)
             {
 
-                return Result<GrimoireOfflineTransitionJournalPublication>.Failure(
+                return KeyFailure<GrimoireOfflineTransitionJournalPublication>(
                     keyPresentBeforeGenesis.Error);
 
             }
@@ -875,7 +875,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (keyPresentWithoutAnchor.IsFailure)
             {
 
-                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(
                     keyPresentWithoutAnchor.Error);
 
             }
