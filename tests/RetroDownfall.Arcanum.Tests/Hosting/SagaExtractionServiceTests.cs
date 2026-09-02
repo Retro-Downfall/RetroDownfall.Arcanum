@@ -898,19 +898,26 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Guid blockedSessionId = await CreateSessionAsync();
+        Guid firstSessionId = await CreateSessionAsync();
 
-        await CreateEntryAsync(blockedSessionId, "content this extraction model can never parse");
+        await CreateEntryAsync(firstSessionId, "content this extraction model can never parse");
 
-        Guid healthySessionId = await CreateSessionAsync();
+        Guid secondSessionId = await CreateSessionAsync();
 
-        await CreateEntryAsync(healthySessionId, "content this extraction model can never parse");
+        await CreateEntryAsync(secondSessionId, "content this extraction model can never parse");
 
         FakeWeaveService weave = new();
 
-        // Every attempt fails identically, forever; the only thing under test is whether the second
-        // session's first attempt has to wait behind the first session's retry backoff (W8-3).
-        FakeIntelligenceProvider intelligence = new() { NextText = "not valid json at all" };
+        // Every attempt fails identically, forever, for both sessions - the only thing under test is
+        // whether the second session's first attempt has to wait behind the first session's retry
+        // backoff (W8-3), not whether either one succeeds. ExpectedCallCount/WaitForExpectedCallsAsync
+        // waits deterministically for the second call instead of polling within a wall-clock margin
+        // against a comparable-duration backoff, which a loaded machine could miss (review round 1).
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "not valid json at all",
+            ExpectedCallCount = 2,
+        };
 
         (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
 
@@ -920,9 +927,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             NullLogger<SagaExtractionService>.Instance)
         {
 
-            // Long enough that a consumer loop blocked on its own backoff could not possibly reach
-            // the second session within the poll window below.
-            RetryBaseDelayForTests = TimeSpan.FromSeconds(2),
+            // Clamps to MaximumAutomaticRetryDelay (5 minutes) - comfortably longer than the wait
+            // below, so the first session's own retry cannot possibly fire during this test and a
+            // second call is unambiguously the second session's first attempt.
+            RetryBaseDelayForTests = TimeSpan.FromMinutes(10),
 
         };
 
@@ -933,22 +941,16 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         try
         {
 
-            service.EnqueueExtraction(blockedSessionId);
+            service.EnqueueExtraction(firstSessionId);
 
-            service.EnqueueExtraction(healthySessionId);
-
-            DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1.5);
-
-            while (intelligence.CallCount < 2 && DateTimeOffset.UtcNow < deadline)
-            {
-
-                await Task.Delay(TimeSpan.FromMilliseconds(50));
-
-            }
+            service.EnqueueExtraction(secondSessionId);
 
             // A single-reader loop that awaits its own retry backoff inline starves every other
-            // queued session for the whole delay. Reaching two calls well inside the 2-second backoff
-            // proves the healthy session's first attempt did not queue behind the blocked one's wait.
+            // queued session for the whole delay. Reaching two calls at all inside this bound - let
+            // alone the five seconds allowed - proves the second session's first attempt did not
+            // queue behind the first session's five-minute-plus wait.
+            await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(5));
+
             Assert.Equal(2, intelligence.CallCount);
 
         }
