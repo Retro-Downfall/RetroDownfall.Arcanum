@@ -1180,6 +1180,49 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // A regular, fully contained file with more than one hard link is rejected by SandboxedFileIo's
+    // containment gate, but before the fix it reused PathEscapesSandboxMessage -- telling the model to
+    // rewrite a path that already is relative and inside the root, and for which no spelling has a
+    // hard link count of 1. The remediation it prescribed could never succeed.
+    [SkippableFact]
+    public async Task ToolsCall_read_file_chunk_names_hard_links_instead_of_a_sandbox_escape()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Unsupported operating system.");
+
+        const string relativePath = "notes/hard-linked.txt";
+
+        string target = Path.Combine(_workspace.Root, relativePath);
+
+        _workspace.WriteFile(relativePath, "line one\nline two");
+
+        string secondLink = Path.Combine(_workspace.Root, "notes", "hard-linked-alias.txt");
+
+        Assert.True(HardLinkTestSupport.TryCreate(secondLink, target));
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "read_file_chunk",
+            JsonSerializer.SerializeToElement(
+                new ReadFileChunkParams
+                {
+                    RelativePath = relativePath,
+                    StartLine = 1,
+                    EndLine = 1,
+                },
+                McpJsonSerializerContext.Default.ReadFileChunkParams));
+
+        Assert.True(result.IsError);
+
+        Assert.Contains("hard link", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("leave the workspace sandbox", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     [Fact]
     public async Task ToolsCall_write_file_writes_inside_workspace_sandbox()
     {
