@@ -3,7 +3,7 @@
 > **[`README.md`](README.md)** is the curated public GitHub front page; update it only when that public-facing content intentionally changes. `docs/Arcanum.DESIGN.md` is the authoritative architecture/persistence/testing reference; `docs/Arcanum.API.md` is the exact HTTP contract; `docs/Arcanum.Command.Reference.md` is the complete CLI surface; and `docs/Compendium.README.md` owns configuration. This file is the fast-start agent orientation, not a replacement for those owning documents.
 
 ## What this is
-**Arcanum** is a .NET 10, local-first AI assistant/inference hub. One `arcanum` binary is both the HTTP host (`arcanum serve`) and thin CLI clients (`run`, `watch`, `session`, …) over the same API. Windows/Linux ship Native AOT; macOS ships Native AOT too when LLVM `lld` is installed (`brew install lld`), and degrades to a signed folder-based self-contained publish when it is not.
+**Arcanum** is a .NET 10, local-first AI assistant/inference hub. One `arcanum` binary is both the HTTP host (`arcanum serve`) and thin CLI clients (`run`, `watch`, `session`, …) over the same API. Windows ships Native AOT; macOS ships Native AOT too when LLVM `lld` is installed (`brew install lld`), and degrades to a signed folder-based self-contained publish when it is not. Linux is not a shipping RID: the hermetic SQLCipher targets map a filename only for an `osx-` or `win-` prefix, so `dotnet build` on a Linux host stops at ARCSQLC001 before compiling anything.
 
 ## Project layout & dependency direction
 `Cli → Api → Infrastructure → Core` (Infrastructure also references the isolated `Secrets` project).
@@ -32,7 +32,7 @@ dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.
 ./scripts/verify-aot-il-warnings.sh      # AOT publish closure must be free of first-party IL/AOT warnings
 ./scripts/verify-native-sqlcipher.sh --rid osx-arm64   # native provenance, hashes, symbols, compile options
 ```
-Run everything from the repo root. Don't rely on `workspace_check` as a bootstrap verifier for untrusted repos — it executes repo-authored code and requires explicit feature enablement, trusted workspace bytes, and an eligible macOS containment/runtime chain. Its Ward record is informational.
+Run everything from the repo root. Two of those scripts need tools macOS does not ship: `verify-aot-il-warnings.sh` requires ripgrep and `verify-native-sqlcipher.sh` requires `jq`, and each fails closed naming the missing command — `brew install ripgrep jq lld` covers them and the AOT linker together. Don't rely on `workspace_check` as a bootstrap verifier for untrusted repos — it executes repo-authored code and requires explicit feature enablement, trusted workspace bytes, and an eligible macOS containment/runtime chain. Its Ward record is informational.
 
 ## Adding things — quick checklists
 - **New endpoint:** add to `MapArcanumEndpoints` → return `ApiResponse<T>` (or a documented streaming shape) → register the payload type on `ArcanumJsonContext` → `.WithName(...)` → explicit `JsonTypeInfo` on any failable `Results.Json` → update `Arcanum.DESIGN.md` §4.3 and `Arcanum.API.md` as applicable.
