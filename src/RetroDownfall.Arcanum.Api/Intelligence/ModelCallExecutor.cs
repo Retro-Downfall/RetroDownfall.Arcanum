@@ -222,68 +222,77 @@ public sealed class ModelCallExecutor : IModelCallExecutor
 
         SubagentExecutionAmbient.Tracker?.BeginModelCall();
 
-        await foreach (ChatResponseUpdate update in chatClient
-            .GetStreamingResponseAsync(
-                providerPayload.Messages,
-                providerPayload.Options,
-                cancellationToken)
-            .WithCancellation(cancellationToken)
-            .ConfigureAwait(false))
+        try
         {
-            if (update.Contents is { Count: > 0 })
+            await foreach (ChatResponseUpdate update in chatClient
+                .GetStreamingResponseAsync(
+                    providerPayload.Messages,
+                    providerPayload.Options,
+                    cancellationToken)
+                .WithCancellation(cancellationToken)
+                .ConfigureAwait(false))
             {
-                foreach (AIContent content in update.Contents)
+                if (update.Contents is { Count: > 0 })
                 {
-                    switch (content)
+                    foreach (AIContent content in update.Contents)
                     {
-                        case TextContent { Text.Length: > 0 } text:
-                            yield return new ModelCallTextDelta(purpose, modelCallId, text.Text);
-                            break;
+                        switch (content)
+                        {
+                            case TextContent { Text.Length: > 0 } text:
+                                yield return new ModelCallTextDelta(purpose, modelCallId, text.Text);
+                                break;
 
-                        case TextReasoningContent reasoning:
-                            yield return new ModelCallReasoningUpdate(
-                                purpose,
-                                modelCallId,
-                                effectiveOutput == ReasoningOutputMode.None
-                                    ? string.Empty
-                                    : reasoning.Text ?? string.Empty,
-                                requestedOutput,
-                                effectiveOutput,
-                                !string.IsNullOrEmpty(reasoning.ProtectedData));
-                            break;
+                            case TextReasoningContent reasoning:
+                                yield return new ModelCallReasoningUpdate(
+                                    purpose,
+                                    modelCallId,
+                                    effectiveOutput == ReasoningOutputMode.None
+                                        ? string.Empty
+                                        : reasoning.Text ?? string.Empty,
+                                    requestedOutput,
+                                    effectiveOutput,
+                                    !string.IsNullOrEmpty(reasoning.ProtectedData));
+                                break;
 
-                        case UsageContent usageContent:
-                            if (usageContent.Details is not null)
-                            {
-                                finalUsage = usageContent.Details;
-                            }
-                            ContextTokenBreakdown? reconciled = Reconcile(
-                                breakdown,
-                                usageContent.Details);
-                            bool reconciliationChanged = !ReferenceEquals(reconciled, breakdown);
-                            breakdown = reconciled;
-                            if (reconciliationChanged && breakdown is not null)
-                            {
-                                yield return new ModelCallContextUpdate(purpose, modelCallId, breakdown);
-                            }
+                            case UsageContent usageContent:
+                                if (usageContent.Details is not null)
+                                {
+                                    finalUsage = usageContent.Details;
+                                }
+                                ContextTokenBreakdown? reconciled = Reconcile(
+                                    breakdown,
+                                    usageContent.Details);
+                                bool reconciliationChanged = !ReferenceEquals(reconciled, breakdown);
+                                breakdown = reconciled;
+                                if (reconciliationChanged && breakdown is not null)
+                                {
+                                    yield return new ModelCallContextUpdate(purpose, modelCallId, breakdown);
+                                }
 
-                            yield return new ModelCallUsageUpdate(
-                                purpose,
-                                modelCallId,
-                                usageContent.Details);
-                            break;
+                                yield return new ModelCallUsageUpdate(
+                                    purpose,
+                                    modelCallId,
+                                    usageContent.Details);
+                                break;
+                        }
                     }
                 }
+
+                // Semantic updates are emitted first so provider commitment is recorded before any raw
+                // response update can be projected to a client.
+                yield return new ModelCallResponseUpdate(purpose, modelCallId, update);
             }
-
-            // Semantic updates are emitted first so provider commitment is recorded before any raw
-            // response update can be projected to a client.
-            yield return new ModelCallResponseUpdate(purpose, modelCallId, update);
         }
-
-        RecordReconciliationMetrics(breakdown, finalUsage, context);
-        RecordPromptCacheMetrics(context, purpose, finalUsage);
-        RecordDelegatedUsage(context, finalUsage);
+        finally
+        {
+            // W1-6: reached on every exit — normal completion, a provider fault, or the consumer
+            // abandoning the enumerator — so a stream that observed usage before failing or being
+            // disconnected is still accounted instead of silently losing reconciliation, prompt-cache
+            // and delegated-usage telemetry for that call.
+            RecordReconciliationMetrics(breakdown, finalUsage, context);
+            RecordPromptCacheMetrics(context, purpose, finalUsage);
+            RecordDelegatedUsage(context, finalUsage);
+        }
     }
 
     private void RecordDelegatedUsage(

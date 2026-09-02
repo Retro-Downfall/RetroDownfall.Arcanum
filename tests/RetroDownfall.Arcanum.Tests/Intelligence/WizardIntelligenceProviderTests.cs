@@ -3788,6 +3788,87 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W1-6: ModelCallExecutor.ExecuteStreamingAsync had no try/finally around its provider
+    /// enumeration, so a stream that faults after already reporting usage skipped reconciliation,
+    /// prompt-cache, and delegated-usage recording entirely — that telemetry population is exactly
+    /// what an operator investigating provider trouble wants counted.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_ProviderFaultsAfterUsage_StillRecordsPromptCacheMetrics()
+    {
+
+        string marker = Guid.NewGuid().ToString("N");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Name = marker }],
+        };
+
+        UsageDetails usage = new()
+        {
+            InputTokenCount = 50,
+            OutputTokenCount = 5,
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueUpdatesThenStreamFailure(
+            [
+                new ChatResponseUpdate(ChatRole.Assistant, [new UsageContent(usage)]),
+            ],
+            new InvalidOperationException("provider dropped mid-stream"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        ConcurrentQueue<long> captured = new();
+
+        using System.Diagnostics.Metrics.MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) => activeListener.EnableMeasurementEvents(instrument),
+        };
+
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+
+            if (instrument.Name != "arcanum_prompt_cache_calls_total")
+            {
+
+                return;
+
+            }
+
+            foreach (KeyValuePair<string, object?> tag in tags)
+            {
+
+                if (tag.Key == "provider" && tag.Value is string s && s == marker)
+                {
+
+                    captured.Enqueue(measurement);
+
+                }
+
+            }
+
+        });
+
+        listener.Start();
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "usage then fault",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            });
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(1, Assert.Single(captured));
+
+    }
+
     [Fact]
     public async Task Streaming_tool_interaction_is_persisted_before_tool_result_can_be_disposed()
     {
