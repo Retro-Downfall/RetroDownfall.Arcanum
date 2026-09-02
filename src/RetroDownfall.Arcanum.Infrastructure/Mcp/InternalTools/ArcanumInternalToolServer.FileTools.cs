@@ -655,6 +655,20 @@ internal sealed partial class ArcanumInternalToolServer
 
             string? lastPath = null;
 
+            // Snapshot of the out-of-scope tracker as of the last entry actually kept on this page, not
+            // the tracker's live state once the loop below returns. The foreach's own lookahead -- it
+            // must call MoveNext() one entry past the page boundary to learn whether hasMore is true --
+            // resumes the walk's lazy iterator past that boundary entry's own yield, which runs *that*
+            // entry's descend decision (including any OutOfScopeDescentTracker.TryRecord for it) even
+            // though none of what that decision produces ever makes it into this page. Encoding the
+            // live tracker would carry that premature recording into the continuation token, and the
+            // next page's checkpoint-itself seek would then see the boundary entry as already recorded
+            // and refuse to redescend into it -- silently dropping content that was never shown. Taking
+            // the snapshot right after the last kept entry, before the lookahead runs, is what lets the
+            // next page's seek redecide that entry's descent itself, exactly as if it had never been
+            // peeked at.
+            string[] outOfScopeSnapshot = [];
+
             // Seeks directly to the checkpoint by re-listing only its ancestor directories (a resumed
             // page never re-walks or re-validates the prefix a prior page already emitted); a checkpoint
             // that no longer exists on disk is reported here, up front, exactly as it was when a full
@@ -702,6 +716,12 @@ internal sealed partial class ArcanumInternalToolServer
                 materializedBytes += entryBytes;
 
                 lastPath = relativePath;
+
+                // Taken after every kept entry, not just once at the count cap: the byte-budget break
+                // below can end the page before the count cap is reached, so which iteration is "last
+                // kept" is not knowable in advance. Cheap to retake each time -- pages are bounded by
+                // _listDirectoryPageSize, and the tracker itself is budget-bounded (see TryRecord).
+                outOfScopeSnapshot = outOfScopeTracker.ToRelativePaths().ToArray();
             }
 
             if (hasMore)
@@ -710,7 +730,7 @@ internal sealed partial class ArcanumInternalToolServer
                 string continuation = EncodeListDirectoryContinuation(
                     args,
                     lastPath!,
-                    outOfScopeTracker.ToRelativePaths().ToArray());
+                    outOfScopeSnapshot);
 
                 lines.Add(
                     $"... [MORE: continuation={continuation}; call list_directory again with the same relativePath/recursive arguments and this opaque continuation token.]" );

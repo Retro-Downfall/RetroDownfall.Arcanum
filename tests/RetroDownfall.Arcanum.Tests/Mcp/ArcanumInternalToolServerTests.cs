@@ -3144,6 +3144,161 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // Round-2 re-review follow-up: a page boundary landing exactly on an out-of-scope alias entry
+    // drops that alias's content instead of duplicating it. ListDirectoryCore's foreach must call
+    // MoveNext() one entry past the page boundary to learn whether hasMore is true, and that call
+    // resumes the walk's lazy iterator past the boundary entry's own yield -- running that entry's
+    // descend decision (including recording it into the OutOfScopeDescentTracker) even though nothing
+    // that decision produces is ever shown on this page. Without a fix, that premature recording flows
+    // into the continuation token, and the next page's checkpoint-itself seek sees the boundary entry
+    // as already recorded and refuses to redescend -- the alias is emitted but its content never
+    // appears on any page. Six out-of-scope targets, each reached through exactly one symlink (no
+    // cross-linking, to isolate this mechanism from the combinatorial-duplication shape above) and each
+    // holding one nested real subdirectory, with a page size (4) and per-target entry count (3: the
+    // alias itself, its nested subdirectory, and one file inside it) engineered so a boundary lands
+    // exactly on the alias entry itself for every other target.
+    [Fact]
+    public async Task ToolsCall_list_directory_shows_an_out_of_scope_aliass_content_when_a_page_boundary_lands_on_the_alias_itself()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        const int directoryCount = 6;
+
+        string[] directories = new string[directoryCount];
+
+        for (int d = 0; d < directoryCount; d++)
+        {
+
+            directories[d] = _workspace.CreateSubdir($"dir{d}");
+
+            string nested = Path.Combine(directories[d], "nested");
+
+            Directory.CreateDirectory(nested);
+
+            File.WriteAllText(Path.Combine(nested, "g.txt"), "x");
+
+        }
+
+        string scopeDirectory = _workspace.CreateSubdir("scope");
+
+        for (int d = 0; d < directoryCount; d++)
+        {
+
+            Directory.CreateSymbolicLink(
+                Path.Combine(scopeDirectory, $"scopelink{d}"),
+                directories[d]);
+
+        }
+
+        await using TestMcpSession oracleSession = await CreateSessionAsync(
+            listDirectoryMaxPaths: 100_000);
+
+        JsonElement oracleArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams { RelativePath = "scope", Recursive = true },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire oracleResult = await oracleSession.CallToolAsync(
+            "list_directory",
+            oracleArguments);
+
+        Assert.False(oracleResult.IsError);
+
+        string oracleText = Assert.Single(oracleResult.Content).Text!;
+
+        int oracleCount = oracleText.Split('\n').Length;
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            listDirectoryMaxPaths: 4);
+
+        List<string> allLines = new();
+
+        int pages = 0;
+
+        string? continuation = null;
+
+        do
+        {
+
+            pages++;
+
+            Assert.True(pages <= 200, "Runaway paging -- aborting the test.");
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams
+                {
+                    RelativePath = "scope",
+                    Recursive = true,
+                    Continuation = continuation,
+                },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            foreach (string line in text.Split('\n'))
+            {
+
+                if (!line.StartsWith("...", StringComparison.Ordinal))
+                {
+
+                    allLines.Add(line);
+
+                }
+
+            }
+
+            const string cursorPrefix = "continuation=";
+
+            int cursorStart = text.LastIndexOf(cursorPrefix, StringComparison.Ordinal);
+
+            if (cursorStart < 0)
+            {
+
+                break;
+
+            }
+
+            cursorStart += cursorPrefix.Length;
+
+            int cursorEnd = text.IndexOf(';', cursorStart);
+
+            continuation = text[cursorStart..cursorEnd];
+
+        } while (true);
+
+        HashSet<string> oracleSet = new(oracleText.Split('\n'), StringComparer.Ordinal);
+
+        HashSet<string> observedSet = new(allLines, StringComparer.Ordinal);
+
+        List<string> missing = oracleSet.Except(observedSet).OrderBy(static s => s, StringComparer.Ordinal).ToList();
+
+        List<string> extra = observedSet.Except(oracleSet).OrderBy(static s => s, StringComparer.Ordinal).ToList();
+
+        // The whole check: every real path shown exactly once, across every page, including the one a
+        // page boundary happened to land on. A dropped alias shows up here as allLines.Count below
+        // oracleCount, with the dropped alias's own nested subdirectory and file named in "missing" --
+        // the alias entry itself is still shown (it was already yielded before the boundary), only its
+        // content never appears on any page.
+        Assert.True(
+            allLines.Count == oracleCount,
+            $"Expected {oracleCount} entries across all continuations but observed {allLines.Count} over " +
+            $"{pages} pages. A page boundary landing on an out-of-scope alias must not drop its content. " +
+            $"Missing: [{string.Join(", ", missing)}]. Extra: [{string.Join(", ", extra)}].");
+
+    }
+
     [Fact]
     public async Task ToolsCall_list_directory_rejects_file_path()
     {
