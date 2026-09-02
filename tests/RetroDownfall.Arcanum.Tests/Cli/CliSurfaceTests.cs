@@ -281,9 +281,11 @@ public sealed class CliSurfaceTests
     /// </summary>
     /// <remarks>
     /// An operator who scans headings and reads "four registered" never tries <c>pin</c>,
-    /// <c>unpin</c>, <c>mask</c>, or <c>unmask</c>. The count is taken from the tree rather than
-    /// written as a literal, so registering a tenth verb reds this instead of leaving the heading one
-    /// behind.
+    /// <c>unpin</c>, <c>mask</c>, or <c>unmask</c>. The heading's count is taken from the tree rather
+    /// than written as a literal, so registering a tenth verb reds this instead of leaving the heading
+    /// one behind. The separate pin on nine is deliberate and not a duplicate of that: without it the
+    /// two halves could drift together and still agree, and the point is that a change to this family
+    /// is read by someone rather than absorbed.
     /// </remarks>
     [Fact]
     public void The_covenant_heading_states_the_number_of_verbs_the_tree_registers()

@@ -240,24 +240,27 @@ public sealed class DocumentationStructureTests
     /// source of a host that ran <c>MapArcanumEndpoints</c>. A source scan cannot stand in for it: the
     /// chronosync registration wraps its <c>MapPost(</c> across two lines and escapes a
     /// single-line pattern.</para>
+    /// <para>Its reach is what this configuration registers, which is the limit worth stating: a route
+    /// behind a feature flag this host leaves off is invisible to it. Exactly one is — the Scalar UI,
+    /// whose flag defaults off — and every other family, Conclave and A2A and Saga and Lexicon
+    /// included, is mapped here and therefore checked.</para>
     /// </remarks>
     [Collection("ApiHost")]
     public sealed class ApiReferenceRouteTable(ArcanumWebApplicationFactory factory)
     {
 
         /// <summary>
-        /// Routes deliberately outside the route table, each with the reason it is not a row.
+        /// The one route deliberately outside the route table, with the reason it is not a row.
         /// </summary>
         /// <remarks>
-        /// Both are third-party documentation surfaces rather than application endpoints: they emit
-        /// no <c>ApiResponse</c> envelope, carry no error codes, and are described together in the
-        /// reference's own "not application `ApiResponse`" line rather than as method/path rows.
+        /// The OpenAPI document is a documentation surface rather than an application endpoint: it
+        /// emits no <c>ApiResponse</c> envelope, carries no error code, and the reference describes it
+        /// alongside the Scalar UI in its own "not application `ApiResponse`" line rather than as a
+        /// method/path row.
         /// </remarks>
         private static readonly string[] NotRouteTableRows =
         [
             "GET /api/openapi/{documentName}.json",
-
-            "GET /api/scalar/{documentName}",
         ];
 
         [Fact]
