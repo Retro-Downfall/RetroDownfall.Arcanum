@@ -4,6 +4,8 @@ using RetroDownfall.Arcanum.Api.Primitives;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 namespace RetroDownfall.Arcanum.Tests.Api.Primitives;
 
 public sealed class ArcanumErrorMapperTests
@@ -111,6 +113,12 @@ public sealed class ArcanumErrorMapperTests
     // permission, so it maps to 503 (retry later) rather than sharing the 403 used by genuine
     // access-control failures (PathNotAllowed, AccessDenied, etc.) above.
     [InlineData(ErrorCodes.Embeddings.FeatureDisabled, StatusCodes.Status503ServiceUnavailable)]
+    // A closed Grimoire admission gate. It joins the Covenant 503 family rather than falling to the
+    // default 500 for the same reason every other member is there: maintenance owns the database on
+    // purpose and will give it back, so the caller is being asked to retry, not told Arcanum broke.
+    // Before this code existed the refusal travelled as Covenant.Unavailable and was already a 503;
+    // giving it a code of its own must not quietly downgrade the status it always had.
+    [InlineData(GrimoireMaintenanceUnavailableException.Code, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Sending.AgentUnreachable, StatusCodes.Status502BadGateway)]
     [InlineData(ErrorCodes.Sending.AgentCardInvalid, StatusCodes.Status502BadGateway)]
     [InlineData(ErrorCodes.Sending.TaskRejected, StatusCodes.Status400BadRequest)]
