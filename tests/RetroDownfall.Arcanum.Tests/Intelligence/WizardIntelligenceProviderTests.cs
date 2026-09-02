@@ -4449,6 +4449,88 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             request.ReservedUsd);
     }
 
+    /// <summary>
+    /// W1-3: a client disconnect must not make a round that already streamed real provider usage
+    /// look like it spent nothing. Usage arrives, the provider then goes quiet, and the caller
+    /// cancels — the round must reconcile the observed usage rather than releasing the reservation
+    /// as though nothing happened.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_CancelledAfterUsageArrives_ReconcilesInsteadOfReleasing()
+    {
+
+        UsageDetails usage = new()
+        {
+            InputTokenCount = 100,
+            OutputTokenCount = 20,
+        };
+
+        TaskCompletionSource aboutToBlock = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueUsageThenBlock(usage, aboutToBlock);
+
+        RecordingTurnRunWriter turnRuns = new();
+
+        RecordingBudgetReservationService reservations = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        using CancellationTokenSource cancellation = new();
+
+        IAsyncEnumerator<IntelligenceEvent> enumerator = wizard
+            .StreamPromptAsync(
+                BaseRequest() with
+                {
+                    Prompt = "usage then cancel",
+                    SkipSpellRouting = true,
+                    DisableMcpTools = true,
+                },
+                InvocationContexts.AttendedSession(),
+                cancellation.Token)
+            .GetAsyncEnumerator();
+
+        try
+        {
+
+            // GetAsyncEnumerator does not start the pipeline by itself — an async iterator is
+            // lazy until its first MoveNextAsync — so the drain has to run concurrently with (not
+            // after) waiting for the barrier, or nothing ever reaches EnqueueUsageThenBlock.
+            async Task DrainAsync()
+            {
+                while (await enumerator.MoveNextAsync())
+                {
+                }
+            }
+
+            Task drainTask = DrainAsync();
+
+            // Fires only after the usage chunk has already been folded into the round's update
+            // accumulator (see EnqueueUsageThenBlock), so cancelling here cannot race the fix.
+            await aboutToBlock.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await cancellation.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drainTask)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
+        finally
+        {
+
+            await enumerator.DisposeAsync();
+
+        }
+
+        Assert.Equal(1, reservations.ReconcileCount);
+        Assert.False(reservations.WasReleased);
+
+    }
+
     [Fact]
     public void EnsureContextBudget_ExactReasoningReservationBoundaryFits()
     {
@@ -9097,6 +9179,18 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public void EnqueueSlowStream(TimeSpan delay, string token) =>
             _streaming.Enqueue(ct => SlowStream(delay, token, ct));
 
+        /// <summary>
+        /// Yields one usage-bearing update, then blocks until the caller's own token is cancelled
+        /// (rather than completing or throwing on its own) — models a provider that reports usage
+        /// mid-stream and then goes quiet, so a test can cancel the caller token while it waits.
+        /// <paramref name="aboutToBlock"/>, when supplied, completes right before the indefinite
+        /// wait starts — by then the usage update has already been folded into the caller's
+        /// round-update accumulator, so a test awaiting it before cancelling knows the usage was
+        /// observed rather than racing the cancellation against it.
+        /// </summary>
+        public void EnqueueUsageThenBlock(UsageDetails usage, TaskCompletionSource? aboutToBlock = null) =>
+            _streaming.Enqueue(ct => UsageThenBlock(usage, aboutToBlock, ct));
+
         public void EnqueueSlowBuffered(TimeSpan delay, string text) =>
             _buffered.Enqueue(async ct =>
             {
@@ -9327,6 +9421,18 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
 
             yield return new ChatResponseUpdate(ChatRole.Assistant, token);
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> UsageThenBlock(
+            UsageDetails usage,
+            TaskCompletionSource? aboutToBlock,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [new UsageContent(usage)]);
+
+            aboutToBlock?.TrySetResult();
+
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
         }
 
     }

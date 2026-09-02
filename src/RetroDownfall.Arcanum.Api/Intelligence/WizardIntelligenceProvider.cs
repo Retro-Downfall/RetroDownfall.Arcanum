@@ -3161,6 +3161,29 @@ public sealed partial class WizardIntelligenceProvider(
                         catch (OperationCanceledException)
                         {
 
+                            // W1-3: a client disconnect must not make a round that already
+                            // streamed real provider bytes look like it spent nothing — that
+                            // both loses the spend from budget accounting and returns the
+                            // reservation via ReleaseAsync instead of ReconcileAsync.
+                            // Reconstruct usage from whatever raw updates already arrived (the
+                            // same conversion the successful-completion path below uses), on
+                            // CancellationToken.None since inferenceToken is already cancelled,
+                            // so a usage chunk seen before the cancellation still gets recorded.
+                            if (roundUpdates.Count > 0)
+                            {
+                                ChatCompletionUsage? partialUsage = MapUsageDetails(
+                                    roundUpdates.ToChatResponse().Usage);
+
+                                await RecordProviderCallUsageAsync(
+                                        streamAccountingLocal,
+                                        partialUsage,
+                                        lease.Provider.Name,
+                                        targetModel,
+                                        streamPurpose,
+                                        CancellationToken.None)
+                                    .ConfigureAwait(false);
+                            }
+
                             throw;
 
                         }
