@@ -738,10 +738,23 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
             // instant any layout change is ever made, so Dispose's hadPendingPersist check pays a
             // synchronous flush on every close, even when the debounced write landed on disk
             // seconds ago.
-            if (ReferenceEquals(_persistCts, cts))
+            //
+            // Interlocked.CompareExchange, not a check-then-set: this method runs on the thread
+            // pool (the continuation after Task.Delay(...).ConfigureAwait(false)) while
+            // SchedulePersist runs on the UI thread. A plain `if (ReferenceEquals(_persistCts,
+            // cts)) { _persistCts = null; }` has a window between the read and the write — a
+            // SchedulePersist call landing in that window installs its own fresh
+            // CancellationTokenSource, which this line would then null out from under it, leaving
+            // Dispose believing nothing is pending while a debounce is genuinely in flight.
+            // CompareExchange makes the compare-and-clear one atomic step; it swaps (and this is
+            // the only place that then disposes cts, since nothing else holds a reference to it
+            // once the field no longer does) only when _persistCts still is cts. If a newer
+            // SchedulePersist already replaced it, this is a safe no-op — cts is left for that
+            // newer run's own eventual completion, or Dispose, to cancel and dispose instead.
+            if (Interlocked.CompareExchange(ref _persistCts, null, cts) == cts)
             {
 
-                _persistCts = null;
+                cts.Dispose();
 
             }
 
