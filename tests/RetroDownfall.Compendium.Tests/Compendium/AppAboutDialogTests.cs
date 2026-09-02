@@ -52,6 +52,59 @@ public sealed class AppAboutDialogTests
 
     }
 
+    [Fact]
+    public void OnAboutClick_WhenTheProviderIsAlreadyDisposed_DoesNotCrashTheDispatcher()
+    {
+
+        SynchronizationContext? previous = SynchronizationContext.Current;
+
+        RecordingSynchronizationContext recorder = new();
+
+        SynchronizationContext.SetSynchronizationContext(recorder);
+
+        try
+        {
+
+            ServiceCollection serviceCollection = new();
+
+            serviceCollection.AddSingleton<IDialogService>(new NoopDialogService());
+
+            ServiceProvider provider = serviceCollection.BuildServiceProvider();
+
+            // Disposed before the click — GetRequiredService<IDialogService>() itself throws
+            // ObjectDisposedException here, before ShowAlertAsync is ever reached. This is the most
+            // reachable real trigger: macOS keeps the native menu bar (and its Click handlers) live
+            // during teardown, after DI has already been disposed.
+            provider.Dispose();
+
+            App app = new();
+
+            App.ConfigureServices(provider);
+
+            app.OnAboutClick(sender: null, EventArgs.Empty);
+
+        }
+        finally
+        {
+
+            SynchronizationContext.SetSynchronizationContext(previous);
+
+        }
+
+        Assert.Null(recorder.Observed);
+
+    }
+
+    private sealed class NoopDialogService : IDialogService
+    {
+
+        public Task ShowAlertAsync(string title, string message, string cancel = "OK") => Task.CompletedTask;
+
+        public Task<bool> ShowConfirmAsync(string title, string message, string accept = "Yes", string cancel = "No") =>
+            Task.FromResult(true);
+
+    }
+
     private sealed class ThrowingDialogService : IDialogService
     {
 

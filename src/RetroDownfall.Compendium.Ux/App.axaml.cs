@@ -78,12 +78,16 @@ public partial class App : Application
 
         }
 
-        string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-beta";
-
-        IDialogService dialogs = _services.GetRequiredService<IDialogService>();
-
         try
         {
+
+            string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-beta";
+
+            // GetRequiredService throws ObjectDisposedException on a disposed provider — the most
+            // reachable real trigger, since macOS keeps the native menu bar (and this Click handler)
+            // live during teardown, after DI has already been disposed. That throw has to land inside
+            // this try too, not just the await below it.
+            IDialogService dialogs = _services.GetRequiredService<IDialogService>();
 
             await dialogs.ShowAlertAsync(
                 "About Compendium",

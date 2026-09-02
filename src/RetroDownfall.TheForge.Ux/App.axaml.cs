@@ -160,54 +160,54 @@ public partial class App : Application
     private async void OnAboutClick(object? sender, EventArgs e)
     {
 
-        Window? owner = (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
-
-        if (owner is null)
-        {
-
-            return;
-
-        }
-
-        string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-alpha";
-
-        Window dialog = new()
-        {
-            Title = "About The Forge",
-            Width = 420,
-            Height = 160,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false,
-            Content = new StackPanel
-            {
-                Margin = new Thickness(24),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock
-                    {
-                        Text = "The Forge — Inference IDE",
-                        FontWeight = FontWeight.SemiBold,
-                        FontSize = 16,
-                    },
-                    new TextBlock
-                    {
-                        Text = $"Version {version}",
-                        Opacity = 0.8,
-                    },
-                    new TextBlock
-                    {
-                        Text = "Arcanum HTTP API client for campaigns, spells, sessions, and apprentices.",
-                        TextWrapping = TextWrapping.Wrap,
-                        Opacity = 0.72,
-                        Margin = new Thickness(0, 4, 0, 0),
-                    },
-                },
-            },
-        };
-
         try
         {
+
+            Window? owner = (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+
+            if (owner is null)
+            {
+
+                return;
+
+            }
+
+            string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-alpha";
+
+            Window dialog = new()
+            {
+                Title = "About The Forge",
+                Width = 420,
+                Height = 160,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                CanResize = false,
+                Content = new StackPanel
+                {
+                    Margin = new Thickness(24),
+                    Spacing = 8,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = "The Forge — Inference IDE",
+                            FontWeight = FontWeight.SemiBold,
+                            FontSize = 16,
+                        },
+                        new TextBlock
+                        {
+                            Text = $"Version {version}",
+                            Opacity = 0.8,
+                        },
+                        new TextBlock
+                        {
+                            Text = "Arcanum HTTP API client for campaigns, spells, sessions, and apprentices.",
+                            TextWrapping = TextWrapping.Wrap,
+                            Opacity = 0.72,
+                            Margin = new Thickness(0, 4, 0, 0),
+                        },
+                    },
+                },
+            };
 
             await dialog.ShowDialog(owner);
 
@@ -218,7 +218,8 @@ public partial class App : Application
             // async void reposts an unhandled throw to the UI synchronization context instead of
             // returning it to a caller, which crashes the process — a stale owner (window closing or
             // already torn down) must not take the app down just because the About dialog could not
-            // be shown. Mirrors Compendium's App.axaml.cs OnAboutClick.
+            // be shown, and neither must a fault while building the dialog itself. Mirrors
+            // Compendium's App.axaml.cs OnAboutClick.
         }
 
     }
