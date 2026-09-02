@@ -101,15 +101,20 @@ public sealed class CovenantConnectionDrainTests
 
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
-        CovenantConnectionDrain drain = new();
+        CountingDrain drain = new(new CovenantConnectionDrain());
 
         GrimoireConnectionAdmissionGate admission = new(TimeProvider.System, drain);
 
-        using IDisposable otherHolder = drain.Register(database.Connection);
+        // A closed handle of its own, not the scratch database's already-open one. Handed an open
+        // external connection, EF's open and close never reach the physical handle, so no interceptor
+        // callback fires and the enrolment this test is named for never exists at all.
+        await using SqliteConnection serving = new(database.Connection.ConnectionString);
+
+        using IDisposable otherHolder = drain.Register(serving);
 
         DbContextOptions<DrainProbeDbContext> options =
             new DbContextOptionsBuilder<DrainProbeDbContext>()
-                .UseSqlite(database.Connection, contextOwnsConnection: false)
+                .UseSqlite(serving, contextOwnsConnection: false)
                 .AddInterceptors(
                     new CovenantConnectionEnrolmentInterceptor(
                         new GrimoireOrdinaryConnectionLifecycle(admission, drain),
@@ -123,7 +128,15 @@ public sealed class CovenantConnectionDrainTests
 
         await context.Database.CloseConnectionAsync();
 
-        await database.Connection.OpenAsync(Token);
+        // Counted, not inferred. The state assertions below hold whether or not the connection was
+        // ever enrolled - the other holder's own registration keeps the count at one and the drain
+        // closes the handle either way - so this is the only place the enrolment the test is named
+        // for is actually observed: two enrolments in, exactly one paid back by the EF close.
+        Assert.Equal(2, drain.RegisterCount);
+
+        Assert.Equal(1, drain.ReleaseCount);
+
+        await serving.OpenAsync(Token);
 
         Result drained = await drain.DrainAsync(Token);
 
@@ -131,7 +144,7 @@ public sealed class CovenantConnectionDrainTests
 
         // The interceptor paid back only its own enrolment. The other logical holder still owns the
         // physical handle, so the reference-counted drain must retain and close it.
-        Assert.Equal(ConnectionState.Closed, database.Connection.State);
+        Assert.Equal(ConnectionState.Closed, serving.State);
 
     }
 
@@ -608,6 +621,68 @@ public sealed class CovenantConnectionDrainTests
         // would repeat key derivation on the per-turn path, which is a latency change to measure
         // rather than to assume.
         || source.Is("SessionEntryPersistence.cs");
+
+    /// <summary>
+    /// Counts enrolments and their releases while the real drain does all of the work.
+    /// </summary>
+    /// <remarks>
+    /// A decorator rather than a stand-in, because the surrounding test still needs the drain to
+    /// close the handle for real; what it could not see before is how many enrolments existed and
+    /// how many were paid back.
+    /// </remarks>
+    private sealed class CountingDrain(ICovenantConnectionDrain inner) : ICovenantConnectionDrain
+    {
+
+        internal int RegisterCount { get; private set; }
+
+        internal int ReleaseCount { get; private set; }
+
+        public IDisposable Register(SqliteConnection connection)
+        {
+
+            RegisterCount++;
+
+            return new CountedEnrolment(this, inner.Register(connection));
+
+        }
+
+        public IDisposable Register(SqliteConnection connection, Action afterPhysicalClose)
+        {
+
+            RegisterCount++;
+
+            return new CountedEnrolment(this, inner.Register(connection, afterPhysicalClose));
+
+        }
+
+        public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
+            inner.ClearExactPoolAfterClose(connection);
+
+        public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
+            inner.DrainAsync(cancellationToken);
+
+        private sealed class CountedEnrolment(CountingDrain owner, IDisposable enrolment) : IDisposable
+        {
+
+            private int _released;
+
+            public void Dispose()
+            {
+
+                if (Interlocked.Exchange(ref _released, 1) == 0)
+                {
+
+                    owner.ReleaseCount++;
+
+                }
+
+                enrolment.Dispose();
+
+            }
+
+        }
+
+    }
 
     /// <summary>
     /// A real handle to the scratch database whose close this test holds open until it says so.
