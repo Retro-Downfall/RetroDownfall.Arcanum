@@ -2179,6 +2179,46 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W1-9: the no-tools restart used to fire only on an English substring match against the
+    /// provider's error text, so a provider wording the same condition differently (this test's
+    /// "tool calling is not available for this model" -- deliberately missing "does not support
+    /// tools") never triggered it. The model entry's own declared SupportsTools: false is now an
+    /// independent, authoritative signal.
+    /// </summary>
+    [Fact]
+    public async Task StreamToolUnsupported_DeclaredCapabilityWithoutMatchingSubstring_StillRetriesWithoutTools()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueImmediateStreamFailure(
+            new InvalidOperationException("tool calling is not available for this model"));
+
+        chat.EnqueueStreamTokens("retried");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsTools: false)] }],
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "retry stream", SkipSpellRouting = true, DisableMcpTools = true });
+
+        Assert.Contains(
+            events,
+            static e => e.Type == IntelligenceEventType.Status
+                && e.Message.Contains("does not support tools", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "retried");
+
+    }
+
     [Fact]
     public async Task Scenario39_ReadOnlyToolPolicy_FiltersWriteTools()
     {

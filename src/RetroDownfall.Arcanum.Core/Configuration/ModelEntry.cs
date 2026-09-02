@@ -24,12 +24,15 @@ public sealed record ModelEntry
     public ModelEntry(
         string Name,
         bool SupportsVision = false,
+        bool? SupportsTools = null,
         ModelReasoningSettings? Reasoning = null)
     {
 
         this.Name = Name;
 
         this.SupportsVision = SupportsVision;
+
+        this.SupportsTools = SupportsTools;
 
         this.Reasoning = Reasoning;
 
@@ -38,6 +41,15 @@ public sealed record ModelEntry
     public string Name { get; set; } = string.Empty;
 
     public bool SupportsVision { get; set; }
+
+    /// <summary>
+    /// Declared tool-calling capability. <see langword="null"/> means undeclared: a caller must
+    /// not treat that as "does not support tools" — an undeclared model may support tools fine —
+    /// and should fall back to some other signal instead. Only an explicit
+    /// <see langword="false"/> is an authoritative "this model does not support tools".
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? SupportsTools { get; set; }
 
     /// <summary>
     /// Optional reasoning declaration for nonstandard third-party endpoints. <see langword="null"/>
@@ -78,6 +90,8 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 
                 bool supportsVision = false;
 
+                bool? supportsTools = null;
+
                 ReasoningWireDialect? wireDialect = null;
 
                 int? maxBudgetTokens = null;
@@ -101,6 +115,12 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                     {
                         supportsVision = reader.TokenType is JsonTokenType.True or JsonTokenType.False
                             && reader.GetBoolean();
+                    }
+                    else if (string.Equals(propertyName, "supportsTools", StringComparison.OrdinalIgnoreCase))
+                    {
+                        supportsTools = reader.TokenType is JsonTokenType.True or JsonTokenType.False
+                            ? reader.GetBoolean()
+                            : null;
                     }
                     else if (string.Equals(propertyName, "reasoning", StringComparison.OrdinalIgnoreCase))
                     {
@@ -162,7 +182,7 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                         }
                         : null;
 
-                return new ModelEntry(name, supportsVision, reasoning);
+                return new ModelEntry(name, supportsVision, supportsTools, reasoning);
 
             default:
                 throw new JsonException(
@@ -177,6 +197,11 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
         writer.WriteString("name", value.Name);
 
         writer.WriteBoolean("supportsVision", value.SupportsVision);
+
+        if (value.SupportsTools is { } supportsTools)
+        {
+            writer.WriteBoolean("supportsTools", supportsTools);
+        }
 
         if (value.Reasoning?.WireDialect is not null || value.Reasoning?.MaxBudgetTokens is not null)
         {

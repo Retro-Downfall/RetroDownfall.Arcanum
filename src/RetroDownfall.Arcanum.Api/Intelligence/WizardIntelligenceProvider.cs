@@ -3305,9 +3305,21 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (inferenceError is not null)
                 {
+                    // W1-9: the declared model entry is authoritative when it says anything at
+                    // all -- SupportsTools is a nullable bool specifically so "undeclared" (null,
+                    // the default for every model that predates this field) never reads the same
+                    // as an explicit "this model does not support tools" (false). Only a declared
+                    // false widens the gate; an undeclared entry falls back to the substring hint
+                    // exactly as before, so a provider that words the same failure differently is
+                    // no worse off than it was, and one with a declared capability no longer
+                    // depends on Ollama's exact English wording.
+                    bool declaredToolIncompatible =
+                        ProviderResolver.TryResolveModelEntry(lease.Provider, lease.ResolvedModel, out ModelEntry? modelEntry)
+                        && modelEntry is { SupportsTools: false };
+
                     bool allowNoToolsRestart = streamUsesTools
                         && streamingMoveNextFailure is { Message: var moveMsg }
-                        && LooksLikeModelDoesNotSupportTools(moveMsg)
+                        && (declaredToolIncompatible || LooksLikeModelDoesNotSupportTools(moveMsg))
                         && !classification.ProviderCommitted
                         && (streaming ? streamAccumulator.Length == 0 : true);
 
