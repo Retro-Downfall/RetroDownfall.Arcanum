@@ -1035,6 +1035,26 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
     }
 
+    [Theory]
+    [InlineData("application/json", true)]
+    [InlineData("application/json; charset=utf-8", true)]
+    [InlineData("application/x-ndjson; charset=utf-8", true)]
+    [InlineData("text/event-stream", true)]
+    [InlineData("text/event-stream; charset=utf-8", true)]
+    [InlineData("application/octet-stream", false)]
+    [InlineData("image/png", false)]
+    [InlineData("text/plain", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsReplayableContentType_AllowsOnlyTheTextShapesThisFilterActuallyCaches(
+        string? contentType,
+        bool expected)
+    {
+
+        Assert.Equal(expected, IdempotencyEndpointFilters.IsReplayableContentType(contentType));
+
+    }
+
     [Fact]
     public async Task ConcurrentRequest_WhenFirstAcquireHasNotRegisteredLocally_NeverExecutesAsNonOwner()
     {
@@ -2365,6 +2385,12 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         httpContext.Request.ContentType = "application/json";
 
         httpContext.Request.Headers[ArcanumApiHeaders.IdempotencyKey] = key;
+
+        // Every fake handler built on this context writes a JSON-shaped body directly via
+        // Response.WriteAsync, bypassing Results.Json (which would set this for a real handler) --
+        // matching that here keeps IsReplayableContentType's W2-9 gate from seeing an untyped
+        // response and treating a genuinely-JSON test body as unsafe to cache.
+        httpContext.Response.ContentType = "application/json";
 
         httpContext.Response.Body = new MemoryStream();
 

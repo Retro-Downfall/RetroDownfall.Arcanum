@@ -640,8 +640,16 @@ public static class IdempotencyEndpointFilters
             // same key" contract means a fresh execution, not the frozen failure. A deterministic 4xx
             // (validation refusal) still caches, since resending the same request would fail the same
             // way for the same reason.
+            //
+            // Also gated on content type when there is a body to worry about (W2-9): the claim is
+            // stored as a UTF-8 string and replayed by re-encoding it, so any non-UTF-8 byte would
+            // silently become U+FFFD on replay. Every route this filter attaches to today emits JSON,
+            // NDJSON, or SSE — all guaranteed UTF-8 — so this cannot change behavior for a current
+            // caller; it only stops a future non-text route from attaching the filter and getting a
+            // silently corrupted replay. An empty body has nothing to corrupt, so it is exempt.
             bool terminalStreamValid = withinCap
                 && IsIdempotencyReplayableStatus(httpContext.Response.StatusCode)
+                && (buffered.Length == 0 || IsReplayableContentType(httpContext.Response.ContentType))
                 && (explicitlyTerminal || (buffered.Length > 0 && !aborted));
 
             if (!terminalStreamValid)
@@ -724,6 +732,19 @@ public static class IdempotencyEndpointFilters
         statusCode < StatusCodes.Status500InternalServerError
         && statusCode != StatusCodes.Status429TooManyRequests
         && statusCode != StatusCodes.Status408RequestTimeout;
+
+    /// <summary>
+    /// Whether a response with this content type is safe to cache: the claim is stored as a UTF-8
+    /// string (<see cref="PersistClaimAsync"/>) and replayed by re-encoding it
+    /// (<see cref="IdempotencyReplayResult.ExecuteAsync"/>), so anything that is not guaranteed valid
+    /// UTF-8 text would round-trip lossy. Every route this filter attaches to today emits one of
+    /// these three text shapes — plain JSON, NDJSON, or SSE — all of which this class's own remarks
+    /// document as cached the same way, so this is not a narrowing of existing behavior.
+    /// </summary>
+    internal static bool IsReplayableContentType(string? contentType) =>
+        contentType is not null
+        && (contentType.Contains("json", StringComparison.OrdinalIgnoreCase)
+            || contentType.Contains("event-stream", StringComparison.OrdinalIgnoreCase));
 
     internal static string CreateOwnerId() =>
         string.Concat(ProcessInstanceId, ":", Guid.NewGuid().ToString("N"));
