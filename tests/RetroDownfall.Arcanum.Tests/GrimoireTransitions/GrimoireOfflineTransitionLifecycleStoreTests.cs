@@ -199,10 +199,11 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
 
         Assert.Equal(kept, recovered.Publication.Payload);
 
-        // The resume evidence copies the blocker's own binding digest into both fields of the
-        // proof, which is the only shape ValidateAdvance accepts today (D5-2: the digest field
-        // meant to carry a genuinely recomputed state digest is tautological against the
-        // blocker's binding digest instead). Not this finding's defect to fix.
+        // The blocker's ResolutionBindingDigest and ExpectedStateDigest are both Digest(0x71)
+        // in this fixture, so the resume evidence's CanonicalStateDigest legitimately matches
+        // ExpectedStateDigest (D5-2's real acceptance check) even though it is written as the
+        // same literal as the binding digest below - the two fields are equal here by fixture
+        // choice, not because the comparison still accepts either one.
         CovenantResetOfflineTransitionPayloadV1 resumed = applying with
         {
             BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
