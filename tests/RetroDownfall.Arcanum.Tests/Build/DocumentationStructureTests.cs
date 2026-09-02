@@ -14,6 +14,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// under the wrong chapter or a table broken mid-body survives every review because the source still
 /// reads correctly line by line.
 /// </summary>
+[Collection("ApiHost")]
 public sealed class DocumentationStructureTests
 {
 

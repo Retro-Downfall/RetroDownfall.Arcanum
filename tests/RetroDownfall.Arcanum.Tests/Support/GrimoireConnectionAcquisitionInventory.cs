@@ -1049,7 +1049,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs", "WorkspaceIndexingService", "UpdateChunkMetadataAsync(9)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs", "WorkspaceIndexingService", "UpdateChunkMetadataAsync(10)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1063,7 +1063,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs", "WorkspaceIndexingService", "LoadExistingFileLastWriteTimesAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs", "WorkspaceIndexingService", "LoadExistingFileSignaturesAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1077,7 +1077,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs", "WorkspaceIndexingService", "InsertChunkAsync(14)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs", "WorkspaceIndexingService", "InsertChunkAsync(15)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
