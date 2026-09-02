@@ -216,9 +216,9 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
         Assert.Equal(2048, GrimoireOfflineTransitionJournalAuthenticator.MaxAnchorCharacters);
 
-        Assert.Equal(1_000_000UL, GrimoireOfflineTransitionJournalAuthenticator.MaxRevision);
+        Assert.Equal(32_768UL, GrimoireOfflineTransitionJournalAuthenticator.MaxRevision);
 
-        Assert.Equal(1_000_000UL, GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch);
+        Assert.Equal(65_536UL, GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch);
 
         using GrimoireOfflineTransitionJournalKeyLease lease = CreateLease();
 
@@ -260,6 +260,21 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
         Assert.True(GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(
             maximumPlaintextEnvelope).IsSuccess);
+
+    }
+
+    [Fact]
+    public void Slot_epoch_and_revision_bounds_stay_under_the_random_nonce_seal_budget()
+    {
+
+        // NIST SP 800-38D caps random 96-bit-IV GCM at 2^32 invocations under one key; the
+        // transition journal key is stable across every slot epoch and never rotates, so the
+        // total number of Seal calls one key can ever see is bounded only by these two caps.
+        ulong maximumSealsPerKey =
+            GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch
+            * GrimoireOfflineTransitionJournalAuthenticator.MaxRevision;
+
+        Assert.True(maximumSealsPerKey <= 1UL << 32);
 
     }
 

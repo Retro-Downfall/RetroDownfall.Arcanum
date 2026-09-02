@@ -37,9 +37,9 @@ internal static class GrimoireOfflineTransitionJournalAuthenticator
 
     internal const int MaxAnchorCharacters = 2048;
 
-    internal const ulong MaxRevision = 1_000_000;
+    internal const ulong MaxRevision = 32_768;
 
-    internal const ulong MaxSlotEpoch = 1_000_000;
+    internal const ulong MaxSlotEpoch = 65_536;
 
     internal const string JournalLocationDomain =
         "Arcanum.GrimoireOfflineTransition.JournalLocation.v1";
