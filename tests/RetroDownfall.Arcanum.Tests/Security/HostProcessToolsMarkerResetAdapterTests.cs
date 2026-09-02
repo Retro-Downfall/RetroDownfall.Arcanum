@@ -184,6 +184,46 @@ public sealed class HostProcessToolsMarkerResetAdapterTests
 
     }
 
+    /// <summary>
+    /// A reopen whose evidence no longer matches decodes the slot's plaintext copy successfully
+    /// and then refuses it as a mismatch without minting a capability. No capability means no
+    /// disposal call site is ever reached, so the adapter's own copy is the only thing left
+    /// holding those bytes — it must be zeroed before AdoptOrDispose returns.
+    /// </summary>
+    [Fact]
+    public void Reopen_evidence_mismatch_zeroes_the_adapter_owned_copy_before_returning()
+    {
+
+        InMemoryHostProcessToolsMarkerSlot slot = Seeded(out byte[] payload);
+
+        HostProcessToolsMarkerResetAdapter adapter = Adapter(slot);
+
+        byte[]? captured = null;
+
+        adapter.EncodedBufferObserverForTests = buffer => captured = buffer;
+
+        HostProcessToolsOsMarkerEvidence expected = Evidence(payload);
+
+        HostProcessToolsOsMarkerEvidence foreign = new(
+            Installation,
+            Guid.Parse("11112222-3333-4444-5555-666677778888"),
+            7,
+            expected.TaintFingerprint,
+            expected.MarkerBytesDigest,
+            expected.DurableIdentityDigest);
+
+        HostToolsMarkerPairResetOsOpenResult reopened = adapter.ReopenExact(foreign);
+
+        Assert.Equal(HostToolsMarkerPairResetOsOpenStatus.Mismatch, reopened.Status);
+
+        Assert.Null(reopened.Capability);
+
+        Assert.NotNull(captured);
+
+        Assert.Equal(new byte[captured.Length], captured);
+
+    }
+
     [Fact]
     public async Task Compare_delete_removes_the_opened_record_and_the_slot_then_proves_absent()
     {
