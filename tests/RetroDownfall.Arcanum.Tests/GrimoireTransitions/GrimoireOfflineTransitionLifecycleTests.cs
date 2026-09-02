@@ -1172,6 +1172,41 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
     }
 
     [Fact]
+    public void Blocker_expected_state_digest_must_be_valid()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 applying = Payload(
+            GrimoireOfflineTransitionState.Applying,
+            inFlight: CovenantResetPhase.CanonicalApplied);
+
+        CovenantResetOfflineTransitionPayloadV1 kept = applying with
+        {
+            Lifecycle = applying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = new(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    GrimoireOfflineTransitionState.Applying,
+                    Digest(0x71),
+                    Digest(0x78)),
+            },
+        };
+
+        Assert.True(GrimoireOfflineTransitionLifecycleValidator.ValidPayload(kept));
+
+        // A valid ResolutionBindingDigest paired with an invalid ExpectedStateDigest must still
+        // reject the payload - the two fields are independently required to be valid.
+        Assert.False(GrimoireOfflineTransitionLifecycleValidator.ValidPayload(kept with
+        {
+            Lifecycle = kept.Lifecycle with
+            {
+                Blocker = kept.Lifecycle.Blocker! with { ExpectedStateDigest = default },
+            },
+        }));
+
+    }
+
+    [Fact]
     public void Handler_exposes_only_typed_lifecycle_outcomes()
     {
 
