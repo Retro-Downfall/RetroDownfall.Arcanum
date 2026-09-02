@@ -64,6 +64,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private TaskCompletionSource<long> _nextOpenGeneration = NewOpenGenerationSignal();
 
+    private long _materializedTerminalCallbacks;
+
     internal GrimoireConnectionAdmissionGate(TimeProvider timeProvider)
         : this(
             timeProvider,
@@ -174,6 +176,18 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         _afterSuccessfulDrainTestSeam = afterSuccessfulDrainTestSeam;
 
     }
+
+    /// <summary>
+    /// How many open tickets have had terminal-callback machinery built for them.
+    /// </summary>
+    /// <remarks>
+    /// Every physical Grimoire open takes a ticket, and under a pooled context that is every EF
+    /// operation. The callback has exactly one reader - a stage-two close waiting for opens already
+    /// in flight - so on a gate that has never been closed it is machinery built for nobody.
+    /// Counted rather than inferred, because an allocation per open is invisible to every other
+    /// assertion the suite can make.
+    /// </remarks>
+    internal long MaterializedTerminalCallbacks => Interlocked.Read(ref _materializedTerminalCallbacks);
 
     public long CurrentGeneration
     {
@@ -650,7 +664,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
 
             terminalCallbacks = _unresolvedOpens
-                .Select(static ticket => ticket.TerminalCallback)
+                .Select(static ticket => ticket.TerminalCallbackWhileLocked())
                 .ToArray();
 
         }
@@ -943,6 +957,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
 
         }
+
+    }
+
+    private TaskCompletionSource MaterializeTerminalCallback()
+    {
+
+        _ = Interlocked.Increment(ref _materializedTerminalCallbacks);
+
+        return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
     }
 
@@ -2339,8 +2362,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         long generation) : IGrimoireConnectionOpenTicket
     {
 
-        private readonly TaskCompletionSource _terminal =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource? _terminal;
 
         private int _disposed;
 
@@ -2352,7 +2374,29 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal bool RefusalRequested { get; private set; }
 
-        internal Task TerminalCallback => _terminal.Task;
+        /// <summary>
+        /// The wait a stage-two close takes on this open, built the first time one asks for it.
+        /// </summary>
+        /// <remarks>
+        /// Called only from inside the gate's lock, which is what makes the lazy field safe. A
+        /// ticket that has already reached its terminal state has nothing left to wait for, so it
+        /// answers with a completed task and builds nothing at all.
+        /// </remarks>
+        internal Task TerminalCallbackWhileLocked()
+        {
+
+            if (State is OpenTicketState.Terminal)
+            {
+
+                return Task.CompletedTask;
+
+            }
+
+            _terminal ??= gate.MaterializeTerminalCallback();
+
+            return _terminal.Task;
+
+        }
 
         public Result RevalidateAfterNativeOpen()
         {
@@ -2439,7 +2483,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        internal void SignalTerminalWhileLocked() => _terminal.TrySetResult();
+        internal void SignalTerminalWhileLocked() => _ = _terminal?.TrySetResult();
 
         private void ThrowIfDisposed() =>
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);

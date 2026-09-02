@@ -64,6 +64,74 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    /// <summary>
+    /// An ordinary open builds no closure machinery while there is no closure.
+    /// </summary>
+    /// <remarks>
+    /// Every physical Grimoire open takes a ticket, and under a pooled context that is every EF
+    /// operation on the host. The ticket's terminal callback exists for one reader - a stage-two
+    /// close waiting for opens already in flight - so on a gate that has never been closed it is
+    /// machinery built for nobody. Nothing else in the suite can see an allocation per open, which
+    /// is why it is counted here rather than inferred.
+    /// </remarks>
+    [Fact]
+    public async Task Ordinary_opens_build_terminal_callbacks_only_once_a_closure_needs_them()
+    {
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        List<SqliteConnection> connections = [];
+
+        List<IGrimoireConnectionOpenTicket> tickets = [];
+
+        for (int index = 0; index < 32; index++)
+        {
+
+            SqliteConnection connection = new();
+
+            connections.Add(connection);
+
+            tickets.Add(gate.AcquireOrdinaryOpen(connection));
+
+        }
+
+        Assert.Equal(0, gate.MaterializedTerminalCallbacks);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(48));
+
+        Task<Result<IGrimoireExclusiveClosedLease>> close = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        // The one reader there is: a stage-two close does get a callback per unresolved open.
+        Assert.Equal(32, gate.MaterializedTerminalCallbacks);
+
+        foreach (IGrimoireConnectionOpenTicket ticket in tickets)
+        {
+
+            ticket.MarkFailed();
+
+            ticket.Dispose();
+
+        }
+
+        Result<IGrimoireExclusiveClosedLease> closed = await close.WaitAsync(BoundedWait);
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await closed.Value.DisposeAsync();
+
+        foreach (SqliteConnection connection in connections)
+        {
+
+            connection.Dispose();
+
+        }
+
+    }
+
     [Fact]
     public async Task Stale_open_is_refused_at_post_native_open_revalidation()
     {
