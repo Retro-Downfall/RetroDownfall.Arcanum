@@ -521,6 +521,53 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
     }
 
     [Fact]
+    public void Keep_closed_resume_into_a_state_other_than_the_recorded_resume_state_is_refused()
+    {
+
+        // No in-flight phase in this base shape: resuming into a different state must be able
+        // to leave InFlightPhase/InFlightBeforeState both null (any non-Applying state requires
+        // it), so a fixture that carries an in-flight phase can never test this refusal without
+        // also tripping ValidPayload or SameEvidenceExceptBlocker for an unrelated reason.
+        CovenantResetOfflineTransitionPayloadV1 applying = Payload(
+            GrimoireOfflineTransitionState.Applying);
+
+        GrimoireOfflineTransitionBlocker blocker = new(
+            "Covenant.ManualRecoveryRequired",
+            GrimoireOfflineTransitionState.Applying,
+            Digest(0x71),
+            Digest(0x71));
+
+        CovenantResetOfflineTransitionPayloadV1 kept = applying with
+        {
+            Lifecycle = applying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = blocker,
+            },
+        };
+
+        Assert.True(Handler().ValidateAdvance(applying, kept).IsSuccess);
+
+        CovenantResetOfflineTransitionPayloadV1 misresumed = applying with
+        {
+            Lifecycle = applying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.Closing,
+            },
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
+        };
+
+        // Independently valid as a Closing-state payload (StateEvidenceCoherent's Closing
+        // branch does not constrain ClosingEvidence), and matches the blocker's proof exactly -
+        // so a refusal here can only come from the recorded-ResumeState mismatch itself, not
+        // from an incidentally malformed fixture.
+        Assert.True(GrimoireOfflineTransitionLifecycleValidator.ValidPayload(misresumed));
+
+        Assert.True(Handler().ValidateAdvance(kept, misresumed).IsFailure);
+
+    }
+
+    [Fact]
     public void Keep_closed_can_be_entered_again_after_a_resolved_park()
     {
 
