@@ -142,13 +142,13 @@ public static class LongRunningOperationRecoveryRegistry
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.WorkspaceIndex,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently,
-                Owner: "WorkspaceIndexService",
+                Owner: "WorkspaceIndexingService",
                 MinCheckpointVersion: 0,
                 MaxCheckpointVersion: 0,
                 LongRunningOperationStartupPriority.Readiness,
                 RecoveryIntent:
-                    "Re-enumerate deterministically from durable file state. Already-indexed rows remain the "
-                    + "authority, so a restart costs work but never correctness.",
+                    "Close the row without re-enumerating; already-indexed rows remain the authority, so "
+                    + "nothing is reconciled until the next background tick names the workspace again.",
                 ManualRepairGuidance:
                     "Re-run 'arcanum workspace index'; indexing is idempotent by file identity and content hash."),
 

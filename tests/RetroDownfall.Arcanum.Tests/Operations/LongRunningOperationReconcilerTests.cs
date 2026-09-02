@@ -387,6 +387,27 @@ public sealed class LongRunningOperationReconcilerTests
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
     }
+
+    /// <summary>
+    /// W5-4: the registry exists so an operator can learn what recovery does without reading the
+    /// handler's source (registry header comment). <see cref="WorkspaceIndexRecoveryHandler"/> closes
+    /// the row and re-enumerates nothing, deferring to the next background tick — the descriptor's
+    /// operator-facing text has to say that, not its opposite, and has to name the service that
+    /// actually owns the kind (<c>WorkspaceIndexingService</c>, not <c>WorkspaceIndexService</c>).
+    /// <see cref="LongRunningOperationReconciler"/> is what consumes this registry at startup priority
+    /// and checkpoint-window resolution, so its descriptor content is exercised here.
+    /// </summary>
+    [Fact]
+    public void WorkspaceIndex_recovery_intent_matches_the_handler_it_describes()
+    {
+        LongRunningOperationRecoveryDescriptor descriptor =
+            LongRunningOperationRecoveryRegistry.Find(LongRunningOperationKinds.WorkspaceIndex)!;
+
+        Assert.Contains("close", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("background tick", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("re-enumerate", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("WorkspaceIndexingService", descriptor.Owner);
+    }
 }
 
 /// <summary>
