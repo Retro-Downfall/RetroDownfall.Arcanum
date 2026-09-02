@@ -1261,6 +1261,75 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
+    public async Task Cancellation_requested_after_the_retirement_unlink_lands_does_not_convert_success_to_recovery_required()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("cancel-after-retirement-unlink").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleMetadata metadata;
+
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            metadata = current.Metadata;
+
+        }
+
+        using CancellationTokenSource cts = new();
+
+        GrimoireOfflineTransitionJournalFileStore cancelling = new(
+            afterStep: step =>
+            {
+
+                if (step == "file:delete-parent-flushed")
+                {
+
+                    cts.Cancel();
+
+                }
+
+            });
+
+        Result result = await cancelling.CompleteRetirementAsync(
+            held,
+            location,
+            GrimoireOfflineTransitionJournalRetirementSource.Canonical,
+            metadata,
+            bytes,
+            requireCanonicalAfter: false,
+            cts.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await cancelling.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Null(evidence.Canonical);
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
+
+    }
+
+    [Fact]
     public async Task Resume_after_a_crash_before_permissions_verification_returns_recovery_required_rather_than_throwing()
     {
 

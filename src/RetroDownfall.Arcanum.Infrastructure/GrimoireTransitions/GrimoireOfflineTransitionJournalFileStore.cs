@@ -1411,7 +1411,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     primitives,
                     location,
                     requireCanonicalAfter,
-                    cancellationToken).ConfigureAwait(false))
+                    CancellationToken.None).ConfigureAwait(false))
             {
 
                 return RecoveryRequired();
@@ -1433,7 +1433,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     primitives,
                     location,
                     requireCanonicalAfter,
-                    cancellationToken).ConfigureAwait(false))
+                    CancellationToken.None).ConfigureAwait(false))
             {
 
                 return RecoveryRequired();
