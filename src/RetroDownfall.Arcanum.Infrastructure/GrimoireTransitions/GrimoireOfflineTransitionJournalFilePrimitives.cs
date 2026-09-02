@@ -32,19 +32,6 @@ internal enum GrimoireOfflineTransitionPreviousRetention : byte
 internal readonly record struct GrimoireOfflineTransitionExchangeResult(
     GrimoireOfflineTransitionPreviousRetention Retention);
 
-internal readonly record struct GrimoireOfflineTransitionWindowsReplaceFileArguments(
-    string ReplacedFileName,
-    string ReplacementFileName,
-    string BackupFileName);
-
-internal delegate bool GrimoireOfflineTransitionReplaceFile(
-    string replacedFileName,
-    string replacementFileName,
-    string backupFileName,
-    uint replaceFlags,
-    IntPtr exclude,
-    IntPtr reserved);
-
 internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
 {
 
@@ -592,19 +579,28 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             }
 
-            GrimoireOfflineTransitionWindowsReplaceFileArguments windowsArguments =
-                MapWindowsReplaceFileArguments(_parentPath, journalLeaf, workingLeaf, previousLeaf);
-
-            if (OperatingSystem.IsWindows()
-                && InvokeWindowsReplaceFile(windowsArguments, ReplaceFileWindows))
+            if (!OperatingSystem.IsWindows())
             {
 
-                return new GrimoireOfflineTransitionExchangeResult(
-                    GrimoireOfflineTransitionPreviousRetention.Previous);
+                return Unavailable<GrimoireOfflineTransitionExchangeResult>();
 
             }
 
-            return Unavailable<GrimoireOfflineTransitionExchangeResult>();
+            // Every other Windows mutation (OpenWindowsChild, RenameWindowsHandle, CompareUnlink's
+            // FileDispositionInfoEx) is anchored to the retained no-follow parent handle and cannot be
+            // redirected by an ancestor-directory reparse-point swap. ReplaceFileW is not: it re-resolves
+            // every operand from the path string captured at Open(), following reparse points along the
+            // way. Two handle-relative renames land the same publish -> journal, journal -> previous
+            // exchange ReplaceFileW's backup semantics produced, without ever leaving the retained handle.
+            bool movedJournalToPrevious = RenameWindowsHandle(journalLeaf, previousLeaf);
+
+            bool movedWorkingToJournal = movedJournalToPrevious
+                && RenameWindowsHandle(workingLeaf, journalLeaf);
+
+            return movedWorkingToJournal && ValidateParent()
+                ? new GrimoireOfflineTransitionExchangeResult(
+                    GrimoireOfflineTransitionPreviousRetention.Previous)
+                : Unavailable<GrimoireOfflineTransitionExchangeResult>();
 
         }
         catch (Exception exception) when (
@@ -617,47 +613,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             return Unavailable<GrimoireOfflineTransitionExchangeResult>();
 
         }
-
-    }
-
-    internal static GrimoireOfflineTransitionWindowsReplaceFileArguments
-        MapWindowsReplaceFileArguments(
-            string parentPath,
-            string journalLeaf,
-            string workingLeaf,
-            string previousLeaf)
-    {
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(parentPath);
-
-        if (!ValidLeaf(journalLeaf) || !ValidLeaf(workingLeaf) || !ValidLeaf(previousLeaf))
-        {
-
-            throw new ArgumentException("Windows replacement arguments require valid relative leaves.");
-
-        }
-
-        return new GrimoireOfflineTransitionWindowsReplaceFileArguments(
-            Path.Combine(parentPath, journalLeaf),
-            Path.Combine(parentPath, workingLeaf),
-            Path.Combine(parentPath, previousLeaf));
-
-    }
-
-    internal static bool InvokeWindowsReplaceFile(
-        GrimoireOfflineTransitionWindowsReplaceFileArguments arguments,
-        GrimoireOfflineTransitionReplaceFile replaceFile)
-    {
-
-        ArgumentNullException.ThrowIfNull(replaceFile);
-
-        return replaceFile(
-            arguments.ReplacedFileName,
-            arguments.ReplacementFileName,
-            arguments.BackupFileName,
-            replaceFlags: 0,
-            exclude: IntPtr.Zero,
-            reserved: IntPtr.Zero);
 
     }
 
@@ -1972,16 +1927,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         uint creationDisposition,
         uint flagsAndAttributes,
         IntPtr templateFile);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "ReplaceFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ReplaceFileWindows(
-        string replacedFileName,
-        string replacementFileName,
-        string backupFileName,
-        uint replaceFlags,
-        IntPtr exclude,
-        IntPtr reserved);
 
     [LibraryImport("kernel32.dll", EntryPoint = "SetFileInformationByHandle", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
