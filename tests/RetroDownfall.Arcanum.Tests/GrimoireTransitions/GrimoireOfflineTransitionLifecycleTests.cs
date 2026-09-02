@@ -70,13 +70,21 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
 
                 CovenantResetOfflineTransitionPayloadV1 next = PayloadForEdge(from, to, current: false);
 
+                bool currentValid = GrimoireOfflineTransitionLifecycleValidator.ValidPayload(current);
+
+                bool nextValid = GrimoireOfflineTransitionLifecycleValidator.ValidPayload(next);
+
+                Assert.True(
+                    currentValid && nextValid,
+                    $"{from} -> {to}: current-valid={currentValid}, next-valid={nextValid}; "
+                    + "a pair refused for an invalid fixture, not by the edge guard, proves "
+                    + "nothing about the edge.");
+
                 bool accepted = Handler().ValidateAdvance(current, next).IsSuccess;
 
                 Assert.True(
                     legal.Contains((from, to)) == accepted,
-                    $"{from} -> {to}: expected {legal.Contains((from, to))}, actual {accepted}; "
-                    + $"current-valid={GrimoireOfflineTransitionLifecycleValidator.ValidPayload(current)}, "
-                    + $"next-valid={GrimoireOfflineTransitionLifecycleValidator.ValidPayload(next)}.");
+                    $"{from} -> {to}: expected {legal.Contains((from, to))}, actual {accepted}.");
 
             }
 
@@ -1186,7 +1194,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         if (state is GrimoireOfflineTransitionState.KeepClosed)
         {
 
-            GrimoireOfflineTransitionState resumeState = current ? to : from;
+            GrimoireOfflineTransitionState resumeState = LegalResumeState(current ? to : from);
 
             if (resumeState is GrimoireOfflineTransitionState.ReopenPrepared
                 or GrimoireOfflineTransitionState.Verifying
@@ -1308,7 +1316,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
 
             GrimoireOfflineTransitionBlocker blocker = new(
                 "Covenant.ManualRecoveryRequired",
-                to,
+                LegalResumeState(to),
                 Digest(0x73));
 
             payload = payload with
@@ -1333,9 +1341,17 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                 {
                     Blocker = new(
                         "Covenant.ManualRecoveryRequired",
-                        from,
+                        LegalResumeState(from),
                         Digest(0x74)),
                 },
+                // A degenerate KeepClosed -> KeepClosed pair falls into both this block and
+                // the "from is KeepClosed" block above, which stamped resume evidence onto
+                // this same (!current) side for the mirrored reason (resuming out of
+                // KeepClosed). A parked payload can carry a Blocker or resume evidence, never
+                // both, so parking wins here and the resume evidence is cleared.
+                BlockerResolutionEvidence = from is GrimoireOfflineTransitionState.KeepClosed
+                    ? null
+                    : payload.BlockerResolutionEvidence,
             };
 
         }
@@ -1350,6 +1366,21 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         return payload;
 
     }
+
+    // Blocker.ResumeState can never legally be Prepared, KeepClosed, or RetirementPending
+    // (ValidLifecycle), but PayloadForEdge borrows the raw "other" state of the pair under
+    // test for that field so a genuinely-illegal edge stays refusable through a resume-state
+    // mismatch rather than through a malformed payload. Substituting a state that is always a
+    // legal ResumeState keeps the substituted payload's own shape internally coherent because
+    // Lifecycle(...) already gives every non-Prepared, non-Closing state complete closing
+    // evidence, empty verification, and no reconciliation evidence — exactly what
+    // StateEvidenceCoherent's Applying branch requires.
+    private static GrimoireOfflineTransitionState LegalResumeState(
+        GrimoireOfflineTransitionState natural) => natural is GrimoireOfflineTransitionState.Prepared
+            or GrimoireOfflineTransitionState.KeepClosed
+            or GrimoireOfflineTransitionState.RetirementPending
+        ? GrimoireOfflineTransitionState.Applying
+        : natural;
 
     private static CovenantResetOfflineTransitionPayloadV1 AdvanceSameStateEvidence(
         CovenantResetOfflineTransitionPayloadV1 payload,
