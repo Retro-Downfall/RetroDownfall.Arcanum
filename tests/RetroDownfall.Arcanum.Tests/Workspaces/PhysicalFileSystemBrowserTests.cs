@@ -170,15 +170,138 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
-        // Built from Path.DirectorySeparatorChar rather than written with '/': RelativePath is
-        // whatever Path.GetRelativePath produced, so the entry reads container\deeper\match.txt on
-        // Windows. What this test pins is that a non-matching directory was still traversed, and
-        // that is true under either separator.
+        // RelativePath is normalized to '/' regardless of host OS (see the backslash-normalization
+        // tests below), so this pins to a literal slash-joined suffix rather than Path.Combine, which
+        // would build a backslash-joined suffix on Windows. What this test pins is that a
+        // non-matching directory was still traversed.
         Assert.Contains(
             result.Value!.Entries,
             static entry => entry.RelativePath.EndsWith(
-                Path.Combine("container", "deeper", "match.txt"),
+                "container/deeper/match.txt",
                 StringComparison.Ordinal));
+
+    }
+
+    /// <summary>
+    /// On Windows, Path.DirectorySeparatorChar is '\\' and Path.GetRelativePath's raw output for any
+    /// nested entry genuinely contains it. This pins the fold that
+    /// ArcanumInternalToolServer.FileTools.cs already applies to list_directory. Skipped elsewhere:
+    /// Path.DirectorySeparatorChar is '/' on POSIX, so there is no separator backslash for the fold to
+    /// remove there (see the POSIX round-trip test below for what POSIX must instead preserve).
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_And_ReadAsync_NormalizeBackslashesInRelativePaths_OnWindows()
+    {
+
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "Path.DirectorySeparatorChar is '/' on this host; there is no separator backslash to fold.");
+
+        _workspace.WriteFile("nested/deeper/leaf.txt", "leaf");
+
+        PhysicalFileSystemBrowser browser = CreateBrowser();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileListResult> recursive = await browser.ListAsync(
+            workspace,
+            null,
+            recursive: true,
+            searchPattern: null,
+            CancellationToken.None);
+
+        Assert.True(recursive.IsSuccess);
+
+        Assert.All(
+            recursive.Value!.Entries,
+            static entry => Assert.DoesNotContain('\\', entry.RelativePath));
+
+        Result<FileListResult> nested = await browser.ListAsync(
+            workspace,
+            "nested/deeper",
+            recursive: false,
+            searchPattern: null,
+            CancellationToken.None);
+
+        Assert.True(nested.IsSuccess);
+
+        Assert.NotNull(nested.Value!.ParentPath);
+
+        Assert.DoesNotContain('\\', nested.Value.ParentPath!);
+
+        Result<FileReadResult> read = await browser.ReadAsync(
+            workspace,
+            "nested/deeper/leaf.txt",
+            CancellationToken.None);
+
+        Assert.True(read.IsSuccess);
+
+        Assert.DoesNotContain('\\', read.Value!.RelativePath);
+
+    }
+
+    /// <summary>
+    /// A backslash inside a POSIX path segment is ordinary filename content, not a separator — POSIX
+    /// has no reserved separator but '/'. WorkspacePathResolver.ResolveRelativePath does not fold it on
+    /// input (this test's own "weird\\name/child" argument resolving successfully is proof of that), so
+    /// a fold on output must leave it alone too, or the RelativePath this API just returned no longer
+    /// identifies the file it named: a client round-tripping it back into ReadAsync would 404. This is
+    /// the regression a hardcoded '\\' -> '/' fold (rather than Path.DirectorySeparatorChar, a no-op
+    /// here) would reintroduce.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_And_ReadAsync_PreserveBackslashInPosixFileName_RoundTrip()
+    {
+
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "A literal backslash cannot be created as filename content on Windows; it is always the separator there.");
+
+        const string content = "posix backslash content";
+
+        _workspace.WriteFile("weird\\name/child/leaf.txt", content);
+
+        PhysicalFileSystemBrowser browser = CreateBrowser();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileListResult> weirdListing = await browser.ListAsync(
+            workspace,
+            "weird\\name",
+            recursive: false,
+            searchPattern: null,
+            CancellationToken.None);
+
+        Assert.True(weirdListing.IsSuccess);
+
+        FileEntry childDirectory = Assert.Single(weirdListing.Value!.Entries);
+
+        Assert.Contains('\\', childDirectory.RelativePath);
+
+        Result<FileListResult> childListing = await browser.ListAsync(
+            workspace,
+            "weird\\name/child",
+            recursive: false,
+            searchPattern: null,
+            CancellationToken.None);
+
+        Assert.True(childListing.IsSuccess);
+
+        Assert.NotNull(childListing.Value!.ParentPath);
+
+        Assert.Contains('\\', childListing.Value.ParentPath!);
+
+        FileEntry leaf = Assert.Single(childListing.Value.Entries);
+
+        Assert.Contains('\\', leaf.RelativePath);
+
+        Result<FileReadResult> read = await browser.ReadAsync(workspace, leaf.RelativePath, CancellationToken.None);
+
+        Assert.True(read.IsSuccess);
+
+        Assert.Equal(content, read.Value!.Content);
+
+        Assert.Contains('\\', read.Value.RelativePath);
 
     }
 

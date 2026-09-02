@@ -51,7 +51,13 @@ public sealed class SanctumGuard(
             return invalidCampaign;
         }
 
-        (Campaign? campaign, SanctumConfig? config) = await TryLoadCampaignAndConfigAsync(campaignId, ct).ConfigureAwait(false);
+        (CampaignLoadOutcome outcome, Campaign? campaign, SanctumConfig? config) =
+            await TryLoadCampaignAndConfigAsync(campaignId, ct).ConfigureAwait(false);
+
+        if (outcome == CampaignLoadOutcome.Unresolvable)
+        {
+            return DenyUnresolvableCampaign(campaignId, toolName, "PathEscape");
+        }
 
         if (campaign is null || config is null || !config.Enabled || !config.EnforcePathBoundary)
         {
@@ -125,7 +131,13 @@ public sealed class SanctumGuard(
             return invalidCampaign;
         }
 
-        (_, SanctumConfig? config) = await TryLoadCampaignAndConfigAsync(campaignId, ct).ConfigureAwait(false);
+        (CampaignLoadOutcome outcome, _, SanctumConfig? config) =
+            await TryLoadCampaignAndConfigAsync(campaignId, ct).ConfigureAwait(false);
+
+        if (outcome == CampaignLoadOutcome.Unresolvable)
+        {
+            return DenyUnresolvableCampaign(campaignId, toolName, "NetworkEgress");
+        }
 
         if (config is null || !config.Enabled)
         {
@@ -190,7 +202,13 @@ public sealed class SanctumGuard(
             return invalidCampaign;
         }
 
-        (_, SanctumConfig? config) = await TryLoadCampaignAndConfigAsync(campaignId, ct).ConfigureAwait(false);
+        (CampaignLoadOutcome outcome, _, SanctumConfig? config) =
+            await TryLoadCampaignAndConfigAsync(campaignId, ct).ConfigureAwait(false);
+
+        if (outcome == CampaignLoadOutcome.Unresolvable)
+        {
+            return DenyUnresolvableCampaign(campaignId, toolName, "DisabledTool");
+        }
 
         if (config is null || !config.Enabled)
         {
@@ -381,25 +399,46 @@ public sealed class SanctumGuard(
             MaxFileDescriptors = ArcanumSettingClamps.SanctumMaxFileDescriptors(limits.MaxFileDescriptors),
         };
 
-    private async Task<(Campaign? Campaign, SanctumConfig? Config)> TryLoadCampaignAndConfigAsync(
+    /// <summary>
+    /// Distinguishes "no campaign context was supplied" (full permission — there is nothing to
+    /// enforce) from "a campaign id was supplied and did not resolve" (deny — a resolved config's
+    /// restrictions can never be checked, so silently granting full permission would be exactly
+    /// backwards). See <see cref="TryLoadCampaignAndConfigAsync"/>.
+    /// </summary>
+    private enum CampaignLoadOutcome
+    {
+        NotSupplied,
+        Unresolvable,
+        Resolved,
+    }
+
+    private async Task<(CampaignLoadOutcome Outcome, Campaign? Campaign, SanctumConfig? Config)> TryLoadCampaignAndConfigAsync(
         string campaignId,
         CancellationToken ct)
     {
+        // A malformed non-blank id is already denied by DenyIfInvalidCampaignId before any caller
+        // reaches here, but this check is kept defensive (Unresolvable, not NotSupplied) so this
+        // loader is fail-closed on its own even if a future caller skips that gate.
+        if (string.IsNullOrWhiteSpace(campaignId))
+        {
+            return (CampaignLoadOutcome.NotSupplied, null, null);
+        }
+
         if (!Guid.TryParse(campaignId, out Guid id))
         {
-            return (null, null);
+            return (CampaignLoadOutcome.Unresolvable, null, null);
         }
 
         Campaign? campaign = await campaignRepository.GetByIdAsync(id, ct).ConfigureAwait(false);
 
         if (campaign is null)
         {
-            return (null, null);
+            return (CampaignLoadOutcome.Unresolvable, null, null);
         }
 
         SanctumConfig config = CampaignRepository.GetSanctumConfig(campaign);
 
-        return (campaign, config);
+        return (CampaignLoadOutcome.Resolved, campaign, config);
     }
 
     private static bool IsUnderAllowedRoots(string workspaceRoot, string candidateFull, IReadOnlyList<string> allowedPaths)
@@ -448,11 +487,28 @@ public sealed class SanctumGuard(
             return null;
         }
 
+        return DenyWithLogOnlyBreach(campaignId, toolName, breachType, "Invalid campaign identifier.");
+    }
+
+    /// <summary>
+    /// Denies a well-formed campaign id that did not resolve to a campaign row (deleted mid-turn, or
+    /// supplied by a caller that never resolved <c>TurnContext.Campaign</c> in the first place). There
+    /// is no config left to consult, so this can never fall through to full permission.
+    /// </summary>
+    private SanctumResult DenyUnresolvableCampaign(string campaignId, string toolName, string breachType) =>
+        DenyWithLogOnlyBreach(
+            campaignId,
+            toolName,
+            breachType,
+            "The campaign identifier does not resolve to a known campaign.");
+
+    private SanctumResult DenyWithLogOnlyBreach(string campaignId, string toolName, string breachType, string detail)
+    {
         SanctumBreach breach = CreateBreach(
             campaignId,
             toolName,
             breachType,
-            "Invalid campaign identifier.");
+            detail);
 
         // Log-only: the campaign id does not resolve to an existing campaign row, so persisting
         // would violate the SanctumBreaches -> Campaigns foreign key. Enforcement still denies.
