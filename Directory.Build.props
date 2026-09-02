@@ -10,6 +10,20 @@
 
     <LangVersion>latest</LangVersion>
 
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Both default to $(TreatWarningsAsErrors) when unset (Microsoft.NETCore.Native.targets,
+         Microsoft.NET.ILLink.targets), so the line above would otherwise also hand ILC its
+         warnaserror flag and the trimmer TreatWarningsAsErrors during a Native AOT publish.
+         scripts/verify-aot-il-warnings.sh is the designed enforcement for that closure:
+         its ALLOWED list tolerates real third-party ILC warnings (EF Core, Serilog, etc.) that
+         a blanket warnaserror flag cannot distinguish from a first-party one, and would turn
+         into a hard publish failure instead of the nuanced pass this script already makes.
+         (No literal double hyphen above: an XML comment may not contain one.) -->
+    <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
+
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
+
     <!-- The one place a version is written. It is stamped into every assembly, and it is what CI
          reads when it cuts a build after a push to main, so the release and the binaries cannot
          disagree.
