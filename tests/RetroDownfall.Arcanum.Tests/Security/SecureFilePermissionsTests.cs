@@ -93,10 +93,14 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void ApplyOwnerOnlyToSensitivePaths_restricts_configuration_preset_sidecars()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -140,10 +144,14 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void RunStartupPermissionSelfCheck_warns_for_configuration_preset_sidecars()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -316,10 +324,14 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void RunStartupPermissionSelfCheck_warns_for_world_readable_file()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -364,10 +376,16 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void RunStartupPermissionSelfCheck_warns_for_world_readable_secret_files()
     {
 
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
 
@@ -412,10 +430,16 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void TryApplyUnixFileMode_logs_warning_when_chmod_fails()
     {
 
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
 
@@ -449,10 +473,16 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void CreateOwnerOnlyTempFile_creates_file_with_owner_only_mode()
     {
 
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
 
