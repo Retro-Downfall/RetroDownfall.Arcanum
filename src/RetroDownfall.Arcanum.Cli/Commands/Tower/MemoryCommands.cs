@@ -288,7 +288,7 @@ public sealed partial class MemoryCommands(
 
             dispatcher.WriteDiagnostic("<QUERY> is required.");
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
@@ -298,7 +298,7 @@ public sealed partial class MemoryCommands(
             dispatcher.WriteDiagnostic(
                 "--scope must be one of: session, attachments, workspace, saga, lexicon, all.");
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
