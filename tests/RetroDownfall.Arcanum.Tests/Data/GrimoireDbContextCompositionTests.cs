@@ -206,18 +206,74 @@ public sealed class GrimoireDbContextCompositionTests
 
     }
 
+    /// <summary>
+    /// The API suite's host shares one serving interceptor, the way the product host does.
+    /// </summary>
+    /// <remarks>
+    /// The host registers the context with <c>AddDbContextPool</c>, which forces singleton options
+    /// and therefore exactly one <c>CovenantConnectionEnrolmentInterceptor</c> - one lock, one
+    /// lifecycle table, and pooled context and connection objects reused across requests, so a
+    /// refused open's lifecycle state is inherited by whatever runs next on the same connection.
+    /// A per-scope interceptor is a real composition too (the CLI's), but it is not the one the API
+    /// suite is presented as exercising, and no test could see the difference: every existing check
+    /// reads options from a single scope, where a fresh interceptor per scope looks identical.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Api_test_host_shares_one_serving_interceptor_across_scopes()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        IServiceProvider provider = factory.Services;
+
+        await using AsyncServiceScope first = provider.CreateAsyncScope();
+
+        await using AsyncServiceScope second = provider.CreateAsyncScope();
+
+        CovenantConnectionEnrolmentInterceptor firstInterceptor = Assert.Single(
+            Interceptors(first.ServiceProvider
+                .GetRequiredService<DbContextOptions<ArcanumDbContext>>()));
+
+        CovenantConnectionEnrolmentInterceptor secondInterceptor = Assert.Single(
+            Interceptors(second.ServiceProvider
+                .GetRequiredService<DbContextOptions<ArcanumDbContext>>()));
+
+        Assert.Same(firstInterceptor, secondInterceptor);
+
+    }
+
     [Fact]
     public void Direct_DbContext_options_paths_are_named_non_serving_exemptions()
     {
 
         ProductionSource[] sources = [.. ProductionSourceInventory.Sources()];
 
+        ProductionSource[] optionsPaths =
+        [
+            .. sources.Where(static source => BuildsArcanumDbContextOptions(source)),
+        ];
+
+        // The filter has to see the call sites this inventory is written about before its emptiness
+        // assertion means anything. Both serving registrations break the configurator call across
+        // lines and spell the argument `options`, and two of the three named exemptions build the
+        // builder with a target-typed `new`, so a filter keyed to one exact spelling of each
+        // statement selects none of them and the check below compares an empty list against itself.
+        Assert.Contains(optionsPaths, static source => source.Is("ServiceCollectionExtensions.cs"));
+
+        Assert.Contains(optionsPaths, static source => source.Is("ArcanumDbContextFactory.cs"));
+
+        Assert.Contains(optionsPaths, static source => source.Is("ArcanumDbContext.cs"));
+
+        Assert.Contains(
+            optionsPaths,
+            static source => source.Is("InstallationResetExistingGrimoire.cs"));
+
         List<string> unnamed =
         [
-            .. sources
-                .Where(static source =>
-                    source.Names("new DbContextOptionsBuilder<ArcanumDbContext>")
-                    || source.Names("ArcanumDbContextOptionsConfigurator.Configure(optionsBuilder"))
+            .. optionsPaths
+                .Where(static source => !InstallsTheServingConfigurator(source))
                 .Where(static source => !IsNamedNonServingOptionsPath(source))
                 .Select(static source => source.RelativePath),
         ];
@@ -233,6 +289,39 @@ public sealed class GrimoireDbContextCompositionTests
                 && source.Names("SqliteConnection connection = new("));
 
     }
+
+    /// <summary>
+    /// Every shape that builds <c>DbContextOptions&lt;ArcanumDbContext&gt;</c> in this repository.
+    /// </summary>
+    /// <remarks>
+    /// Construct-level tokens rather than one exact spelling of a statement. The builder is written
+    /// both as <c>new DbContextOptionsBuilder&lt;ArcanumDbContext&gt;()</c> and as a target-typed
+    /// <c>= new()</c>, and both configurator call sites break the argument onto its own line - so a
+    /// filter that matches a whole statement selects whichever site happened to be formatted that
+    /// way when it was written, and goes quiet the first time one of them is reflowed.
+    /// </remarks>
+    private static bool BuildsArcanumDbContextOptions(ProductionSource source) =>
+        source.Names("DbContextOptionsBuilder<ArcanumDbContext>")
+        || InstallsTheServingConfigurator(source)
+        || source.Names("ArcanumDbContextOptionsConfigurator.ConfigureNonServingFallback(")
+
+        // The provider call itself, because the bypass this inventory exists to catch need not name
+        // the builder type at all: `AddDbContext<ArcanumDbContext>((sp, o) => o.UseSqlite(...))`
+        // configures serving options through the lambda's parameter and matches none of the tokens
+        // above. That shape shipped past this test until it was added.
+        || source.Names(".UseSqlite(");
+
+    /// <summary>
+    /// The serving composition: options built by the configurator that installs the interceptor.
+    /// </summary>
+    /// <remarks>
+    /// The configurator's own file counts. It is where the serving provider call and the interceptor
+    /// registration live, so it names its own method rather than calling it, and it is the one file
+    /// that could not be an exemption without exempting serving composition itself.
+    /// </remarks>
+    private static bool InstallsTheServingConfigurator(ProductionSource source) =>
+        source.Names("ArcanumDbContextOptionsConfigurator.Configure(")
+        || source.Is("ArcanumDbContextOptionsConfigurator.cs");
 
     private static bool IsNamedNonServingOptionsPath(ProductionSource source) =>
 

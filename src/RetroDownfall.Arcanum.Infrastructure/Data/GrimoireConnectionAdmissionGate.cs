@@ -32,6 +32,18 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private readonly TimeSpan _openingAttemptTimeout;
 
+    /// <summary>
+    /// How long stage one waits for ordinary requests and background work to finish.
+    /// </summary>
+    /// <remarks>
+    /// A separate deadline from <see cref="_openingAttemptTimeout"/> because it bounds a different
+    /// thing - session-attachment indexing, entry weaving and saga extraction rather than one
+    /// physical connection reaching its terminal callback - and its expiry is reported under its own
+    /// error code. Both default to the same value, so separating them moves no deadline; it gives
+    /// the failure an operator reads a knob of its own to turn.
+    /// </remarks>
+    private readonly TimeSpan _workDrainCheckpoint;
+
     private readonly Func<CancellationToken, ValueTask> _afterSuccessfulDrainTestSeam;
 
     private readonly HashSet<OpenTicket> _unresolvedOpens = [];
@@ -51,6 +63,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private object? _maintenanceAdoptionInterlockOwner;
 
     private TaskCompletionSource<long> _nextOpenGeneration = NewOpenGenerationSignal();
+
+    private long _materializedTerminalCallbacks;
 
     internal GrimoireConnectionAdmissionGate(TimeProvider timeProvider)
         : this(
@@ -99,6 +113,35 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         TimeProvider timeProvider,
         ICovenantConnectionDrain drain,
         TimeSpan openingAttemptTimeout,
+        TimeSpan workDrainCheckpoint)
+        : this(
+            timeProvider,
+            drain,
+            openingAttemptTimeout,
+            workDrainCheckpoint,
+            AfterSuccessfulDrainNoOpAsync)
+    {
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        TimeSpan openingAttemptTimeout,
+        Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam)
+        : this(
+            timeProvider,
+            drain,
+            openingAttemptTimeout,
+            openingAttemptTimeout,
+            afterSuccessfulDrainTestSeam)
+    {
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        TimeSpan openingAttemptTimeout,
+        TimeSpan workDrainCheckpoint,
         Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam)
     {
 
@@ -115,15 +158,36 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
+        if (workDrainCheckpoint <= TimeSpan.Zero)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(workDrainCheckpoint));
+
+        }
+
         _timeProvider = timeProvider;
 
         _drain = drain;
 
         _openingAttemptTimeout = openingAttemptTimeout;
 
+        _workDrainCheckpoint = workDrainCheckpoint;
+
         _afterSuccessfulDrainTestSeam = afterSuccessfulDrainTestSeam;
 
     }
+
+    /// <summary>
+    /// How many open tickets have had terminal-callback machinery built for them.
+    /// </summary>
+    /// <remarks>
+    /// Every physical Grimoire open takes a ticket, and under a pooled context that is every EF
+    /// operation. The callback has exactly one reader - a stage-two close waiting for opens already
+    /// in flight - so on a gate that has never been closed it is machinery built for nobody.
+    /// Counted rather than inferred, because an allocation per open is invisible to every other
+    /// assertion the suite can make.
+    /// </remarks>
+    internal long MaterializedTerminalCallbacks => Interlocked.Read(ref _materializedTerminalCallbacks);
 
     public long CurrentGeneration
     {
@@ -468,7 +532,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         {
 
             await Task.WhenAll(terminalLifetimes)
-                .WaitAsync(_openingAttemptTimeout, _timeProvider, cancellationToken)
+                .WaitAsync(_workDrainCheckpoint, _timeProvider, cancellationToken)
                 .ConfigureAwait(false);
 
         }
@@ -539,6 +603,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         long closedGeneration;
 
+        // The lock block below commits stage two in one step - the generation bump, the move to
+        // Closed, and the refusal stamped on every unresolved open. Reporting cancellation after
+        // that commitment tells the caller nothing happened while the gate is permanently Closed on
+        // a burned generation, so the token is honoured here, before the transition, where refusing
+        // is a pure no-op that leaves the closing owner and its abort path intact.
+        cancellationToken.ThrowIfCancellationRequested();
+
         lock (_sync)
         {
 
@@ -593,15 +664,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
 
             terminalCallbacks = _unresolvedOpens
-                .Select(static ticket => ticket.TerminalCallback)
+                .Select(static ticket => ticket.TerminalCallbackWhileLocked())
                 .ToArray();
 
         }
 
         try
         {
-
-            cancellationToken.ThrowIfCancellationRequested();
 
             try
             {
@@ -712,12 +781,16 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
+        // Abort is the only way out of a stage one that timed out, and while the gate is Closing
+        // every request and work lease is refused. The caller most likely to reach here is a host
+        // unwinding under an ambient token that has already fired, so honouring that token would
+        // withhold the escape hatch from exactly the caller who needs it and leave the gate Closing
+        // with nothing left to release it. The proof runs uncancelled for the same reason: a proof
+        // abandoned halfway is indistinguishable from a proof that failed.
+        _ = cancellationToken;
 
-        bool provenSafe = await proveNoDestructiveEffectAsync(cancellationToken)
+        bool provenSafe = await proveNoDestructiveEffectAsync(CancellationToken.None)
             .ConfigureAwait(false);
-
-        cancellationToken.ThrowIfCancellationRequested();
 
         if (!provenSafe)
         {
@@ -884,6 +957,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
 
         }
+
+    }
+
+    private TaskCompletionSource MaterializeTerminalCallback()
+    {
+
+        _ = Interlocked.Increment(ref _materializedTerminalCallbacks);
+
+        return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
     }
 
@@ -1760,6 +1842,50 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     }
 
+    /// <summary>
+    /// Records that a tracked physical-open lifetime was abandoned without reporting an outcome.
+    /// </summary>
+    /// <remarks>
+    /// Disposal is the caller's guard, and a guard may only say what it knows. A handle that already
+    /// reported is left exactly as it is. One whose native open never started did not open, and that
+    /// is a fact disposal can establish on its own, so it completes.
+    ///
+    /// <para>A handle whose open had already started is the case this method exists to get right. It
+    /// is marked abandoned and left in its closure's live set: nothing here inspected the connection,
+    /// so nothing here may report it closed, and reporting one would let ordinary admission reopen
+    /// while a maintenance connection is possibly still physically open. Refusing the disposition
+    /// instead is the fail-closed reading, and it is the one the whole gate is built on.</para>
+    /// </remarks>
+    private void CompleteMaintenanceHandleOnDispose(TrackedMaintenanceHandle handle)
+    {
+
+        lock (_sync)
+        {
+
+            if (!handle.Closure.LiveMaintenanceHandles.Contains(handle))
+            {
+
+                return;
+
+            }
+
+            if (handle.State is MaintenanceHandleState.NotStarted)
+            {
+
+                _ = CompleteMaintenanceHandleWhileLocked(
+                    handle,
+                    MaintenanceHandleState.NotOpened);
+
+                return;
+
+            }
+
+            handle.State = MaintenanceHandleState.AbandonedWhileOpen;
+
+        }
+
+    }
+
     private void ReleaseScopedConnectionPermit(ScopedConnectionPermit permit)
     {
 
@@ -1827,7 +1953,25 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        await lane.HandlesDrained.ConfigureAwait(false);
+        try
+        {
+
+            await lane.HandlesDrained
+                .WaitAsync(_openingAttemptTimeout, _timeProvider)
+                .ConfigureAwait(false);
+
+        }
+        catch (TimeoutException)
+        {
+
+            // A phase that threw between consuming a capability and reporting its handle's terminal
+            // physical-open state leaves that handle live for good, and this wait sits in front of
+            // the only code that gives the process-wide adoption interlock back. Waiting forever
+            // turns one leaked handle into a wedged process, so the wait is bounded and the release
+            // below runs either way. The handles stay live, so the closed lease still refuses to
+            // disposition - the leak is reported, not forgiven.
+
+        }
 
         lock (_sync)
         {
@@ -1996,6 +2140,16 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         NotOpened = 3,
 
         PhysicallyClosed = 4,
+
+        /// <summary>
+        /// A native open that started and whose phase unwound without ever reporting an outcome.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately not a terminal state. Nothing here observed the connection, so nothing here
+        /// may claim it closed; the handle stays in its closure's live set and keeps refusing
+        /// disposition, which is the fail-closed reading of "a physical open may still be out there".
+        /// </remarks>
+        AbandonedWhileOpen = 5,
 
     }
 
@@ -2230,8 +2384,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         long generation) : IGrimoireConnectionOpenTicket
     {
 
-        private readonly TaskCompletionSource _terminal =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource? _terminal;
 
         private int _disposed;
 
@@ -2243,7 +2396,29 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal bool RefusalRequested { get; private set; }
 
-        internal Task TerminalCallback => _terminal.Task;
+        /// <summary>
+        /// The wait a stage-two close takes on this open, built the first time one asks for it.
+        /// </summary>
+        /// <remarks>
+        /// Called only from inside the gate's lock, which is what makes the lazy field safe. A
+        /// ticket that has already reached its terminal state has nothing left to wait for, so it
+        /// answers with a completed task and builds nothing at all.
+        /// </remarks>
+        internal Task TerminalCallbackWhileLocked()
+        {
+
+            if (State is OpenTicketState.Terminal)
+            {
+
+                return Task.CompletedTask;
+
+            }
+
+            _terminal ??= gate.MaterializeTerminalCallback();
+
+            return _terminal.Task;
+
+        }
 
         public Result RevalidateAfterNativeOpen()
         {
@@ -2330,7 +2505,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        internal void SignalTerminalWhileLocked() => _terminal.TrySetResult();
+        internal void SignalTerminalWhileLocked() => _ = _terminal?.TrySetResult();
 
         private void ThrowIfDisposed() =>
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -2531,6 +2706,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         ScopedConnectionPermit? scopedPermit) : IGrimoireTrackedMaintenanceHandle
     {
 
+        private int _disposed;
+
         internal Closure Closure { get; } = closure;
 
         internal MaintenanceIoLane Lane { get; } = lane;
@@ -2546,6 +2723,22 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         public Result ReportPhysicallyClosed() =>
             gate.ReportMaintenancePhysicallyClosed(this);
+
+        public ValueTask DisposeAsync()
+        {
+
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+
+                gate.CompleteMaintenanceHandleOnDispose(this);
+
+            }
+
+            GC.SuppressFinalize(this);
+
+            return ValueTask.CompletedTask;
+
+        }
 
     }
 
@@ -2725,12 +2918,17 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 revalidateDurableOwnerAsync,
                 cancellationToken);
 
+        // The token is accepted for symmetry with the rest of the lease surface and is deliberately
+        // not observed. CompleteClosedLease is the only edge from Closed back to Ordinary and it is
+        // a pure in-lock state transition with no I/O to abandon, so there is nothing here that
+        // cancelling could save - only a wedged gate, because a cleanup path unwinding under an
+        // ambient shutdown token is exactly the caller that must still be allowed to reopen.
         public ValueTask<Result> CompleteAsync(
             CovenantExclusiveLeaseDisposition disposition,
             CancellationToken cancellationToken)
         {
 
-            cancellationToken.ThrowIfCancellationRequested();
+            _ = cancellationToken;
 
             if (disposition is not CovenantExclusiveLeaseDisposition.RollbackAndReopen
                 and not CovenantExclusiveLeaseDisposition.CommitAndReopen

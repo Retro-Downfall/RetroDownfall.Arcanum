@@ -125,8 +125,13 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
             registration = _lifecycle.BeginOpen(connection);
 
         }
-        catch (Exception failed) when (failed is GrimoireMaintenanceUnavailableException
-            or InvalidOperationException)
+        catch (GrimoireMaintenanceUnavailableException)
+        {
+
+            return MaintenanceUnavailable();
+
+        }
+        catch (InvalidOperationException)
         {
 
             return Refused("Ordinary Grimoire connection admission is unavailable.");
@@ -252,8 +257,15 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
             registration = _lifecycle.BeginOpen(connection);
 
         }
-        catch (Exception failed) when (failed is GrimoireMaintenanceUnavailableException
-            or InvalidOperationException)
+        catch (GrimoireMaintenanceUnavailableException)
+        {
+
+            await connection.DisposeAsync().ConfigureAwait(false);
+
+            return MaintenanceUnavailable();
+
+        }
+        catch (InvalidOperationException)
         {
 
             await connection.DisposeAsync().ConfigureAwait(false);
@@ -513,6 +525,20 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
     private static Error Refused(string message) =>
         new(ErrorCodes.Covenant.Unavailable, message);
+
+    /// <summary>
+    /// The refusal a closed admission gate produces, reported under its own code.
+    /// </summary>
+    /// <remarks>
+    /// Separated from <see cref="Refused"/> because it is not a failure: admission is closed on
+    /// purpose and will reopen. Folded into the generic unavailable code, a planned maintenance
+    /// window is indistinguishable to every caller from an invalid connection string or a broken
+    /// native runtime, and there is nothing left for a caller to key a retry or a 503 on.
+    /// </remarks>
+    private static Error MaintenanceUnavailable() =>
+        new(
+            GrimoireMaintenanceUnavailableException.Code,
+            "The Grimoire is temporarily unavailable while maintenance owns connection admission.");
 
     private sealed class Lease(
         SqliteConnection connection,

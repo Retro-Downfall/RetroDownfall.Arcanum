@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Http;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 namespace RetroDownfall.Arcanum.Api.Primitives;
 
 internal static class ArcanumErrorMapper
@@ -118,7 +120,13 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Covenant.ManualArtifactErasureRequired
                 or ErrorCodes.Covenant.ManualRecoveryRequired
                 or ErrorCodes.Covenant.ErasureIncomplete
-                or ErrorCodes.Covenant.IntegrityFailure =>
+                or ErrorCodes.Covenant.IntegrityFailure
+
+                // A closed Grimoire admission gate belongs with them: maintenance owns the database
+                // on purpose and will give it back, so the caller is being asked to retry. The
+                // refusal used to travel as Covenant.Unavailable and was already answered here;
+                // giving it a code of its own must not turn a planned window into "Arcanum broke".
+                or GrimoireMaintenanceUnavailableException.Code =>
                 StatusCodes.Status503ServiceUnavailable,
 
             ErrorCodes.Hub.Model =>

@@ -794,6 +794,15 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         }
 
+        public ValueTask DisposeAsync()
+        {
+
+            _events.Add("handle-disposed");
+
+            return ValueTask.CompletedTask;
+
+        }
+
     }
 
     private class RecordingLane(

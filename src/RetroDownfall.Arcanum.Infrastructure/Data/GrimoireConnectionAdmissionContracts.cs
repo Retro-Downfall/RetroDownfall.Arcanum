@@ -380,7 +380,23 @@ internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 /// <summary>
 /// One maintenance physical-open lifetime that ends only after open failure or physical closure.
 /// </summary>
-internal interface IGrimoireTrackedMaintenanceHandle
+/// <remarks>
+/// The lifetime is disposable so that a phase can hold it under <c>await using</c> like every other
+/// authority the closed lease issues. Without that, a phase that throws between consuming its
+/// capability and reporting the outcome leaks the lifetime by construction rather than by mistake,
+/// and a leaked lifetime blocks both the closed lease's disposition and its lane's release.
+///
+/// Disposal is the guard, not a second way to report, and it may only say what it knows. A lifetime
+/// that already reported is left alone. One whose native open never started did not open, and
+/// disposal may complete it. One whose open had started is recorded as abandoned and stays live:
+/// disposal did not inspect the connection, so it may not claim a closure, and a closure it claimed
+/// falsely would let ordinary admission reopen over a connection that is possibly still open. The
+/// owner's disposition stays refused until something that did observe the connection reports it.
+///
+/// The member is required rather than defaulted, because a lifetime that owns a physical open and
+/// silently inherits a do-nothing disposal is the leak it exists to close.
+/// </remarks>
+internal interface IGrimoireTrackedMaintenanceHandle : IAsyncDisposable
 {
 
     Result ReportOpenStarted();
@@ -453,6 +469,16 @@ internal enum CovenantMaintenanceConnectionPurpose : byte
 /// </summary>
 internal sealed class GrimoireMaintenanceUnavailableException : InvalidOperationException
 {
+
+    /// <summary>
+    /// The code a caller reports when it turns this refusal into a <c>Result</c>.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from the generic unavailable code, because a closed admission gate is a deliberate,
+    /// temporary refusal rather than a product failure. Without a code of its own, the one thing a
+    /// caller can say about it is the same thing it says about an invalid connection string.
+    /// </remarks>
+    internal const string Code = "Grimoire.MaintenanceUnavailable";
 
     internal GrimoireMaintenanceUnavailableException()
         : base("The Grimoire is temporarily unavailable while maintenance owns connection admission.")

@@ -5,9 +5,11 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -15,6 +17,16 @@ public sealed class GrimoireConnectionAdmissionGateTests
 {
 
     private static readonly TimeSpan OpeningTimeout = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Real-time ceiling for a step that a manual clock has already made ready to complete.
+    /// </summary>
+    /// <remarks>
+    /// These tests drive the gate's own waits from <see cref="ManualTimeProvider"/>, so anything
+    /// still pending after the clock has been advanced is a defect rather than a slow machine. The
+    /// ceiling exists only so such a defect fails the test instead of hanging the suite.
+    /// </remarks>
+    private static readonly TimeSpan BoundedWait = TimeSpan.FromSeconds(10);
 
     [Fact]
     public void Ordinary_open_ticket_is_available_before_closing()
@@ -51,6 +63,74 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result opened = ticket.MarkOpened();
 
         Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
+
+    }
+
+    /// <summary>
+    /// An ordinary open builds no closure machinery while there is no closure.
+    /// </summary>
+    /// <remarks>
+    /// Every physical Grimoire open takes a ticket, and under a pooled context that is every EF
+    /// operation on the host. The ticket's terminal callback exists for one reader - a stage-two
+    /// close waiting for opens already in flight - so on a gate that has never been closed it is
+    /// machinery built for nobody. Nothing else in the suite can see an allocation per open, which
+    /// is why it is counted here rather than inferred.
+    /// </remarks>
+    [Fact]
+    public async Task Ordinary_opens_build_terminal_callbacks_only_once_a_closure_needs_them()
+    {
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        List<SqliteConnection> connections = [];
+
+        List<IGrimoireConnectionOpenTicket> tickets = [];
+
+        for (int index = 0; index < 32; index++)
+        {
+
+            SqliteConnection connection = new();
+
+            connections.Add(connection);
+
+            tickets.Add(gate.AcquireOrdinaryOpen(connection));
+
+        }
+
+        Assert.Equal(0, gate.MaterializedTerminalCallbacks);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(48));
+
+        Task<Result<IGrimoireExclusiveClosedLease>> close = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        // The one reader there is: a stage-two close does get a callback per unresolved open.
+        Assert.Equal(32, gate.MaterializedTerminalCallbacks);
+
+        foreach (IGrimoireConnectionOpenTicket ticket in tickets)
+        {
+
+            ticket.MarkFailed();
+
+            ticket.Dispose();
+
+        }
+
+        Result<IGrimoireExclusiveClosedLease> closed = await close.WaitAsync(BoundedWait);
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await closed.Value.DisposeAsync();
+
+        foreach (SqliteConnection connection in connections)
+        {
+
+            connection.Dispose();
+
+        }
 
     }
 
@@ -693,6 +773,8 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireClosingOwner closing = Begin(gate, Owner(9));
 
+        long observedGeneration = gate.CurrentGeneration;
+
         using CancellationTokenSource cancelled = new();
 
         cancelled.Cancel();
@@ -700,10 +782,17 @@ public sealed class GrimoireConnectionAdmissionGateTests
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => gate.CloseConnectionAdmissionAsync(closing, cancelled.Token).AsTask());
 
+        // Not issuing a lease is the weaker half of the promise. Without this, the test cannot tell
+        // a call that refused before the transition from one that committed the whole transition
+        // and then reported cancellation - and the resumed close below succeeds either way.
+        Assert.Equal(observedGeneration, gate.CurrentGeneration);
+
         Result<IGrimoireExclusiveClosedLease> resumed =
             await gate.CloseConnectionAdmissionAsync(closing, CancellationToken.None);
 
         Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        Assert.Equal(observedGeneration + 1, gate.CurrentGeneration);
 
         await using IGrimoireExclusiveClosedLease lease = resumed.Value;
 
@@ -712,6 +801,136 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    /// <summary>
+    /// A cancelled stage-two close is a refusal, not a half-committed transition.
+    /// </summary>
+    /// <remarks>
+    /// The generation bump, the move to Closed and the refusal stamped on every unresolved open are
+    /// one commitment. A caller that is told its call was cancelled has been told nothing happened,
+    /// so nothing may have happened: the generation must be untouched, the gate must still be
+    /// Closing, and an open that was in flight must still be able to revalidate and complete.
+    /// </remarks>
+    [Fact]
+    public async Task Precancelled_connection_close_leaves_the_transition_and_its_unresolved_open_intact()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        using SqliteConnection connection = new();
+
+        IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(connection);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(41));
+
+        long observedGeneration = gate.CurrentGeneration;
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => gate.CloseConnectionAdmissionAsync(closing, cancelled.Token).AsTask());
+
+        Assert.Equal(observedGeneration, gate.CurrentGeneration);
+
+        Result revalidated = ticket.RevalidateAfterNativeOpen();
+
+        Assert.True(
+            revalidated.IsSuccess,
+            revalidated.IsFailure ? revalidated.Error.Message : null);
+
+        Result opened = ticket.MarkOpened();
+
+        Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
+
+        ticket.Dispose();
+
+    }
+
+    /// <summary>
+    /// Reopening connection admission is compensation, so a cancelled caller cannot refuse it.
+    /// </summary>
+    /// <remarks>
+    /// Completing the closed lease is the only edge from Closed back to Ordinary, and it is a pure
+    /// in-lock state transition with no I/O to abandon. The caller that reaches it under an already
+    /// cancelled ambient token - a host shutting down while maintenance unwinds - is exactly the one
+    /// that must not be turned away: refusing leaves the gate Closed with no live lease, and every
+    /// later ordinary open is refused for the rest of the process.
+    /// </remarks>
+    [Fact]
+    public async Task Precancelled_lease_disposition_still_reopens_connection_admission()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, Owner(42));
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        Result reopened = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            cancelled.Token);
+
+        Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? admitted));
+
+        await admitted!.DisposeAsync();
+
+    }
+
+    /// <summary>
+    /// A refusal from a closed gate is reported under its own code, not as a generic failure.
+    /// </summary>
+    /// <remarks>
+    /// The factory catches GrimoireMaintenanceUnavailableException together with every other
+    /// InvalidOperationException and reported both as the same unavailable code with the same
+    /// message. A closed admission gate is a deliberate, temporary refusal, and a caller that cannot
+    /// tell it from an invalid connection string has to treat a planned maintenance window as a
+    /// product failure.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Closed_admission_is_refused_to_the_ordinary_factory_under_its_own_code()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingStageTwoDrain drain = new(block: false);
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        IGrimoireOrdinaryConnectionFactory factory = provider
+            .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, Owner(47));
+
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = ArcanumPaths.GrimoireDatabaseFile,
+
+            Mode = SqliteOpenMode.Memory,
+
+            Pooling = false,
+        }.ToString());
+
+        Result<IGrimoireOrdinaryConnectionLease> refused = await factory.AcquireScopedAsync(
+            connection,
+            CovenantSqliteConnectionMode.ReadWrite,
+            CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(GrimoireMaintenanceUnavailableException.Code, refused.Error.Code);
 
     }
 
@@ -1377,6 +1596,61 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    /// <summary>
+    /// The stage-one drain and the physical-open wait are different waits with different deadlines.
+    /// </summary>
+    /// <remarks>
+    /// One is how long a physical connection may take to reach its terminal callback; the other is
+    /// how long ordinary requests and background work may take to finish. Session-attachment
+    /// indexing, entry weaving and saga extraction routinely outlast any sane open deadline, and the
+    /// drain reports its expiry under its own error code - so an operator who reads a work-drain
+    /// timeout needs a work-drain knob to turn, not the one named for connection opening.
+    ///
+    /// <para>The drain checkpoint is the shorter of the two here so the assertion discriminates: the
+    /// clock is advanced by exactly that value, which a drain still keyed to the opening timeout
+    /// would never reach. The opening timeout keeps its own coverage in
+    /// <c>Opening_timeout_leaves_admission_closed_and_does_not_issue_a_closed_lease</c>, which
+    /// advances by exactly that value instead. Production passes neither: both waits keep the same
+    /// default, so this separates the knobs without moving either deadline.</para>
+    /// </remarks>
+    [Fact]
+    public async Task Stage_one_drain_honours_its_own_deadline_not_the_physical_open_one()
+    {
+
+        ManualTimeProvider clock = new();
+
+        TimeSpan workDrainCheckpoint = OpeningTimeout / 4;
+
+        GrimoireConnectionAdmissionGate gate = new(
+            clock,
+            new RecordingStageTwoDrain(block: false),
+            OpeningTimeout,
+            workDrainCheckpoint);
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? request));
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(46));
+
+        Task<Result> drain = gate
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(BoundedWait);
+
+        clock.Advance(workDrainCheckpoint);
+
+        Result timedOut = await drain.WaitAsync(BoundedWait);
+
+        Assert.True(timedOut.IsFailure);
+
+        Assert.Equal("Grimoire.WorkDrainTimeout", timedOut.Error.Code);
+
+        await request!.DisposeAsync();
+
+    }
+
     [Fact]
     public async Task Only_proven_pre_erasure_safety_can_abort_a_timed_out_stage_one_transition()
     {
@@ -1430,6 +1704,60 @@ public sealed class GrimoireConnectionAdmissionGateTests
             await gate.WaitForNextOpenGenerationAsync(
                 observedGeneration,
                 CancellationToken.None));
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? admitted));
+
+        await admitted!.DisposeAsync();
+
+    }
+
+    /// <summary>
+    /// Aborting a stuck transition is the escape hatch, so a cancelled caller cannot be refused it.
+    /// </summary>
+    /// <remarks>
+    /// A stage one that timed out leaves the gate Closing: every request and work lease is refused
+    /// and every ordinary open without a live finisher lifetime throws. Abort is the only way back,
+    /// and the caller most likely to reach it is a host unwinding under an ambient token that has
+    /// already fired. Refusing there leaves the gate Closing with nothing left to release it.
+    /// </remarks>
+    [Fact]
+    public async Task Precancelled_abort_still_releases_a_timed_out_stage_one_transition()
+    {
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? request));
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(45));
+
+        Task<Result> drain = gate
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(BoundedWait);
+
+        clock.Advance(OpeningTimeout);
+
+        Assert.True((await drain).IsFailure);
+
+        await request!.DisposeAsync();
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        Result aborted = await gate.AbortClosingAsync(
+            closing,
+            static _ => ValueTask.FromResult(true),
+            cancelled.Token);
+
+        Assert.True(aborted.IsSuccess, aborted.IsFailure ? aborted.Error.Message : null);
 
         Assert.True(gate.TryAcquireRequestLease(
             GrimoireRequestKind.Finite,
@@ -1642,6 +1970,218 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    /// <summary>
+    /// A maintenance handle that never reports a terminal state cannot hold the process hostage.
+    /// </summary>
+    /// <remarks>
+    /// A phase that throws between consuming a capability and reporting the physical outcome leaves
+    /// its handle live. Releasing the lane waited on those handles with no deadline, and the wait
+    /// sits in front of the only code that gives the shared adoption interlock back, so one leaked
+    /// handle stalled the lane's disposal and every later adoption attempt behind it. The drain is
+    /// now bounded, and the interlock is surrendered whether or not the handles reported.
+    /// </remarks>
+    [Fact]
+    public async Task Leaked_maintenance_handle_cannot_stall_lane_release_or_later_adoption()
+    {
+
+        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        CovenantExclusiveRecoveryOwner owner = Owner(43);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceConnectionCapability capability =
+            closed.IssueMaintenanceConnectionCapability(
+                CanonicalPath,
+                CovenantMaintenanceConnectionMode.ReadOnly,
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
+
+        Result<IGrimoireTrackedMaintenanceHandle> leaked = capability.Consume(
+            owner,
+            closed.Generation,
+            CanonicalPath,
+            CovenantMaintenanceConnectionMode.ReadOnly,
+            CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+            lane);
+
+        Assert.True(leaked.IsSuccess, leaked.IsFailure ? leaked.Error.Message : null);
+
+        Task release = lane.DisposeAsync().AsTask();
+
+        Assert.False(release.IsCompleted);
+
+        await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(BoundedWait);
+
+        clock.Advance(OpeningTimeout);
+
+        await release.WaitAsync(BoundedWait);
+
+        Result<IGrimoireExpiredLeaseAdoptionInterlock> adoption =
+            await gate.AcquireExpiredLeaseAdoptionInterlockAsync(
+                    owner,
+                    static (_, _) => ValueTask.FromResult(true),
+                    CancellationToken.None)
+                .AsTask()
+                .WaitAsync(BoundedWait);
+
+        Assert.True(adoption.IsSuccess, adoption.IsFailure ? adoption.Error.Message : null);
+
+        await adoption.Value.DisposeAsync();
+
+    }
+
+    /// <summary>
+    /// Disposing a handle whose native open never started completes it, because that much is known.
+    /// </summary>
+    /// <remarks>
+    /// Every other authority the closed lease issues is disposable, so a phase can guard it with
+    /// <c>await using</c>. The tracked handle was the one that was not, which left a caller no way to
+    /// write the guard at all: a throw between consuming the capability and reporting the outcome
+    /// leaked the handle by construction rather than by mistake. A handle that never started an open
+    /// has no connection to be wrong about, so disposal may complete it and the owner may
+    /// disposition.
+    /// </remarks>
+    [Fact]
+    public async Task Disposing_a_never_opened_maintenance_handle_completes_its_lifetime()
+    {
+
+        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        CovenantExclusiveRecoveryOwner owner = Owner(44);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceConnectionCapability capability =
+            closed.IssueMaintenanceConnectionCapability(
+                CanonicalPath,
+                CovenantMaintenanceConnectionMode.ReadOnly,
+                CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+                lane).Value;
+
+        IGrimoireTrackedMaintenanceHandle handle = capability.Consume(
+            owner,
+            closed.Generation,
+            CanonicalPath,
+            CovenantMaintenanceConnectionMode.ReadOnly,
+            CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+            lane).Value;
+
+        await handle.DisposeAsync();
+
+        Assert.True(handle.ReportOpenStarted().IsFailure);
+
+        // The clock is never advanced: the lane's drain has to be already satisfied, which is only
+        // true if disposal genuinely completed the handle's lifetime rather than the bounded wait
+        // quietly giving up on it.
+        await lane.DisposeAsync().AsTask().WaitAsync(BoundedWait);
+
+        Result keptClosed = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None);
+
+        Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    /// <summary>
+    /// Disposing a handle whose open had started may not report a closure nobody observed.
+    /// </summary>
+    /// <remarks>
+    /// The guard runs on the way out of a phase that threw, and it has not looked at the connection.
+    /// Completing such a handle as physically closed would empty the closure's live set, let the
+    /// owner disposition, and reopen ordinary admission over a maintenance connection that may still
+    /// be physically open - which is the exact outcome the closed lease exists to prevent. Disposal
+    /// records the abandonment and leaves the handle live, so the disposition stays refused until
+    /// something that did observe the connection reports it.
+    /// </remarks>
+    [Fact]
+    public async Task Disposing_an_open_maintenance_handle_leaves_the_lease_undispositionable()
+    {
+
+        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        CovenantExclusiveRecoveryOwner owner = Owner(49);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceConnectionCapability capability =
+            closed.IssueMaintenanceConnectionCapability(
+                CanonicalPath,
+                CovenantMaintenanceConnectionMode.ReadWrite,
+                CovenantMaintenanceConnectionPurpose.Compaction,
+                lane).Value;
+
+        IGrimoireTrackedMaintenanceHandle handle = capability.Consume(
+            owner,
+            closed.Generation,
+            CanonicalPath,
+            CovenantMaintenanceConnectionMode.ReadWrite,
+            CovenantMaintenanceConnectionPurpose.Compaction,
+            lane).Value;
+
+        Assert.True(handle.ReportOpenStarted().IsSuccess);
+
+        await handle.DisposeAsync();
+
+        // Disposal is not a report: an abandoned open cannot be reported closed after the fact
+        // either, because that caller no longer knows any more than the guard did.
+        Assert.True(handle.ReportPhysicallyClosed().IsFailure);
+
+        // The lane goes first, and it does give the shared adoption interlock back - on its bounded
+        // wait rather than on a drain that will never complete. Releasing it also removes the other
+        // reason a disposition can be refused, so what the assertion below sees is the handle alone.
+        Task release = lane.DisposeAsync().AsTask();
+
+        Task scheduled = clock.WaitForScheduledTimerCountAsync(1);
+
+        if (await Task.WhenAny(release, scheduled).WaitAsync(BoundedWait) == scheduled)
+        {
+
+            clock.Advance(OpeningTimeout);
+
+        }
+
+        await release.WaitAsync(BoundedWait);
+
+        Result refused = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None);
+
+        Assert.True(
+            refused.IsFailure,
+            "A disposition was allowed while a maintenance open that nobody observed closing is "
+            + "still outstanding.");
 
     }
 
@@ -2249,13 +2789,16 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
 
-        TaskCompletionSource terminalCasCompleted = NewBarrier();
+        // A gate value rather than a barrier this test built, completed and then asserted against
+        // itself: admission really is Ordinary again, and it got there while the adoption interlock
+        // was still held by someone else.
+        Assert.True(gate.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? readmitted));
 
-        terminalCasCompleted.TrySetResult();
+        await readmitted!.DisposeAsync();
 
         Assert.False(competingLane.IsCompleted);
-
-        Assert.True(terminalCasCompleted.Task.IsCompletedSuccessfully);
 
         await adoption.DisposeAsync();
 
