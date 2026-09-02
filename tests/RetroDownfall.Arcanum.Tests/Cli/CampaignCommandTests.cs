@@ -57,18 +57,26 @@ public sealed class CampaignCommandTests
     /// W10-3: every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
     /// server-down failure was indistinguishable from a real domain failure. Routed through
     /// <c>CliFailureExit</c>, a <c>Connection.*</c> failure now exits 3 and names the address tried.
+    /// A non-default port is configured (rather than asserting the harness's own default address)
+    /// so the assertion is load-bearing on <c>CampaignCommands.WriteError</c> actually reading
+    /// <c>Arcanum:Host</c>, not just coinciding with a hardcoded default.
     /// </summary>
     [Fact]
     public void Campaign_list_reports_a_network_failure_and_names_the_configured_base_address()
     {
 
+        const int ConfiguredPort = 19999;
+
         RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
 
-        CliTestResult result = RunCommand(handler, ["campaign", "list"]);
+        CliTestResult result = RunCommand(
+            handler,
+            ["campaign", "list"],
+            configureServices: services => services.Configure<ArcanumSettings>(s => s.Host.Port = ConfiguredPort));
 
         Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
 
-        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings());
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
 
         Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
 
@@ -418,7 +426,10 @@ public sealed class CampaignCommandTests
 
     }
 
-    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(
+        RecordingHandler handler,
+        string[] args,
+        Action<ServiceCollection>? configureServices = null)
     {
 
         ServiceCollection services = new();
@@ -434,6 +445,8 @@ public sealed class CampaignCommandTests
         services.RemoveAll<ISecretStore>();
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
+
+        configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
 
