@@ -38,12 +38,13 @@
 
     <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
 
-    <!-- The one place a version is written. It is stamped into every assembly, and it is what CI
-         reads when it cuts a build after a push to main, so the release and the binaries cannot
-         disagree.
+    <!-- The one place a version is written. It is stamped into every assembly and it is what the
+         release workflow reads when an operator dispatches it with no version input, so the release
+         and the binaries cannot disagree. No push cuts a build: CI runs the gates on a pull request
+         or a manual dispatch and calls nothing at the end.
 
-         Two shapes. A bare channel - 0.1.0-beta - means "cut the next beta": CI finds the highest
-         v0.1.0-beta.N already released, including unpublished drafts, and cuts N+1. Changing 0.1.0
+         Two shapes. A bare channel - 0.1.0-beta - means "cut the next beta": the release workflow
+         finds the highest v0.1.0-beta.N already released, including unpublished drafts, and cuts N+1. Changing 0.1.0
          restarts that count, because it counts per base version. A fully written version -
          0.1.0-beta.12, or 0.1.0 for a real release - is used exactly as written. So editing this
          line and pushing is how you name a version by hand; leaving it alone is how the beta stream
