@@ -346,8 +346,8 @@ jobs:
     if: needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified'
     # A whole job rather than a matrix leg of windows-suite, deliberately, for two reasons that both
     # fail silently. `needs:` names a job id and waits for every leg of that job's matrix, so folding
-    # arm64 into windows-suite would have added it to the Beta release gate below without anyone
-    # choosing that -- and this lane has never run, so its real failure list is unknown. And a
+    # arm64 into windows-suite would put this lane behind anything that gates on that job id, without
+    # anyone choosing that -- and this lane has never run, so its real failure list is unknown. And a
     # job-level `if:` cannot read the `matrix` context at all, so a matrix could not carry the
     # per-RID manifest gate above without rebuilding it as a dynamically generated matrix. Please do
     # not "simplify" the duplication away without answering both.
