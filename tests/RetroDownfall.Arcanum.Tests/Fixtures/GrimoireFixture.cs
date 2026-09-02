@@ -1,17 +1,44 @@
 using System.Collections.Concurrent;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
+
+/// <summary>
+/// The product's two real Grimoire compositions.
+/// </summary>
+/// <remarks>
+/// Both composition roots register <c>IGrimoireRepository</c> with their own explicit factory, so a
+/// behavioural test through one proves nothing about the other: the argument list that omitted the
+/// labelled-artifact guard was duplicated in both, and a fix applied to one would have left the other
+/// exactly as it was.
+/// </remarks>
+public enum GrimoireComposition
+{
+
+    /// <summary>The offline CLI maintenance composition, <c>AddArcanumGrimoireForCli</c>.</summary>
+    NonPooledCli = 1,
+
+    /// <summary>The serving host composition, <c>AddArcanumInfrastructure</c>.</summary>
+    PooledHost = 2,
+
+}
 
 public sealed class GrimoireFixture : IDisposable
 {
@@ -455,6 +482,110 @@ public sealed class GrimoireFixture : IDisposable
 
     public IOptionsMonitor<ArcanumSettings> CreateOptionsMonitor() =>
         new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings());
+
+    /// <summary>
+    /// A provider built through one of the product's real composition roots, serving one copy of this
+    /// fixture's database.
+    /// </summary>
+    /// <remarks>
+    /// For the questions whose answer is a property of the composition rather than of the type: an
+    /// explicit factory registration that omits an argument the constructor accepts a default for
+    /// cannot be observed by constructing the subject directly, because the test that constructs it
+    /// passes the argument the registration forgot. Only the registration itself can be asked, and the
+    /// only honest way to ask is to resolve the service from the root that declares it.
+    ///
+    /// <para>Exactly one piece is not production: the <see cref="ArcanumDbContext"/> registration is
+    /// replaced so it opens this fixture's copy instead of
+    /// <c>ArcanumPaths.GrimoireDatabaseFile</c> — without it every composed suite would read and write
+    /// the developer's live Grimoire. <c>ArcanumWebApplicationFactory</c> replaces it the same way and
+    /// for the same reason, including re-registering the enrolment interceptor the host's own options
+    /// path installs, so a composed connection is still enrolled in the Covenant drain.</para>
+    ///
+    /// <para>The production ordinary-connection factory is left registered, and its scoped path
+    /// operates on the connection it is handed — this copy's. Its <c>OpenFreshAsync</c> path is the one
+    /// member that still derives a path from <c>ArcanumPaths</c>; nothing reachable from a repository
+    /// composition test calls it, and a suite that needs it must bind the fixture double instead.</para>
+    /// </remarks>
+    public ServiceProvider CreateComposedProvider(GrimoireComposition composition)
+    {
+
+        ServiceCollection services = new();
+
+        if (composition == GrimoireComposition.NonPooledCli)
+        {
+
+            _ = services.AddArcanumGrimoireForCli();
+
+            // Composition-root inputs the CLI host supplies from outside this extension, not
+            // substitutes for anything under test. Secret and blob storage are deliberately the
+            // fixture's own: the production helper that supplies them, AddArcanumSecretStore, wires
+            // OsKeychainSecretStore over the real OS credential store, and no suite may reach the
+            // developer's keychain to ask a question about a repository registration.
+            _ = services.AddLogging();
+
+            _ = services.Configure<ArcanumSettings>(static _ => { });
+
+            _ = services.AddSingleton<ISecretStore>(new TestSecretStore());
+
+            _ = services.AddSingleton<IEncryptedBlobStore>(TestEncryptedBlobStore.Create());
+
+        }
+        else
+        {
+
+            _ = services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
+
+        }
+
+        string connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = CopyDatabase(),
+            Password = _passphrase,
+            Pooling = false,
+        }.ToString();
+
+        // The options *configuration* has to go first. Removing only the built options leaves the
+        // host's own configuration callback in place, so the context ends up with two enrolment
+        // interceptors and the second BeginOpen refuses the connection its twin already opened.
+        services.RemoveAll<IDbContextOptionsConfiguration<ArcanumDbContext>>();
+
+        services.RemoveAll<DbContextOptions<ArcanumDbContext>>();
+
+        services.RemoveAll<ArcanumDbContext>();
+
+        _ = services.AddDbContext<ArcanumDbContext>((sp, options) =>
+            options
+                .UseSqlite(connectionString)
+                .UseModel(ArcanumDbContextModel.Instance)
+                .AddInterceptors(
+                    new CovenantConnectionEnrolmentInterceptor(
+                        sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                        sp.GetRequiredService<ICovenantConnectionDrain>(),
+                        sp.GetRequiredService<ICovenantSqliteConnectionInitializer>())));
+
+        // Connection admission is the one production component a fixture copy cannot keep. The real
+        // ordinary factory validates every connection against ArcanumPaths.GrimoireDatabaseFile and
+        // refuses anything else, which is precisely the property that stops a suite from reaching the
+        // developer's live Grimoire — and which a copy under the temp directory can never satisfy. The
+        // guard, its ledger, the label table and the repository registration are all the real ones;
+        // only the admission of this database's own connection is the fixture's.
+        services.RemoveAll<IGrimoireOrdinaryConnectionFactory>();
+
+        _ = services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+            new FixtureOrdinaryConnectionFactory(connectionString));
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        if (provider.GetRequiredService<IGrimoireDbPassphraseSource>() is GrimoireDbPassphraseSource source)
+        {
+
+            source.SetPassphrase(_passphrase);
+
+        }
+
+        return provider;
+
+    }
 
     private async Task BuildTemplateAsync(CancellationToken cancellationToken)
     {

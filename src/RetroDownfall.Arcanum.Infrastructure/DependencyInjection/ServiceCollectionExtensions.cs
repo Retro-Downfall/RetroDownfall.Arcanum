@@ -335,7 +335,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
                 sp.GetService<ISessionAttachmentIndexMaintenance>(),
                 sp.GetService<CovenantMutationKernel>(),
-                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -1249,7 +1250,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
                 sp.GetService<ISessionAttachmentIndexMaintenance>(),
                 sp.GetService<CovenantMutationKernel>(),
-                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad

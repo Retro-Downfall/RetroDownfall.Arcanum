@@ -1572,6 +1572,121 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A labelled Entry cannot be deleted through the repository the product actually composes.
+    /// </summary>
+    /// <remarks>
+    /// Resolved from a real composition root rather than constructed here, because the defect this
+    /// pins was never in the repository: the guard was a constructor parameter defaulting to null and
+    /// both factory registrations simply stopped short of it, so every test that built the subject by
+    /// hand passed the argument production forgot and watched a refusal production could not reach.
+    /// The refusal surfaces as a throw rather than a failed <c>Result</c> because
+    /// <c>DeleteEntryAsync</c> returns <c>bool</c>: there is no failure channel in its signature, which
+    /// is why the guard raises instead of returning one (§10.20.2).
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(GrimoireComposition.NonPooledCli)]
+    [InlineData(GrimoireComposition.PooledHost)]
+    public async Task Deleting_a_labelled_entry_through_the_composed_repository_is_refused(
+        GrimoireComposition composition)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ServiceProvider provider = _fixture.CreateComposedProvider(composition);
+
+        await using AsyncServiceScope scope = provider.CreateAsyncScope();
+
+        IGrimoireRepository repository = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "Which artifacts carry a sensitivity label?",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        ArcanumDbContext composed = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        await LabelAssistantEntryAsync(composed, assistantEntryId, CancellationToken.None);
+
+        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.DeleteEntryAsync(sessionId, assistantEntryId, CancellationToken.None));
+
+        Assert.Contains("purge boundary", refused.Message, StringComparison.Ordinal);
+
+        // The refusal is only worth anything if it stopped the delete. A guard that raised after the
+        // row was gone would satisfy the assertion above and lose the artifact anyway.
+        Assert.True(
+            await composed.Entries
+                .AsNoTracking()
+                .AnyAsync(entry => entry.Id == assistantEntryId, CancellationToken.None),
+            "The refused delete removed the labelled Entry anyway.");
+
+    }
+
+    /// <summary>
+    /// Puts a live sensitivity label on an assistant Entry, by the same raw insert the label suite uses.
+    /// </summary>
+    /// <remarks>
+    /// Raw rather than through the ledger's own write path: <c>artifact_sensitivity</c> is declared in
+    /// the schema tree rather than the compiled EF model, and the label is this test's precondition
+    /// rather than the thing it asserts.
+    /// </remarks>
+    private static async Task LabelAssistantEntryAsync(
+        ArcanumDbContext db,
+        Guid entryId,
+        CancellationToken cancellationToken)
+    {
+
+        System.Data.Common.DbConnection connection = db.Database.GetDbConnection();
+
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(cancellationToken);
+
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO artifact_sensitivity (
+                LabelId, ArtifactKindCode, ArtifactId, SensitivityCode, ProvenanceModeCode,
+                ExactGenerationIds, GenerationBloom, SessionId, CampaignId, TurnId,
+                ArtifactRevision, ArtifactContentDigest, SensitivityDigest, ProducingPlanDigest,
+                ProducingAdmissionDigest, ProducingMaintenanceReceiptDigest, ArtifactLabelDigest,
+                CreatedAtUtc)
+            VALUES ($label, $kind, $artifact, 1, 1, $generations, NULL, NULL, NULL, NULL,
+                    1, zeroblob(32), zeroblob(32), NULL, NULL, NULL, zeroblob(32), $now);
+            """;
+
+        AddParameter(command, "$label", Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+        AddParameter(command, "$kind", (int)SensitiveArtifactKind.AssistantEntry);
+
+        AddParameter(command, "$artifact", entryId.ToString("D").ToUpperInvariant());
+
+        AddParameter(command, "$generations", Enumerable.Repeat((byte)7, 16).ToArray());
+
+        AddParameter(command, "$now", "2026-01-01T00:00:00.0000000Z");
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
+    {
+
+        System.Data.Common.DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = name;
+
+        parameter.Value = value;
+
+        command.Parameters.Add(parameter);
+
+    }
+
     private GrimoireRepository CreateRepository(
         ArcanumDbContext? db = null,
         ILogger<GrimoireRepository>? logger = null,
@@ -1586,7 +1701,8 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             covenantKernel: null,
-            connections ?? FixtureOrdinaryConnectionFactory.For(context));
+            connections ?? FixtureOrdinaryConnectionFactory.For(context),
+            FixtureLabeledArtifactGuard.For(context));
 
     }
 

@@ -3840,6 +3840,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             operations,
             timeProvider ?? TimeProvider.System,
             logger ?? NullLogger<DataRetentionService>.Instance,
+            FixtureLabeledArtifactGuard.For(_db!),
             _attachmentsRoot,
             _filesRoot,
             _logsRoot,

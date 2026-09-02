@@ -56,6 +56,7 @@ internal sealed partial class DataRetentionService(
     ILongRunningOperationStore operations,
     TimeProvider timeProvider,
     ILogger<DataRetentionService> logger,
+    ICovenantLabeledArtifactGuard labeledArtifactGuard,
     string? attachmentsRootOverride = null,
     string? filesRootOverride = null,
     string? logsRootOverride = null,
@@ -71,8 +72,7 @@ internal sealed partial class DataRetentionService(
     DataRetentionLeaseMaintainer? leaseMaintainer = null,
     CovenantRequestedOperationStarter? requestedOperationStarter = null,
     ICovenantFactoryErasureApplyRequestDigestCalculator? factoryApplyRequestDigests = null,
-    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null,
-    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : IDataRetentionService
+    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null) : IDataRetentionService
 {
 
     /// <summary>
@@ -5894,18 +5894,18 @@ internal sealed partial class DataRetentionService(
     /// a transaction is refused by the provider, so "inside the transaction" is not a shape this
     /// seam can take. <c>SagaMemoryStore</c>'s own bulk delete asks in the same place.
     ///
-    /// <para>An installation whose container never registered a guard answers success: there is no
-    /// Covenant arm, so there is no label table to consult and nothing protected to refuse.</para>
+    /// <para>The guard is required rather than optional. An installation with no Covenant arm still
+    /// gets a truthful answer from the guard itself, which reads a missing label table as "nothing
+    /// protected exists here" and returns success — so the absent-guard branch bought nothing, and
+    /// what it cost was every composition that forgot the argument skipping the refusal in silence.</para>
     /// </remarks>
     private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
         SensitiveArtifactKind kind,
         Guid artifactId,
         CancellationToken cancellationToken) =>
-        labeledArtifactGuard is { } guard
-            ? await guard
-                .EnsureUnlabeledAsync(kind, artifactId, cancellationToken)
-                .ConfigureAwait(false)
-            : Result.Success();
+        await labeledArtifactGuard
+            .EnsureUnlabeledAsync(kind, artifactId, cancellationToken)
+            .ConfigureAwait(false);
 
     /// <summary>
     /// Whether the labelled-artifact guard permits a set-based delete over one whole kind.
@@ -5918,11 +5918,9 @@ internal sealed partial class DataRetentionService(
     private async ValueTask<Result> EnsureKindUnlabeledAsync(
         SensitiveArtifactKind kind,
         CancellationToken cancellationToken) =>
-        labeledArtifactGuard is { } guard
-            ? await guard
-                .EnsureNoneLabeledAsync(kind, cancellationToken)
-                .ConfigureAwait(false)
-            : Result.Success();
+        await labeledArtifactGuard
+            .EnsureNoneLabeledAsync(kind, cancellationToken)
+            .ConfigureAwait(false);
 
     /// <summary>
     /// Counts the search rows still standing for a known set of entry rowids.

@@ -309,6 +309,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             operations,
             time,
             NullLogger<DataRetentionService>.Instance,
+            FixtureLabeledArtifactGuard.For(_db!),
             Path.Combine(_root, "attachments"),
             Path.Combine(_root, "files"),
             Path.Combine(_root, "logs"),

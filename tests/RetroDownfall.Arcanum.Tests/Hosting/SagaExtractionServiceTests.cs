@@ -803,7 +803,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(disabledSettings),
             attachmentIndex: null,
             covenantKernel: null,
-            FixtureOrdinaryConnectionFactory.For(sp.GetRequiredService<ArcanumDbContext>())));
+            FixtureOrdinaryConnectionFactory.For(sp.GetRequiredService<ArcanumDbContext>()),
+            FixtureLabeledArtifactGuard.For(sp.GetRequiredService<ArcanumDbContext>())));
 
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
@@ -1024,7 +1025,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             attachmentIndex: null,
             covenantKernel: null,
-            FixtureOrdinaryConnectionFactory.For(_db!));
+            FixtureOrdinaryConnectionFactory.For(_db!),
+            FixtureLabeledArtifactGuard.For(_db!));
 
     private static AttachmentMemoryProvenance CreateProvenance(
         Guid sessionId,

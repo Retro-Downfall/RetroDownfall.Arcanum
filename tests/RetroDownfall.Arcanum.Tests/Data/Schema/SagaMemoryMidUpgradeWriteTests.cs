@@ -405,6 +405,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                     TestOrdinaryConnectionFactory.For(db)),
                 TimeProvider.System,
                 NullLogger<DataRetentionService>.Instance,
+                FixtureLabeledArtifactGuard.For(db),
                 root,
                 root,
                 root);

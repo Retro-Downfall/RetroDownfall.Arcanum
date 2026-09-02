@@ -1955,7 +1955,8 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             covenantKernel: null,
-            FixtureOrdinaryConnectionFactory.For(db));
+            FixtureOrdinaryConnectionFactory.For(db),
+            FixtureLabeledArtifactGuard.For(db));
 
     }
 

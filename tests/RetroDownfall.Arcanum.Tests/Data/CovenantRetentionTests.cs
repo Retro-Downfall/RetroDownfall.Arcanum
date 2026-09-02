@@ -1284,6 +1284,7 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                 TestOrdinaryConnectionFactory.For(_db!)),
             TimeProvider.System,
             NullLogger<DataRetentionService>.Instance,
+            FixtureLabeledArtifactGuard.For(_db!),
             Path.Combine(_root, "attachments"),
             Path.Combine(_root, "files"),
             Path.Combine(_root, "logs"),
