@@ -10,6 +10,8 @@ using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Daemons;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -39,6 +41,16 @@ internal sealed partial class DataRetentionService
     private DateTimeOffset PrunePlanningTimestamp =>
         _prunePlanningTimestamp.Value
         ?? timeProvider.GetUtcNow();
+
+    /// <summary>
+    /// The predicate every retention probe of <c>Entries_fts</c> is issued under.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so the query-plan gate explains the string this service actually executes. A plan test
+    /// that assembled equivalent SQL of its own would keep passing after the real probe quietly went
+    /// back to scanning the whole index, which is the failure it exists to catch.
+    /// </remarks>
+    internal const string EntryFtsProbePredicate = "rowid = @rowid";
 
     private const string BatchCandidatePrefix = "batch:";
 
@@ -885,9 +897,11 @@ internal sealed partial class DataRetentionService
 
             candidates.Add(FileCandidatePrefix + file.Id.ToString("D"));
 
-            (long physicalFiles, long physicalBytes) = MeasureOwnedFile(
+            (bool physicalFileExists, long physicalBytes) = ProbeOwnedFile(
                 _filesRoot,
                 file.Id.ToString("N"));
+
+            long physicalFiles = physicalFileExists ? 1 : 0;
 
             items.Add(
                 new DataRetentionPlanItem(
@@ -1716,8 +1730,11 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", id.ToString("N"))).ConfigureAwait(false);
 
+            // Counted from the entry rather than from the index: Entries_ai mirrors one search row
+            // per entry, and the only predicate Entries_fts could answer by identity is an UNINDEXED
+            // column, which walks the whole content index once per planned candidate.
             long entryDerived = await CountTableAsync(
-                "Entries_fts",
+                "Entries",
                 "lower(replace(Id, '-', '')) = @id",
                 cancellationToken,
                 ("@id", id.ToString("N"))).ConfigureAwait(false);
@@ -4557,14 +4574,32 @@ internal sealed partial class DataRetentionService
 
             }
 
-            DataRetentionApplyResult result = await DeleteSessionAsync(
-                operationId,
-                current,
-                sessionId,
-                expectedSnapshot: null,
-                ageCutoff: effectiveCutoff,
-                mutationJournal,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            // The Session delete refuses a labelled Entry outright, which is right for the route that
+            // names one Session and wrong for a sweep that named this one among many. Nothing has
+            // been mutated when it refuses — the guard asks before the transaction opens — so the
+            // sweep leaves this Session alone and carries on, the way it does for any other candidate
+            // it may not take.
+            DataRetentionApplyResult result;
+
+            try
+            {
+
+                result = await DeleteSessionAsync(
+                    operationId,
+                    current,
+                    sessionId,
+                    expectedSnapshot: null,
+                    ageCutoff: effectiveCutoff,
+                    mutationJournal,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            }
+            catch (RetentionCovenantLabelException)
+            {
+
+                return CandidateDeleteResult.Empty;
+
+            }
 
             return CandidateDeleteResult.From(result);
 
@@ -5383,18 +5418,18 @@ internal sealed partial class DataRetentionService
         if (HasBoundedValue(candidate, AuditLogCandidatePrefix))
         {
 
-            return OwnedFileExists(
+            return ProbeOwnedFile(
                 _logsRoot,
-                candidate[AuditLogCandidatePrefix.Length..]);
+                candidate[AuditLogCandidatePrefix.Length..]).Exists;
 
         }
 
         if (HasBoundedValue(candidate, GuardrailLogCandidatePrefix))
         {
 
-            return OwnedFileExists(
+            return ProbeOwnedFile(
                 _logsRoot,
-                candidate[GuardrailLogCandidatePrefix.Length..]);
+                candidate[GuardrailLogCandidatePrefix.Length..]).Exists;
 
         }
 
@@ -5665,7 +5700,7 @@ internal sealed partial class DataRetentionService
 
         string retainedRelativePath = fileId.ToString("N");
 
-        bool reconciled = !OwnedFileExists(_filesRoot, retainedRelativePath);
+        bool reconciled = !ProbeOwnedFile(_filesRoot, retainedRelativePath).Exists;
 
         reconciled &= await CountTableAsync(
             "UploadedFiles",
@@ -5694,11 +5729,13 @@ internal sealed partial class DataRetentionService
         await using DbCommand read = connection.CreateCommand();
 
         read.CommandText =
-            "SELECT SessionId, IsPinned FROM Entries WHERE lower(replace(Id, '-', '')) = @id";
+            "SELECT SessionId, IsPinned, rowid FROM Entries WHERE lower(replace(Id, '-', '')) = @id";
 
         Add(read, "@id", entryId.ToString("N"));
 
         Guid sessionId;
+
+        long entryRowId;
 
         await using (DbDataReader reader = await read
                          .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -5712,6 +5749,8 @@ internal sealed partial class DataRetentionService
             }
 
             sessionId = Guid.Parse(reader.GetString(0));
+
+            entryRowId = reader.GetInt64(2);
 
             if (Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture) != 0)
             {
@@ -5766,6 +5805,20 @@ internal sealed partial class DataRetentionService
         bool ftsTableExists = await TableExistsAsync(
             "Entries_fts",
             cancellationToken).ConfigureAwait(false);
+
+        // A sweep is not a targeted deletion: one protected member is a reason to leave that member
+        // where it is, exactly as a pin or an operator hold is, not to abandon every other candidate.
+        // Skipping keeps the label pointing at content that still exists, which is the invariant the
+        // raw delete broke (§10.20.2).
+        if ((await EnsureArtifactUnlabeledAsync(
+                SensitiveArtifactKind.AssistantEntry,
+                entryId,
+                cancellationToken).ConfigureAwait(false)).IsFailure)
+        {
+
+            return CandidateDeleteResult.Empty;
+
+        }
 
         await using DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
@@ -5863,18 +5916,6 @@ internal sealed partial class DataRetentionService
 
             }
 
-            if (ftsTableExists)
-            {
-
-                derived += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    "DELETE FROM Entries_fts WHERE lower(replace(Id, '-', '')) = @id",
-                    cancellationToken,
-                    ("@id", entryId.ToString("N"))).ConfigureAwait(false);
-
-            }
-
             _ = await ExecuteAsync(
                 connection,
                 transaction,
@@ -5931,6 +5972,13 @@ internal sealed partial class DataRetentionService
 
             }
 
+            // Entries_ad has just removed this entry's search row by rowid. Deleting it here as well
+            // would remove it a second time, and the only predicate this statement could offer is an
+            // UNINDEXED column, so it would walk the whole FTS content index once per candidate to
+            // do it. The count is still owed to the operator, so it comes from the entry itself:
+            // Entries_ai mirrors exactly one search row per entry.
+            derived += ftsTableExists ? rows : 0;
+
             _ = await ExecuteAsync(
                 connection,
                 transaction,
@@ -5979,9 +6027,9 @@ internal sealed partial class DataRetentionService
 
         reconciled &= await CountTableAsync(
             "Entries_fts",
-            "lower(replace(Id, '-', '')) = @id",
+            EntryFtsProbePredicate,
             cancellationToken,
-            ("@id", entryId.ToString("N"))).ConfigureAwait(false) == 0;
+            ("@rowid", entryRowId)).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "attachment_memory_consultations",
@@ -6356,6 +6404,24 @@ internal sealed partial class DataRetentionService
 
     }
 
+    /// <summary>
+    /// Whether a candidate named by its stored identity carries a live sensitivity label.
+    /// </summary>
+    /// <remarks>
+    /// A candidate whose identity is not a <see cref="Guid"/> can carry no label at all: the label
+    /// table keys every artifact by one, so there is no row such an identity could match. Answering
+    /// false there is not a relaxation — it is the only answer the table can give.
+    /// </remarks>
+    private async ValueTask<bool> CandidateIsLabeledAsync(
+        SensitiveArtifactKind kind,
+        string candidateId,
+        CancellationToken cancellationToken) =>
+        Guid.TryParse(candidateId, out Guid artifactId)
+        && (await EnsureArtifactUnlabeledAsync(
+                kind,
+                artifactId,
+                cancellationToken).ConfigureAwait(false)).IsFailure;
+
     private async Task<CandidateDeleteResult> DeleteSagaCandidateAsync(
         string memoryId,
         DateTimeOffset effectiveCutoff,
@@ -6371,6 +6437,16 @@ internal sealed partial class DataRetentionService
         bool vectorTableExists = await TableExistsAsync(
             "saga_memory_embeddings_vec",
             cancellationToken).ConfigureAwait(false);
+
+        if (await CandidateIsLabeledAsync(
+                SensitiveArtifactKind.Saga,
+                memoryId,
+                cancellationToken).ConfigureAwait(false))
+        {
+
+            return CandidateDeleteResult.Empty;
+
+        }
 
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
@@ -6504,6 +6580,16 @@ internal sealed partial class DataRetentionService
         DateTimeOffset effectiveCutoff,
         CancellationToken cancellationToken)
     {
+
+        if (await CandidateIsLabeledAsync(
+                SensitiveArtifactKind.Lexicon,
+                entryId,
+                cancellationToken).ConfigureAwait(false))
+        {
+
+            return CandidateDeleteResult.Empty;
+
+        }
 
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
@@ -6724,7 +6810,7 @@ internal sealed partial class DataRetentionService
             1,
             bytes,
             0,
-            !OwnedFileExists(_logsRoot, fileName));
+            !ProbeOwnedFile(_logsRoot, fileName).Exists);
 
     }
 
@@ -7038,46 +7124,6 @@ internal sealed partial class DataRetentionService
             0,
             0,
             reconciled);
-
-    }
-
-    private bool OwnedFileExists(string root, string relativePath)
-    {
-
-        string candidate = Path.GetFullPath(Path.Combine(root, relativePath));
-
-        return WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                root,
-                candidate,
-                out _)
-            && File.Exists(candidate);
-
-    }
-
-    private static (long Files, long Bytes) MeasureOwnedFile(
-        string root,
-        string relativePath)
-    {
-
-        string fullRoot = Path.GetFullPath(root);
-
-        string candidate = Path.GetFullPath(
-            Path.Combine(fullRoot, relativePath));
-
-        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                fullRoot,
-                candidate,
-                out _)
-            || !File.Exists(candidate))
-        {
-
-            return (0, 0);
-
-        }
-
-        FileInfo file = new(candidate);
-
-        return (1, file.Length);
 
     }
 

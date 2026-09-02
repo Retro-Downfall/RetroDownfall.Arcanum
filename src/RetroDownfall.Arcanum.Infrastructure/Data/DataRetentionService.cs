@@ -71,8 +71,26 @@ internal sealed partial class DataRetentionService(
     DataRetentionLeaseMaintainer? leaseMaintainer = null,
     CovenantRequestedOperationStarter? requestedOperationStarter = null,
     ICovenantFactoryErasureApplyRequestDigestCalculator? factoryApplyRequestDigests = null,
-    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null) : IDataRetentionService
+    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null,
+    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : IDataRetentionService
 {
+
+    /// <summary>
+    /// The terminal code every retention row left for durable recovery is stamped with.
+    /// </summary>
+    /// <remarks>
+    /// Not a message to the caller — the store's recovery contract. <c>FindExpiredAsync</c> and
+    /// <c>TryAcquireLeaseAsync</c> re-select a <c>ReconciliationRequired</c> retention row only when
+    /// its <c>TerminalErrorCode</c> is this exact value, while <c>TryStartSingleFlightAsync</c>
+    /// refuses every new retention operation while such a row exists at all. Stamping the row with
+    /// the code the caller was handed instead strands it: nothing adopts it, and prune,
+    /// delete-session, reset-memory and factory-reset all answer <c>Data.Conflict</c> until a person
+    /// resets it by hand.
+    ///
+    /// <para>So the two are deliberately different values. The caller is told exactly which ending it
+    /// hit; the row carries the one code the recovery machinery matches on.</para>
+    /// </remarks>
+    internal const string RetentionRecoveryTerminalCode = ErrorCodes.Data.ReconciliationFailed;
 
     private static readonly int[] ActiveOperationStates =
     [
@@ -1004,14 +1022,47 @@ internal sealed partial class DataRetentionService(
             if (!completed)
             {
 
+                // Its own code, not the catch-all. Nothing is wrong with the data and nothing is
+                // left on disk - only the bookkeeping is open - so this is the one retention ending
+                // a client may retry unconditionally, and it has to be able to tell.
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(
-                        ErrorCodes.Data.ReconciliationFailed,
+                        ErrorCodes.Data.OperationNotFinalized,
                         "Data was pruned, but the durable operation could not be finalized; retry is safe."));
 
             }
 
             return Result<DataRetentionApplyResult>.Success(applied);
+
+        }
+        catch (RetentionCovenantLabelException ex)
+        {
+
+            // Nothing was mutated: every guard asks before its transaction opens. The operation is
+            // terminalized under the guard's own code so a client can tell protected state that must
+            // leave through the purge boundary from an ordinary retention hold, and the refusal
+            // itself is returned verbatim because its message names the boundary rather than the
+            // artifact (§10.20.2).
+            LongRunningOperation refused = await operations.GetAsync(
+                operation.Id,
+                CancellationToken.None).ConfigureAwait(false)
+                ?? lease.Operation;
+
+            bool marked = await operations.TryTransitionAsync(
+                operation.Id,
+                refused.Revision,
+                ownerId,
+                LongRunningOperationState.Failed,
+                timeProvider.GetUtcNow(),
+                ex.Error.Code,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return Result<DataRetentionApplyResult>.Failure(
+                marked
+                    ? ex.Error
+                    : new Error(
+                        ErrorCodes.Data.ReconciliationFailed,
+                        "A labelled artifact refused the deletion, but its durable marker could not be finalized."));
 
         }
         catch (RetentionBlockedException ex)
@@ -1091,18 +1142,21 @@ internal sealed partial class DataRetentionService(
                 CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
+            // The opposite instruction to the one above, and it used to share its code: the mutation
+            // is durable and bytes an operator owns are still on disk, so a client must not read this
+            // as "nothing happened" and must not retry it blind.
             bool terminalized = await operations.TryTransitionAsync(
                 operation.Id,
                 latest.Revision,
                 ownerId,
                 LongRunningOperationState.ReconciliationRequired,
                 timeProvider.GetUtcNow(),
-                ErrorCodes.Data.ReconciliationFailed,
+                RetentionRecoveryTerminalCode,
                 CancellationToken.None).ConfigureAwait(false);
 
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
-                    ErrorCodes.Data.ReconciliationFailed,
+                    ErrorCodes.Data.QuarantineRecoveryRequired,
                     terminalized
                         ? "The database mutation committed; quarantined bytes will be finalized by durable recovery."
                         : "The database mutation committed, but its quarantine recovery marker could not be finalized."));
@@ -2488,6 +2542,14 @@ internal sealed partial class DataRetentionService(
 
         }
 
+        await RefuseLabeledSessionEntriesAsync(
+            snapshot,
+            cancellationToken).ConfigureAwait(false);
+
+        bool ftsTableExists = await TableExistsAsync(
+            "Entries_fts",
+            cancellationToken).ConfigureAwait(false);
+
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -2589,13 +2651,6 @@ internal sealed partial class DataRetentionService(
                 cancellationToken,
                 ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
-            derivedDeleted += await ExecuteAsync(
-                connection,
-                transaction,
-                "DELETE FROM Entries_fts WHERE lower(replace(SessionId, '-', '')) = @id",
-                cancellationToken,
-                ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
-
             _ = await ExecuteAsync(
                 connection,
                 transaction,
@@ -2610,12 +2665,21 @@ internal sealed partial class DataRetentionService(
                 cancellationToken,
                 ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
-            rowsDeleted += await ExecuteAsync(
+            long entriesDeleted = await ExecuteAsync(
                 connection,
                 transaction,
                 "DELETE FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id",
                 cancellationToken,
                 ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
+
+            rowsDeleted += entriesDeleted;
+
+            // Entries_ad removes each search row by rowid as its entry goes, so a statement here
+            // would delete a second time — and it could only find its rows by walking the whole
+            // FTS content index on an UNINDEXED column, which is the quadratic shape that trigger
+            // was keyed by rowid to avoid. The count still has to be reported, so it comes from the
+            // entries themselves: Entries_ai mirrors one search row per entry.
+            derivedDeleted += ftsTableExists ? entriesDeleted : 0;
 
             rowsDeleted += await DeleteSessionRowInTransactionAsync(
                 connection,
@@ -2680,9 +2744,9 @@ internal sealed partial class DataRetentionService(
         TryDeleteEmptySessionDirectory(sessionId);
 
         bool reconciled = snapshot.Attachments.All(
-            attachment => !OwnedFileExists(
+            attachment => !ProbeOwnedFile(
                 _attachmentsRoot,
-                attachment.RelativePath));
+                attachment.RelativePath).Exists);
 
         reconciled &= await CountTableAsync(
             "Sessions",
@@ -2714,11 +2778,9 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
-        reconciled &= await CountTableAsync(
-            "Entries_fts",
-            "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
-            ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
+        reconciled &= await CountEntryFtsRowsAsync(
+            snapshot.EntryRowIds,
+            cancellationToken).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "attachment_memory_consultations",
@@ -2985,7 +3047,7 @@ internal sealed partial class DataRetentionService(
 
         FinalizeOperationQuarantines(quarantinedFiles);
 
-        bool reconciled = !OwnedFileExists(_attachmentsRoot, snapshot.RelativePath);
+        bool reconciled = !ProbeOwnedFile(_attachmentsRoot, snapshot.RelativePath).Exists;
 
         reconciled &= await CountTableAsync(
             "SessionAttachments",
@@ -3046,6 +3108,11 @@ internal sealed partial class DataRetentionService(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
+
+        await RefuseLabeledUntargetedResetAsync(
+            scope,
+            campaignId,
+            cancellationToken).ConfigureAwait(false);
 
         List<MemoryResetSelection> selections = [];
 
@@ -3201,11 +3268,13 @@ internal sealed partial class DataRetentionService(
 
         List<Guid> pinnedEntryIds = [];
 
+        List<long> entryRowIds = [];
+
         await using (DbCommand entries = connection.CreateCommand())
         {
 
             entries.CommandText =
-                "SELECT Id, IsPinned FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id";
+                "SELECT Id, IsPinned, rowid FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id";
 
             Add(entries, "@id", sessionId.ToString("N"));
 
@@ -3218,6 +3287,8 @@ internal sealed partial class DataRetentionService(
                 Guid entryId = Guid.Parse(reader.GetString(0));
 
                 entryIds.Add(entryId);
+
+                entryRowIds.Add(reader.GetInt64(2));
 
                 if (Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture) != 0)
                 {
@@ -3285,8 +3356,11 @@ internal sealed partial class DataRetentionService(
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
+        // Counted from the entries rather than from the index: Entries_ai mirrors one search row per
+        // entry, and Entries_fts.SessionId is UNINDEXED, so asking the index this question walks the
+        // whole content index once per snapshot.
         long entryFts = await CountTableAsync(
-            "Entries_fts",
+            "Entries",
             "lower(replace(SessionId, '-', '')) = @id",
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
@@ -3307,6 +3381,7 @@ internal sealed partial class DataRetentionService(
             status,
             [.. entryIds],
             [.. pinnedEntryIds],
+            [.. entryRowIds],
             [.. attachments],
             entryEmbeddings,
             entryVectorEmbeddings,
@@ -3407,10 +3482,9 @@ internal sealed partial class DataRetentionService(
             snapshot.Id,
             cancellationToken).ConfigureAwait(false);
 
-        bool fileExists = TryGetOwnedFileLength(
+        (bool fileExists, long fileBytes) = ProbeOwnedFile(
             _attachmentsRoot,
-            snapshot.RelativePath,
-            out long fileBytes);
+            snapshot.RelativePath);
 
         long state = await CountTableAsync(
             "session_attachment_index_state",
@@ -3456,13 +3530,15 @@ internal sealed partial class DataRetentionService(
 
         List<Guid> pinnedEntryIds = [];
 
+        List<long> entryRowIds = [];
+
         await using (DbCommand entries = connection.CreateCommand())
         {
 
             entries.Transaction = transaction;
 
             entries.CommandText =
-                "SELECT Id, IsPinned FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id ORDER BY Id";
+                "SELECT Id, IsPinned, rowid FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id ORDER BY Id";
 
             Add(entries, "@id", sessionId.ToString("N"));
 
@@ -3475,6 +3551,8 @@ internal sealed partial class DataRetentionService(
                 Guid entryId = Guid.Parse(reader.GetString(0));
 
                 entryIds.Add(entryId);
+
+                entryRowIds.Add(reader.GetInt64(2));
 
                 if (Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture) != 0)
                 {
@@ -3550,10 +3628,12 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
+        // Counted from the entries for the reason the out-of-transaction twin gives: one search row
+        // per entry, and an UNINDEXED column is the only identity Entries_fts could answer by.
         long entryFts = await CountInTransactionAsync(
             connection,
             transaction,
-            "Entries_fts",
+            "Entries",
             "lower(replace(SessionId, '-', '')) = @id",
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
@@ -3578,6 +3658,7 @@ internal sealed partial class DataRetentionService(
             status,
             [.. entryIds],
             [.. pinnedEntryIds],
+            [.. entryRowIds],
             [.. attachmentSnapshots],
             entryEmbeddings,
             entryVectorEmbeddings,
@@ -3689,10 +3770,9 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false);
 
-        bool fileExists = TryGetOwnedFileLength(
+        (bool fileExists, long fileBytes) = ProbeOwnedFile(
             _attachmentsRoot,
-            relativePath,
-            out long fileBytes);
+            relativePath);
 
         return new AttachmentPlanSnapshot(
             id,
@@ -5805,6 +5885,180 @@ internal sealed partial class DataRetentionService(
 
     }
 
+    /// <summary>
+    /// Whether the labelled-artifact guard permits removing one named artifact by raw delete.
+    /// </summary>
+    /// <remarks>
+    /// Asked before the mutation transaction opens, not inside it. This service and the guard read
+    /// the same scoped Grimoire connection, and a command issued on a connection that already holds
+    /// a transaction is refused by the provider, so "inside the transaction" is not a shape this
+    /// seam can take. <c>SagaMemoryStore</c>'s own bulk delete asks in the same place.
+    ///
+    /// <para>An installation whose container never registered a guard answers success: there is no
+    /// Covenant arm, so there is no label table to consult and nothing protected to refuse.</para>
+    /// </remarks>
+    private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        Guid artifactId,
+        CancellationToken cancellationToken) =>
+        labeledArtifactGuard is { } guard
+            ? await guard
+                .EnsureUnlabeledAsync(kind, artifactId, cancellationToken)
+                .ConfigureAwait(false)
+            : Result.Success();
+
+    /// <summary>
+    /// Whether the labelled-artifact guard permits a set-based delete over one whole kind.
+    /// </summary>
+    /// <remarks>
+    /// The bulk arm, for the statements that examine no identity at all. A per-artifact check cannot
+    /// see rows it never enumerated, so the only honest question is whether the kind still has a
+    /// labelled member anywhere and the only safe answer for "yes" is to refuse (§10.20.2).
+    /// </remarks>
+    private async ValueTask<Result> EnsureKindUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        CancellationToken cancellationToken) =>
+        labeledArtifactGuard is { } guard
+            ? await guard
+                .EnsureNoneLabeledAsync(kind, cancellationToken)
+                .ConfigureAwait(false)
+            : Result.Success();
+
+    /// <summary>
+    /// Counts the search rows still standing for a known set of entry rowids.
+    /// </summary>
+    /// <remarks>
+    /// The post-delete proof that <c>Entries_ad</c> ran. It cannot ask <c>Entries_fts</c> for the
+    /// Session, because <c>SessionId</c> there is UNINDEXED and the question would walk the whole
+    /// content index once per purge; and it cannot re-derive the rowids from <c>Entries</c>, because
+    /// those rows are exactly what has just gone. So the rowids are carried from the snapshot taken
+    /// before the delete and asked for by the one key FTS5 can resolve.
+    ///
+    /// <para>Batched because the answer is one bound parameter per rowid, and a Session with more
+    /// entries than SQLite's variable limit would otherwise turn a reconciliation into a
+    /// failure.</para>
+    /// </remarks>
+    private async Task<long> CountEntryFtsRowsAsync(
+        long[] entryRowIds,
+        CancellationToken cancellationToken)
+    {
+
+        const int batchSize = 256;
+
+        long standing = 0;
+
+        for (int offset = 0; offset < entryRowIds.Length; offset += batchSize)
+        {
+
+            long[] batch = entryRowIds[offset..Math.Min(offset + batchSize, entryRowIds.Length)];
+
+            (string Name, object Value)[] parameters =
+                [.. batch.Select(static (rowId, index) => ("@rowid" + index.ToString(CultureInfo.InvariantCulture), (object)rowId))];
+
+            standing += await CountTableAsync(
+                "Entries_fts",
+                "rowid IN (" + string.Join(", ", parameters.Select(static parameter => parameter.Name)) + ")",
+                cancellationToken,
+                parameters).ConfigureAwait(false);
+
+        }
+
+        return standing;
+
+    }
+
+    /// <summary>
+    /// Refuses an untargeted memory reset over a store that still holds a labelled member.
+    /// </summary>
+    /// <remarks>
+    /// An untargeted reset hands one bare <c>DELETE FROM</c> the whole table, which is the exact
+    /// shape the guard's bulk arm exists for: the statement examines no identity, so no per-artifact
+    /// check can see the rows it never enumerated and the only safe answer for a labelled member is
+    /// to refuse. A Campaign-targeted reset takes the predicate arm instead and is left alone.
+    ///
+    /// <para>Saga and Lexicon are the two stores asked about, because they are the two kinds the
+    /// label table names for a store's own rows. The embedding scopes truncate derived rows whose
+    /// labels are all one kind, and <see cref="SensitiveArtifactKind.Embedding"/> does not
+    /// distinguish an Entry embedding from an attachment one — asking it here would refuse an
+    /// attachment reset for a labelled Entry embedding it never touches.</para>
+    /// </remarks>
+    private async Task RefuseLabeledUntargetedResetAsync(
+        MemoryResetScope scope,
+        Guid? campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        if (campaignId is not null)
+        {
+
+            return;
+
+        }
+
+        SensitiveArtifactKind? kind = scope switch
+        {
+
+            MemoryResetScope.Saga => SensitiveArtifactKind.Saga,
+
+            MemoryResetScope.Lexicon => SensitiveArtifactKind.Lexicon,
+
+            _ => null,
+
+        };
+
+        if (kind is not { } protectedKind)
+        {
+
+            return;
+
+        }
+
+        Result unlabeled = await EnsureKindUnlabeledAsync(
+            protectedKind,
+            cancellationToken).ConfigureAwait(false);
+
+        if (unlabeled.IsFailure)
+        {
+
+            throw new RetentionCovenantLabelException(unlabeled.Error);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Refuses a Session deletion that would take a labelled assistant Entry with it.
+    /// </summary>
+    /// <remarks>
+    /// A Session delete is all or nothing — the Session row and every Entry under it leave in one
+    /// transaction — so a protected member is a reason to refuse the whole operation rather than to
+    /// leave a Session deleted around Entries that are still there. The single-entry route already
+    /// dispatches through the purge boundary; this is the bulk twin that did not.
+    /// </remarks>
+    private async Task RefuseLabeledSessionEntriesAsync(
+        SessionPlanSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+
+        foreach (Guid entryId in snapshot.EntryIds)
+        {
+
+            Result unlabeled = await EnsureArtifactUnlabeledAsync(
+                SensitiveArtifactKind.AssistantEntry,
+                entryId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (unlabeled.IsFailure)
+            {
+
+                throw new RetentionCovenantLabelException(unlabeled.Error);
+
+            }
+
+        }
+
+    }
+
     private async Task<DbConnection> OpenConnectionAsync(
         CancellationToken cancellationToken)
     {
@@ -5981,103 +6235,40 @@ internal sealed partial class DataRetentionService(
 
     }
 
-    private static bool TryGetOwnedFileLength(
+    /// <summary>
+    /// Resolves one managed file under a root, proves containment, and reports what it found.
+    /// </summary>
+    /// <remarks>
+    /// The single containment-check-then-stat helper both retention partials use. It replaced three
+    /// copies that differed in what they returned — and in one respect that was not cosmetic: one of
+    /// them handed the raw root to the containment check while resolving the candidate in full.
+    /// <c>WorkspacePathPolicy.IsPathUnderWorkspace</c> trims a trailing separator from the root and
+    /// normalises nothing else, so a root carrying a <c>.</c> or <c>..</c> segment stops being a
+    /// prefix of its own contents and a file plainly inside the tree reads as outside it — which for
+    /// a reconciliation probe means "already gone". Every root reaching retention is resolved at
+    /// construction today, so the three agreed; a caller passing an override would have found out
+    /// which copy it reached.
+    ///
+    /// <para>The root is resolved here rather than at the call sites, so a hardening change to the
+    /// containment rule has one place to land instead of three.</para>
+    /// </remarks>
+    private static (bool Exists, long Bytes) ProbeOwnedFile(
         string root,
-        string relativePath,
-        out long bytes)
+        string relativePath)
     {
-
-        bytes = 0;
 
         string fullRoot = Path.GetFullPath(root);
 
         string candidate = Path.GetFullPath(
             Path.Combine(fullRoot, relativePath));
 
-        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+        return WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
                 fullRoot,
                 candidate,
                 out _)
-            || !File.Exists(candidate))
-        {
-
-            return false;
-
-        }
-
-        bytes = new FileInfo(candidate).Length;
-
-        return true;
-
-    }
-
-    private bool TryDeleteOwnedFile(
-        string root,
-        string relativePath,
-        out long deletedBytes)
-    {
-
-        deletedBytes = 0;
-
-        string fullRoot = Path.GetFullPath(root);
-
-        string candidate = Path.GetFullPath(
-            Path.Combine(fullRoot, relativePath));
-
-        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                fullRoot,
-                candidate,
-                out _))
-        {
-
-            logger.LogWarning(
-                "Retention refused a file path outside its selected root: {RelativePath}",
-                relativePath);
-
-            return false;
-
-        }
-
-        if (!File.Exists(candidate))
-        {
-
-            return false;
-
-        }
-
-        if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
-                candidate,
-                FileSystemObjectKind.RegularFile,
-                out IdentityOwnedFileSystemArtifact artifact))
-        {
-
-            if (!File.Exists(candidate))
-            {
-
-                return false;
-
-            }
-
-            throw new IOException(
-                "Retention refused a file whose no-follow identity could not be captured.");
-
-        }
-
-        FileInfo info = new(candidate);
-
-        deletedBytes = info.Length;
-
-        if (!IdentityOwnedFileSystemCleanup.TryDelete(artifact))
-        {
-
-            deletedBytes = 0;
-
-            throw new IOException(
-                "Retention refused a file whose identity changed before deletion.");
-
-        }
-
-        return true;
+            && File.Exists(candidate)
+            ? (true, new FileInfo(candidate).Length)
+            : (false, 0);
 
     }
 
@@ -7515,6 +7706,7 @@ internal sealed partial class DataRetentionService(
         string Status,
         Guid[] EntryIds,
         Guid[] PinnedEntryIds,
+        long[] EntryRowIds,
         AttachmentPlanSnapshot[] Attachments,
         long EntryEmbeddingCount,
         long EntryVectorEmbeddingCount,
@@ -7564,6 +7756,26 @@ internal sealed partial class DataRetentionService(
     private sealed class RetentionConflictException(string message) : Exception(message);
 
     private sealed class RetentionBlockedException(string message) : Exception(message);
+
+    /// <summary>
+    /// A retention route reached an artifact the labelled-artifact guard refuses to remove.
+    /// </summary>
+    /// <remarks>
+    /// Carries the guard's own <see cref="Error"/> rather than a message, because the code is the
+    /// half a programmatic client can act on: a route that flattened this into
+    /// <c>Data.Blocked</c> would tell an operator their deletion hit an ordinary retention hold
+    /// rather than protected state that must be dispatched through the purge boundary (§10.20.2).
+    ///
+    /// <para>Every throw site runs before its transaction is opened, so unwinding this leaves
+    /// nothing half-applied.</para>
+    /// </remarks>
+    private sealed class RetentionCovenantLabelException(Error error)
+        : Exception(error.Message)
+    {
+
+        public Error Error { get; } = error;
+
+    }
 
     private sealed class RetentionQuarantineRecoveryRequiredException(
         string message,

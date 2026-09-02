@@ -574,7 +574,33 @@ public static class ErrorCodes
 
         public const string ConfirmationRequired = "Data.ConfirmationRequired";
 
+        /// <summary>The operation failed and its durable history requires operator review.</summary>
+        /// <remarks>
+        /// Deliberately no longer the single answer for every unhappy retention ending. It kept
+        /// "retry is safe", "the mutation committed and bytes are still quarantined" and "somebody
+        /// has to look" under one code and one status, so a programmatic client could not tell them
+        /// apart; the distinguishing detail survived only in the message text.
+        /// </remarks>
         public const string ReconciliationFailed = "Data.ReconciliationFailed";
+
+        /// <summary>
+        /// The database mutation committed and quarantined bytes still need to be finalized.
+        /// </summary>
+        /// <remarks>
+        /// The one ending where the data change is already durable and the remaining work is on
+        /// disk. A caller must not treat it as "nothing happened": the rows are gone, and durable
+        /// recovery or an operator finishes the cleanup.
+        /// </remarks>
+        public const string QuarantineRecoveryRequired = "Data.QuarantineRecoveryRequired";
+
+        /// <summary>
+        /// The data change applied, but the durable operation row could not be transitioned.
+        /// </summary>
+        /// <remarks>
+        /// The only retention ending where an unconditional retry is safe: nothing is wrong with the
+        /// data and nothing is left on disk, so the caller may simply ask again.
+        /// </remarks>
+        public const string OperationNotFinalized = "Data.OperationNotFinalized";
 
         public const string InventoryUnavailable = "Data.InventoryUnavailable";
 
