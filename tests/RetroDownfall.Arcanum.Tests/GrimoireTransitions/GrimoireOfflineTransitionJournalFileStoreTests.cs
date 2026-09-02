@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 using System.Text;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -1410,6 +1412,74 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     }
 
+    /// <summary>
+    /// Exercises <c>OpenChild</c> directly (below <c>CreateWorkingExclusive</c>'s <c>fchmod</c> repair)
+    /// so the mode the kernel actually assigned at creation time is observable. Apple's arm64 ABI
+    /// passes every variadic argument of a variadic call on the stack rather than in a register, so a
+    /// fixed-arity P/Invoke declaration of <c>openat</c> that places the creation mode in a register can
+    /// deliver unrelated register contents to the kernel instead.
+    /// </summary>
+    [SkippableFact]
+    public void Working_file_creation_delivers_owner_only_mode_before_the_fchmod_repair()
+    {
+
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Unix-only: exercises the openat exclusive-create path fchmod repairs afterwards.");
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = Value(
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest));
+
+        int previousUmask = UmaskUnix(0);
+
+        try
+        {
+
+            SecureFileOpenStatus status = primitives.OpenChild(
+                "openat-mode-probe",
+                createExclusive: true,
+                writable: true,
+                out var handle);
+
+            using (handle)
+            {
+
+                Assert.Equal(SecureFileOpenStatus.Success, status);
+
+                Assert.NotNull(handle);
+
+                UnixFileMode observed = File.GetUnixFileMode(handle);
+
+                Assert.True(
+                    observed == (UnixFileMode.UserRead | UnixFileMode.UserWrite),
+                    "observed pre-fchmod mode: " + observed);
+
+            }
+
+        }
+        finally
+        {
+
+            UmaskUnix(previousUmask);
+
+        }
+
+    }
+
+    [DllImport("libc", EntryPoint = "umask")]
+    private static extern int UmaskUnix(int mask);
+
     [Fact]
     public void Production_windows_layout_uses_retained_handle_acl_and_synchronous_streams()
     {
@@ -1585,7 +1655,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         string parentOpen = SourceMethod(
             source,
             "private static SafeFileHandle? OpenParentNoFollow(",
-            "private SecureFileOpenStatus OpenChild(");
+            "internal SecureFileOpenStatus OpenChild(");
 
         Assert.Contains("WindowsParentDesiredAccess", parentOpen, StringComparison.Ordinal);
 

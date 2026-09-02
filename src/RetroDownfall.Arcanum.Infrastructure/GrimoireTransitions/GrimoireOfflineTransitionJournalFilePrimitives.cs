@@ -1143,7 +1143,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     }
 
-    private SecureFileOpenStatus OpenChild(
+    internal SecureFileOpenStatus OpenChild(
         string leaf,
         bool createExclusive,
         bool writable,
@@ -1860,8 +1860,39 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int OpenUnix(string path, int flags);
 
+    /// <summary>
+    /// <c>openat</c> is declared <c>int openat(int, const char *, int, ...)</c>: <c>mode</c> is a
+    /// variadic argument. On Apple's arm64 ABI a variadic call passes every variadic argument on the
+    /// stack rather than in a register, even though a fixed-arity declaration with the same number of
+    /// named parameters would place the fourth argument in a register — so the four-parameter shape
+    /// below delivers unspecified register contents as the creation mode on osx-arm64. Dispatch to the
+    /// stack-shaped overload there and keep the register-shaped one for every other supported platform.
+    /// </summary>
+    private static int OpenAtUnix(int directory, string path, int flags, int mode) =>
+        OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+            ? OpenAtAppleArm64(directory, path, flags, 0, 0, 0, 0, 0, mode)
+            : OpenAtUnixFixedArity(directory, path, flags, mode);
+
     [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
-    private static partial int OpenAtUnix(int directory, string path, int flags, int mode);
+    private static partial int OpenAtUnixFixedArity(int directory, string path, int flags, int mode);
+
+    /// <summary>
+    /// Fills x0-x7 with the directory descriptor, the path pointer, the flags, and five zero filler
+    /// arguments so the ninth argument -- <paramref name="mode"/> -- spills to the first stack slot,
+    /// which is where Apple's arm64 ABI requires a variadic callee to read its first variadic argument
+    /// regardless of how many named parameters precede it.
+    /// </summary>
+    [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int OpenAtAppleArm64(
+        int directory,
+        string path,
+        int flags,
+        int registerFiller3,
+        int registerFiller4,
+        int registerFiller5,
+        int registerFiller6,
+        int registerFiller7,
+        int mode);
 
     [LibraryImport("libc", EntryPoint = "renameat2", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int RenameAt2(
