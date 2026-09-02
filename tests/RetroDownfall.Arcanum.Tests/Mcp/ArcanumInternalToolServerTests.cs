@@ -2910,8 +2910,34 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
-    [Fact]
-    public async Task ToolsCall_list_directory_does_not_duplicate_content_reached_through_multiple_directory_symlinks_across_pages()
+    // Reproduces the reviewer's W6-4 shape at two scopes, swept over several fixture sizes:
+    // - subdirectoryScope: false -- listed from the workspace root, so every symlink's target lies
+    //   *inside* the listing scope (round-1 shape; the target's own real name also appears in this
+    //   same listing).
+    // - subdirectoryScope: true -- listed from a dedicated "scope" subdirectory whose own symlinks
+    //   point at the six cross-linked directories from *outside* it, so every symlink's target lies
+    //   outside the listing scope but still inside the workspace (round-2 shape: the target's real
+    //   name is never part of this listing at all, so an out-of-scope alias needs different cross-page
+    //   memory than an in-scope one does).
+    // In both shapes, a resume that loses track of canonical directories descended on an earlier page
+    // re-triggers a full re-descent through a later alias to the same target, compounding across pages
+    // instead of staying bounded.
+    [Theory]
+    [InlineData(6, false)]
+    [InlineData(6, true)]
+    [InlineData(8, false)]
+    [InlineData(8, true)]
+    [InlineData(16, false)]
+    [InlineData(16, true)]
+    [InlineData(18, false)]
+    [InlineData(18, true)]
+    [InlineData(28, false)]
+    [InlineData(28, true)]
+    [InlineData(40, false)]
+    [InlineData(40, true)]
+    public async Task ToolsCall_list_directory_does_not_duplicate_content_reached_through_multiple_directory_symlinks_across_pages(
+        int filesPerDirectory,
+        bool subdirectoryScope)
     {
 
         if (!OperatingSystem.IsMacOS()
@@ -2922,15 +2948,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         }
 
-        // Reproduces the reviewer's W6-4 regression shape: a handful of real directories densely
-        // cross-linked by directory symlinks. A resume that reseeds cycle detection from only the
-        // checkpoint's ancestor chain has no memory of canonical directories a *prior* page already
-        // descended into, so a symlink alias encountered again on a later page re-triggers a full
-        // re-descent -- and with many aliases pointing at few real targets, that re-descent compounds
-        // across pages instead of staying bounded.
         const int directoryCount = 6;
-
-        const int filesPerDirectory = 8;
 
         const int symlinksPerDirectory = directoryCount - 1;
 
@@ -2977,103 +2995,59 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         Assert.Equal(symlinkCount, linkIndex);
 
-        // Defensive, not currently load-bearing on macOS/Linux CI: Directory.ResolveLinkTarget has been
-        // observed here to return the *stored* symlink target verbatim (readlink semantics), matching
-        // _workspace.Root's own raw (non-realpath'd) form, so canonicalRoot below normally equals
-        // rawRoot exactly. If a runtime ever resolves through an ancestor symlink too (e.g. macOS's own
-        // /var -> private/var, which the .NET API here has not been seen to cross), a directory reached
-        // through one of this fixture's symlinks would canonicalize differently than the *same* directory
-        // reached directly under _workspace.Root -- an artifact of this oracle's own path comparisons,
-        // nothing to do with the tool under test. Map both forms into the same space before ever adding
-        // one to a HashSet or comparing it, so the oracle stays correct either way.
-        string rawRoot = Path.GetFullPath(_workspace.Root);
+        string listingRelativePath = ".";
 
-        string canonicalRoot;
+        if (subdirectoryScope)
         {
 
-            string probeLink = Path.Combine(Path.GetTempPath(), $"arcanum-oracle-probe-{Guid.NewGuid():N}");
+            string scopeDirectory = _workspace.CreateSubdir("scope");
 
-            Directory.CreateSymbolicLink(probeLink, Path.GetTempPath());
-
-            try
+            for (int d = 0; d < directoryCount; d++)
             {
 
-                canonicalRoot = Path.Combine(
-                    Directory.ResolveLinkTarget(probeLink, returnFinalTarget: true)!.FullName,
-                    Path.GetRelativePath(Path.GetTempPath(), _workspace.Root));
-
-            }
-            finally
-            {
-
-                // Deletes only the probe symlink itself (unlink), never Path.GetTempPath()'s contents.
-                Directory.Delete(probeLink);
+                Directory.CreateSymbolicLink(
+                    Path.Combine(scopeDirectory, $"scopelink{d}"),
+                    directories[d]);
 
             }
 
-        }
-
-        string Normalize(string path)
-        {
-
-            string full = Path.GetFullPath(path);
-
-            return full.StartsWith(rawRoot, StringComparison.Ordinal)
-                ? canonicalRoot + full[rawRoot.Length..]
-                : full;
+            listingRelativePath = "scope";
 
         }
 
-        // Oracle: the fixture is synthetic and fully connected, so the correct total is arithmetic, not
-        // just "whatever a second walk happens to produce" -- one entry per directory at the level it is
-        // first reached, plus each directory's own files and outgoing symlinks shown exactly once, when
-        // (and only when) that directory's content is shown. +3 for the class-wide baseline every test's
-        // _workspace already carries by the time it runs (see InitializeAsync above): the "folder" and
-        // "notes" entries at the root, plus "notes/alpha.txt".
-        const int baselineFixtureEntries = 3;
+        // Oracle: run the exact same call with a page size large enough that the whole listing fits in
+        // one page (no continuation at all), and let the walk's own first-encounter-wins resolution
+        // order decide the count -- not a hand-derived formula. Unlike the root-scope shape (where a
+        // real directory's own name always wins the race against any alias to it, making the count a
+        // simple sum), the subdirectory shape's count depends on which of several out-of-scope aliases
+        // reaches a given target first, which is not practical to predict by hand.
+        const int oracleMaxPaths = 100_000;
 
-        const int expectedCount = baselineFixtureEntries
-            + directoryCount
-            + (directoryCount * (filesPerDirectory + symlinksPerDirectory));
+        await using TestMcpSession oracleSession = await CreateSessionAsync(
+            listDirectoryMaxPaths: oracleMaxPaths);
 
-        int oracleCount = 0;
-
-        HashSet<string> oracleVisited = new(StringComparer.Ordinal)
-        {
-            Normalize(_workspace.Root),
-        };
-
-        void WalkOracle(string directory)
-        {
-
-            foreach (string entry in Directory.EnumerateFileSystemEntries(directory)
-                         .OrderBy(static p => p, StringComparer.Ordinal))
+        JsonElement oracleArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams
             {
+                RelativePath = listingRelativePath,
+                Recursive = true,
+            },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
 
-                oracleCount++;
+        McpToolsCallResultWire oracleResult = await oracleSession.CallToolAsync(
+            "list_directory",
+            oracleArguments);
 
-                if (Directory.Exists(entry))
-                {
+        Assert.False(oracleResult.IsError);
 
-                    string canonical = Normalize(
-                        Directory.ResolveLinkTarget(entry, returnFinalTarget: true)?.FullName ?? entry);
+        string oracleText = Assert.Single(oracleResult.Content).Text!;
 
-                    if (oracleVisited.Add(canonical))
-                    {
+        Assert.DoesNotContain(
+            "[MORE:",
+            oracleText,
+            StringComparison.Ordinal);
 
-                        WalkOracle(entry);
-
-                    }
-
-                }
-
-            }
-
-        }
-
-        WalkOracle(_workspace.Root);
-
-        Assert.Equal(expectedCount, oracleCount);
+        int oracleCount = oracleText.Split('\n').Length;
 
         await using TestMcpSession session = await CreateSessionAsync();
 
@@ -3092,14 +3066,15 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
             Assert.True(
                 pages <= pageSafetyCap,
-                $"Aborting after {pageSafetyCap} pages without reaching the end of the listing. That is itself " +
-                "the failure: bounded re-descent should finish in a small, small-multiple-of-oracleCount/64 " +
-                "number of pages, not run away.");
+                $"Aborting after {pageSafetyCap} pages without reaching the end of the listing " +
+                $"(filesPerDirectory={filesPerDirectory}, subdirectoryScope={subdirectoryScope}). That is " +
+                "itself the failure: bounded re-descent should finish in a small, small-multiple-of-" +
+                "oracleCount/64 number of pages, not run away.");
 
             JsonElement arguments = JsonSerializer.SerializeToElement(
                 new ListDirectoryParams
                 {
-                    RelativePath = ".",
+                    RelativePath = listingRelativePath,
                     Recursive = true,
                     Continuation = continuation,
                 },
@@ -3147,25 +3122,25 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         } while (true);
 
         // The whole check: every real path shown exactly once. A resume that loses track of canonical
-        // directories visited on an earlier page re-descends into content reachable through more than one
-        // directory symlink, which shows up here as extra lines -- allLines.Count above expectedCount --
-        // not as literal duplicate strings (re-descended content is emitted under a different alias
-        // prefix each time, e.g. dir0/link0/f000.txt alongside dir1/f000.txt, so it never collides in a
-        // plain HashSet of the emitted lines themselves). The count alone does not say how many pages
-        // it took to get there, so report both together -- that pairing is what the RED evidence needs.
+        // directories descended on an earlier page re-descends into content reachable through more than
+        // one directory symlink, which shows up here as extra lines -- allLines.Count above oracleCount
+        // -- not as literal duplicate strings (re-descended content is emitted under a different alias
+        // prefix each time, so it never collides in a plain list of the emitted lines themselves).
         Assert.True(
-            allLines.Count == expectedCount,
-            $"Expected {expectedCount} entries across all continuations but observed {allLines.Count} over " +
-            $"{pages} pages. A resume that loses track of canonical directories visited on an earlier page " +
-            "re-descends into content reachable through more than one directory symlink.");
+            allLines.Count == oracleCount,
+            $"Expected {oracleCount} entries across all continuations (filesPerDirectory={filesPerDirectory}, " +
+            $"subdirectoryScope={subdirectoryScope}) but observed {allLines.Count} over {pages} pages. A " +
+            "resume that loses track of canonical directories descended on an earlier page re-descends " +
+            "into content reachable through more than one directory symlink.");
 
-        int pageBound = (expectedCount / 64) + 3;
+        int expectedPages = (int)Math.Ceiling(oracleCount / 64.0);
 
         Assert.True(
-            pages <= pageBound,
-            $"Expected at most {pageBound} pages for {expectedCount} real entries, but observed {pages} pages. " +
-            "Page count running far past the entry count confirms combinatorial re-descent, not just a few " +
-            "extra duplicate pages.");
+            pages == expectedPages,
+            $"Expected exactly {expectedPages} pages for {oracleCount} entries at 64 per page " +
+            $"(filesPerDirectory={filesPerDirectory}, subdirectoryScope={subdirectoryScope}), but observed " +
+            $"{pages} pages. Page count above the arithmetic minimum confirms combinatorial re-descent, not " +
+            "just a few extra duplicate pages.");
 
     }
 
@@ -4067,6 +4042,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         IntelligenceSettings? intelligenceSettings = null,
         long maxFileReadSizeBytes = 1024 * 1024,
         int maxJsonRpcLineBytes = 2_097_152,
+        int listDirectoryMaxPaths = 64,
         bool conclaveEnabled = false,
         bool sagaEnabled = false,
         bool a2aClientEnabled = false,
@@ -4137,7 +4113,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             scopeFactory,
             pacer,
             normalizedRoot,
-            listDirectoryMaxPaths: 64,
+            listDirectoryMaxPaths: listDirectoryMaxPaths,
             intelligenceSettings: settings,
             maxFileReadSizeBytes: maxFileReadSizeBytes,
             conclaveEnabled: conclaveEnabled,

@@ -630,6 +630,7 @@ internal sealed partial class ArcanumInternalToolServer
             if (!TryDecodeListDirectoryContinuation(
                     args,
                     out string? afterPath,
+                    out string[] decodedOutOfScopeDescendedRelativePaths,
                     out string? continuationError))
             {
 
@@ -662,8 +663,10 @@ internal sealed partial class ArcanumInternalToolServer
                     absolutePath,
                     args.Recursive,
                     afterPath,
+                    decodedOutOfScopeDescendedRelativePaths,
                     cancellationToken,
-                    out IEnumerable<string> walk))
+                    out IEnumerable<string> walk,
+                    out OutOfScopeDescentTracker outOfScopeTracker))
             {
 
                 return ToolError(
@@ -706,7 +709,8 @@ internal sealed partial class ArcanumInternalToolServer
 
                 string continuation = EncodeListDirectoryContinuation(
                     args,
-                    lastPath!);
+                    lastPath!,
+                    outOfScopeTracker.ToRelativePaths().ToArray());
 
                 lines.Add(
                     $"... [MORE: continuation={continuation}; call list_directory again with the same relativePath/recursive arguments and this opaque continuation token.]" );
@@ -745,13 +749,26 @@ internal sealed partial class ArcanumInternalToolServer
         }
     }
 
+    /// <summary>
+    /// Decodes <paramref name="args"/>'s continuation, if any, into the checkpoint path to resume from
+    /// and the set of out-of-scope directory symlink targets (workspace-relative, forward-slashed)
+    /// already descended into by an earlier page of this same listing -- the cross-page memory an
+    /// out-of-scope alias needs, since <see cref="WalkListDirectoryEntries"/>'s per-page
+    /// <c>visitedCanonicalDirectories</c> alone is reseeded fresh on every resumed page (see W6-4 round
+    /// 2). An in-scope alias needs no such memory: its target's own real name owns its content, so
+    /// whether to descend it is a pure function of the canonical path alone, not of what an earlier page
+    /// already saw.
+    /// </summary>
     private bool TryDecodeListDirectoryContinuation(
         ListDirectoryParams args,
         out string? afterPath,
+        out string[] outOfScopeDescendedRelativePaths,
         out string? error)
     {
 
         afterPath = null;
+
+        outOfScopeDescendedRelativePaths = [];
 
         error = null;
 
@@ -795,7 +812,16 @@ internal sealed partial class ArcanumInternalToolServer
 
             }
 
-            afterPath = payload[(separator + 1)..];
+            string remainder = payload[(separator + 1)..];
+
+            // A third, optional segment -- the out-of-scope-descent set -- follows the checkpoint path
+            // after a second '\n'; entries within it are '\u001f'-joined (never '\n'-joined) so a
+            // checkpoint path itself is never ambiguous with the boundary between the two segments.
+            int entriesSeparator = remainder.IndexOf('\n');
+
+            afterPath = entriesSeparator < 0
+                ? remainder
+                : remainder[..entriesSeparator];
 
             if (afterPath.Length == 0)
             {
@@ -805,6 +831,17 @@ internal sealed partial class ArcanumInternalToolServer
                 afterPath = null;
 
                 return false;
+
+            }
+
+            if (entriesSeparator >= 0)
+            {
+
+                string entriesPortion = remainder[(entriesSeparator + 1)..];
+
+                outOfScopeDescendedRelativePaths = entriesPortion.Length == 0
+                    ? []
+                    : entriesPortion.Split('\u001f', StringSplitOptions.RemoveEmptyEntries);
 
             }
 
@@ -826,12 +863,20 @@ internal sealed partial class ArcanumInternalToolServer
 
     private static string EncodeListDirectoryContinuation(
         ListDirectoryParams args,
-        string lastPath)
+        string lastPath,
+        IReadOnlyCollection<string> outOfScopeDescendedRelativePaths)
     {
 
         string payload = ComputeListDirectoryScopeFingerprint(args)
             + "\n"
             + lastPath;
+
+        if (outOfScopeDescendedRelativePaths.Count > 0)
+        {
+
+            payload += "\n" + string.Join('\u001f', outOfScopeDescendedRelativePaths);
+
+        }
 
         return Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
 
@@ -861,13 +906,133 @@ internal sealed partial class ArcanumInternalToolServer
     /// langword="false"/> only when the checkpoint itself could not be found (vanished, or a malformed
     /// token); the caller reports that as the same restart-required error either way.
     /// </summary>
+    /// <summary>
+    /// Tracks which out-of-scope directory symlink targets one <c>list_directory</c> call has already
+    /// descended into, across every continuation of that same call -- the cross-page memory an
+    /// out-of-scope alias needs (W6-4 round 2). An in-scope alias needs none: its target's own real
+    /// name owns its content, so whether to descend it is a pure function of the canonical path alone
+    /// (see <see cref="WalkListDirectoryEntries"/>), never of what an earlier page already saw. An
+    /// out-of-scope target has no real name inside the listed scope for the walk to ever reach on its
+    /// own, so its only defense against being re-descended on a later page is remembering it here,
+    /// carried in the continuation token between pages.
+    /// </summary>
+    /// <remarks>
+    /// Bounded by the same budget the continuation token itself is: an identity that cannot be safely
+    /// recorded must not be descended, so a future page is never left needing to remember something
+    /// this page silently dropped.
+    /// </remarks>
+    private sealed class OutOfScopeDescentTracker
+    {
+
+        // Generous, fixed headroom for the fingerprint (32 hex characters) and the page's eventual
+        // lastPath -- neither known precisely at the point an in-progress page decides whether to
+        // descend into one more out-of-scope alias, but each individually small relative to a
+        // realistic _maxJsonRpcLineBytes. TryDecodeListDirectoryContinuation's own byte-budget check is
+        // the exact, final backstop if this estimate is ever optimistic.
+        private const int ReservedOverheadBytes = 4_096;
+
+        private readonly string _workspaceRoot;
+
+        private readonly int _maxTokenBytes;
+
+        private long _reservedEntryBytes;
+
+        public OutOfScopeDescentTracker(
+            IReadOnlyList<string> decodedRelativePaths,
+            string workspaceRoot,
+            StringComparer comparer,
+            int maxTokenBytes)
+        {
+
+            _workspaceRoot = workspaceRoot;
+
+            _maxTokenBytes = maxTokenBytes;
+
+            CanonicalDirectories = new HashSet<string>(comparer);
+
+            foreach (string relative in decodedRelativePaths)
+            {
+
+                string canonical = Path.GetFullPath(
+                    Path.Combine(workspaceRoot, relative));
+
+                if (CanonicalDirectories.Add(canonical))
+                {
+
+                    _reservedEntryBytes += Encoding.UTF8.GetByteCount(relative) + 1;
+
+                }
+
+            }
+
+        }
+
+        public HashSet<string> CanonicalDirectories { get; }
+
+        public IEnumerable<string> ToRelativePaths() =>
+            CanonicalDirectories.Select(canonical =>
+                Path.GetRelativePath(_workspaceRoot, canonical)
+                    .Replace(Path.DirectorySeparatorChar, '/'));
+
+        /// <summary>
+        /// Records <paramref name="canonicalTarget"/> as descended, or reports that doing so safely is
+        /// no longer possible within this token's byte budget. The caller must not descend when this
+        /// returns <see langword="false"/> -- see the type-level remarks.
+        /// </summary>
+        public bool TryRecord(string canonicalTarget)
+        {
+
+            if (CanonicalDirectories.Contains(canonicalTarget))
+            {
+
+                return true;
+
+            }
+
+            string relative = Path.GetRelativePath(_workspaceRoot, canonicalTarget)
+                .Replace(Path.DirectorySeparatorChar, '/');
+
+            long candidateBytes = Encoding.UTF8.GetByteCount(relative) + 1;
+
+            long projectedTokenBytes = ReservedOverheadBytes
+                + (((_reservedEntryBytes + candidateBytes) * 4) / 3);
+
+            if (projectedTokenBytes > _maxTokenBytes)
+            {
+
+                return false;
+
+            }
+
+            _reservedEntryBytes += candidateBytes;
+
+            _ = CanonicalDirectories.Add(canonicalTarget);
+
+            return true;
+
+        }
+
+    }
+
     private bool TrySeekListDirectoryEntries(
         string absolutePath,
         bool recursive,
         string? afterPath,
+        IReadOnlyList<string> decodedOutOfScopeDescendedRelativePaths,
         CancellationToken cancellationToken,
-        out IEnumerable<string> entries)
+        out IEnumerable<string> entries,
+        out OutOfScopeDescentTracker outOfScopeTracker)
     {
+
+        StringComparer pathComparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+        outOfScopeTracker = new OutOfScopeDescentTracker(
+            decodedOutOfScopeDescendedRelativePaths,
+            _workspaceRoot!,
+            pathComparer,
+            _maxJsonRpcLineBytes);
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
                 _workspaceRoot!,
@@ -881,10 +1046,6 @@ internal sealed partial class ArcanumInternalToolServer
 
         }
 
-        StringComparer pathComparer = OperatingSystem.IsWindows()
-            ? StringComparer.OrdinalIgnoreCase
-            : StringComparer.Ordinal;
-
         // The same resolution the containment check above just used for absolutePath itself, so a
         // directory's canonical identity and this root are never compared across a raw-vs-resolved
         // mismatch (e.g. a workspace root reached through its own ancestor symlink).
@@ -896,6 +1057,17 @@ internal sealed partial class ArcanumInternalToolServer
 
         _ = visitedCanonicalDirectories.Add(
             canonicalScopeRoot);
+
+        // Every out-of-scope target an earlier page already recorded is, from this page's own
+        // perspective, exactly as "already visited" as the scope root or an ancestor -- merging it in
+        // here means WalkListDirectoryEntries's existing Add-gated push decision (unchanged from round
+        // 1) already refuses to re-descend into it, with no separate comparison needed at that site.
+        foreach (string canonical in outOfScopeTracker.CanonicalDirectories)
+        {
+
+            _ = visitedCanonicalDirectories.Add(canonical);
+
+        }
 
         Stack<(string Directory, string[] Entries, int Index)> stack = new();
 
@@ -912,6 +1084,7 @@ internal sealed partial class ArcanumInternalToolServer
                      afterPath,
                      recursive,
                      visitedCanonicalDirectories,
+                     outOfScopeTracker,
                      stack,
                      cancellationToken))
         {
@@ -926,6 +1099,7 @@ internal sealed partial class ArcanumInternalToolServer
             stack,
             canonicalScopeRoot,
             visitedCanonicalDirectories,
+            outOfScopeTracker,
             recursive,
             cancellationToken);
 
@@ -954,6 +1128,7 @@ internal sealed partial class ArcanumInternalToolServer
         string afterPath,
         bool recursive,
         HashSet<string> visitedCanonicalDirectories,
+        OutOfScopeDescentTracker outOfScopeTracker,
         Stack<(string Directory, string[] Entries, int Index)> stack,
         CancellationToken cancellationToken)
     {
@@ -1072,18 +1247,38 @@ internal sealed partial class ArcanumInternalToolServer
                 string canonicalAncestor = Path.GetFullPath(
                     resolvedAncestor ?? matchedEntry);
 
+                bool ancestorIsAlias = !visitedCanonicalDirectories.Comparer.Equals(
+                    canonicalAncestor,
+                    Path.GetFullPath(matchedEntry));
+
+                bool ancestorIsInScope = WorkspacePathPolicy.IsPathUnderWorkspace(
+                    canonicalScopeRoot,
+                    canonicalAncestor);
+
                 // An honest checkpoint's ancestor was descended into on the page that emitted it, and the
                 // forward walk (WalkListDirectoryEntries below) never descends into a directory symlink
                 // whose target sits inside the listing scope -- the target's own real name owns that
                 // content instead. An ancestor segment that resolves to an in-scope alias here cannot be
                 // a position the walk ever produced; treat it exactly like any other checkpoint that does
                 // not resolve to a real position.
-                if (!visitedCanonicalDirectories.Comparer.Equals(
-                        canonicalAncestor,
-                        Path.GetFullPath(matchedEntry))
-                    && WorkspacePathPolicy.IsPathUnderWorkspace(
-                        canonicalScopeRoot,
-                        canonicalAncestor))
+                if (ancestorIsAlias && ancestorIsInScope)
+                {
+
+                    return false;
+
+                }
+
+                // An out-of-scope alias ancestor needs the same cross-page memory as any other
+                // out-of-scope descent (W6-4 round 2): this checkpoint's own existence proves it was
+                // already descended into on an earlier page, and once a later page's checkpoint moves
+                // past it, this seek is the only place that re-derives the fact -- the per-page
+                // visitedCanonicalDirectories set below is reseeded fresh every page and does not carry
+                // it forward on its own. Recording it here is redundant (a no-op) whenever it already
+                // came from the decoded token, and only load-bearing the one time this exact ancestor is
+                // encountered for the first time from a seek rather than a forward push.
+                if (ancestorIsAlias
+                    && !ancestorIsInScope
+                    && !outOfScopeTracker.TryRecord(canonicalAncestor))
                 {
 
                     return false;
@@ -1110,18 +1305,33 @@ internal sealed partial class ArcanumInternalToolServer
                     string canonicalCheckpoint = Path.GetFullPath(
                         resolvedCheckpoint ?? matchedEntry);
 
+                    bool checkpointIsAlias = !visitedCanonicalDirectories.Comparer.Equals(
+                        canonicalCheckpoint,
+                        Path.GetFullPath(matchedEntry));
+
+                    bool checkpointIsInScope = WorkspacePathPolicy.IsPathUnderWorkspace(
+                        canonicalScopeRoot,
+                        canonicalCheckpoint);
+
                     // Descend only via the canonical path: an in-scope alias is emitted (it already was,
                     // as the checkpoint itself, on the page before this one) but never recursed into --
                     // the target's own real name owns its content, exactly as WalkListDirectoryEntries
                     // decides below for the same shape encountered on a forward (non-resumed) walk.
-                    bool isInScopeAlias = !visitedCanonicalDirectories.Comparer.Equals(
-                            canonicalCheckpoint,
-                            Path.GetFullPath(matchedEntry))
-                        && WorkspacePathPolicy.IsPathUnderWorkspace(
-                            canonicalScopeRoot,
-                            canonicalCheckpoint);
+                    bool refuse = checkpointIsAlias && checkpointIsInScope;
 
-                    if (!isInScopeAlias
+                    // The forward walk that emitted this checkpoint as an entry suspends its iterator
+                    // right after yielding it, before ever reaching this same recursion decision itself
+                    // (a lazy `yield return`'s continuation only runs on the next MoveNext, and the page
+                    // that emitted this checkpoint stopped pulling right there). So an out-of-scope alias
+                    // checkpoint being recursed into here, from a seek, is genuinely the first time this
+                    // exact descent is decided -- record it, gated by the same budget every other
+                    // out-of-scope descent is (W6-4 round 2).
+                    bool canRecord = !checkpointIsAlias
+                        || checkpointIsInScope
+                        || outOfScopeTracker.TryRecord(canonicalCheckpoint);
+
+                    if (!refuse
+                        && canRecord
                         && visitedCanonicalDirectories.Add(canonicalCheckpoint))
                     {
 
@@ -1150,6 +1360,7 @@ internal sealed partial class ArcanumInternalToolServer
         Stack<(string Directory, string[] Entries, int Index)> stack,
         string canonicalScopeRoot,
         HashSet<string> visitedCanonicalDirectories,
+        OutOfScopeDescentTracker outOfScopeTracker,
         bool recursive,
         CancellationToken cancellationToken)
     {
@@ -1196,20 +1407,33 @@ internal sealed partial class ArcanumInternalToolServer
                 string canonicalDirectory = Path.GetFullPath(
                     resolvedEntry ?? entry);
 
+                bool isAlias = !visitedCanonicalDirectories.Comparer.Equals(
+                    canonicalDirectory,
+                    Path.GetFullPath(entry));
+
+                bool isInScope = WorkspacePathPolicy.IsPathUnderWorkspace(
+                    canonicalScopeRoot,
+                    canonicalDirectory);
+
                 // Descend only via the canonical path. A directory symlink is always emitted as an entry,
                 // but recursed into only when its target sits outside the listing scope -- inside the
                 // scope, the target's own real name will (or already did) own that content, so descending
                 // through a symlink alias too can only duplicate it. This makes the resume's per-page
                 // visited set irrelevant for in-scope targets: whether to descend one is never a function
                 // of what an earlier page already saw, so a fresh page has nothing to forget.
-                bool isInScopeAlias = !visitedCanonicalDirectories.Comparer.Equals(
-                        canonicalDirectory,
-                        Path.GetFullPath(entry))
-                    && WorkspacePathPolicy.IsPathUnderWorkspace(
-                        canonicalScopeRoot,
-                        canonicalDirectory);
+                bool refuse = isAlias && isInScope;
 
-                if (!isInScopeAlias
+                // An out-of-scope alias target has no real name inside the listed scope for a later page
+                // to ever reach on its own, so it needs the cross-page memory an in-scope target does
+                // not (W6-4 round 2): recording it here, gated by the continuation token's own byte
+                // budget, is what lets a later page recognize this exact canonical directory as already
+                // shown instead of re-descending into it through a different alias.
+                bool canRecord = !isAlias
+                    || isInScope
+                    || outOfScopeTracker.TryRecord(canonicalDirectory);
+
+                if (!refuse
+                    && canRecord
                     && visitedCanonicalDirectories.Add(
                         canonicalDirectory))
                 {
