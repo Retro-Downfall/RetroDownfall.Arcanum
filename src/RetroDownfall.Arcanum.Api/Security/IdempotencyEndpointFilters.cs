@@ -145,7 +145,10 @@ public static class IdempotencyEndpointFilters
         finally
         {
 
-            ArrayPool<byte>.Shared.Return(rented);
+            // clearArray: true — this buffer held up to 80 KiB of raw request body bytes; returning
+            // it without clearing would leave that content readable by whatever the pool hands the
+            // buffer to next.
+            ArrayPool<byte>.Shared.Return(rented, clearArray: true);
 
         }
 
