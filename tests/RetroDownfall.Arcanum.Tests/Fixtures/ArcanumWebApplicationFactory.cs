@@ -176,15 +176,25 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                 // ArcanumDbContextOptionsConfigurator registers it in the host: this branch replaces
                 // the host's own options, and a suite whose connections were exempt from the Covenant
                 // drain could not observe an erasure failing on a handle nothing closed.
-                services.AddDbContext<ArcanumDbContext>((sp, options) =>
-                    options
-                        .UseSqlite(connectionString)
-                        .UseModel(ArcanumDbContextModel.Instance)
-                        .AddInterceptors(
-                            new CovenantConnectionEnrolmentInterceptor(
-                                sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
-                                sp.GetRequiredService<ICovenantConnectionDrain>(),
-                                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>())));
+                //
+                // Pooled, like the host (ServiceCollectionExtensions AddDbContextPool), and not
+                // because the suite needs the pool. AddDbContext gives scoped options, so this
+                // lambda mints a fresh interceptor for every scope: one lock and one lifecycle table
+                // per request, and no context or connection object ever reused. That is a real
+                // composition - it is the CLI's - but it is not the host shape this suite stands in
+                // for, and it cannot produce the state the interceptor's own contract is about, a
+                // weak lifecycle entry following one physical connection across pooled reopens.
+                services.AddDbContextPool<ArcanumDbContext>(
+                    (sp, options) =>
+                        options
+                            .UseSqlite(connectionString)
+                            .UseModel(ArcanumDbContextModel.Instance)
+                            .AddInterceptors(
+                                new CovenantConnectionEnrolmentInterceptor(
+                                    sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                                    sp.GetRequiredService<ICovenantConnectionDrain>(),
+                                    sp.GetRequiredService<ICovenantSqliteConnectionInitializer>())),
+                    poolSize: 32);
             }
             else
             {

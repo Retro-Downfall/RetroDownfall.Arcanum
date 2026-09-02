@@ -206,6 +206,44 @@ public sealed class GrimoireDbContextCompositionTests
 
     }
 
+    /// <summary>
+    /// The API suite's host shares one serving interceptor, the way the product host does.
+    /// </summary>
+    /// <remarks>
+    /// The host registers the context with <c>AddDbContextPool</c>, which forces singleton options
+    /// and therefore exactly one <c>CovenantConnectionEnrolmentInterceptor</c> - one lock, one
+    /// lifecycle table, and pooled context and connection objects reused across requests, so a
+    /// refused open's lifecycle state is inherited by whatever runs next on the same connection.
+    /// A per-scope interceptor is a real composition too (the CLI's), but it is not the one the API
+    /// suite is presented as exercising, and no test could see the difference: every existing check
+    /// reads options from a single scope, where a fresh interceptor per scope looks identical.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Api_test_host_shares_one_serving_interceptor_across_scopes()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        IServiceProvider provider = factory.Services;
+
+        await using AsyncServiceScope first = provider.CreateAsyncScope();
+
+        await using AsyncServiceScope second = provider.CreateAsyncScope();
+
+        CovenantConnectionEnrolmentInterceptor firstInterceptor = Assert.Single(
+            Interceptors(first.ServiceProvider
+                .GetRequiredService<DbContextOptions<ArcanumDbContext>>()));
+
+        CovenantConnectionEnrolmentInterceptor secondInterceptor = Assert.Single(
+            Interceptors(second.ServiceProvider
+                .GetRequiredService<DbContextOptions<ArcanumDbContext>>()));
+
+        Assert.Same(firstInterceptor, secondInterceptor);
+
+    }
+
     [Fact]
     public void Direct_DbContext_options_paths_are_named_non_serving_exemptions()
     {
