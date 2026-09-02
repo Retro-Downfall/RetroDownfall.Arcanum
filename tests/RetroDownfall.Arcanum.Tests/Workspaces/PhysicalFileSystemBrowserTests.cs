@@ -652,16 +652,13 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ReadAsync_rejects_symlink_to_outside_workspace()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-escape containment is exercised on Unix hosts.");
 
         string outsideFile = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}.txt");
 
@@ -706,10 +703,14 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ListAsync_skips_an_unreadable_subdirectory_and_still_returns_the_rest()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what makes the directory unreadable here.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only call below.
         if (OperatingSystem.IsWindows())
         {
 

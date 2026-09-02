@@ -126,10 +126,14 @@ public sealed class PermissionPostureTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task A_group_readable_secret_is_degraded_and_names_the_repair()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Unix group-readable mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -165,10 +169,14 @@ public sealed class PermissionPostureTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Planning_lists_only_the_paths_whose_mode_differs_and_changes_nothing()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Unix group-readable mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -196,10 +204,14 @@ public sealed class PermissionPostureTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Applying_hardens_the_path_and_a_second_apply_converges_without_changing_anything()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Unix group-readable mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -239,10 +251,14 @@ public sealed class PermissionPostureTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task No_step_ever_records_the_content_of_the_file_it_hardens()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Unix owner-only mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 

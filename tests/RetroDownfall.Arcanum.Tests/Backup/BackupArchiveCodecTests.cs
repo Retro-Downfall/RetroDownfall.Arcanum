@@ -274,10 +274,14 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Published_archive_is_owner_only_on_Unix()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 

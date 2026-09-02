@@ -97,10 +97,14 @@ public sealed class OwnedTemporaryFileTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void Create_is_owner_only_on_Unix()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -127,16 +131,11 @@ public sealed class OwnedTemporaryFileTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void Create_refuses_an_existing_symbolic_link_without_touching_its_target()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(OperatingSystem.IsWindows(), "Symlink retarget refusal is exercised on Unix hosts.");
 
         string target = Path.Combine(_root, "target");
 

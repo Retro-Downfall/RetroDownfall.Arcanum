@@ -55,10 +55,14 @@ public sealed class OwnedTemporaryDirectoryTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void Create_secures_the_temporary_child_without_restricting_its_parent_on_Unix()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 

@@ -198,10 +198,16 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ReadCappedAsync_PermissionDenied_ReturnsReadFailedNotNotFound()
     {
 
+        Skip.If(
+            OperatingSystem.IsWindows() || System.Environment.IsPrivilegedProcess,
+            "Permission denial cannot be exercised on Windows or as a privileged process.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows() || System.Environment.IsPrivilegedProcess)
         {
 

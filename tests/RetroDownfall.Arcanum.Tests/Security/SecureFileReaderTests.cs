@@ -230,14 +230,12 @@ public sealed class SecureFileReaderTests : IAsyncLifetime
         Assert.Null(result.Text);
     }
 
-    [Fact]
+    [SkippableFact]
     public void TryOpenRegularFile_rejects_symlink()
     {
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink rejection is exercised on Unix hosts.");
 
         string target = _workspace.WriteFile("target.txt", "target");
 

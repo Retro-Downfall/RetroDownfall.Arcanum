@@ -17,32 +17,7 @@ public sealed class CompensationCancellationTokenTests
 {
 
     /// <summary>Sites still on the caller's token. Every packet that fixes one deletes its line.</summary>
-    internal static readonly string[] AllowedSites =
-    [
-        "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnBegin.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Repositories/CampaignRepository.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStore.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantManagedFileErasureKernel.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ManagedFileWriteIntentRecoveryService.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinator.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Backup/RestoreStagingManagedAuthoritySanitizationCapability.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationReconciler.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs",
-
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionGate.cs",
-    ];
+    internal static readonly string[] AllowedSites = [];
 
     private static readonly Regex CompensationOnCallerToken = new(
         @"(?:RollbackAsync|ExecuteNonQueryAsync|TryTransitionAsync)\((?:[^()]*,\s*)?(?:cancellationToken|ct|token)\)",

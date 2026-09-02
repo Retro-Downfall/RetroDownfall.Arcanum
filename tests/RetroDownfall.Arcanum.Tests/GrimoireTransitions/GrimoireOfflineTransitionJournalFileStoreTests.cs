@@ -160,10 +160,14 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void Location_refuses_insecure_or_foreign_existing_parent_posture()
     {
 
+        Skip.IfNot(OperatingSystem.IsMacOS(), "This posture check is macOS-specific.");
+
+        // Dead once Skip.IfNot above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS())
         {
 

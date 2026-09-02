@@ -235,17 +235,13 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Directory_snapshot_never_enumerates_through_a_symlink_outside_the_workspace()
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-escape containment is exercised on Unix hosts.");
 
         string outside = Path.Combine(
             Path.GetTempPath(),
@@ -301,17 +297,13 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Directory_snapshot_visits_a_canonical_directory_only_once_across_symlink_cycles()
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-cycle containment is exercised on Unix hosts.");
 
         await File.WriteAllTextAsync(
             Path.Combine(_workspace, "cycle-visible.txt"),
@@ -362,17 +354,13 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Directory_snapshot_preserves_access_through_a_contained_noncyclic_directory_symlink()
     {
 
-        if (!OperatingSystem.IsMacOS()
-            && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink containment is exercised on Unix hosts.");
 
         string shared = Path.Combine(_workspace, "shared");
 
