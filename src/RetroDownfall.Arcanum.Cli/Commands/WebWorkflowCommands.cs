@@ -235,7 +235,7 @@ public sealed class WebWorkflowCommands(
             dispatcher.WriteDiagnostic(
                 "--format must be terminal, markdown, or json.");
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
