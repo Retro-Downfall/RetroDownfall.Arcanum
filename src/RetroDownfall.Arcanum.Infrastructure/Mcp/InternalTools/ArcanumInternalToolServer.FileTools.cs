@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
@@ -85,26 +86,202 @@ internal sealed partial class ArcanumInternalToolServer
             ArcanumSettingClamps.MaxFileReadSizeBytes(
                 _maxFileReadSizeBytes));
 
-        (string? content, McpToolsCallResultWire? readError) =
-            await SandboxedFileIo.TryReadAllTextAsync(
-                    _workspaceRoot!,
+        (string? slice, McpToolsCallResultWire? readError) =
+            await TryReadLineRangeThroughValidatedHandleAsync(
                     absolutePath,
+                    args.StartLine,
+                    args.EndLine,
                     maxReadBytes,
                     cancellationToken)
                 .ConfigureAwait(false);
 
-        if (content is null)
+        if (slice is null)
         {
             return PrefixToolError("read_file_chunk", readError!);
         }
 
-        string slice = SliceLineRange(
-            content,
-            args.StartLine,
-            args.EndLine,
-            cancellationToken);
-
         return CapToolTextResult(slice, "read_file_chunk");
+    }
+
+    private static readonly UTF8Encoding StrictUtf8NoBom = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
+    /// <summary>
+    /// Streams <paramref name="absolutePath"/> through the same validated handle
+    /// <see cref="SandboxedFileIo.TryOpenForRead"/> opens for every other read path, stopping once
+    /// <paramref name="endLine"/>'s content has been captured (or end of file, whichever comes first)
+    /// instead of decoding the file's full length before slicing. <paramref name="maxRangeBytes"/>
+    /// budgets what is actually read rather than the file's total size, so a narrow range near the top
+    /// of a file larger than the cap still succeeds; a distant <paramref name="startLine"/> still costs
+    /// reading everything before it, because a plain-text file carries no line index.
+    /// </summary>
+    private async Task<(string? Content, McpToolsCallResultWire? Error)> TryReadLineRangeThroughValidatedHandleAsync(
+        string absolutePath,
+        int startLine,
+        int endLine,
+        int maxRangeBytes,
+        CancellationToken cancellationToken)
+    {
+
+        if (!SandboxedFileIo.TryOpenForRead(_workspaceRoot!, absolutePath, out FileStream? stream, out McpToolsCallResultWire? openError))
+        {
+            return (null, openError);
+        }
+
+        using (stream)
+        {
+
+            char[] charBuffer = ArrayPool<char>.Shared.Rent(8192);
+
+            try
+            {
+
+                // Strips a leading UTF-8 BOM the same way the whole-file path does
+                // (SecureFileReader.DecodeUtf8), so a file saved with one numbers its lines identically
+                // through both read paths. detectEncodingFromByteOrderMarks is left off below because
+                // it would also honor a UTF-16/UTF-32 BOM, which the whole-file path never did.
+                byte[] bomProbe = new byte[3];
+
+                int bomRead = await stream.ReadAsync(bomProbe, cancellationToken).ConfigureAwait(false);
+
+                if (bomRead != 3 || bomProbe[0] != 0xEF || bomProbe[1] != 0xBB || bomProbe[2] != 0xBF)
+                {
+                    stream.Seek(-bomRead, SeekOrigin.Current);
+                }
+
+                using StreamReader reader = new(
+                    stream,
+                    StrictUtf8NoBom,
+                    detectEncodingFromByteOrderMarks: false,
+                    bufferSize: 8192,
+                    leaveOpen: true);
+
+                StringBuilder content = new();
+
+                long rangeBytes = 0;
+
+                int lineNumber = 1;
+
+                bool pendingCr = false;
+
+                // Only advances lineNumber/pendingCr to decide when enough of the file has been read
+                // for SliceLineRange to compute the answer; SliceLineRange itself still owns every
+                // terminator decision (CRLF, lone CR, LF) once the accumulated text reaches it below.
+                bool ScanChunkPastEndLine(int count)
+                {
+
+                    for (int i = 0; i < count; i++)
+                    {
+
+                        char c = charBuffer[i];
+
+                        if (pendingCr)
+                        {
+
+                            pendingCr = false;
+
+                            if (c == '\n')
+                            {
+                                continue;
+                            }
+
+                        }
+
+                        if (c == '\r')
+                        {
+
+                            pendingCr = true;
+
+                            lineNumber++;
+
+                        }
+                        else if (c == '\n')
+                        {
+
+                            lineNumber++;
+
+                        }
+                        else
+                        {
+
+                            continue;
+
+                        }
+
+                        if (lineNumber > endLine)
+                        {
+                            return true;
+                        }
+
+                    }
+
+                    return false;
+
+                }
+
+                while (true)
+                {
+
+                    int read;
+
+                    try
+                    {
+
+                        read = await reader.ReadAsync(charBuffer, cancellationToken).ConfigureAwait(false);
+
+                    }
+                    catch (DecoderFallbackException)
+                    {
+
+                        return (null, ToolError("The file is not valid UTF-8 text."));
+
+                    }
+
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    content.Append(charBuffer, 0, read);
+
+                    rangeBytes += Encoding.UTF8.GetByteCount(charBuffer, 0, read);
+
+                    if (rangeBytes > maxRangeBytes)
+                    {
+                        return (null, ToolError("The file exceeds the maximum read size limit."));
+                    }
+
+                    if (ScanChunkPastEndLine(read))
+                    {
+                        break;
+                    }
+
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                }
+
+                return (
+                    SliceLineRange(content.ToString(), startLine, endLine, cancellationToken),
+                    null);
+
+            }
+            catch (Exception ex)
+                when (ex is IOException or UnauthorizedAccessException)
+            {
+
+                return (null, ToolError("An I/O error occurred. See server logs."));
+
+            }
+            finally
+            {
+
+                ArrayPool<char>.Shared.Return(charBuffer);
+
+            }
+
+        }
+
     }
 
     /// <summary>

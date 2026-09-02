@@ -1060,6 +1060,52 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // read_file_chunk decoded the whole file into a string before slicing, so a file larger than
+    // MaxFileReadSizeBytes (default 1 MiB, ArcanumRuntimeDefaults.cs) had no readable chunk at all --
+    // startLine/endLine never affected the read. A narrow range near the top of an oversized file must
+    // still succeed.
+    [Fact]
+    public async Task ToolsCall_read_file_chunk_returns_a_narrow_range_from_a_file_larger_than_the_read_cap()
+    {
+
+        const string relativePath = "notes/oversized.txt";
+
+        string[] requestedLines =
+        [
+            "line one",
+            "line two",
+            "line three",
+            "line four",
+            "line five",
+        ];
+
+        string head = string.Join('\n', requestedLines) + "\n";
+
+        // 2 MiB total, comfortably past the 1 MiB default read cap, padded well past the five
+        // requested lines so it is the range -- not the file happening to be small anyway -- under test.
+        string padding = new string('x', (2 * 1024 * 1024) - head.Length);
+
+        _workspace.WriteFile(relativePath, head + padding);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "read_file_chunk",
+            JsonSerializer.SerializeToElement(
+                new ReadFileChunkParams
+                {
+                    RelativePath = relativePath,
+                    StartLine = 1,
+                    EndLine = 5,
+                },
+                McpJsonSerializerContext.Default.ReadFileChunkParams));
+
+        Assert.False(result.IsError);
+
+        Assert.Equal(string.Join('\n', requestedLines), result.Content![0].Text);
+
+    }
+
     [Fact]
     public async Task ToolsCall_read_file_chunk_returns_requested_lines()
     {
