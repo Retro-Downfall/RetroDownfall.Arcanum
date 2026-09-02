@@ -111,6 +111,13 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
     private readonly TimeProvider _timeProvider;
 
+    /// <summary>
+    /// Runs, if set, every time <see cref="ApplyOnConnectionAsync"/>'s <see cref="SqliteBusyRetry"/>
+    /// wrap retries a busy exclusive acquisition - the only way a test can prove a retry actually
+    /// happened rather than the erasure merely succeeding on an uncontested first attempt.
+    /// </summary>
+    internal Func<int, Exception, CancellationToken, ValueTask>? RetryingForTesting { get; set; }
+
     internal CovenantCanonicalErasureTransaction(
         ICovenantV3MaintenanceConnectionFactory connections,
         ICovenantSqliteConnectionInitializer initializer,
@@ -196,7 +203,8 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
             return await SqliteBusyRetry.ExecuteAsync(
                 () => ApplyWithinTransactionAsync(connection, operation, cancellationToken),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                RetryingForTesting).ConfigureAwait(false);
 
         }
         catch (GrimoireBusyTimeoutException timedOut)
@@ -729,6 +737,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             new Error(
                 ErrorCodes.Covenant.MaintenanceFailed,
                 $"A Covenant erasure could not {step}: another handle held the database for "
-                + $"{timedOut.Attempts} attempt(s) over {timedOut.Deadline}."));
+                + $"{timedOut.Attempts} attempt(s) over {timedOut.Elapsed}."));
 
 }

@@ -436,6 +436,30 @@ public sealed class CovenantCanonicalErasureTransactionTests
             fixture.Drain,
             TimeProvider.System);
 
+        // Review round 1: IsSuccess alone cannot tell a genuine retry from a holder that happened to
+        // release before the erasure's first attempt ever ran - this suite would pass vacuously
+        // either way. RetryingForTesting is invoked once per busy exception SqliteBusyRetry actually
+        // caught, so counting its calls (Interlocked, since it runs on the Task.Run thread below) and
+        // inspecting what it was called with is the only way to assert a retry happened at all.
+        int retryCount = 0;
+
+        service.RetryingForTesting = (attempt, exception, retryingToken) =>
+        {
+
+            _ = Interlocked.Increment(ref retryCount);
+
+            Assert.True(attempt >= 1, $"Expected a positive attempt number; observed {attempt}.");
+
+            SqliteException busy = Assert.IsType<SqliteException>(exception);
+
+            Assert.True(
+                busy.SqliteErrorCode is 5 or 6,
+                $"Expected the retried exception to be SQLITE_BUSY/LOCKED; observed code {busy.SqliteErrorCode}.");
+
+            return ValueTask.CompletedTask;
+
+        };
+
         // Task.Run, not a bare call: ApplyAsync's prefix (drain, connection open, the secure-delete
         // read-back) can complete synchronously all the way into the blocking BeginTransaction call,
         // which would otherwise run inline on this thread and only return control here after the
@@ -460,6 +484,8 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Result<Guid> applied = await applying;
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        Assert.True(retryCount >= 1, "Expected at least one retry; the holder may have released before the first attempt ever raced it.");
 
     }
 

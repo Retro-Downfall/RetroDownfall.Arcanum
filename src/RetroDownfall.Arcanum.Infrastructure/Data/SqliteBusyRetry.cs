@@ -81,10 +81,15 @@ internal static class SqliteBusyRetry
             catch (Exception ex) when (
                 IsBusyOrLocked(ex))
             {
-                if (Stopwatch.GetElapsedTime(startedAt) >= bound)
+                // Computed once and reused for both the comparison and the throw below - not
+                // re-measured at the throw site, which would report a slightly later timestamp than
+                // the one this check actually acted on.
+                TimeSpan elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+                if (elapsed >= bound)
                 {
 
-                    throw new GrimoireBusyTimeoutException(attempt, bound, ex);
+                    throw new GrimoireBusyTimeoutException(attempt, bound, elapsed, ex);
 
                 }
 
@@ -172,10 +177,10 @@ internal static class SqliteBusyRetry
 internal sealed class GrimoireBusyTimeoutException : Exception
 {
 
-    internal GrimoireBusyTimeoutException(int attempts, TimeSpan deadline, Exception lastBusyException)
+    internal GrimoireBusyTimeoutException(int attempts, TimeSpan deadline, TimeSpan elapsed, Exception lastBusyException)
         : base(
-            $"The Grimoire did not become available after {attempts} attempt(s) over {deadline}; "
-            + "another handle is likely holding an exclusive or reserved lock.",
+            $"The Grimoire did not become available after {attempts} attempt(s) over {elapsed} "
+            + $"(deadline {deadline}); another handle is likely holding an exclusive or reserved lock.",
             lastBusyException)
     {
 
@@ -183,10 +188,21 @@ internal sealed class GrimoireBusyTimeoutException : Exception
 
         Deadline = deadline;
 
+        Elapsed = elapsed;
+
     }
 
     internal int Attempts { get; }
 
+    /// <summary>The configured bound <see cref="ExecuteAsync{T}"/> was given or defaulted to.</summary>
     internal TimeSpan Deadline { get; }
+
+    /// <summary>
+    /// The real time this retry loop spent, measured once at the point the deadline check fired.
+    /// Not the same number as <see cref="Deadline"/>: the check runs only after an attempt's own
+    /// busy exception is caught, so a single slow attempt can carry the total past the deadline by
+    /// as much as that one attempt's own duration before this loop ever gets to check again.
+    /// </summary>
+    internal TimeSpan Elapsed { get; }
 
 }

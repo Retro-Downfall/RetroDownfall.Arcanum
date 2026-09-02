@@ -133,6 +133,15 @@ public sealed class SqliteBusyRetryTests
 
         Assert.Equal(attempts, thrown.Attempts);
 
+        // Review round 1: the deadline check runs only after an attempt's own busy exception is
+        // caught, so the real elapsed time can carry past the configured deadline by as much as that
+        // one attempt's own duration - Elapsed, not Deadline, is what the exception's message must
+        // report to stay honest about how long the caller actually waited.
+        Assert.True(
+            thrown.Elapsed >= thrown.Deadline,
+            $"Expected the measured elapsed time ({thrown.Elapsed}) to be at least the configured "
+            + $"deadline ({thrown.Deadline}).");
+
     }
 
     [Fact]
