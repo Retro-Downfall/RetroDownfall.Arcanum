@@ -270,6 +270,35 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Begin_with_a_null_lifecycle_is_refused_without_throwing()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 malformed = PreparedPayload() with
+        {
+            Lifecycle = null!,
+        };
+
+        Result<GrimoireOfflineTransitionTypedPublication> begun = await LifecycleStore().BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            malformed,
+            CancellationToken.None);
+
+        Assert.True(begun.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, begun.Error.Code);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+            Value(await RawStore().RecoverAsync(
+                _lock,
+                _guarded,
+                CancellationToken.None)).Outcome);
+
+    }
+
+    [Fact]
     public async Task Wrong_slot_epoch_typed_begin_leaves_no_active_journal()
     {
 
