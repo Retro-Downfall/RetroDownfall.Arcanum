@@ -1,4 +1,5 @@
 using System.Globalization;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -10,7 +11,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 /// <summary>
 /// Saga long-term associative memory (requires arcanum serve).
 /// </summary>
-public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette themePalette, IConfirmationPrompt confirmationPrompt)
 {
 
     private const int ContentPreviewChars = 80;
@@ -40,7 +41,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
 
             }
 
@@ -132,7 +133,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<QUERY> is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
 
         }
 
@@ -146,7 +147,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a GUID.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
 
             }
 
@@ -222,6 +223,17 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// <param name="id">Saga memory ID.</param>
     public async Task<int> Delete(string id, CancellationToken cancellationToken)
     {
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync($"Delete Saga memory '{id}'?", cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Saga memory deletion cancelled.")));
+
+            return 0;
+
+        }
 
         Result result = await apiClient.SagaDeleteAsync(id, cancellationToken).ConfigureAwait(false);
 
