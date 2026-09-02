@@ -117,7 +117,11 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(
+            _db!,
+            new NoOpSessionAttachmentStore(),
+            _fixture.CreateOptionsMonitor(),
+            FixtureOrdinaryConnectionFactory.For(_db!));
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Hidden title", CancellationToken.None);
 

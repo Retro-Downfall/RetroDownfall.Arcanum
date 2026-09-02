@@ -227,6 +227,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             _db!,
             _attachments!,
             new TestOptionsMonitor<ArcanumSettings>(_settings),
+            FixtureOrdinaryConnectionFactory.For(_db!),
             queue);
 
         Session source = await sessions.CreateAsync(
