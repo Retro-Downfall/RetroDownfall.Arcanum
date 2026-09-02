@@ -331,6 +331,65 @@ public sealed class HostProcessToolsStartupGateTests
     }
 
     /// <summary>
+    /// The denial a tool call hands back has to describe the process the operator is actually in.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="HostProcessToolPolicy.DeniedMessage"/> used to tell them that setting Development
+    /// edition plus <c>ARCANUM_ALLOW_HOST_PROCESS_TOOLS</c> enables these tools and that
+    /// <c>GET /api/health</c> would then report Degraded. Both became the startup gate's decision.
+    /// On an installation with no completed transition that exact pair is what the gate refuses to
+    /// start on - asserted here through the gate's own entry point rather than assumed - so the
+    /// message was directing the operator into the one state that stops their host, and promising a
+    /// health status only the permitted path ever produces. The remedy it gives now is the gate's
+    /// own, held to the same sentence so the two cannot drift apart.
+    /// </remarks>
+    [Fact]
+    public async Task The_tool_denial_gives_the_same_remedy_the_startup_gate_gives()
+    {
+
+        const string Remedy =
+            "Clear the ARCANUM_ALLOW_HOST_PROCESS_TOOLS environment variable and start the host again.";
+
+        Harness harness = Harness.Create();
+
+        harness.Environment.EscapeHatchOptIn = true;
+
+        Result<HostProcessToolsStartupDecision> blocked = await harness.Gate
+            .ClassifyAndPublishAsync(CancellationToken.None);
+
+        // The premise: the pair the old denial called the way to turn these tools on is the pair
+        // this gate refuses to start with, and it publishes that refusal rather than permitting.
+        Assert.True(blocked.IsFailure);
+
+        Assert.True(harness.Policy.IsPublished);
+
+        Assert.False(harness.Policy.HostProcessToolsPermitted);
+
+        Assert.EndsWith(Remedy, HostProcessToolsStartupGate.EscapeHatchRemediation, StringComparison.Ordinal);
+
+        Assert.Contains(
+            HostProcessToolsStartupGate.EscapeHatchRemediation,
+            blocked.Error.Message,
+            StringComparison.Ordinal);
+
+        // The denial an operator reads from a refused tool call has to end on that same remedy.
+        Assert.EndsWith(Remedy, HostProcessToolPolicy.DeniedMessage, StringComparison.Ordinal);
+
+        // It may not offer the pair as a way to enable anything, and it may not promise a health
+        // status that only the permitted path produces.
+        Assert.DoesNotContain(
+            "to enable",
+            HostProcessToolPolicy.DeniedMessage,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            "Degraded",
+            HostProcessToolPolicy.DeniedMessage,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    /// <summary>
     /// Every command a refused startup tells the operator to run has to be one the CLI has.
     /// </summary>
     /// <remarks>

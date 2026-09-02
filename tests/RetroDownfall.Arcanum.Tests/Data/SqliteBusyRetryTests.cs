@@ -106,7 +106,7 @@ public sealed class SqliteBusyRetryTests
     }
 
     /// <summary>
-    /// W3b-4: the loop retried SQLITE_BUSY/LOCKED forever, bounded only by the caller's own
+    /// The loop retried SQLITE_BUSY/LOCKED forever, bounded only by the caller's own
     /// cancellation token — a caller with no token of its own (an HTTP request the host put no
     /// server-side timeout on) never got the maintenance-unavailable answer at all.
     /// </summary>
@@ -133,7 +133,7 @@ public sealed class SqliteBusyRetryTests
 
         Assert.Equal(attempts, thrown.Attempts);
 
-        // Review round 1: the deadline check runs only after an attempt's own busy exception is
+        // The deadline check runs only after an attempt's own busy exception is
         // caught, so the real elapsed time can carry past the configured deadline by as much as that
         // one attempt's own duration - Elapsed, not Deadline, is what the exception's message must
         // report to stay honest about how long the caller actually waited.

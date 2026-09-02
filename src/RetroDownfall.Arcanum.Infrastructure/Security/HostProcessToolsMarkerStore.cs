@@ -345,7 +345,7 @@ internal sealed class HostProcessToolsMarkerResetAdapter : IHostToolsMarkerPairR
         EncodedBufferObserverForTests?.Invoke(encoded);
 
         // Zeroed in the finally below unless ownership transfers to a minted ResetOsCapability on
-        // the success path (W7-7): every other exit — decode failure, evidence mismatch, thrown
+        // the success path: every other exit — decode failure, evidence mismatch, thrown
         // exception — leaves this the only reference to the plaintext copy, and none of them used
         // to zero it.
         byte[]? encodedToZero = encoded;

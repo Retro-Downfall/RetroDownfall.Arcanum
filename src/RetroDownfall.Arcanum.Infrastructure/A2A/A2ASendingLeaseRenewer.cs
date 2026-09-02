@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// Keeps the durable lease alive on every Sending this process is actively holding.
 /// </summary>
 /// <remarks>
-/// A Sending has no whole-operation deadline (#55), so its ledger lease marks ownership rather than sizing
+/// A Sending has no whole-operation deadline, so its ledger lease marks ownership rather than sizing
 /// the work — which only holds up if something renews it. Nothing did, while
 /// <c>LongRunningOperationStartupHostedService</c> reconciles the whole ledger every minute for the host's
 /// lifetime: any Sending that outran the lease was found "expired", re-leased by the reconciler and

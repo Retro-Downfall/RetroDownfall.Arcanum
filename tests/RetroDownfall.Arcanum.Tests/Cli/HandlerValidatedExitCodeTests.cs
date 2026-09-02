@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Core.Security;
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 /// <summary>
-/// W10-8: a handler-validated required/parse failure (Command.Reference.md:96-115 — nullable in the
+/// A handler-validated required/parse failure (Command.Reference.md:96-115 — nullable in the
 /// generated parser so the handler can resolve saved context, read a secure value, or produce a
 /// better error) must exit the same way <c>run</c> already does for the same class of failure —
 /// <see cref="CliExitCode.ConfigurationError"/> — everywhere this packet owns a handler, not exit 1

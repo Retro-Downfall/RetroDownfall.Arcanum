@@ -8,7 +8,7 @@ using RetroDownfall.Arcanum.Infrastructure.Resilience;
 namespace RetroDownfall.Arcanum.Tests.Resilience;
 
 /// <summary>
-/// W8-7: the probe scheduler's Task.Delay sat after the work inside the same try, so an exception
+/// The probe scheduler's Task.Delay sat after the work inside the same try, so an exception
 /// thrown before the delay was reached looped immediately with no backoff.
 /// </summary>
 public sealed class ProviderHealthProbeServiceTests
@@ -44,7 +44,7 @@ public sealed class ProviderHealthProbeServiceTests
         // Assert.InRange(AccessCount, 1, 5) alone cannot tell "backed off" apart from "faulted after
         // one tick": a regression that lets the tick's exception propagate (e.g. a stray `throw;` in
         // the scheduler's catch) would also leave AccessCount at exactly 1, forever, and still pass
-        // that range check. Checking the loop is still alive closes that gap (review round 1).
+        // that range check. Checking the loop is still alive closes that gap.
         Task? executeTask = service.ExecuteTask;
 
         Assert.NotNull(executeTask);

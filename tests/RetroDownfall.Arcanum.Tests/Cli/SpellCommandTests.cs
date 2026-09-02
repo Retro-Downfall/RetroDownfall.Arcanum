@@ -50,7 +50,7 @@ public sealed class SpellCommandTests
     }
 
     /// <summary>
-    /// W10-3: every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
+    /// Every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
     /// server-down failure was indistinguishable from a real domain failure. Routed through
     /// <c>CliFailureExit</c>, a <c>Connection.*</c> failure now exits 3 and names the address tried.
     /// A non-default port is configured (rather than asserting the harness's own default address)
@@ -288,7 +288,7 @@ public sealed class SpellCommandTests
 
     }
 
-    /// <summary>W10-2: an irreversible delete must ask before it acts.</summary>
+    /// <summary>An irreversible delete must ask before it acts.</summary>
     [Fact]
     public void Spell_delete_requires_confirmation_before_sending_request()
     {

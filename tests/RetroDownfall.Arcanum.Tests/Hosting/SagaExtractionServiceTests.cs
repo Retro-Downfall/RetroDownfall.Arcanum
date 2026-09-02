@@ -910,9 +910,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         // Every attempt fails identically, forever, for both sessions - the only thing under test is
         // whether the second session's first attempt has to wait behind the first session's retry
-        // backoff (W8-3), not whether either one succeeds. ExpectedCallCount/WaitForExpectedCallsAsync
+        // backoff, not whether either one succeeds. ExpectedCallCount/WaitForExpectedCallsAsync
         // waits deterministically for the second call instead of polling within a wall-clock margin
-        // against a comparable-duration backoff, which a loaded machine could miss (review round 1).
+        // against a comparable-duration backoff, which a loaded machine could miss.
         FakeIntelligenceProvider intelligence = new()
         {
             NextText = "not valid json at all",
@@ -1015,7 +1015,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             // The first attempt is now blocked mid-flight on Gate. A second arrival for the same
             // session must merge into the still-reserved dedup key instead of racing a duplicate
-            // channel write for the same session (W8-12): dequeuing used to remove the key immediately,
+            // channel write for the same session: dequeuing used to remove the key immediately,
             // so a concurrent enqueue found nothing to merge into and queued a second, separate entry.
             AttachmentMemoryProvenance secondProvenance = new(
                 sessionId,
@@ -1054,7 +1054,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W8-12 residual (review round 1): the dedup key survives dequeue now (peeked, not removed), but
+    /// The dedup key survives dequeue (peeked, not removed), but
     /// the shutdown-cancellation return path did not release it, unlike the disabled-skip branch a few
     /// lines above it - a session mid-attempt when the host stops would stay in <c>_pending</c> forever
     /// with no channel entry left to ever read it back out.

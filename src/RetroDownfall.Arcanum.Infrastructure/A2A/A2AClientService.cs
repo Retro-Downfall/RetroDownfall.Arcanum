@@ -935,7 +935,7 @@ public sealed class A2AClientService : IA2AClientService
     /// The notification body is deliberately not trusted as the outcome: it is a remote-authored claim
     /// about state, and the authoritative answer — including artifacts and the usage block a Sending's
     /// cost is read from — comes from <c>tasks/get</c>. A callback that never arrives leaves the Sending
-    /// waiting, which is the same "no whole-operation deadline" contract every other mode has (#55);
+    /// waiting, which is the same "no whole-operation deadline" contract every other mode has;
     /// what it does <em>not</em> do is hold a concurrency slot while it waits.
     /// <para>
     /// The snapshot <c>SendMessage</c> handed back is read once against the peer before anything waits on

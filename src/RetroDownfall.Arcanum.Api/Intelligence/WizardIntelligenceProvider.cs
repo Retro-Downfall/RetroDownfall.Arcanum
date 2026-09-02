@@ -3166,7 +3166,7 @@ public sealed partial class WizardIntelligenceProvider(
                         catch (OperationCanceledException)
                         {
 
-                            // W1-3: a client disconnect must not make a round that already
+                            // A client disconnect must not make a round that already
                             // streamed real provider bytes look like it spent nothing — that
                             // both loses the spend from budget accounting and returns the
                             // reservation via ReleaseAsync instead of ReconcileAsync.
@@ -3310,7 +3310,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (inferenceError is not null)
                 {
-                    // W1-9: the declared model entry is authoritative when it says anything at
+                    // The declared model entry is authoritative when it says anything at
                     // all -- SupportsTools is a nullable bool specifically so "undeclared" (null,
                     // the default for every model that predates this field) never reads the same
                     // as an explicit "this model does not support tools" (false). Only a declared
@@ -4489,7 +4489,7 @@ public sealed partial class WizardIntelligenceProvider(
         Task processTask,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        // W1-7: the human-prompt channel is per-turn, not per-call — it is created once and
+        // The human-prompt channel is per-turn, not per-call — it is created once and
         // completed only when the whole streaming turn ends, so a fresh WaitToReadAsync abandoned
         // on every pump iteration (as `wards`'s call-scoped one below still is) parks one more
         // queued reader and one more cancellationToken registration for the remaining life of the

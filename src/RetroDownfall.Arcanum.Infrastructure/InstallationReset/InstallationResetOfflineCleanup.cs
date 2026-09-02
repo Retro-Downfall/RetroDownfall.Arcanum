@@ -196,7 +196,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
         // Counts every successful destructive delete, file or directory, so the cancellation catch
         // below can tell "nothing was touched" apart from "a directory was removed" — filesDeleted
-        // alone only tracks the file loop and reads a directory-only pass as untouched (W5-7).
+        // alone only tracks the file loop and reads a directory-only pass as untouched.
         long mutationCount = 0;
 
         List<InstallationResetPreservedBackup> backups = [];
@@ -1102,8 +1102,8 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
     // mutationCount (files and directories both) is the discriminator, not filesDeleted: a
     // directory-only pass that then hits one of these failure sites really did mutate the
-    // filesystem, and reporting a clean Failure here would discard that (review round 1, same
-    // misread the cancellation predicate above already had - W5-7).
+    // filesystem, and reporting a clean Failure here would discard that - the same misread the
+    // cancellation predicate above already had.
     private static Result<InstallationResetOfflineCleanupResult> FailureOrIncomplete(
         long filesDeleted,
         long mutationCount,

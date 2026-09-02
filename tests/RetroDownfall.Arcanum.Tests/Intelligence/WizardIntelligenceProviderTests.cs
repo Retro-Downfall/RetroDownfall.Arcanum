@@ -1270,7 +1270,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W1-5: EnsureContextBudgetWithMaterializations' trim loop re-estimated the entire (shrinking)
+    /// EnsureContextBudgetWithMaterializations' trim loop re-estimated the entire (shrinking)
     /// transcript on every removed pair, so an over-budget round paid one full-transcript
     /// EstimateContext call per pair removed rather than one small, removed-slice-sized call. A
     /// round with many parallel tool calls that blow the budget exercises many removals in a
@@ -1355,7 +1355,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     /// real MCP ElicitationHandler always declined elicitation during attended streaming turns.
     /// The fix re-establishes the ambient inside ProcessWithLiveWardsAsync, a plain non-yielding
     /// local function invoked with zero intervening yields after each tool call's own ToolCall
-    /// frame. This also exercises W1-7's held human-channel wait across several re-arms for the
+    /// frame. This also exercises the held human-channel wait across several re-arms for the
     /// first time -- previously nothing could ever write to that channel to trigger one.
     /// </summary>
     [Fact]
@@ -2238,7 +2238,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W1-9: the no-tools restart used to fire only on an English substring match against the
+    /// The no-tools restart used to fire only on an English substring match against the
     /// provider's error text, so a provider wording the same condition differently (this test's
     /// "tool calling is not available for this model" -- deliberately missing "does not support
     /// tools") never triggered it. The model entry's own declared SupportsTools: false is now an
@@ -3965,7 +3965,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W1-6: ModelCallExecutor.ExecuteStreamingAsync had no try/finally around its provider
+    /// ModelCallExecutor.ExecuteStreamingAsync had no try/finally around its provider
     /// enumeration, so a stream that faults after already reporting usage skipped reconciliation,
     /// prompt-cache, and delegated-usage recording entirely — that telemetry population is exactly
     /// what an operator investigating provider trouble wants counted.
@@ -4129,7 +4129,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W1-1: a disconnected client must not orphan a tool call. The provider proposes a tool call
+    /// A disconnected client must not orphan a tool call. The provider proposes a tool call
     /// that blocks on a test barrier (modeling a slow/uncancelled MCP tool); the client abandons
     /// the enumerator right after the first ward frame, while the tool is still running. Disposal
     /// must observe the tool task — bounded by a grace period — rather than returning immediately
@@ -4707,7 +4707,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W1-3: a client disconnect must not make a round that already streamed real provider usage
+    /// A client disconnect must not make a round that already streamed real provider usage
     /// look like it spent nothing. Usage arrives, the provider then goes quiet, and the caller
     /// cancels — the round must reconcile the observed usage rather than releasing the reservation
     /// as though nothing happened.
@@ -9207,7 +9207,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     /// <summary>
     /// V-2 regression tool: records whether HumanPromptLiveEmitterAmbient.Current is non-null at
     /// tool-invocation time, then (if non-null) emits <paramref name="frameCount"/> frames on it,
-    /// yielding between each so the pump's held wait (W1-7) has to resolve and re-arm repeatedly
+    /// yielding between each so the pump's held wait has to resolve and re-arm repeatedly
     /// across one tool call rather than once.
     /// </summary>
     private static AIFunction CreateHumanFrameEmittingTool(string name, int frameCount) =>
@@ -10360,8 +10360,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     /// <summary>
     /// Delegates every call to a real estimator while recording how many messages
-    /// <see cref="EstimateContext"/> was asked to estimate each time it ran — W1-5's counting
-    /// double, distinguishing an O(removed) trim (a few small calls) from an O(messages) one (every
+    /// <see cref="EstimateContext"/> was asked to estimate each time it ran, distinguishing an
+    /// O(removed) trim (a few small calls) from an O(messages) one (every
     /// call sized to the current, still-largely-untrimmed transcript).
     /// </summary>
     private sealed class CountingModelTokenEstimator(IModelTokenEstimator inner) : IModelTokenEstimator

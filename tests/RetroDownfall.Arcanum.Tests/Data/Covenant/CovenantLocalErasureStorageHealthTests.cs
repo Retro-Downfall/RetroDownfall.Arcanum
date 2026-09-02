@@ -1037,7 +1037,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
     }
 
     /// <summary>
-    /// W14-6: the compensating <c>DETACH</c> in <c>ExportAsync</c>'s finally block must run on
+    /// The compensating <c>DETACH</c> in <c>ExportAsync</c>'s finally block must run on
     /// <see cref="CancellationToken.None"/>, not the caller's token. When the caller's token is
     /// already cancelled by the time the finally block runs, rolling back on that token throws a
     /// fresh <see cref="OperationCanceledException"/> that replaces the real export failure the try
@@ -1110,9 +1110,9 @@ public sealed class CovenantLocalErasureStorageHealthTests
     }
 
     /// <summary>
-    /// W15-1: <c>InitializeAcceleratorOnConnectionAsync</c>'s catch rolled back on the caller's
-    /// <c>CancellationToken</c> - the same compensation-on-the-wrong-token shape W15-1 fixed
-    /// elsewhere in this file's <c>ExportAsync</c>, found again here on review.
+    /// <c>InitializeAcceleratorOnConnectionAsync</c>'s catch rolled back on the caller's
+    /// <c>CancellationToken</c> - the same compensation-on-the-wrong-token shape corrected
+    /// elsewhere in this file's <c>ExportAsync</c>.
     /// </summary>
     [Fact]
     public async Task InitializeAcceleratorAsync_still_returns_the_integrity_failure_when_the_token_cancels_before_the_rollback()

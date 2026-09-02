@@ -432,7 +432,7 @@ internal sealed partial class ArcanumInternalToolServer
             // (issue #59).
             ApprenticeToolInvocationContext? caller = ApprenticeToolInvocationAmbient.Current;
 
-            // A Sending has no whole-operation deadline (#55), so the window between dispatch and its
+            // A Sending has no whole-operation deadline, so the window between dispatch and its
             // terminal frame is unbounded. Relaying remote state changes onto the caller's Chronicle is
             // what stops that window being a black box (issue #61).
             IProgress<A2ASendingProgress>? progress = CreateSendingProgress(scope, caller);

@@ -145,7 +145,7 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
     }
 
     /// <summary>
-    /// W7-5: the Windows PEM rehydration path exports the private key into an unencrypted PKCS#12
+    /// The Windows PEM rehydration path exports the private key into an unencrypted PKCS#12
     /// byte[] to work around Schannel's ephemeral-key-set restriction. That array must be zeroed
     /// before Load returns, matching every other secret buffer this project owns.
     /// </summary>

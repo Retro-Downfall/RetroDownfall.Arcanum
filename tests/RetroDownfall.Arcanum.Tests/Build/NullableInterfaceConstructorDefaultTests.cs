@@ -41,10 +41,14 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// matched <c>Task&lt;IFoo&gt;</c> and every other generic argument, and reported nine sites as the
     /// V-1 shape that are nothing of the kind.</para>
     ///
-    /// <para>On the evidence above, no site left in this list is the V-1 shape: a dependency whose
-    /// absence silently disables a refusal. What the list buys is the ninety-ninth entry - a new
-    /// optional interface dependency cannot enter <c>src/</c> without someone writing down which of
-    /// those four things is true of it.</para>
+    /// <para>Several sites here are dependencies whose absence would disable a refusal rather than
+    /// an observation - the two labelled-artifact guards, the two sensitive-artifact purgers, and the
+    /// workspace registry behind the attachment root check. None of them is a live bypass: each
+    /// reason names the registration or the single construction site that supplies it, so the claim
+    /// this list makes is that the container is what keeps the refusal reachable, not that the
+    /// parameter is harmless when null. What the list buys is the ninety-ninth entry - a new optional
+    /// interface dependency cannot enter <c>src/</c> without someone writing down which of those four
+    /// things is true of it, and which of those two claims it is making.</para>
     /// </remarks>
     private static readonly Dictionary<string, string> Allowed = new(StringComparer.Ordinal)
     {
@@ -64,7 +68,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:modelTokenEstimator"] = "the null coalesces to a constructed default at the use site, so no host runs without a IModelTokenEstimator",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:purger"] = "every use of the ICovenantSensitiveArtifactPurger is null-safe; absence disables an observation, not a refusal",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:purger"] = "the owner is registered at ApiBootstrapper.cs:426 and ICovenantSensitiveArtifactPurger at ServiceCollectionExtensions.cs:1956; the null check at ContextCompressionService.cs:228 skips the group-safe purge entirely (and is what keeps the null-forgiving dereference at :92 unreached), so the container supplying it is what keeps that purge reachable",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/EmbeddingGeneratorFactory.cs:EmbeddingGeneratorFactory:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
@@ -82,7 +86,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:resourceLimiter"] = "IProcessResourceLimiter is registered; the owner is also constructed by hand in src, where whether each site passes it is unverified",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:resourceLimiter"] = "the only construction in src is WizardIntelligenceProvider.cs:6525, which passes the resolved IProcessResourceLimiter",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:sanctumGuard"] = "the null coalesces to a constructed default at the use site, so no host runs without a ISanctumGuard",
 
@@ -140,7 +144,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Configuration/ConfigurationPresetService.cs:ConfigurationPresetService:credentialStore"] = "every use of the IWebResearchCredentialStore is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CampaignPathMarkerLifecycle.cs:CampaignPathMarkerLifecycle:recoveryKeys"] = "ICampaignRootIdentityRecoveryKeyProvider is registered; the owner is also constructed by hand in src, where whether each site passes it is unverified",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CampaignPathMarkerLifecycle.cs:CampaignPathMarkerLifecycle:recoveryKeys"] = "the only construction in src is the DI factory at ServiceCollectionExtensions.cs:1621, which passes the registered ICampaignRootIdentityRecoveryKeyProvider",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:attachmentStore"] = "every use of the ISessionAttachmentStore is null-safe; absence disables an observation, not a refusal",
 
@@ -160,7 +164,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs:LongRunningOperationStore:covenantDrain"] = "every use of the ICovenantConnectionDrain is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs:SagaMemoryStore:labeledArtifactGuard"] = "every use of the ICovenantLabeledArtifactGuard is null-safe; absence disables an observation, not a refusal",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs:SagaMemoryStore:labeledArtifactGuard"] = "the owner is registered at ServiceCollectionExtensions.cs:1225 and ICovenantLabeledArtifactGuard at :1949; a null skips the label guard in DeleteAsync (SagaMemoryStore.cs:518) and DeleteAllAsync (:622), so the container supplying it is what keeps those refusals reachable",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:blobStore"] = "owner is container-activated and IEncryptedBlobStore is registered; the container supplies it in a composed host",
 
@@ -168,7 +172,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:sourceResolver"] = "every use of the IAttachmentSourceResolver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:GrimoireDatabaseHostedService:startupProbe"] = "IInstallationStartupProbe is registered; the owner is also constructed by hand in src, where whether each site passes it is unverified",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:GrimoireDatabaseHostedService:startupProbe"] = "the null coalesces to InstallationStartupProbe.CreateDefault() at GrimoireDatabaseHostedService.cs:37, and the only construction in src - the DI factory at ServiceCollectionExtensions.cs:1058 - never passes one, so that default is the production probe",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs:HostToolsMarkerPairResetCoordinator:managedFiles"] = "every use of the IFullInstallationResetManagedFileReconciler is null-safe; absence disables an observation, not a refusal",
 
@@ -190,7 +194,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellCatalogService.cs:SpellCatalogService:progressObserver"] = "every use of the ISpellCatalogProgressObserver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:LexiconService:labeledArtifactGuard"] = "every use of the ICovenantLabeledArtifactGuard is null-safe; absence disables an observation, not a refusal",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:LexiconService:labeledArtifactGuard"] = "the owner is registered at ServiceCollectionExtensions.cs:1234 and ICovenantLabeledArtifactGuard at :1949; a null skips the label guard on delete (LexiconService.cs:236), so the container supplying it is what keeps that refusal reachable",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs:ArcanumInternalToolServer:workspaceCheckRuntime"] = "the null coalesces to a constructed default at the use site, so no host runs without a IWorkspaceCheckRuntime",
 
@@ -208,11 +212,11 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Resilience/ProviderHealthProbe.cs:ProviderHealthProbe:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Security/AttachmentSourceResolver.cs:AttachmentSourceResolver:workspaceRegistry"] = "every use of the IWorkspaceRegistry is null-safe; absence disables an observation, not a refusal",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/AttachmentSourceResolver.cs:AttachmentSourceResolver:workspaceRegistry"] = "the owner is registered at ServiceCollectionExtensions.cs:322 and :1217 and IWorkspaceRegistry at :1404; a null returns Success(claimedRoot) at AttachmentSourceResolver.cs:890 on a claim a registry can answer Unsafe for, so the container supplying it is what keeps that refusal reachable",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Security/SanctumGuard.cs:SanctumGuard:dnsResolver"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDnsResolver",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs:EmbeddingsResetService:purger"] = "every use of the ICovenantSensitiveArtifactPurger is null-safe; absence disables an observation, not a refusal",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs:EmbeddingsResetService:purger"] = "the only construction in src is the DI factory at ServiceCollectionExtensions.cs:1015, which passes the ICovenantSensitiveArtifactPurger registered at :1956; a null would return an empty purge outcome (EmbeddingsResetService.cs:107), so the factory passing it is what keeps the purge reachable",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Workspaces/CodingTools/WorkspaceCheckRuntime.cs:WorkspaceCheckRuntime:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 

@@ -34,7 +34,7 @@ internal sealed class HostLockSerilogFileSink : ILogEventSink, IDisposable
     /// Default per-file cap, matching Serilog's own default value but paired with
     /// <c>rollOnFileSizeLimit: true</c> below - without an explicit limit, Serilog's default is the
     /// same 1 GiB ceiling but with rolling off, so an event past it is silently dropped rather than
-    /// written to a new file (W8-6). Naming this rather than relying on the library default keeps the
+    /// written to a new file. Naming this rather than relying on the library default keeps the
     /// behavior stable if that default ever changes upstream; it is a constructor parameter, not a
     /// hard-coded value, so a test can exercise the roll-instead-of-drop behavior without writing a
     /// gigabyte of log data first.

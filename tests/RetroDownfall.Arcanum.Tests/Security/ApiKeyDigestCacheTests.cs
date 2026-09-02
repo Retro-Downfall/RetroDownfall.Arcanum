@@ -20,7 +20,7 @@ public sealed class ApiKeyDigestCacheTests
 
         Assert.True(found);
 
-        // W7-10: TryGetDigest hands out a defensive copy, never the live cached array — a caller
+        // TryGetDigest hands out a defensive copy, never the live cached array — a caller
         // that zeroes or otherwise writes into what it gets back must not corrupt the digest every
         // subsequent authentication compares against.
         Assert.NotSame(digest, result);
@@ -119,7 +119,7 @@ public sealed class ApiKeyDigestCacheTests
 
     }
 
-    // W7-10: TryGetDigest hands out the live shared byte[] holding the expected digest, so any
+    // TryGetDigest hands out the live shared byte[] holding the expected digest, so any
     // consumer that writes into what it gets back — the natural instinct in this codebase, where
     // every other secret buffer is zeroed in a finally — silently rewrites the digest every
     // subsequent authentication compares against. StoreDigest aliases the caller's array the same

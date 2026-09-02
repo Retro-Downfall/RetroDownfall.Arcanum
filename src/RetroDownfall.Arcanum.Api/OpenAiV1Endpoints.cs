@@ -665,7 +665,7 @@ internal static partial class OpenAiV1Endpoints
                                         ev.Message),
                                     ct).ConfigureAwait(false);
                                 streamErrored = true;
-                                // Fix round 1, item 1: this is a failure frame, not a completed
+                                // This is a failure frame, not a completed
                                 // response — marking it idempotency-terminal cached it as a
                                 // permanently replayable "success." PersistClaimAsync's own
                                 // buffered/aborted fallback would still treat a non-empty,
@@ -750,7 +750,7 @@ internal static partial class OpenAiV1Endpoints
                 completionId,
                 ex.GetType().FullName);
 
-            // Fix round 1, item 1: a client still connected here (the common case for a
+            // A client still connected here (the common case for a
             // provider-side fault) leaves PersistClaimAsync's own buffered/aborted fallback free to
             // treat whatever this writes as a terminal, replayable body — this arm never called
             // MarkIdempotencyTerminal, but omitting it is not the same as excluding the claim, so

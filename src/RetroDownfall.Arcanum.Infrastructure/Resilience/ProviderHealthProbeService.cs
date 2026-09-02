@@ -30,7 +30,7 @@ internal sealed class ProviderHealthProbeService(
 
             // Defaults true (the longer, "avoid hammering a down provider" interval) so a tick that
             // throws before ever reaching the tracker still backs off like an unhealthy pass, rather
-            // than the delay below being skipped entirely and the loop spinning hot (W8-7).
+            // than the delay below being skipped entirely and the loop spinning hot.
             bool anyUnhealthy = true;
 
             try

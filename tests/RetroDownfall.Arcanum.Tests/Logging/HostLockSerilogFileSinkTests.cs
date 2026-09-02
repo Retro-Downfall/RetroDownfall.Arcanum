@@ -8,7 +8,7 @@ using Serilog.Core;
 namespace RetroDownfall.Arcanum.Tests.Logging;
 
 /// <summary>
-/// W8-6: the rolling file sink must never silently drop an event past its per-file size cap.
+/// The rolling file sink must never silently drop an event past its per-file size cap.
 /// </summary>
 public sealed class HostLockSerilogFileSinkTests : IAsyncLifetime
 {

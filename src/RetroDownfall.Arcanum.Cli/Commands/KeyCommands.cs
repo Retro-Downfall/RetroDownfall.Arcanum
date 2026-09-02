@@ -485,7 +485,7 @@ public sealed class KeyCommands(
     /// Runs a credential-store mutation under exclusive installation ownership. Returns
     /// <see cref="CliExitCode.Success"/> on completion; on a bare <see cref="InvalidOperationException"/>
     /// (the credential store's own actionable remedy, or the initialization layer's maintenance-lock
-    /// and installation-reset refusals — W10-7), returns <see cref="CliExitCode.GenericError"/> after
+    /// and installation-reset refusals), returns <see cref="CliExitCode.GenericError"/> after
     /// printing that exception's own message, rather than letting it reach the top-level
     /// CliFailureMapper default arm and flatten to "An unexpected CLI error occurred.". Matched by
     /// exact type, not <c>is InvalidOperationException</c>, so a typed subclass this file does not

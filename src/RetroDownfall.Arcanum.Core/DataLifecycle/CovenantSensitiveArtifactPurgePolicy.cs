@@ -91,7 +91,7 @@ public sealed record CovenantSensitiveArtifactPurgeRule(
 /// The one exhaustive code-to-policy table for deleting a Covenant-derived artifact.
 /// </summary>
 /// <remarks>
-/// Thirteen kinds, thirteen literal rules, one owner. Retention purge (#94), family reinitialize, and
+/// Thirteen kinds, thirteen literal rules, one owner. Retention purge, family reinitialize, and
 /// Covenant reset all delete the same artifacts for different reasons, and three independent switch
 /// statements over the same enum is how one of them ends up preserving evidence the other two remove.
 /// Every erasure path resolves its policy here or does not run.

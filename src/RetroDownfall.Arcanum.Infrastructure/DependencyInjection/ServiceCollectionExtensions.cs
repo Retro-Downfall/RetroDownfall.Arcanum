@@ -2068,7 +2068,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<TimeProvider>()));
 
         // The two recovery handlers the registry requires for the kinds this slice adds. Registering
-        // a kind without its handler is the exact drift the coverage suite fails on (#40).
+        // a kind without its handler is the exact drift the coverage suite fails on.
         services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantIndexRebuildRecoveryHandler>();
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantFamilyReinitializeRecoveryHandler>();

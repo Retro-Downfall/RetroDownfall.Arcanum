@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Data;
 
 /// <summary>
-/// Compare-and-set guard behind inference-run crash recovery (#40), exercised against real SQLite
+/// Compare-and-set guard behind inference-run crash recovery, exercised against real SQLite
 /// rather than a fake, because the guarantee lives in the <c>WHERE … AND Status = Running</c> clause.
 /// </summary>
 [Collection("Grimoire")]

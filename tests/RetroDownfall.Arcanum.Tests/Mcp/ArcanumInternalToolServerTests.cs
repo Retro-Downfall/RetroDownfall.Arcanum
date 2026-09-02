@@ -2906,13 +2906,12 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
-    // Reproduces the reviewer's W6-4 shape at two scopes, swept over several fixture sizes:
+    // Reproduces the cross-linked-symlink shape at two scopes, swept over several fixture sizes:
     // - subdirectoryScope: false -- listed from the workspace root, so every symlink's target lies
-    //   *inside* the listing scope (round-1 shape; the target's own real name also appears in this
-    //   same listing).
+    //   *inside* the listing scope (the target's own real name also appears in this same listing).
     // - subdirectoryScope: true -- listed from a dedicated "scope" subdirectory whose own symlinks
     //   point at the six cross-linked directories from *outside* it, so every symlink's target lies
-    //   outside the listing scope but still inside the workspace (round-2 shape: the target's real
+    //   outside the listing scope but still inside the workspace (the target's real
     //   name is never part of this listing at all, so an out-of-scope alias needs different cross-page
     //   memory than an in-scope one does).
     // In both shapes, a resume that loses track of canonical directories descended on an earlier page
@@ -3287,11 +3286,11 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
-    // Round 3: a refused out-of-scope descent must say so in the response, not vanish silently. Forcing
+    // A refused out-of-scope descent must say so in the response, not vanish silently. Forcing
     // ReservedOverheadBytesForTests absurdly high makes the very first out-of-scope TryRecord call
     // refuse, on a fixture that otherwise fits in one page (no continuation at all) -- exactly the shape
-    // the reviewer measured as "IsError false, one page, no continuation marker, no truncation text,
-    // indistinguishable from a complete listing".
+    // that would otherwise read as IsError false, one page, no continuation marker and no truncation
+    // text: indistinguishable from a complete listing.
     [SkippableFact]
     public async Task ToolsCall_list_directory_reports_a_truncation_marker_when_the_out_of_scope_budget_refuses_a_descent()
     {
@@ -3363,12 +3362,12 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
-    // Round 3, item 2: the continuation token's out-of-scope-descent segment used to join entries with
+    // The continuation token's out-of-scope-descent segment used to join entries with
     // a single separator byte. A workspace-relative path can legally contain any byte a POSIX filesystem
     // allows (NUL and '/' excepted) -- including that exact separator byte, built here via a numeric
-    // cast rather than typed as an escape sequence, since typing that escape sequence directly in source
-    // has twice landed the raw byte on disk instead during this same body of work (see the report's
-    // "tooling hazard" note). A target directory named with that byte embedded, reached through two
+    // cast rather than typed as an escape sequence, because typing that escape sequence directly in
+    // source has repeatedly landed the raw byte in the file instead, which git then reads as binary
+    // and stops diffing. A target directory named with that byte embedded, reached through two
     // different aliases with a page boundary forced between them, exercises exactly the shape the
     // reviewer measured: the separator-joined token decodes the target's single recorded identity back
     // into two garbled fragments, neither of which matches the target's real canonical path, so the
@@ -3505,9 +3504,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
-    // Round 3 follow-up (self-caught before returning): a review pass raised an int-overflow concern
-    // against ParseLengthPrefixedEntries's digit-accumulation loop. Investigated by simulating the
-    // digit-by-digit accumulation in isolation (see the report's own subsection on this) and found
+    // An int-overflow concern was raised against ParseLengthPrefixedEntries's digit-accumulation
+    // loop and investigated by simulating the digit-by-digit accumulation in isolation. It is
     // unreachable in practice -- the loop's own check runs after *every* digit, not once at the end, so
     // the accumulated value can never exceed entriesPortion.Length entering any single multiply-add, and
     // entriesPortion.Length is itself bounded well below int.MaxValue by

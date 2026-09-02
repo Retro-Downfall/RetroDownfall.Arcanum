@@ -11,7 +11,7 @@ public interface IIdempotencyClaimStore
 
     /// <summary>
     /// Looks a claim up by its identity rather than its key hash. Crash recovery holds the claim id
-    /// from the durable operation ledger, never the caller's original key (#40).
+    /// from the durable operation ledger, never the caller's original key.
     /// </summary>
     Task<IdempotencyClaim?> GetByIdAsync(Guid claimId, CancellationToken cancellationToken = default);
 

@@ -82,7 +82,7 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
                 await using DbCommand cmd = connection.CreateCommand();
 
                 // The Running guard is what makes repeated recovery safe: a run that reached Completed or
-                // Failed before the crash landed keeps that status instead of being rewritten (#40).
+                // Failed before the crash landed keeps that status instead of being rewritten.
                 cmd.CommandText =
                     """
                     UPDATE "InferenceRuns"

@@ -8,25 +8,21 @@ namespace RetroDownfall.TheForge.Tests;
 
 /// <summary>
 /// Windows-only: ACL semantics (owner-only DACL, protected from inheritance) have no Unix
-/// equivalent to assert here, so every test in this class is a runtime no-op off Windows —
+/// equivalent to assert here, so every test in this class skips off Windows —
 /// [SupportedOSPlatform("windows")] quiets CA1416 for the ACL-reading calls the same way
-/// TheForgeOwnerOnlyPermissions itself quiets it for the ACL-writing calls, and the runtime
-/// OperatingSystem.IsWindows() guard is what actually skips the body elsewhere.
+/// TheForgeOwnerOnlyPermissions itself quiets it for the ACL-writing calls, and Skip.IfNot is what
+/// takes the method out of the run there. Returning early instead reported Passed on every
+/// non-Windows machine without asserting anything, and the skipped count never moved to say so.
 /// </summary>
 public sealed class TheForgeOwnerOnlyPermissionsTests
 {
 
-    [Fact]
+    [SkippableFact]
     [SupportedOSPlatform("windows")]
     public void TrySetFile_OnWindows_RestrictsTheDaclToTheCurrentUserOnly()
     {
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), "Owner-only DACL semantics are Windows-only.");
 
         string path = Path.Combine(Path.GetTempPath(), $"forge-acl-file-{Guid.NewGuid():N}.tmp");
 
@@ -54,17 +50,12 @@ public sealed class TheForgeOwnerOnlyPermissionsTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     [SupportedOSPlatform("windows")]
     public void TrySetDirectory_OnWindows_RestrictsTheDaclToTheCurrentUserOnly()
     {
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), "Owner-only DACL semantics are Windows-only.");
 
         string path = Path.Combine(Path.GetTempPath(), $"forge-acl-dir-{Guid.NewGuid():N}");
 

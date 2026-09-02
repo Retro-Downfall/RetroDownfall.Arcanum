@@ -379,7 +379,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
     }
 
     /// <summary>
-    /// W3a-4: the exclusive acquisition has no <see cref="SqliteBusyRetry"/> wrap, so any handle the
+    /// The exclusive acquisition has no <see cref="SqliteBusyRetry"/> wrap, so any handle the
     /// drain could not close turns the erasure into a hard refusal after the first attempt's own
     /// busy budget elapses. <see cref="CovenantDisclosureJournal"/> wraps its identical
     /// <c>BEGIN IMMEDIATE</c> in the retry helper; this transaction did not.
@@ -436,7 +436,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             fixture.Drain,
             TimeProvider.System);
 
-        // Review round 1: IsSuccess alone cannot tell a genuine retry from a holder that happened to
+        // IsSuccess alone cannot tell a genuine retry from a holder that happened to
         // release before the erasure's first attempt ever ran - this suite would pass vacuously
         // either way. RetryingForTesting is invoked once per busy exception SqliteBusyRetry actually
         // caught, so counting its calls (Interlocked, since it runs on the Task.Run thread below) and

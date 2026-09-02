@@ -44,7 +44,7 @@ public sealed class PromptCommandTests
     }
 
     /// <summary>
-    /// W10-3: every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
+    /// Every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
     /// server-down failure was indistinguishable from a real domain failure. Routed through
     /// <c>CliFailureExit</c>, a <c>Connection.*</c> failure now exits 3 and names the address tried.
     /// A non-default port is configured (rather than asserting the harness's own default address)
@@ -167,7 +167,7 @@ public sealed class PromptCommandTests
     }
 
     /// <summary>
-    /// W10-2: an irreversible delete must ask before it acts. Without <c>--yes</c> and with stdout
+    /// An irreversible delete must ask before it acts. Without <c>--yes</c> and with stdout
     /// redirected (as it always is under this harness), <see cref="ConfirmationPrompt"/> fails closed
     /// rather than silently deleting the picker-resolved resource.
     /// </summary>

@@ -734,9 +734,9 @@ public sealed class WardGateTests
                 CancellationToken.None))
             .ToArray();
 
-        // W7-6 follow-up: entryCts used to be minted before the capacity check, and this
-        // path returned without disposing it or the caller's JsonDocument arguments — the same
-        // leak shape W7-6 fixed on the duplicate-ward-id path, here on the capacity-denial path.
+        // entryCts used to be minted before the capacity check, and this path returned without
+        // disposing it or the caller's JsonDocument arguments — the same leak shape the
+        // duplicate-ward-id path had, here on the capacity-denial path.
         JsonDocument overflowArguments = JsonDocument.Parse("""{"path":"README.md"}""");
 
         WardResolution overflow = await gate.WardAsync(
@@ -869,7 +869,7 @@ public sealed class WardGateTests
 
     }
 
-    // W7-6: a duplicate ward id rejects admission before the entry ever enters _pending, so none
+    // A duplicate ward id rejects admission before the entry ever enters _pending, so none
     // of the three terminal paths above run for it. The rejected entry's own JsonDocument and
     // CancellationTokenSource must still be released, or every retried/duplicate ward id leaks a
     // pooled native buffer.

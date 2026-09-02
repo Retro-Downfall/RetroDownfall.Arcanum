@@ -70,7 +70,7 @@ public sealed class SessionManagementCommandTests
     }
 
     /// <summary>
-    /// W10-3: an unreachable host is a network failure, not a generic one — scripts need exit 3 to
+    /// An unreachable host is a network failure, not a generic one — scripts need exit 3 to
     /// tell "arcanum serve is down" apart from a real domain error, and the message must name the
     /// address the client actually tried so an operator on a non-default <c>Arcanum:Host</c> can act.
     /// </summary>

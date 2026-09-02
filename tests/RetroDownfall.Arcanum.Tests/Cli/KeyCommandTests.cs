@@ -259,7 +259,7 @@ public sealed class KeyCommandTests
 
     }
 
-    /// <summary>W10-2: an irreversible delete must ask before it acts.</summary>
+    /// <summary>An irreversible delete must ask before it acts.</summary>
     [Fact]
     public async Task Provider_delete_requires_confirmation_before_touching_any_store()
     {
@@ -283,7 +283,7 @@ public sealed class KeyCommandTests
     }
 
     /// <summary>
-    /// W10-7: ProviderCredentialStore.DeleteApiKeyAsync deletes the encrypted mirror, then throws
+    /// ProviderCredentialStore.DeleteApiKeyAsync deletes the encrypted mirror, then throws
     /// InvalidOperationException naming the account that survives in the OS credential store when
     /// the OS delete failed. That message matched no CliFailureMapper arm, so the operator was told
     /// only "An unexpected CLI error occurred." and never learned the keychain entry survived.
@@ -422,7 +422,7 @@ public sealed class KeyCommandTests
 
             Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
 
-            // W10-7: the refusal's own remedy text must reach the operator, not the generic
+            // The refusal's own remedy text must reach the operator, not the generic
             // "An unexpected CLI error occurred." that RunMutationAsync used to let every
             // InvalidOperationException — including these initialization-layer lock and reset
             // refusals — flatten into.
@@ -599,7 +599,7 @@ public sealed class KeyCommandTests
         /// <summary>
         /// Reproduces ProviderCredentialStore.DeleteApiKeyAsync's OsCredentialStoreStatus.Failed
         /// arm: the encrypted mirror is deleted first (below), then this throws naming the account
-        /// that survives in the OS store — W10-7.
+        /// that survives in the OS store.
         /// </summary>
         public Exception? DeleteFailure { get; init; }
 

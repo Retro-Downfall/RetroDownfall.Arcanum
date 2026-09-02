@@ -1,6 +1,6 @@
 -- LongRunningOperations.SessionId names a row in Sessions, whose Id every writer renders uppercase
 -- dashed and whose write-time guard has refused anything else since version 5. This column was written
--- through the store's own "N" rendering until W3b-5 switched it, so an installation holds both eras:
+-- through the store's own "N" rendering until the store switched it, so an installation holds both eras:
 -- rows written before that switch in the dash-free spelling, rows written after it in the spelling
 -- Sessions actually holds. A join written the obvious way - SessionId = Sessions.Id, with no
 -- lower(replace(...)) on either side - therefore matches every new row and silently misses every old

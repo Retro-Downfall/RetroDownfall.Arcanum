@@ -145,6 +145,22 @@ internal sealed record GrimoireOfflineTransitionReconciliationEvidence(
 
 }
 
+/// <summary>
+/// Why a lifecycle stayed closed, and what a later resume has to prove before it may reopen.
+/// </summary>
+/// <remarks>
+/// Nothing under <c>src/</c> constructs one. The lifecycle store this record belongs to is
+/// deliberately not activated on any production path, so every instance that exists today comes
+/// from a test or from deserializing a payload a test wrote. That is the state this type is
+/// designed for rather than an omission: the shape is settled and validated ahead of the producer
+/// that will eventually mint it.
+///
+/// <para><see cref="ExpectedStateDigest"/> is the digest a future resume producer must recompute
+/// from the state it actually observes, never copy forward out of the blocker it is answering. The
+/// lifecycle validator admits a resolution only when the proof's own canonical (or healthy-catalog)
+/// state digest equals this value, so a producer that echoes the stored digest back asserts
+/// equality with itself and proves nothing.</para>
+/// </remarks>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 internal sealed record GrimoireOfflineTransitionBlocker(
     string ErrorCode,

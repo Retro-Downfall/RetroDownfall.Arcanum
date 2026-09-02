@@ -520,7 +520,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
     }
 
-    // W2.P1-2: a late OperationCanceledException handler from a prior generation must not
+    // A late OperationCanceledException handler from a prior generation must not
     // persist Paused over a newer Resume that already incremented the execution generation.
 
     [Fact]
@@ -750,7 +750,6 @@ public sealed class ApprenticeServiceReliabilityTests
             await collector.WaitAsync(TimeSpan.FromSeconds(5));
 
         }
-
         catch (OperationCanceledException)
         {
 

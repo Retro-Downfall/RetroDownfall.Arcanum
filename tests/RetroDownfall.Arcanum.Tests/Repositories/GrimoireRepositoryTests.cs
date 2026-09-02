@@ -1254,7 +1254,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W15-1: a compensating rollback must run on <see cref="CancellationToken.None"/>, not the
+    /// A compensating rollback must run on <see cref="CancellationToken.None"/>, not the
     /// caller's token. When the caller's token is already cancelled by the time the catch block's
     /// rollback runs, rolling back on that token throws a fresh <see cref="OperationCanceledException"/>
     /// before <c>throw;</c> can re-raise the original failure, so the caller never learns why the write

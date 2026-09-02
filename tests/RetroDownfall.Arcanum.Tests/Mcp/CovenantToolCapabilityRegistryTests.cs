@@ -271,7 +271,7 @@ public sealed class CovenantToolCapabilityRegistryTests
         }
     }
 
-    // W8-2: ReleaseUnsent used to decide whether to remove a registration from a bare read of
+    // ReleaseUnsent used to decide whether to remove a registration from a bare read of
     // Capability.State, taken before RemoveExact rather than atomically with it. A TryTake landing in
     // that gap could claim the capability (a legitimate handler about to drain it) after ReleaseUnsent
     // had already decided -- based on a now-stale read -- to free the id out from under it. Firing
@@ -316,7 +316,7 @@ public sealed class CovenantToolCapabilityRegistryTests
         }
     }
 
-    // W8-2: SweepExpired had the identical check-then-act shape ReleaseUnsent did -- a bare
+    // SweepExpired had the identical check-then-act shape ReleaseUnsent did -- a bare
     // Capability.State read gating a later RemoveExact, not atomic with it. It has no production
     // caller today (see the class remarks), so this test is what pins the shape rather than a caller
     // exercising it. Same deterministic reproduction as the ReleaseUnsent regression test above: the

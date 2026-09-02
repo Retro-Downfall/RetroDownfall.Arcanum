@@ -213,7 +213,7 @@ public sealed class SagaExtractionService(
 
                 // Peek rather than remove: the key must stay reserved for the whole attempt so a
                 // concurrent EnqueueExtraction call for this session merges into it instead of racing a
-                // second channel write for the same session (W8-12). Released below, once the attempt
+                // second channel write for the same session. Released below, once the attempt
                 // (success, retry, or skip) is finished.
                 if (!_pending.TryGetValue(sessionId, out SagaExtractionRequest? request))
                 {
@@ -260,8 +260,8 @@ public sealed class SagaExtractionService(
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
 
-                    // Host shutdown mid-attempt: release the dedup key and retry ladder here too
-                    // (review round 1), the same way the disabled-skip branch above does, rather than
+                    // Host shutdown mid-attempt: release the dedup key and retry ladder here too,
+                    // the same way the disabled-skip branch above does, rather than
                     // leaving them held by a session nothing will ever read from _pending again.
                     _ = _pending.TryRemove(sessionId, out _);
 
@@ -303,7 +303,7 @@ public sealed class SagaExtractionService(
 
                     // Re-enqueue on a background task after the backoff instead of blocking this
                     // single-reader loop: every other queued session would otherwise sit unread for the
-                    // whole delay, up to MaximumAutomaticRetryDelay, behind one failing session (W8-3).
+                    // whole delay, up to MaximumAutomaticRetryDelay, behind one failing session.
                     // Task.Delay yields at its first await, so this needs no Task.Run; the discarded
                     // task cannot fault — Task.Delay only ever throws OperationCanceledException, and
                     // EnqueueExtraction already catches everything itself. latest (not request) carries
@@ -321,7 +321,7 @@ public sealed class SagaExtractionService(
 
                     // Something merged in while this attempt was running; a plain release would drop it
                     // silently. Re-enqueueing the remainder is cheap - the next pass skips without an
-                    // LLM call once nothing is left unsummarized (W8-12).
+                    // LLM call once nothing is left unsummarized.
                     EnqueueExtraction(latest);
 
                 }

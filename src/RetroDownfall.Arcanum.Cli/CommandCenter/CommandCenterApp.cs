@@ -292,7 +292,7 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
     /// stderr) and returns its captured stdout, governed by <paramref name="timeoutMilliseconds"/>.
     /// </summary>
     /// <remarks>
-    /// W15-7: both redirected streams are drained with <see cref="Process.StandardOutput"/>'s and
+    /// Both redirected streams are drained with <see cref="Process.StandardOutput"/>'s and
     /// <see cref="Process.StandardError"/>'s async reads started <em>before</em>
     /// <see cref="Process.WaitForExit(int)"/> is ever called, so the deadline governs the wait — a
     /// child that never writes and never exits is killed at the deadline instead of blocking the

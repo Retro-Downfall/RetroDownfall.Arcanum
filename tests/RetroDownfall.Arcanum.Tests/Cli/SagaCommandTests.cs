@@ -195,7 +195,7 @@ public sealed class SagaCommandTests
     }
 
     /// <summary>
-    /// W10-2: an irreversible delete must ask before it acts. Without <c>--yes</c> and with stdout
+    /// An irreversible delete must ask before it acts. Without <c>--yes</c> and with stdout
     /// redirected (as it always is under this harness), <see cref="ConfirmationPrompt"/> fails closed
     /// rather than silently deleting the named memory.
     /// </summary>

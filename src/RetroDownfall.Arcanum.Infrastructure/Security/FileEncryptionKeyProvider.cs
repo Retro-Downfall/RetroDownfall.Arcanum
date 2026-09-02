@@ -434,7 +434,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
             .ConfigureAwait(false);
     }
 
-    // W7-8: key ids are public lookup identifiers persisted in blob metadata (DESIGN §5.4.6),
+    // Key ids are public lookup identifiers persisted in blob metadata (DESIGN §5.4.6),
     // not secrets, and _keys is already a Dictionary<string, FileEncryptionKeyMaterial> built with
     // StringComparer.Ordinal (see the constructions above), so a hash lookup is a drop-in
     // replacement for the per-candidate byte[]-allocating fixed-time scan this used to run on

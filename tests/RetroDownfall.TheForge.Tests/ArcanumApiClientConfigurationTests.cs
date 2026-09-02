@@ -85,7 +85,7 @@ public sealed class ArcanumApiClientConfigurationTests
             }
         }
 
-        // Same class of silent failure as a non-2xx response (W11-2): a malformed BaseUrl must not
+        // Same class of silent failure as a non-2xx response: a malformed BaseUrl must not
         // read as "stream completed with zero frames".
         await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
     }

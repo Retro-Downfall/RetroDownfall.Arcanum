@@ -238,9 +238,17 @@ public sealed class CliSurfaceTests
             Walk(BuildMap()).Select(static command => command.Path),
             StringComparer.Ordinal);
 
+        List<(int Number, string Cell)> rows = [.. CommandReferenceRows()];
+
+        // A table the reader found no rows in satisfies the loop below vacuously - every documented
+        // row resolves when there are none - and reports green having checked nothing. A moved file,
+        // a renamed "Removed spellings" heading that now matches the first line, or a table rewritten
+        // without pipes would all land here, so the count is asserted before the contents are.
+        Assert.NotEmpty(rows);
+
         List<string> offenders = [];
 
-        foreach ((int Number, string Cell) row in CommandReferenceRows())
+        foreach ((int Number, string Cell) row in rows)
         {
 
             Match match = DocumentedCommandCell.Match(row.Cell);

@@ -798,8 +798,8 @@ internal sealed partial class ArcanumInternalToolServer
     /// and the set of out-of-scope directory symlink targets (workspace-relative, forward-slashed)
     /// already descended into by an earlier page of this same listing -- the cross-page memory an
     /// out-of-scope alias needs, since <see cref="WalkListDirectoryEntries"/>'s per-page
-    /// <c>visitedCanonicalDirectories</c> alone is reseeded fresh on every resumed page (see W6-4 round
-    /// 2). An in-scope alias needs no such memory: its target's own real name owns its content, so
+    /// <c>visitedCanonicalDirectories</c> alone is reseeded fresh on every resumed page. An in-scope
+    /// alias needs no such memory: its target's own real name owns its content, so
     /// whether to descend it is a pure function of the canonical path alone, not of what an earlier page
     /// already saw.
     /// </summary>
@@ -1054,7 +1054,7 @@ internal sealed partial class ArcanumInternalToolServer
     /// <summary>
     /// Tracks which out-of-scope directory symlink targets one <c>list_directory</c> call has already
     /// descended into, across every continuation of that same call -- the cross-page memory an
-    /// out-of-scope alias needs (W6-4 round 2). An in-scope alias needs none: its target's own real
+    /// out-of-scope alias needs. An in-scope alias needs none: its target's own real
     /// name owns its content, so whether to descend it is a pure function of the canonical path alone
     /// (see <see cref="WalkListDirectoryEntries"/>), never of what an earlier page already saw. An
     /// out-of-scope target has no real name inside the listed scope for the walk to ever reach on its
@@ -1446,7 +1446,7 @@ internal sealed partial class ArcanumInternalToolServer
                 }
 
                 // An out-of-scope alias ancestor needs the same cross-page memory as any other
-                // out-of-scope descent (W6-4 round 2): this checkpoint's own existence proves it was
+                // out-of-scope descent: this checkpoint's own existence proves it was
                 // already descended into on an earlier page, and once a later page's checkpoint moves
                 // past it, this seek is the only place that re-derives the fact -- the per-page
                 // visitedCanonicalDirectories set below is reseeded fresh every page and does not carry
@@ -1502,7 +1502,7 @@ internal sealed partial class ArcanumInternalToolServer
                     // that emitted this checkpoint stopped pulling right there). So an out-of-scope alias
                     // checkpoint being recursed into here, from a seek, is genuinely the first time this
                     // exact descent is decided -- record it, gated by the same budget every other
-                    // out-of-scope descent is (W6-4 round 2).
+                    // out-of-scope descent is.
                     bool canRecord = !checkpointIsAlias
                         || checkpointIsInScope
                         || outOfScopeTracker.TryRecord(canonicalCheckpoint, matchedEntry);
@@ -1602,7 +1602,7 @@ internal sealed partial class ArcanumInternalToolServer
 
                 // An out-of-scope alias target has no real name inside the listed scope for a later page
                 // to ever reach on its own, so it needs the cross-page memory an in-scope target does
-                // not (W6-4 round 2): recording it here, gated by the continuation token's own byte
+                // not: recording it here, gated by the continuation token's own byte
                 // budget, is what lets a later page recognize this exact canonical directory as already
                 // shown instead of re-descending into it through a different alias.
                 bool canRecord = !isAlias

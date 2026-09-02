@@ -59,7 +59,7 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
     }
 
     /// <summary>
-    /// Marks the store disposed without disposing any per-account gate (W7-9). None of these
+    /// Marks the store disposed without disposing any per-account gate. None of these
     /// semaphores ever has its AvailableWaitHandle observed, so none needs disposal — and
     /// disposing one out from under an in-flight caller turned that caller's own
     /// <c>finally { gate.Release(); }</c> into an ObjectDisposedException that replaced whatever

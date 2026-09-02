@@ -696,7 +696,8 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
             BlockerResolutionEvidence = new(Digest(0x71), Digest(0x79)),
         }).IsFailure);
 
-        // A proof that only matches the binding digest (the pre-D5-2 tautological shape) must
+        // A proof that only matches the binding digest - the tautological shape, where the producer
+        // proves equality with the value it was handed - must
         // stay refused now that ExpectedStateDigest is the field that governs acceptance -
         // pins that the comparison is not silently widened back to accept either digest.
         Assert.True(Handler().ValidateAdvance(kept, applying with

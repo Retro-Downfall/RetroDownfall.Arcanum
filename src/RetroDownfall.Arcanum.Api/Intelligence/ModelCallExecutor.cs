@@ -285,7 +285,7 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         }
         finally
         {
-            // W1-6: reached on every exit — normal completion, a provider fault, or the consumer
+            // Reached on every exit — normal completion, a provider fault, or the consumer
             // abandoning the enumerator — so a stream that observed usage before failing or being
             // disconnected is still accounted instead of silently losing reconciliation, prompt-cache
             // and delegated-usage telemetry for that call.

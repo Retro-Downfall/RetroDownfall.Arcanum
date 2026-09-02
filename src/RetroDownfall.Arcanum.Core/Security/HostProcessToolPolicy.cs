@@ -7,9 +7,15 @@ namespace RetroDownfall.Arcanum.Core.Security;
 /// <summary>
 /// Central policy for arbitrary host process execution tools (<c>execute_command</c>,
 /// <c>run_spell_script</c>). Default Local edition denies advertise and invoke on every path.
-/// Escape hatch: <see cref="ArcanumEdition.Development"/> plus startup env
-/// <c>ARCANUM_ALLOW_HOST_PROCESS_TOOLS</c> — forces a degraded health component when active.
 /// </summary>
+/// <remarks>
+/// <see cref="ArcanumEdition.Development"/> plus the startup env
+/// <c>ARCANUM_ALLOW_HOST_PROCESS_TOOLS</c> is a necessary condition, never a sufficient one: the
+/// startup gate's published decision can subtract, and on an installation with no completed
+/// host-process-tools transition it does - it refuses the host outright. Only a state the gate
+/// permits reaches <see cref="HostProcessToolPolicyStatus.IsHealthDegraded"/>, so the degraded
+/// health component follows the resolved answer rather than the two inputs.
+/// </remarks>
 public static class HostProcessToolPolicy
 {
 
@@ -20,10 +26,26 @@ public static class HostProcessToolPolicy
 
     public const string AllowHostProcessToolsEnvVar = "ARCANUM_ALLOW_HOST_PROCESS_TOOLS";
 
+    /// <summary>What an operator sees when a host process tool refuses to advertise or run.</summary>
+    /// <remarks>
+    /// It used to read as an instruction: set the Development edition and
+    /// <see cref="AllowHostProcessToolsEnvVar"/>, and health would report Degraded. Neither is true
+    /// any more. The pair is necessary and not sufficient - the startup gate's published decision
+    /// can still withhold these tools, and on an installation with no completed host-process-tools
+    /// transition that pair is exactly what the gate refuses to start on - so the old text sent an
+    /// operator into the one state that stops their host, and promised a health status only the
+    /// permitted path produces. Saying the decision is "not a setting" would be its own overreach:
+    /// in the Local edition the edition really is why these tools are off. The last sentence is the
+    /// gate's own remedy, word for word, so a reader who follows either one lands in the same place.
+    /// </remarks>
     public const string DeniedMessage =
-        "Host process tools (execute_command / run_spell_script) are disabled in the Local edition. "
-        + "Set Arcanum:Edition=Development (or ARCANUM_EDITION=development) and "
-        + "ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1 to enable; GET /api/health will report Degraded.";
+        "Host process tools (execute_command / run_spell_script) are refused for this process. The "
+        + "Development edition and ARCANUM_ALLOW_HOST_PROCESS_TOOLS are necessary for them, never "
+        + "sufficient: the startup gate's published decision can still withhold them, and on an "
+        + "installation with no completed host-process-tools transition it does - a host started "
+        + "with that variable is refused outright, and no offline command that records such a "
+        + "transition has shipped. "
+        + "Clear the ARCANUM_ALLOW_HOST_PROCESS_TOOLS environment variable and start the host again.";
 
     /// <summary>The decision the startup gate published for this process, once it has one.</summary>
     /// <remarks>

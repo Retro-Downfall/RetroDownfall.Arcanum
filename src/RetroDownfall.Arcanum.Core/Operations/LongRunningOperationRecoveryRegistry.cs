@@ -17,7 +17,7 @@ public enum LongRunningOperationStartupPriority
 }
 
 /// <summary>
-/// One row of the executable recovery matrix (#40): everything an operator or a recovery pass needs
+/// One row of the executable recovery matrix: everything an operator or a recovery pass needs
 /// to know about a durable operation kind without reading the handler's source.
 /// </summary>
 /// <param name="Kind">Bounded kind from <see cref="LongRunningOperationKinds"/>.</param>
@@ -256,7 +256,7 @@ public static class LongRunningOperationRecoveryRegistry
             // created before its first checkpoint — the rebuild writes one before its first batch and
             // the reinitialize before it closes admission — so a version-0 row is not "not started
             // yet", it is a payload this build cannot read, and resuming a database-replacing
-            // operation from one would be a guess (#87).
+            // operation from one would be a guess.
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.CovenantIndexRebuild,
                 LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
