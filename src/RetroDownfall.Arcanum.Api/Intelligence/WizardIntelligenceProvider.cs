@@ -1595,7 +1595,6 @@ public sealed partial class WizardIntelligenceProvider(
         Stopwatch inferenceStopwatch = Stopwatch.StartNew();
 
         Channel<IntelligenceEvent>? liveHumanPromptChannel = null;
-        IHumanPromptLiveEmitter? previousHumanPromptEmitter = HumanPromptLiveEmitterAmbient.Current;
 
         TurnAccountingHandle? streamAccounting = null;
 
@@ -4288,16 +4287,6 @@ public sealed partial class WizardIntelligenceProvider(
         finally
         {
             streamCovenantStaging?.Dispose();
-
-            // V-2: on the normal per-tool-call path this is inert -- every yield return since the
-            // last ProcessWithLiveWardsAsync ambient-set (at minimum this attempt's own
-            // ToolResult/Status/Result frames) already discarded it, the same way the original
-            // top-of-attempt set was discarded before this fix. Kept anyway: an exception
-            // propagating out of a tool call synchronously (no intervening yield return) would
-            // still see that call's ambient active here, and restoring is the correct behavior
-            // for that path -- this attempt's finally must not leave a stale, tool-call-scoped
-            // emitter live in whatever context resumes after it.
-            HumanPromptLiveEmitterAmbient.Current = previousHumanPromptEmitter;
 
             liveHumanPromptChannel?.Writer.TryComplete();
 
