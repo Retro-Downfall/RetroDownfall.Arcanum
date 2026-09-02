@@ -2446,7 +2446,13 @@ public sealed partial class WizardIntelligenceProvider(
                 await liveHumanPromptChannel.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
             };
 
-            HumanPromptLiveEmitterAmbient.Current = new ChannelHumanPromptLiveEmitter(liveHumanPromptChannel);
+            // V-2: NOT set here. This method is an async iterator, and an AsyncLocal write does
+            // not survive a `yield return` — only an `await` does. The very next yield (the
+            // ToolCall frame, before any tool executes) would silently discard this assignment,
+            // so every tool invocation would observe HumanPromptLiveEmitterAmbient.Current as
+            // null regardless. It is instead (re-)established inside ProcessWithLiveWardsAsync,
+            // a plain non-yielding local function invoked with zero intervening yields after each
+            // tool call's own ToolCall frame — see the comment there.
         }
 
         bool humanInteractionAvailable = streaming && liveHumanPromptEmit is not null;
@@ -3564,6 +3570,24 @@ public sealed partial class WizardIntelligenceProvider(
 
                             async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessWithLiveWardsAsync()
                             {
+                                // V-2: (re-)established here, not at the top of the attempt. This
+                                // local function is a plain, non-yielding async method invoked
+                                // (via the call below) with zero intervening yield returns since
+                                // this tool call's own ToolCall frame — so, unlike a set made
+                                // earlier in the enclosing async-iterator method, this one is
+                                // still active by the time control reaches ProcessSingleToolCallAsync
+                                // and, through it, the tool's own body: a plain method call and a
+                                // regular `await` both preserve AsyncLocal state; only a `yield
+                                // return` discards it. Re-set on every tool call (not once for the
+                                // whole attempt) because each preceding ToolCall/ToolResult/ward
+                                // frame's own yield return already discarded whatever the previous
+                                // call established.
+                                if (liveHumanPromptChannel is { } humanPromptChannel)
+                                {
+                                    HumanPromptLiveEmitterAmbient.Current =
+                                        new ChannelHumanPromptLiveEmitter(humanPromptChannel);
+                                }
+
                                 try
                                 {
                                     return await toolExecutionPipeline
@@ -4252,6 +4276,14 @@ public sealed partial class WizardIntelligenceProvider(
         {
             streamCovenantStaging?.Dispose();
 
+            // V-2: on the normal per-tool-call path this is inert -- every yield return since the
+            // last ProcessWithLiveWardsAsync ambient-set (at minimum this attempt's own
+            // ToolResult/Status/Result frames) already discarded it, the same way the original
+            // top-of-attempt set was discarded before this fix. Kept anyway: an exception
+            // propagating out of a tool call synchronously (no intervening yield return) would
+            // still see that call's ambient active here, and restoring is the correct behavior
+            // for that path -- this attempt's finally must not leave a stale, tool-call-scoped
+            // emitter live in whatever context resumes after it.
             HumanPromptLiveEmitterAmbient.Current = previousHumanPromptEmitter;
 
             liveHumanPromptChannel?.Writer.TryComplete();

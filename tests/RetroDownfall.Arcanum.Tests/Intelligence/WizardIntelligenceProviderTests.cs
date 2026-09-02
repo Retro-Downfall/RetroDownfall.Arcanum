@@ -1347,6 +1347,64 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// V-2 (important): HumanPromptLiveEmitterAmbient.Current was set at the top of
+    /// RunInferenceAttemptAsync -- an async iterator -- but the very next yield return (the
+    /// ToolCall frame, before any tool executes) discarded it: an AsyncLocal write survives an
+    /// await but not a yield return. No tool invocation could ever observe it non-null, so the
+    /// real MCP ElicitationHandler always declined elicitation during attended streaming turns.
+    /// The fix re-establishes the ambient inside ProcessWithLiveWardsAsync, a plain non-yielding
+    /// local function invoked with zero intervening yields after each tool call's own ToolCall
+    /// frame. This also exercises W1-7's held human-channel wait across several re-arms for the
+    /// first time -- previously nothing could ever write to that channel to trigger one.
+    /// </summary>
+    [Fact]
+    public async Task StreamingToolCall_ObservesNonNullHumanPromptAmbientAndAllFramesArriveInOrder()
+    {
+
+        const string toolName = "emit_human_frames";
+
+        const int frameCount = 5;
+
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateHumanFrameEmittingTool(toolName, frameCount));
+
+        chat.EnqueueStreamUpdates(
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new FunctionCallContent("call-1", toolName, new Dictionary<string, object?>())]));
+
+        chat.EnqueueStreamTokens("done");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "emit frames", SkipSpellRouting = true });
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        IntelligenceEvent toolResult = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.ToolResult);
+
+        Assert.Equal("ambient-non-null", toolResult.Data);
+
+        List<string> humanFrames = events
+            .Where(static e => e.Type == IntelligenceEventType.Status
+                && (e.Message?.StartsWith("human-frame-", StringComparison.Ordinal) ?? false))
+            .Select(static e => e.Message)
+            .ToList();
+
+        Assert.Equal(
+            Enumerable.Range(0, frameCount).Select(static i => $"human-frame-{i}").ToArray(),
+            humanFrames);
+
+    }
+
     [Fact]
     public async Task Scenario20_AttachedFilesBeyondFormerCountCeiling_AreAccepted()
     {
@@ -9145,6 +9203,37 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             (int evidence) => $"evidence-{evidence}",
             name,
             "returns changing progress evidence");
+
+    /// <summary>
+    /// V-2 regression tool: records whether HumanPromptLiveEmitterAmbient.Current is non-null at
+    /// tool-invocation time, then (if non-null) emits <paramref name="frameCount"/> frames on it,
+    /// yielding between each so the pump's held wait (W1-7) has to resolve and re-arm repeatedly
+    /// across one tool call rather than once.
+    /// </summary>
+    private static AIFunction CreateHumanFrameEmittingTool(string name, int frameCount) =>
+        AIFunctionFactory.Create(
+            async () =>
+            {
+                IHumanPromptLiveEmitter? emitter = HumanPromptLiveEmitterAmbient.Current;
+
+                if (emitter is null)
+                {
+                    return "ambient-null";
+                }
+
+                for (int i = 0; i < frameCount; i++)
+                {
+                    await emitter.EmitAsync(
+                        new IntelligenceEvent(IntelligenceEventType.Status, $"human-frame-{i}"),
+                        CancellationToken.None);
+
+                    await Task.Yield();
+                }
+
+                return "ambient-non-null";
+            },
+            name,
+            "records ambient nullness and emits several live human-channel frames");
 
     private AIFunction CreateProductionApplyPatchTool(
         ArcanumSettings settings,
