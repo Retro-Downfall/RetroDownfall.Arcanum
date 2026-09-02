@@ -649,6 +649,14 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
             BlockerResolutionEvidence = new(Digest(0x71), Digest(0x79)),
         }).IsFailure);
 
+        // A proof that only matches the binding digest (the pre-D5-2 tautological shape) must
+        // stay refused now that ExpectedStateDigest is the field that governs acceptance -
+        // pins that the comparison is not silently widened back to accept either digest.
+        Assert.True(Handler().ValidateAdvance(kept, applying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
+        }).IsFailure);
+
         HealthyCatalogFactoryErasureOfflineTransitionHandlerV1 factoryHandler = new();
 
         HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryApplying = Factory(
@@ -676,6 +684,11 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         Assert.True(factoryHandler.ValidateAdvance(factoryKept, factoryApplying with
         {
             BlockerResolutionEvidence = new(Digest(0x71), Digest(0x79)),
+        }).IsFailure);
+
+        Assert.True(factoryHandler.ValidateAdvance(factoryKept, factoryApplying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
         }).IsFailure);
 
     }
