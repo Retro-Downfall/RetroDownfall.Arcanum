@@ -147,6 +147,13 @@ public sealed partial class WizardIntelligenceProvider(
     private const string AskHumanUnavailableMessage =
         "ask_human is only available during attended streaming turns with a live human-response channel.";
 
+    /// <summary>
+    /// How long the per-call `finally` waits for an abandoned tool invocation to finish before
+    /// giving up on it. Bounded so a client disconnect during a hung/uncancelled tool call cannot
+    /// block the unwind indefinitely; the tool's own cancellation behavior is a separate concern.
+    /// </summary>
+    private static readonly TimeSpan ToolTaskAbandonmentGrace = TimeSpan.FromSeconds(3);
+
     private static readonly ArcanumLocalTimeTool _localTimeTool = new();
 
     private static readonly ArcanumSystemInfoTool _systemInfoTool = new();
@@ -3433,6 +3440,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                         IHumanPromptReservation? askHumanReservation = null;
 
+                        Task<ToolExecutionPipeline.ProcessedToolCall>? processTask = null;
+
                         try
                         {
                             if (IsAskHumanTool(fcc))
@@ -3567,7 +3576,7 @@ public sealed partial class WizardIntelligenceProvider(
                                 }
                             }
 
-                            Task<ToolExecutionPipeline.ProcessedToolCall> processTask = ProcessWithLiveWardsAsync();
+                            processTask = ProcessWithLiveWardsAsync();
 
                             // Pump wards and elicitation/HITL frames concurrently while the tool runs.
                             // Elicitation emits ask_human-shaped ToolCall frames on the per-turn channel
@@ -3671,6 +3680,35 @@ public sealed partial class WizardIntelligenceProvider(
                             if (askHumanReservation is not null)
                             {
                                 await askHumanReservation.DisposeAsync().ConfigureAwait(false);
+                            }
+
+                            if (processTask is { IsCompleted: false } pendingToolTask)
+                            {
+                                // Reached only on abandonment — the happy path already awaited
+                                // processTask above. A disconnected client must not orphan this
+                                // tool call, so wait for it here, bounded so a hung/uncancelled
+                                // tool cannot block the unwind forever.
+                                await Task.WhenAny(
+                                        pendingToolTask,
+                                        Task.Delay(ToolTaskAbandonmentGrace, CancellationToken.None))
+                                    .ConfigureAwait(false);
+
+                                if (!pendingToolTask.IsCompleted)
+                                {
+                                    // Still running past the grace: never await it directly here —
+                                    // that would replace whatever exception is already unwinding
+                                    // this finally. Attach a silent observer instead, so an eventual
+                                    // fault never surfaces as an unobserved Task exception.
+                                    _ = pendingToolTask.ContinueWith(
+                                        static observed => _ = observed.Exception,
+                                        CancellationToken.None,
+                                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                                        TaskScheduler.Default);
+                                }
+                                else if (pendingToolTask.IsFaulted)
+                                {
+                                    _ = pendingToolTask.Exception;
+                                }
                             }
                         }
                     }
@@ -4384,6 +4422,12 @@ public sealed partial class WizardIntelligenceProvider(
     {
         while (true)
         {
+            // Checked first on every iteration: once the caller's token is cancelled, a
+            // WaitToReadAsync built from it below resolves instantly (already-cancelled), so
+            // without this the loop would busy-spin allocating a List and 2-3 Tasks per pass for
+            // the rest of the tool call instead of unwinding through the per-call finally.
+            cancellationToken.ThrowIfCancellationRequested();
+
             while (wards.TryRead(out IntelligenceEvent? ward) && ward is not null)
             {
                 yield return ward;

@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Collections.Concurrent;
@@ -3866,6 +3867,123 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
             throw new InvalidOperationException(
                 "The stream ended before a tool result.");
+        }
+
+    }
+
+    /// <summary>
+    /// W1-1: a disconnected client must not orphan a tool call. The provider proposes a tool call
+    /// that blocks on a test barrier (modeling a slow/uncancelled MCP tool); the client abandons
+    /// the enumerator right after the first ward frame, while the tool is still running. Disposal
+    /// must observe the tool task — bounded by a grace period — rather than returning immediately
+    /// and leaving it to run unobserved, and the ward pump must not spin while it waits: on the
+    /// unfixed code this test times out because the pump never stops re-polling an already-
+    /// cancelled channel wait, so DisposeAsync never returns while the barrier stays closed.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_AbandonedAtFirstWardFrame_ObservesToolTaskAndDoesNotSpinPastGrace()
+    {
+
+        TaskCompletionSource barrier = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource toolInvoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        const string toolName = "barrier_tool";
+
+        async Task<string> BarrierToolAsync()
+        {
+
+            toolInvoked.TrySetResult();
+
+            await barrier.Task.ConfigureAwait(false);
+
+            return "released";
+
+        }
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(AIFunctionFactory.Create(BarrierToolAsync, toolName, "blocks on a test barrier"));
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamToolCall(toolName);
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        IAsyncEnumerator<IntelligenceEvent> enumerator = wizard
+            .StreamPromptAsync(
+                BaseRequest() with { Prompt = "block please", SkipSpellRouting = true },
+                InvocationContexts.AttendedSession(),
+                CancellationToken.None)
+            .GetAsyncEnumerator();
+
+        Task? disposeTask = null;
+
+        try
+        {
+
+            bool sawWarded = false;
+
+            while (await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)))
+            {
+
+                if (enumerator.Current.Type == IntelligenceEventType.Warded)
+                {
+
+                    sawWarded = true;
+
+                    break;
+
+                }
+
+            }
+
+            Assert.True(sawWarded, "expected a Warded frame before abandoning the enumerator");
+
+            // Confirms the tool call is genuinely in flight (blocked on the barrier, not merely
+            // proposed) before the client walks away.
+            await toolInvoked.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Stopwatch abandonment = Stopwatch.StartNew();
+
+            disposeTask = enumerator.DisposeAsync().AsTask();
+
+            // Unfixed code busy-spins the ward pump for as long as the barrier stays closed, so
+            // this times out long before the fix's bounded grace lets disposal return.
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(8));
+
+            abandonment.Stop();
+
+            Assert.InRange(
+                abandonment.Elapsed,
+                TimeSpan.FromSeconds(1.5),
+                TimeSpan.FromSeconds(8));
+
+        }
+        finally
+        {
+
+            barrier.TrySetResult();
+
+            if (disposeTask is not null)
+            {
+
+                try
+                {
+
+                    await disposeTask.WaitAsync(TimeSpan.FromSeconds(15));
+
+                }
+                catch
+                {
+
+                    // Best-effort cleanup only — must not mask an assertion failure above.
+
+                }
+
+            }
+
         }
 
     }

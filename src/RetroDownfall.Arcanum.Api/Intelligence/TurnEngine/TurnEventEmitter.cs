@@ -81,6 +81,12 @@ internal sealed class TurnEventEmitter : IAsyncDisposable
         {
             // The consumer abandoned the run and disposed the emitter; nothing is listening.
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A client disconnect cancels the producer's own token out from under an in-flight
+            // emit (WaitAsync or WriteAsync above) — nothing is listening for this frame either,
+            // and this must not throw or the run ends as a faulted, unobserved background task.
+        }
         finally
         {
             if (gateHeld)
