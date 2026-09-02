@@ -36,6 +36,12 @@ public partial class IlluminationView : UserControl
 
     private static readonly TimeSpan DebounceInterval = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>Matches TruncationNotice's XAML default (IlluminationView.axaml); restored on every
+    /// successful render so a stale failure notice cannot survive it.</summary>
+    private const string TruncationNoticeDefaultText = "Preview truncated";
+
+    private const string RenderFailedNoticeText = "Preview failed to render.";
+
     private static readonly MarkdownImageCache SharedImageCache = new();
 
     private readonly IlluminationHyperlinkCommand _hyperlinkCommand = new();
@@ -240,16 +246,32 @@ public partial class IlluminationView : UserControl
 
         int generation = _renderGeneration.Begin();
 
-        _renderCts?.Cancel();
-
-        _renderCts?.Dispose();
+        // Assign the new CTS to the field before touching the previous one: a superseding call
+        // reads _renderCts as "the one to cancel and dispose", so the field must already point at
+        // ours, never at a CTS some other overlapping call might still be about to read from.
+        CancellationTokenSource? previousRenderCts = _renderCts;
 
         CancellationTokenSource renderCts = new();
 
         _renderCts = renderCts;
 
-        using CancellationTokenSource linkedCts =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, renderCts.Token);
+        previousRenderCts?.Cancel();
+
+        previousRenderCts?.Dispose();
+
+        // A still-overlapping superseding call can dispose renderCts between the field assignment
+        // above and this read; null means exactly that — treat it like losing the generation /
+        // cancellation race checked below, not as a fault.
+        CancellationTokenSource? linkedCtsOrNull = TryCreateLinkedCts(cancellationToken, renderCts.Token);
+
+        if (linkedCtsOrNull is null)
+        {
+
+            return;
+
+        }
+
+        using CancellationTokenSource linkedCts = linkedCtsOrNull;
 
         IlluminationPreparedMarkdown prepared;
 
@@ -287,57 +309,105 @@ public partial class IlluminationView : UserControl
 
             }
 
-            TruncationNotice.IsVisible = prepared.Truncated;
-
-            // Precomputed map is available immediately; renderer anchors replace it after control build.
-            _lineMapper = new MarkdownSourceLineMapper(prepared.Anchors);
-
-            IlluminationImageContext imageContext = new()
+            // Unguarded, this body's exceptions (a highlighter/renderer fault on unusual input, or
+            // an image-resolution fault) would fault this InvokeAsync delegate's Task, which faults
+            // the fire-and-forget DebounceAndRenderAsync task, unobserved — PreviewHost.Content is
+            // never reassigned and the preview silently keeps showing the previous document with no
+            // sign anything went wrong.
+            try
             {
 
-                LoadRemoteImages = LoadRemoteImages,
+                TruncationNotice.Text = TruncationNoticeDefaultText;
 
-                WorkspaceId = WorkspaceId,
+                TruncationNotice.IsVisible = prepared.Truncated;
 
-                RelativePath = RelativePath,
+                // Precomputed map is available immediately; renderer anchors replace it after control build.
+                _lineMapper = new MarkdownSourceLineMapper(prepared.Anchors);
 
-                BaseRelativeDirectory = BaseRelativeDirectory,
+                IlluminationImageContext imageContext = new()
+                {
 
-            };
+                    LoadRemoteImages = LoadRemoteImages,
 
-            MarkdigAstAvaloniaRenderer renderer = new(_highlighter, _imageResolver, _hyperlinkCommand);
+                    WorkspaceId = WorkspaceId,
 
-            renderer.GoToSourceRequested += (_, line) =>
-            {
+                    RelativePath = RelativePath,
 
-                if (!SyncScrollEnabled)
+                    BaseRelativeDirectory = BaseRelativeDirectory,
+
+                };
+
+                MarkdigAstAvaloniaRenderer renderer = new(_highlighter, _imageResolver, _hyperlinkCommand);
+
+                renderer.GoToSourceRequested += (_, line) =>
+                {
+
+                    if (!SyncScrollEnabled)
+                    {
+
+                        return;
+
+                    }
+
+                    GoToSourceRequested?.Invoke(this, line);
+
+                };
+
+                Control content = renderer.Render(prepared.Document, imageContext, renderCts.Token);
+
+                // Stale-render guard: if A started, B superseded it, and A finishes last, A must not publish.
+                if (!_renderGeneration.IsCurrent(generation) || renderCts.IsCancellationRequested)
                 {
 
                     return;
 
                 }
 
-                GoToSourceRequested?.Invoke(this, line);
+                _activeRenderer = renderer;
 
-            };
+                _lineMapper = new MarkdownSourceLineMapper(renderer.Anchors);
 
-            Control content = renderer.Render(prepared.Document, imageContext, renderCts.Token);
+                PreviewHost.Content = content;
 
-            // Stale-render guard: if A started, B superseded it, and A finishes last, A must not publish.
-            if (!_renderGeneration.IsCurrent(generation) || renderCts.IsCancellationRequested)
+            }
+            catch (OperationCanceledException)
             {
 
-                return;
+                // A newer render superseded this one during control construction.
+            }
+            catch (Exception)
+            {
+
+                if (_renderGeneration.IsCurrent(generation))
+                {
+
+                    TruncationNotice.Text = RenderFailedNoticeText;
+
+                    TruncationNotice.IsVisible = true;
+
+                }
 
             }
 
-            _activeRenderer = renderer;
-
-            _lineMapper = new MarkdownSourceLineMapper(renderer.Anchors);
-
-            PreviewHost.Content = content;
-
         });
+
+    }
+
+    private static CancellationTokenSource? TryCreateLinkedCts(CancellationToken a, CancellationToken b)
+    {
+
+        try
+        {
+
+            return CancellationTokenSource.CreateLinkedTokenSource(a, b);
+
+        }
+        catch (ObjectDisposedException)
+        {
+
+            return null;
+
+        }
 
     }
 
