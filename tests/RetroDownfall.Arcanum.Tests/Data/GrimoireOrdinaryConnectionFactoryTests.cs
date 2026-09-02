@@ -471,7 +471,11 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         Assert.True(acquisition.IsFailure);
 
-        Assert.Equal(ErrorCodes.Covenant.Unavailable, acquisition.Error.Code);
+        // A closed admission gate is a deliberate, temporary refusal, and it says so under its own
+        // code. The generic unavailable code still covers the factory's other refusals - an invalid
+        // mode, an unproven scoped connection, a broken native runtime - which is exactly why this
+        // one has to be distinguishable from them.
+        Assert.Equal(GrimoireMaintenanceUnavailableException.Code, acquisition.Error.Code);
 
         Assert.Equal(0, seam.BeforeNativeOpenCount);
 

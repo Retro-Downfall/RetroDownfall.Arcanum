@@ -5,9 +5,11 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -881,6 +883,54 @@ public sealed class GrimoireConnectionAdmissionGateTests
             out IGrimoireRequestLease? admitted));
 
         await admitted!.DisposeAsync();
+
+    }
+
+    /// <summary>
+    /// A refusal from a closed gate is reported under its own code, not as a generic failure.
+    /// </summary>
+    /// <remarks>
+    /// The factory catches GrimoireMaintenanceUnavailableException together with every other
+    /// InvalidOperationException and reported both as the same unavailable code with the same
+    /// message. A closed admission gate is a deliberate, temporary refusal, and a caller that cannot
+    /// tell it from an invalid connection string has to treat a planned maintenance window as a
+    /// product failure.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Closed_admission_is_refused_to_the_ordinary_factory_under_its_own_code()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingStageTwoDrain drain = new(block: false);
+
+        await using ServiceProvider provider = CreateProvider(drain);
+
+        GrimoireConnectionAdmissionGate gate = provider
+            .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+        IGrimoireOrdinaryConnectionFactory factory = provider
+            .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, Owner(47));
+
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = ArcanumPaths.GrimoireDatabaseFile,
+
+            Mode = SqliteOpenMode.Memory,
+
+            Pooling = false,
+        }.ToString());
+
+        Result<IGrimoireOrdinaryConnectionLease> refused = await factory.AcquireScopedAsync(
+            connection,
+            CovenantSqliteConnectionMode.ReadWrite,
+            CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(GrimoireMaintenanceUnavailableException.Code, refused.Error.Code);
 
     }
 

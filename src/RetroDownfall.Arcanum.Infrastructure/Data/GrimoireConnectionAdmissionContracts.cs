@@ -467,6 +467,16 @@ internal enum CovenantMaintenanceConnectionPurpose : byte
 internal sealed class GrimoireMaintenanceUnavailableException : InvalidOperationException
 {
 
+    /// <summary>
+    /// The code a caller reports when it turns this refusal into a <c>Result</c>.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from the generic unavailable code, because a closed admission gate is a deliberate,
+    /// temporary refusal rather than a product failure. Without a code of its own, the one thing a
+    /// caller can say about it is the same thing it says about an invalid connection string.
+    /// </remarks>
+    internal const string Code = "Grimoire.MaintenanceUnavailable";
+
     internal GrimoireMaintenanceUnavailableException()
         : base("The Grimoire is temporarily unavailable while maintenance owns connection admission.")
     {
