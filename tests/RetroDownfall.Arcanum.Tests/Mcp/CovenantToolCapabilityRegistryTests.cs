@@ -1,7 +1,9 @@
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using ArcanumJsonRpcRequest = RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol.JsonRpcRequest;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -151,6 +153,96 @@ public sealed class CovenantToolCapabilityRegistryTests
         Assert.Same(first, registry.TryTake("connection-a", "1").Value.Capability);
         Assert.Same(second, registry.TryTake("connection-b", "1").Value.Capability);
     }
+
+    // SweepExpired() (below) is the only registry-side reclaim, and it has never had a production
+    // caller — only a failed-send unbind that was already wired for every other binding store
+    // (SessionAttachmentToolAmbient, ApplyPatchInvocationBinding, PersistedToolInvocationBinding,
+    // ApprenticeToolInvocationBinding) but stopped short of this registry. TryRegister is TryAdd-only,
+    // so a request id whose frame never reached the wire stayed permanently stranded on a live
+    // connection.
+    [Fact]
+    public void A_failed_send_releases_its_registration_so_a_retry_can_register()
+    {
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+
+        ArcanumJsonRpcRequest first = ToolsCall("7", CovenantToolNames.ProposeCovenant);
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, first);
+
+        Assert.Equal(1, registry.CountForTests);
+
+        // Mirrors InProcessMcpTransport.WriteRequestAsync's catch block: the frame never reached the
+        // wire, so no handler could ever have called TryTake for this id.
+        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, first);
+
+        Assert.Equal(0, registry.CountForTests);
+
+        ArcanumJsonRpcRequest retry = ToolsCall("7", CovenantToolNames.ProposeCovenant);
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, retry);
+
+        Result<CovenantToolCapabilityGrant> taken = registry.TryTake(Connection, "7");
+
+        Assert.True(taken.IsSuccess, taken.IsFailure ? taken.Error.Message : string.Empty);
+
+    }
+
+    [Fact]
+    public void A_taken_registration_survives_a_late_unbind_on_the_same_id()
+    {
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+
+        ArcanumJsonRpcRequest request = ToolsCall("7", CovenantToolNames.ProposeCovenant);
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, request);
+
+        Result<CovenantToolCapabilityGrant> taken = registry.TryTake(Connection, "7");
+
+        Assert.True(taken.IsSuccess, taken.IsFailure ? taken.Error.Message : string.Empty);
+
+        // The send actually succeeded (a handler already took the capability); an unbind reaching
+        // here late must not pull the id out from under the handler that is still draining it.
+        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, request);
+
+        Assert.Equal(CovenantToolCapabilityState.Taken, taken.Value.Capability.State);
+
+    }
+
+    private static CovenantToolStagingContext Staging(CovenantToolCapabilityRegistry registry)
+    {
+
+        CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
+
+        return new CovenantToolStagingContext(
+            new CovenantMutationCollector(
+                Guid.NewGuid(),
+                plan.Digest,
+                CovenantTask6Fixture.BranchId),
+            CovenantCapabilityFixtures.Campaign(),
+            CovenantCapabilityFixtures.Admission(plan),
+            CovenantCapabilityFixtures.Materialization(),
+            new CovenantCapabilityFixtures.StubHeadProbe(),
+            true,
+            registry,
+            CancellationToken.None);
+
+    }
+
+    private static ArcanumJsonRpcRequest ToolsCall(string id, string toolName) =>
+        new()
+        {
+            Method = "tools/call",
+            Id = JsonDocument.Parse($"\"{id}\"").RootElement.Clone(),
+            Params = JsonDocument
+                .Parse($$$"""{"name":"{{{toolName}}}","arguments":{}}""")
+                .RootElement.Clone(),
+        };
 
     [Fact]
     public async Task Concurrent_registration_of_one_request_id_admits_exactly_one_capability()

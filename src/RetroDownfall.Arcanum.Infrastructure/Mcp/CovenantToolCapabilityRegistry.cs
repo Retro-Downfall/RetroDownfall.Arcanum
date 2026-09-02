@@ -140,6 +140,37 @@ public sealed class CovenantToolCapabilityRegistry
     }
 
     /// <summary>
+    /// Releases one connection-and-request-id's registration when the frame that would have carried
+    /// it to a handler never left the client — a failed transport send, before any handler could
+    /// have reached <see cref="TryTake"/> for this id. No nonce is required: the caller here is the
+    /// send path itself, not a handler that took the capability.
+    /// </summary>
+    /// <remarks>
+    /// A no-op once the registration has been taken (mirrors the state guard in
+    /// <see cref="SweepExpired"/>), so a handler that is still draining a capability it already took
+    /// keeps its own bounded cancellation lifetime.
+    /// </remarks>
+    public bool ReleaseUnsent(string connectionKey, string requestId)
+    {
+
+        if (string.IsNullOrWhiteSpace(connectionKey) || string.IsNullOrWhiteSpace(requestId))
+        {
+            return false;
+        }
+
+        string key = ComposeKey(connectionKey, requestId);
+
+        if (!_byRequest.TryGetValue(key, out Registration? registration)
+            || registration.Capability.State != CovenantToolCapabilityState.Registered)
+        {
+            return false;
+        }
+
+        return RemoveExact(key, registration);
+
+    }
+
+    /// <summary>
     /// Reclaims registrations that were installed and never taken, returning them for disposal.
     /// </summary>
     public IReadOnlyList<CovenantToolInvocationContext> SweepExpired()

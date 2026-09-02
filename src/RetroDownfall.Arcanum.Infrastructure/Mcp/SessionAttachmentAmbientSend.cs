@@ -272,6 +272,16 @@ internal static class SessionAttachmentAmbientSend
         string connectionKey,
         string requestId)
     {
+        // BindCovenantStaging (above) only ever registers against the registry the turn's own
+        // staging carries, and unbind runs on the same request's send-then-fail path, so the
+        // ambient here is still the staging that minted whatever was registered for this id — if
+        // anything was. TryRegister is TryAdd-only, so a frame that never reached the wire would
+        // otherwise strand the id for the rest of the connection.
+        if (CovenantToolStagingAmbient.Current is { } staging)
+        {
+            _ = staging.Registry.ReleaseUnsent(connectionKey, requestId);
+        }
+
         SessionAttachmentToolAmbient.UnbindRequest(
             connectionKey,
             requestId);
