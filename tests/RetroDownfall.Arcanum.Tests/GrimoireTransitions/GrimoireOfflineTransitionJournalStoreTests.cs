@@ -1389,6 +1389,50 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     }
 
+    [Theory]
+    [InlineData("begin")]
+    [InlineData("recover")]
+    public async Task Begin_and_recover_refuse_a_closed_genesis_while_the_key_still_exists(
+        string entryPoint)
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _credentials.Delete(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(
+                    terminal.Location.ProfileNamespace.AccountSuffix)).Status);
+
+        GrimoireOfflineTransitionJournalLocation location = terminal.Location;
+
+        Result outcome = entryPoint is "begin"
+            ? await store.BeginAsync(
+                _lock,
+                _guarded,
+                Installation,
+                Operation,
+                GrimoireOfflineTransitionKind.CovenantReset,
+                1,
+                Bytes("reset"),
+                CancellationToken.None)
+            : await store.RecoverAsync(_lock, _guarded, CancellationToken.None);
+
+        Assert.True(outcome.IsFailure, entryPoint);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, outcome.Error.Code);
+
+        Assert.Null(Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(location)));
+
+        Assert.False(File.Exists(location.JournalPath));
+
+    }
+
     [Fact]
     public async Task Retire_writes_and_reads_closed_anchor_before_deleting_the_file()
     {

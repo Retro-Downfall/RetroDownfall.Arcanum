@@ -289,6 +289,23 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             }
 
+            Result<bool> keyPresentBeforeGenesis = _keys.IsPresent(location.ProfileNamespace);
+
+            if (keyPresentBeforeGenesis.IsFailure)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalPublication>.Failure(
+                    keyPresentBeforeGenesis.Error);
+
+            }
+
+            if (keyPresentBeforeGenesis.Value)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+            }
+
             Result<GrimoireOfflineTransitionJournalKeyLease> created = _keys.CreateOrOpen(
                 heldInstallationLock,
                 location.GuardedDirectory,
@@ -825,11 +842,28 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (anchorResult.Value is null)
         {
 
-            return AllAbsent(evidence)
-                ? new GrimoireOfflineTransitionJournalRecoveryState(
+            if (!AllAbsent(evidence))
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result<bool> keyPresentWithoutAnchor = _keys.IsPresent(location.ProfileNamespace);
+
+            if (keyPresentWithoutAnchor.IsFailure)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(
+                    keyPresentWithoutAnchor.Error);
+
+            }
+
+            return keyPresentWithoutAnchor.Value
+                ? RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>()
+                : new GrimoireOfflineTransitionJournalRecoveryState(
                     GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
-                    Publication: null)
-                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                    Publication: null);
 
         }
 
