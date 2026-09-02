@@ -198,6 +198,8 @@ internal interface IGrimoireOfflineTransitionJournalFilePrimitives : IDisposable
     Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
         IReadOnlyList<string> exactLeaves);
 
+    Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file);
+
     Result FlushParent();
 
 }
@@ -1007,6 +1009,30 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 child.Dispose();
 
             }
+
+        }
+
+    }
+
+    public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file)
+    {
+
+        ArgumentNullException.ThrowIfNull(file);
+
+        try
+        {
+
+            file.GetStream(FileAccess.ReadWrite).Flush(flushToDisk: true);
+
+            return Result.Success();
+
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException)
+        {
+
+            return RecoveryRequired();
 
         }
 

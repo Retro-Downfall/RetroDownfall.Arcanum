@@ -1480,6 +1480,180 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [DllImport("libc", EntryPoint = "umask")]
     private static extern int UmaskUnix(int mask);
 
+    /// <summary>
+    /// Pins the durability barriers through the primitives interface the store actually calls, rather
+    /// than the step names it announces: <see cref="RecordingJournalFilePrimitives.BarrierCalls"/> is
+    /// appended to only from inside the real <c>FlushWorking</c>, <c>ExchangeRetainingPrevious</c> or
+    /// <c>PublishFirstNoReplace</c>, and <c>FlushParent</c> implementations, so this is evidence the
+    /// calls actually happened, in this order, not that the store merely claims they did.
+    /// </summary>
+    [Fact]
+    public async Task Publication_invokes_the_working_flush_before_the_atomic_replace_and_the_parent_flush_after()
+    {
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore store = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value);
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("durability-order-genesis").ToArray();
+
+        Result result = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+        Assert.NotNull(recording);
+
+        Assert.Equal((string[])["working", "replace", "parent"], recording.BarrierCalls);
+
+    }
+
+    [Fact]
+    public async Task Publication_fails_closed_when_the_working_flush_barrier_reports_failure()
+    {
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore store = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value)
+                {
+                    FlushWorkingOverride = () => new Error(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "synthetic working-flush barrier failure"),
+                };
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("durability-working-failure").ToArray();
+
+        Result result = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.False(File.Exists(location.WorkingPath));
+
+        Assert.False(File.Exists(location.JournalPath));
+
+    }
+
+    [Fact]
+    public async Task Publication_fails_closed_when_the_parent_flush_barrier_reports_failure()
+    {
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore store = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value)
+                {
+                    FlushParentOverride = () => new Error(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "synthetic parent-flush barrier failure"),
+                };
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("durability-parent-failure").ToArray();
+
+        Result result = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+    }
+
     [Fact]
     public void Production_windows_layout_uses_retained_handle_acl_and_synchronous_streams()
     {
@@ -2016,7 +2190,99 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
             IReadOnlyList<string> exactLeaves) => inner.EnumerateExactChildren(exactLeaves);
 
+        public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>
+            inner.FlushWorking(file);
+
         public Result FlushParent() => inner.FlushParent();
+
+        public void Dispose() => inner.Dispose();
+
+    }
+
+    /// <summary>
+    /// Wraps the real primitives capability and records what the store actually invoked, rather than
+    /// what it announced through <c>afterStep</c>. <see cref="BarrierCalls"/> is appended to only from
+    /// inside <see cref="FlushWorking"/>, <see cref="ExchangeRetainingPrevious"/>,
+    /// <see cref="PublishFirstNoReplace"/>, and <see cref="FlushParent"/>, so a call that never happens
+    /// never appears, and the override delegates let a test make either durability barrier report
+    /// failure without touching the filesystem.
+    /// </summary>
+    private sealed class RecordingJournalFilePrimitives(IGrimoireOfflineTransitionJournalFilePrimitives inner)
+        : IGrimoireOfflineTransitionJournalFilePrimitives
+    {
+
+        internal List<string> BarrierCalls { get; } = [];
+
+        internal int EnumerateExactChildrenCallCount { get; private set; }
+
+        internal Func<Result>? FlushWorkingOverride { get; set; }
+
+        internal Func<Result>? FlushParentOverride { get; set; }
+
+        public FileHandleMetadata ParentMetadata => inner.ParentMetadata;
+
+        public Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(
+            string workingLeaf) => inner.CreateWorkingExclusive(workingLeaf);
+
+        public Result PublishFirstNoReplace(string journalLeaf, string workingLeaf)
+        {
+
+            BarrierCalls.Add("replace");
+
+            return inner.PublishFirstNoReplace(journalLeaf, workingLeaf);
+
+        }
+
+        public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(
+            string journalLeaf,
+            string workingLeaf,
+            string previousLeaf)
+        {
+
+            BarrierCalls.Add("replace");
+
+            return inner.ExchangeRetainingPrevious(journalLeaf, workingLeaf, previousLeaf);
+
+        }
+
+        public Result MoveNoReplace(string sourceLeaf, string destinationLeaf) =>
+            inner.MoveNoReplace(sourceLeaf, destinationLeaf);
+
+        public Result ApplyOwnerOnlyAndVerify(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.ApplyOwnerOnlyAndVerify(expected, relativeLeaf);
+
+        public Result CompareUnlink(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
+
+        public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
+            IReadOnlyList<string> exactLeaves)
+        {
+
+            EnumerateExactChildrenCallCount++;
+
+            return inner.EnumerateExactChildren(exactLeaves);
+
+        }
+
+        public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file)
+        {
+
+            BarrierCalls.Add("working");
+
+            return FlushWorkingOverride?.Invoke() ?? inner.FlushWorking(file);
+
+        }
+
+        public Result FlushParent()
+        {
+
+            BarrierCalls.Add("parent");
+
+            return FlushParentOverride?.Invoke() ?? inner.FlushParent();
+
+        }
 
         public void Dispose() => inner.Dispose();
 

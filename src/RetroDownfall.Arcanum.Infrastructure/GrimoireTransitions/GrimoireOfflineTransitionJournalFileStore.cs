@@ -535,7 +535,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             Before("file:temporary-flushed");
 
-            stream.Flush(flushToDisk: true);
+            if (primitives.FlushWorking(created).IsFailure)
+            {
+
+                return CleanupBeforePublication(primitives, location, created, RecoveryRequired().Error);
+
+            }
 
             Emit("file:temporary-flushed");
 
