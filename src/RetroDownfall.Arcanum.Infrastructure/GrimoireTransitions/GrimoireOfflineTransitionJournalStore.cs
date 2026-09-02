@@ -341,7 +341,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             Result<GrimoireOfflineTransitionAnchorV1?> reread = _anchors.Read(location);
 
-            if (reread.IsFailure || reread.Value is null)
+            if (reread.IsFailure)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalPublication>.Failure(reread.Error);
+
+            }
+
+            if (reread.Value is null)
             {
 
                 return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
@@ -1202,7 +1209,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         Result<GrimoireOfflineTransitionAnchorV1?> currentResult = _anchors.Read(
             terminal.Location);
 
-        if (currentResult.IsFailure || currentResult.Value is null)
+        if (currentResult.IsFailure)
+        {
+
+            return Result.Failure(currentResult.Error);
+
+        }
+
+        if (currentResult.Value is null)
         {
 
             return RecoveryRequired();

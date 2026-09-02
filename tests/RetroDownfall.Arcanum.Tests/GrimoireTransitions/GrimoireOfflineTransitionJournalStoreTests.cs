@@ -125,6 +125,63 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Begin_propagates_a_post_genesis_anchor_reread_failure()
+    {
+
+        SeedIdentity(Installation);
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        ArmedPrefixThrowingCredentialStore anchorCredentials = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccountPrefix);
+
+        GrimoireOfflineTransitionJournalAnchorStore anchors = new(
+            anchorCredentials,
+            afterStep: step =>
+            {
+
+                if (step == "anchor:genesis-readback")
+                {
+
+                    anchorCredentials.Arm();
+
+                }
+
+            });
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            anchors);
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            1,
+            Bytes("first"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+        GrimoireOfflineTransitionAnchorV1 genesis = Assert.IsType<
+            GrimoireOfflineTransitionAnchorV1>(
+            Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(location)));
+
+        Assert.Equal(GrimoireOfflineTransitionAnchorState.Closed, genesis.State);
+
+        Assert.Equal(0UL, genesis.SlotEpoch);
+
+        Assert.False(File.Exists(location.JournalPath));
+
+    }
+
+    [Fact]
     public async Task Begin_requires_external_installation_identity_to_match_the_database_identity()
     {
 
@@ -1561,6 +1618,36 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Retire_propagates_an_anchor_read_failure()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(setup);
+
+        PrefixThrowingCredentialStore anchorUnavailable = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccountPrefix);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(anchorUnavailable));
+
+        Result result = await probing.RetireAsync(_lock, terminal, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+        byte[] canonical = Value(
+            GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(terminal.Envelope));
+
+        Assert.Equal(canonical, File.ReadAllBytes(terminal.Location.JournalPath));
+
+    }
+
+    [Fact]
     public async Task Recover_finishes_exact_file_cleanup_beneath_a_closed_anchor()
     {
 
@@ -2231,6 +2318,35 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
             account.StartsWith(throwingAccountPrefix, StringComparison.Ordinal)
+                ? throw new IOException("The credential store is unavailable for this account.")
+                : inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            inner.Delete(service, account);
+
+    }
+
+    /// <summary>
+    /// Delegates every read to <paramref name="inner"/> until <see cref="Arm"/> is called, then
+    /// throws for the one account prefix under test. Lets earlier, legitimate reads of the same
+    /// account succeed before the one under test is made to fail.
+    /// </summary>
+    private sealed class ArmedPrefixThrowingCredentialStore(
+        IOsCredentialStore inner,
+        string throwingAccountPrefix) : IOsCredentialStore
+    {
+
+        private bool _armed;
+
+        public bool IsAvailable => inner.IsAvailable;
+
+        internal void Arm() => _armed = true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            _armed && account.StartsWith(throwingAccountPrefix, StringComparison.Ordinal)
                 ? throw new IOException("The credential store is unavailable for this account.")
                 : inner.TryGet(service, account);
 
