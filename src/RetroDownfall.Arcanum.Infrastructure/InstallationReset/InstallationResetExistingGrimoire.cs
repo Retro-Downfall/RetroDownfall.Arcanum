@@ -419,9 +419,7 @@ internal sealed class InstallationResetExistingGrimoire(
             // remove outside the purge boundary, so it asks the same guard. It is built here rather
             // than injected because this path runs with no container: the host is stopped, and the
             // context above is composed over a maintenance lease this method owns.
-            using CovenantConnectionSource covenantConnections = new(
-                context,
-                ordinaryConnections);
+            StoppedHostCovenantConnectionSource covenantConnections = new(lease.Connection);
 
             DataRetentionService retention = new(
                 context,
@@ -1005,6 +1003,57 @@ internal sealed class InstallationResetExistingGrimoire(
         public IDisposable OnChange(
             Action<ArcanumSettings, string?> listener) =>
             NoopDisposable.Instance;
+
+    }
+
+    /// <summary>
+    /// The Covenant connection source for a stopped host: the maintenance lease's own open connection.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="CovenantConnectionSource"/> cannot serve this path, and the reason is a property
+    /// worth keeping rather than a defect to route around. That source asks
+    /// <see cref="IGrimoireOrdinaryConnectionFactory.AcquireScopedAsync" /> to admit the connection,
+    /// which either borrows an admission the ordinary lifecycle already recorded or opens a closed
+    /// connection itself. A stopped-host lease is neither: it was opened directly by
+    /// <c>StoppedHostGrimoireConnectionFactory</c> under a maintenance authority, so the lifecycle has
+    /// no registration to lend and the connection is already open. The factory refuses, and the
+    /// refusal used to surface as a durable "requires operator review" reconciliation failure on a
+    /// retention operation that should simply have been told no.
+    ///
+    /// <para>Admitting the lease through the ordinary factory would have been the other way to fix
+    /// this, and it is the wrong one: ordinary admission exists so that serving connections are the
+    /// only ones the drain can account for, and teaching it to adopt a foreign already-open handle
+    /// would cost exactly that. This source adds no reachability instead — it hands back the one
+    /// connection the caller already holds, over the database file the reset validated before it
+    /// opened anything.</para>
+    ///
+    /// <para>It latches <see cref="CovenantProcessResidence"/> on the canonical read for the same
+    /// reason the ordinary source does: this process really did hold Covenant material, and the latch
+    /// only ever makes the offline host-tools transition more forbidden.</para>
+    /// </remarks>
+    private sealed class StoppedHostCovenantConnectionSource(SqliteConnection connection)
+        : ICovenantConnectionSource
+    {
+
+        public ValueTask<SqliteConnection> GetOpenConnectionAsync(
+            CancellationToken cancellationToken)
+        {
+
+            CovenantProcessResidence.MarkOpened();
+
+            return GetOpenCoreConnectionAsync(cancellationToken);
+
+        }
+
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(connection);
+
+        }
 
     }
 
