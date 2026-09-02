@@ -157,7 +157,7 @@ public sealed class CampaignCommands(
                 CliErrorOutput.WriteMarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape("--type must be one of: spell, campaign, data, custom.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             workspaceType = parsed;
@@ -290,7 +290,7 @@ public sealed class CampaignCommands(
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("--type must be one of: spell, campaign, data, custom.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         RegisterCampaignRequest request = new(name.Trim(), path.Trim(), workspaceType, description);
