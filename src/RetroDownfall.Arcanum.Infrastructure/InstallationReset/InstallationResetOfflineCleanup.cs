@@ -26,6 +26,8 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
     private readonly Action<string>? _afterFileDeleted;
 
+    private readonly Action<string>? _afterDirectoryDeleted;
+
     public InstallationResetOfflineCleanup()
     {
 
@@ -39,12 +41,15 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
     internal InstallationResetOfflineCleanup(
         Action? afterInitialCapture,
-        Action<string>? afterFileDeleted)
+        Action<string>? afterFileDeleted,
+        Action<string>? afterDirectoryDeleted = null)
     {
 
         _afterInitialCapture = afterInitialCapture;
 
         _afterFileDeleted = afterFileDeleted;
+
+        _afterDirectoryDeleted = afterDirectoryDeleted;
 
     }
 
@@ -189,6 +194,11 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
         long bytesDeleted = 0;
 
+        // Counts every successful destructive delete, file or directory, so the cancellation catch
+        // below can tell "nothing was touched" apart from "a directory was removed" — filesDeleted
+        // alone only tracks the file loop and reads a directory-only pass as untouched (W5-7).
+        long mutationCount = 0;
+
         List<InstallationResetPreservedBackup> backups = [];
 
         List<CleanupFile> files = [];
@@ -309,6 +319,8 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                 filesDeleted++;
 
+                mutationCount++;
+
                 bytesDeleted += file.Length;
 
                 _afterFileDeleted?.Invoke(file.Artifact.Path);
@@ -379,6 +391,10 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                 }
 
+                mutationCount++;
+
+                _afterDirectoryDeleted?.Invoke(directory.Path);
+
             }
 
             Result backupVerification = VerifyAcceptedBackups(acceptedBackups);
@@ -446,7 +462,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     verification)));
 
         }
-        catch (OperationCanceledException) when (filesDeleted > 0)
+        catch (OperationCanceledException) when (mutationCount > 0)
         {
 
             return Task.FromResult(Incomplete(

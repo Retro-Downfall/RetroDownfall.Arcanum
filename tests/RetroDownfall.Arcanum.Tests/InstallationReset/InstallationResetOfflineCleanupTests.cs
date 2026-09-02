@@ -625,6 +625,46 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W5-7: a resumed pass whose file pass already finished deletes only now-empty directories.
+    /// Directory deletions were never counted, so the cancel-compensation predicate read a
+    /// directory-only mutation as "nothing was touched" and rethrew a bare OperationCanceledException
+    /// instead of reporting the resumable Incomplete/RecoveryRequired shape every other cancellation
+    /// path here produces.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_after_a_directory_only_delete_is_reported_incomplete()
+    {
+
+        string selected = _workspace.CreateSubdir("selected-directory-only");
+
+        _ = Directory.CreateDirectory(Path.Combine(selected, "nested"));
+
+        using CancellationTokenSource cancellation = new();
+
+        InstallationResetOfflineCleanup cleanup = new(
+            afterInitialCapture: null,
+            afterFileDeleted: null,
+            afterDirectoryDeleted: _ => cancellation.Cancel());
+
+        Result<InstallationResetOfflineCleanupResult> result = await cleanup.ExecuteAsync(
+            CreatePlan(selected),
+            cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, result.Value.FilesDeleted);
+
+        Assert.False(result.Value.Verification.Succeeded);
+
+        Assert.Equal(
+            ErrorCodes.Data.RecoveryRequired,
+            Assert.Single(result.Value.Verification.RemainingIssues).Code);
+
+        Assert.False(Directory.Exists(Path.Combine(selected, "nested")));
+
+    }
+
     [Fact]
     public async Task Hard_linked_file_fails_closed_without_deleting_either_link()
     {
