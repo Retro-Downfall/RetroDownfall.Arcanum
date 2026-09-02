@@ -42,7 +42,9 @@ internal sealed partial class CovenantResetOfflineTransitionHandlerV1
 
         bool evidencePreserved = current.BlockerResolutionEvidence
                 == next.BlockerResolutionEvidence
-            || proved && current.BlockerResolutionEvidence is null;
+            || proved && current.BlockerResolutionEvidence is null
+            || next.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+                && next.BlockerResolutionEvidence is null;
 
         return GrimoireOfflineTransitionLifecycleValidator.ValidateAdvance(
             current,
@@ -87,7 +89,9 @@ internal sealed partial class HealthyCatalogFactoryErasureOfflineTransitionHandl
 
         bool evidencePreserved = continuationPreserved
             && (current.BlockerResolutionEvidence == next.BlockerResolutionEvidence
-                || proved && current.BlockerResolutionEvidence is null);
+                || proved && current.BlockerResolutionEvidence is null
+                || next.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+                    && next.BlockerResolutionEvidence is null);
 
         return GrimoireOfflineTransitionLifecycleValidator.ValidateAdvance(
             current,

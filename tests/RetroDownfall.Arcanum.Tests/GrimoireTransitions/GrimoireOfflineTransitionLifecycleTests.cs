@@ -510,6 +510,92 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
     }
 
     [Fact]
+    public void Keep_closed_can_be_entered_again_after_a_resolved_park()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 applying = Payload(
+            GrimoireOfflineTransitionState.Applying,
+            inFlight: CovenantResetPhase.CanonicalApplied);
+
+        GrimoireOfflineTransitionBlocker firstBlocker = new(
+            "Covenant.ManualRecoveryRequired",
+            GrimoireOfflineTransitionState.Applying,
+            Digest(0x71));
+
+        CovenantResetOfflineTransitionPayloadV1 kept = applying with
+        {
+            Lifecycle = applying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = firstBlocker,
+            },
+        };
+
+        Assert.True(Handler().ValidateAdvance(applying, kept).IsSuccess);
+
+        CovenantResetOfflineTransitionPayloadV1 resumed = applying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
+        };
+
+        Assert.True(Handler().ValidateAdvance(kept, resumed).IsSuccess);
+
+        GrimoireOfflineTransitionBlocker secondBlocker = new(
+            "Covenant.ManualRecoveryRequired",
+            GrimoireOfflineTransitionState.Applying,
+            Digest(0x77));
+
+        CovenantResetOfflineTransitionPayloadV1 keptAgain = resumed with
+        {
+            Lifecycle = resumed.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = secondBlocker,
+            },
+            BlockerResolutionEvidence = null,
+        };
+
+        Assert.True(Handler().ValidateAdvance(resumed, keptAgain).IsSuccess);
+
+        HealthyCatalogFactoryErasureOfflineTransitionHandlerV1 factoryHandler = new();
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryApplying = Factory(
+            applying,
+            continuationCompleted: false);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryKept = factoryApplying with
+        {
+            Lifecycle = factoryApplying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = firstBlocker,
+            },
+        };
+
+        Assert.True(factoryHandler.ValidateAdvance(factoryApplying, factoryKept).IsSuccess);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryResumed = factoryApplying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
+        };
+
+        Assert.True(factoryHandler.ValidateAdvance(factoryKept, factoryResumed).IsSuccess);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryKeptAgain = factoryResumed with
+        {
+            Lifecycle = factoryResumed.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = secondBlocker,
+            },
+            BlockerResolutionEvidence = null,
+        };
+
+        Assert.True(factoryHandler.ValidateAdvance(factoryResumed, factoryKeptAgain).IsSuccess);
+
+    }
+
+    [Fact]
     public void Factory_continuation_is_false_until_its_single_boundary_publication_then_true()
     {
 
