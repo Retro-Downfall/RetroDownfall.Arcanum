@@ -4,7 +4,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
-using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
@@ -30,54 +29,6 @@ internal static class InferenceExecuteWriter
         PublicInferenceErrorMessages.NativeGenericFailure;
 
     private static readonly byte[] NewlineBytes = "\n"u8.ToArray();
-
-    public static async Task WriteBufferedAsync(
-        HttpContext httpContext,
-        IArcanumIntelligenceProvider intelligence,
-        PingRequest request,
-        CancellationToken cancellationToken,
-        CanonicalCampaignContext? campaign = null)
-    {
-        Result<PromptTurnResult> turn = await intelligence
-            .ExecutePromptAsync(
-                request,
-                ArcanumInvocationContexts.ForTurn(httpContext, request, campaign),
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-        Result<PromptResponseDto> envelopeResult = turn.IsFailure
-            ? Result<PromptResponseDto>.Failure(turn.Error)
-            : Result<PromptResponseDto>.Success(PromptResponseDto.From(turn.Value));
-
-        ApiResponse<PromptResponseDto> response = ApiResponse<PromptResponseDto>.FromResult(envelopeResult, traceId);
-
-        if (turn.IsSuccess)
-        {
-            httpContext.Response.StatusCode = StatusCodes.Status200OK;
-
-            await JsonSerializer.SerializeAsync(
-                httpContext.Response.Body,
-                response,
-                ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-                cancellationToken).ConfigureAwait(false);
-
-            TurnContextGuards.MarkIdempotencyTerminal(httpContext);
-
-            return;
-        }
-
-        httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code);
-
-        await JsonSerializer.SerializeAsync(
-            httpContext.Response.Body,
-            response,
-            ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-            cancellationToken).ConfigureAwait(false);
-
-        TurnContextGuards.MarkIdempotencyTerminal(httpContext);
-    }
 
     public static async Task WriteStreamAsync(
         HttpContext httpContext,
