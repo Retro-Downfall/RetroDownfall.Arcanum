@@ -640,8 +640,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             List<string> lines = new(_listDirectoryPageSize + 1);
 
-            bool continuationReached = afterPath is null;
-
             long textBudget = Math.Max(
                 1_024,
                 Math.Min(
@@ -656,39 +654,29 @@ internal sealed partial class ArcanumInternalToolServer
 
             string? lastPath = null;
 
-            // The captured local is read live by the enumerator, so the moment the checkpoint below is
-            // matched the walk resumes full per-entry validation for everything it goes on to emit.
-            bool ReachedContinuation() => continuationReached;
+            // Seeks directly to the checkpoint by re-listing only its ancestor directories (a resumed
+            // page never re-walks or re-validates the prefix a prior page already emitted); a checkpoint
+            // that no longer exists on disk is reported here, up front, exactly as it was when a full
+            // replay discovered the same fact by never matching it.
+            if (!TrySeekListDirectoryEntries(
+                    absolutePath,
+                    args.Recursive,
+                    afterPath,
+                    cancellationToken,
+                    out IEnumerable<string> walk))
+            {
 
-            foreach (string entry in EnumerateListDirectoryEntries(
-                         absolutePath,
-                         args.Recursive,
-                         ReachedContinuation,
-                         cancellationToken))
+                return ToolError(
+                    "list_directory: the opaque continuation entry no longer exists in this directory snapshot. No page was checkpointed; restart from the first page to observe the changed workspace safely.");
+
+            }
+
+            foreach (string entry in walk)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
                 string relativePath = Path.GetRelativePath(_workspaceRoot!, entry)
                     .Replace(Path.DirectorySeparatorChar, '/');
-
-                if (!continuationReached)
-                {
-
-                    if (string.Equals(
-                            relativePath,
-                            afterPath,
-                            OperatingSystem.IsWindows()
-                                ? StringComparison.OrdinalIgnoreCase
-                                : StringComparison.Ordinal))
-                    {
-
-                        continuationReached = true;
-
-                    }
-
-                    continue;
-
-                }
 
                 int entryBytes = System.Text.Encoding.UTF8.GetByteCount(relativePath) + 1;
 
@@ -711,14 +699,6 @@ internal sealed partial class ArcanumInternalToolServer
                 materializedBytes += entryBytes;
 
                 lastPath = relativePath;
-            }
-
-            if (!continuationReached)
-            {
-
-                return ToolError(
-                    "list_directory: the opaque continuation entry no longer exists in this directory snapshot. No page was checkpointed; restart from the first page to observe the changed workspace safely.");
-
             }
 
             if (hasMore)
@@ -873,11 +853,20 @@ internal sealed partial class ArcanumInternalToolServer
 
     }
 
-    private IEnumerable<string> EnumerateListDirectoryEntries(
+    /// <summary>
+    /// Builds the depth-first walk for one page: a fresh <paramref name="afterPath"/>-less call starts
+    /// at <paramref name="absolutePath"/>, and a continuation seeks straight to the checkpoint by
+    /// re-listing only its ancestor directories — never the prefix an earlier page already emitted —
+    /// before <see cref="WalkListDirectoryEntries"/> resumes forward from there. Returns <see
+    /// langword="false"/> only when the checkpoint itself could not be found (vanished, or a malformed
+    /// token); the caller reports that as the same restart-required error either way.
+    /// </summary>
+    private bool TrySeekListDirectoryEntries(
         string absolutePath,
         bool recursive,
-        Func<bool> continuationReached,
-        CancellationToken cancellationToken)
+        string? afterPath,
+        CancellationToken cancellationToken,
+        out IEnumerable<string> entries)
     {
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
@@ -886,7 +875,9 @@ internal sealed partial class ArcanumInternalToolServer
                 out string? resolvedRoot))
         {
 
-            yield break;
+            entries = [];
+
+            return true;
 
         }
 
@@ -900,79 +891,277 @@ internal sealed partial class ArcanumInternalToolServer
         _ = visitedCanonicalDirectories.Add(
             Path.GetFullPath(resolvedRoot ?? absolutePath));
 
-        Queue<string> directories = new();
+        Stack<(string Directory, string[] Entries, int Index)> stack = new();
 
-        directories.Enqueue(absolutePath);
+        if (afterPath is null)
+        {
 
-        while (directories.Count > 0)
+            stack.Push(
+                (absolutePath, SortedListDirectoryEntries(absolutePath), 0));
+
+        }
+        else if (!TrySeekToListDirectoryCheckpoint(
+                     absolutePath,
+                     afterPath,
+                     recursive,
+                     visitedCanonicalDirectories,
+                     stack,
+                     cancellationToken))
+        {
+
+            entries = [];
+
+            return false;
+
+        }
+
+        entries = WalkListDirectoryEntries(
+            stack,
+            visitedCanonicalDirectories,
+            recursive,
+            cancellationToken);
+
+        return true;
+
+    }
+
+    private static string[] SortedListDirectoryEntries(string directory) =>
+        Directory.EnumerateFileSystemEntries(
+                directory,
+                "*",
+                SearchOption.TopDirectoryOnly)
+            .OrderBy(static path => path, StringComparer.Ordinal)
+            .ToArray();
+
+    /// <summary>
+    /// Walks down <paramref name="afterPath"/>'s ancestor chain from <paramref name="scopeAbsolutePath"/>,
+    /// re-listing exactly one directory per level to find where that level's segment sits among its
+    /// (sorted, unfiltered) siblings, and pushes a resume frame at each level for the sibling that
+    /// follows it. Touches nothing outside that chain: an earlier, already-emitted sibling's subtree is
+    /// never re-listed, matching <paramref name="stack"/>'s "smallest resume token, no replay" contract.
+    /// </summary>
+    private bool TrySeekToListDirectoryCheckpoint(
+        string scopeAbsolutePath,
+        string afterPath,
+        bool recursive,
+        HashSet<string> visitedCanonicalDirectories,
+        Stack<(string Directory, string[] Entries, int Index)> stack,
+        CancellationToken cancellationToken)
+    {
+
+        string absoluteCheckpoint = Path.GetFullPath(
+            Path.Combine(_workspaceRoot!, afterPath));
+
+        string relativeFromScope = Path.GetRelativePath(
+            scopeAbsolutePath,
+            absoluteCheckpoint);
+
+        if (relativeFromScope.Length == 0
+            || relativeFromScope == "."
+            || relativeFromScope.StartsWith("..", StringComparison.Ordinal)
+            || Path.IsPathRooted(relativeFromScope))
+        {
+
+            return false;
+
+        }
+
+        string[] segments = relativeFromScope.Split(
+            Path.DirectorySeparatorChar,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        if (segments.Length == 0)
+        {
+
+            return false;
+
+        }
+
+        string currentDirectory = scopeAbsolutePath;
+
+        for (int level = 0; level < segments.Length; level++)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string[] siblingEntries = SortedListDirectoryEntries(currentDirectory);
+
+            int foundIndex = -1;
+
+            for (int i = 0; i < siblingEntries.Length; i++)
+            {
+
+                if (string.Equals(
+                        Path.GetFileName(siblingEntries[i]),
+                        segments[level],
+                        OperatingSystem.IsWindows()
+                            ? StringComparison.OrdinalIgnoreCase
+                            : StringComparison.Ordinal))
+                {
+
+                    foundIndex = i;
+
+                    break;
+
+                }
+
+            }
+
+            if (foundIndex < 0)
+            {
+
+                return false;
+
+            }
+
+            string matchedEntry = siblingEntries[foundIndex];
+
+            bool matchedIsDirectory = Directory.Exists(matchedEntry);
+
+            // A forged token cannot be trusted to have named a real ancestor: an honest checkpoint's
+            // ancestor was descended into on the page that emitted it, which by construction never
+            // enqueues a pruned folder, so this can only match here if the token was hand-crafted.
+            // Treat it exactly like any other checkpoint that does not resolve to a real position.
+            if (matchedIsDirectory
+                && IsListDirectorySkipFolder(Path.GetFileName(matchedEntry)))
+            {
+
+                return false;
+
+            }
+
+            bool isCheckpointItself = level == segments.Length - 1;
+
+            // The next sibling at this level is where the walk resumes once whatever gets pushed below
+            // for this level (the checkpoint's own children, at the last level) is exhausted and popped
+            // back to here — same pre-order shape the forward walk already produces on its own.
+            stack.Push(
+                (currentDirectory, siblingEntries, foundIndex + 1));
+
+            if (!isCheckpointItself)
+            {
+
+                if (!matchedIsDirectory)
+                {
+
+                    return false;
+
+                }
+
+                ListDirectoryEntryValidationObserverForTests?.Invoke(matchedEntry);
+
+                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                        _workspaceRoot!,
+                        matchedEntry,
+                        out string? resolvedAncestor))
+                {
+
+                    return false;
+
+                }
+
+                _ = visitedCanonicalDirectories.Add(
+                    Path.GetFullPath(resolvedAncestor ?? matchedEntry));
+
+                currentDirectory = matchedEntry;
+
+            }
+            else if (recursive && matchedIsDirectory)
+            {
+
+                ListDirectoryEntryValidationObserverForTests?.Invoke(matchedEntry);
+
+                if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                        _workspaceRoot!,
+                        matchedEntry,
+                        out string? resolvedCheckpoint))
+                {
+
+                    string canonicalCheckpoint = Path.GetFullPath(
+                        resolvedCheckpoint ?? matchedEntry);
+
+                    if (visitedCanonicalDirectories.Add(canonicalCheckpoint))
+                    {
+
+                        stack.Push(
+                            (matchedEntry, SortedListDirectoryEntries(matchedEntry), 0));
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        return true;
+
+    }
+
+    /// <summary>
+    /// Forward-only pre-order walk over an explicit stack, starting from whatever
+    /// <see cref="TrySeekListDirectoryEntries"/> already positioned it at. Every entry this touches is
+    /// at or after the checkpoint, so — unlike the former replay-based walk — every entry here gets full
+    /// validation; there is no earlier "replaying past the prefix" phase left to defer it for.
+    /// </summary>
+    private IEnumerable<string> WalkListDirectoryEntries(
+        Stack<(string Directory, string[] Entries, int Index)> stack,
+        HashSet<string> visitedCanonicalDirectories,
+        bool recursive,
+        CancellationToken cancellationToken)
+    {
+
+        while (stack.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string directory = directories.Dequeue();
+            (string directory, string[] siblingEntries, int index) = stack.Pop();
 
-            string[] entries = Directory.EnumerateFileSystemEntries(
-                    directory,
-                    "*",
-                    SearchOption.TopDirectoryOnly)
-                .OrderBy(static path => path, StringComparer.Ordinal)
-                .ToArray();
-
-            foreach (string entry in entries)
+            if (index >= siblingEntries.Length)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                bool isDirectory = Directory.Exists(entry);
-
-                if (isDirectory
-                    && IsListDirectorySkipFolder(Path.GetFileName(entry)))
-                {
-                    continue;
-                }
-
-                string? resolvedEntry = null;
-
-                // A directory is validated even while the consumer is still replaying forward to its
-                // continuation checkpoint: the resolved target decides whether the walk descends into
-                // it and identifies it for cycle detection, so deferring that would let the replay
-                // descend through an escaping symlink and emit out-of-workspace paths after the resume
-                // point. A plain file is only ever emitted, never descended, so its component walk —
-                // several filesystem syscalls per path component — can wait until the consumer
-                // actually intends to return it, instead of being paid again on every page.
-                if (isDirectory || continuationReached())
-                {
-                    ListDirectoryEntryValidationObserverForTests?.Invoke(entry);
-
-                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                            _workspaceRoot!,
-                            entry,
-                            out resolvedEntry))
-                    {
-                        continue;
-                    }
-                }
-
-                yield return entry;
-
-                if (recursive && isDirectory)
-                {
-
-                    string canonicalDirectory = Path.GetFullPath(
-                        resolvedEntry ?? entry);
-
-                    if (visitedCanonicalDirectories.Add(
-                            canonicalDirectory))
-                    {
-
-                        directories.Enqueue(entry);
-
-                    }
-
-                }
+                continue;
             }
 
-            if (!recursive)
+            string entry = siblingEntries[index];
+
+            stack.Push(
+                (directory, siblingEntries, index + 1));
+
+            bool isDirectory = Directory.Exists(entry);
+
+            if (isDirectory
+                && IsListDirectorySkipFolder(Path.GetFileName(entry)))
             {
-                yield break;
+                continue;
+            }
+
+            ListDirectoryEntryValidationObserverForTests?.Invoke(entry);
+
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                    _workspaceRoot!,
+                    entry,
+                    out string? resolvedEntry))
+            {
+                continue;
+            }
+
+            yield return entry;
+
+            if (recursive && isDirectory)
+            {
+
+                string canonicalDirectory = Path.GetFullPath(
+                    resolvedEntry ?? entry);
+
+                if (visitedCanonicalDirectories.Add(
+                        canonicalDirectory))
+                {
+
+                    stack.Push(
+                        (entry, SortedListDirectoryEntries(entry), 0));
+
+                }
+
             }
         }
     }

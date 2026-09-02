@@ -248,7 +248,7 @@ internal sealed partial class ArcanumInternalToolServer
         _listDirectoryPageSize = listDirectoryMaxPaths;
 
         _listDirectoryToolsListDescription =
-            "Lists files and folders under a path relative to the workspace root. Optional recursion; skips node_modules, bin, obj, and .git. Large listings return a continuation cursor instead of dropping paths.";
+            "Lists files and folders under a path relative to the workspace root. Optional recursion; skips node_modules, bin, obj, and .git. Recursive listings are depth-first: a directory's own entries follow it immediately, before its siblings. Large listings return a continuation cursor instead of dropping paths.";
 
         _settings = intelligenceSettings;
 

@@ -2632,6 +2632,146 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToolsCall_list_directory_does_not_reenumerate_earlier_directories_on_every_continuation()
+    {
+
+        // Wide, not deep: 40 sibling directories at the root, 5 files each. The former mitigation
+        // (skip full validation for a plain file while replaying past it) already keeps a deep, narrow
+        // tree cheap -- ToolsCall_list_directory_does_not_revalidate_already_paged_entries_on_every_continuation
+        // covers that shape. A directory is always validated, replay or not, so this shape isolates the
+        // cost the earlier mitigation does not touch: re-walking (and re-validating) every one of the 40
+        // already-emitted directories again on every subsequent page.
+        const int directoryCount = 40;
+
+        const int filesPerDirectory = 5;
+
+        for (int d = 0; d < directoryCount; d++)
+        {
+
+            for (int f = 0; f < filesPerDirectory; f++)
+            {
+
+                _workspace.WriteFile($"dir-{d:D3}/file-{f}.txt", "x");
+
+            }
+
+        }
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        int directoryValidations = 0;
+
+        session.Server.ListDirectoryEntryValidationObserverForTests =
+            entry =>
+            {
+
+                if (Path.GetFileName(entry).StartsWith("dir-", StringComparison.Ordinal))
+                {
+
+                    Interlocked.Increment(ref directoryValidations);
+
+                }
+
+            };
+
+        HashSet<string> observed = new(StringComparer.Ordinal);
+
+        int pages = 0;
+
+        string? continuation = null;
+
+        try
+        {
+
+            do
+            {
+
+                pages++;
+
+                JsonElement arguments = JsonSerializer.SerializeToElement(
+                    new ListDirectoryParams
+                    {
+                        RelativePath = ".",
+                        Recursive = true,
+                        Continuation = continuation,
+                    },
+                    McpJsonSerializerContext.Default.ListDirectoryParams);
+
+                McpToolsCallResultWire result = await session.CallToolAsync(
+                    "list_directory",
+                    arguments);
+
+                Assert.False(result.IsError);
+
+                string text = Assert.Single(result.Content).Text!;
+
+                foreach (string line in text.Split('\n'))
+                {
+
+                    if (line.StartsWith("dir-", StringComparison.Ordinal)
+                        && !line.StartsWith("...", StringComparison.Ordinal))
+                    {
+
+                        observed.Add(line);
+
+                    }
+
+                }
+
+                const string cursorPrefix = "continuation=";
+
+                int cursorStart = text.LastIndexOf(
+                    cursorPrefix,
+                    StringComparison.Ordinal);
+
+                if (cursorStart < 0)
+                {
+
+                    break;
+
+                }
+
+                cursorStart += cursorPrefix.Length;
+
+                int cursorEnd = text.IndexOf(';', cursorStart);
+
+                Assert.True(cursorEnd > cursorStart);
+
+                continuation = text[cursorStart..cursorEnd];
+
+            } while (true);
+
+        }
+        finally
+        {
+
+            session.Server.ListDirectoryEntryValidationObserverForTests = null;
+
+        }
+
+        // directoryCount directory entries plus directoryCount * filesPerDirectory file entries, each
+        // exactly once -- proves the walk is still complete and duplicate-free under the new resume.
+        Assert.Equal(
+            directoryCount * (filesPerDirectory + 1),
+            observed.Count);
+
+        Assert.True(pages > 1, "the fixture must span more than one page for a replay cost to show up at all.");
+
+        // Every directory is validated once when the forward walk actually reaches it, plus at most one
+        // ancestor re-validation per continuation call (this tree is one level deep, so each resume seeks
+        // through exactly one ancestor). A full-replay design instead re-validates all `directoryCount`
+        // directories on every page: directoryCount * pages, which for this fixture is 40 * pages and
+        // blows past this bound as soon as there is more than one page.
+        int bound = directoryCount + pages + 2;
+
+        Assert.True(
+            directoryValidations <= bound,
+            $"Expected at most {bound} directory validations across {pages} pages, but observed {directoryValidations}. " +
+            "This grows with page count when list_directory replays every earlier directory on each continuation.");
+
+    }
+
+    [Fact]
     public async Task ToolsCall_list_directory_rejects_file_path()
     {
 
