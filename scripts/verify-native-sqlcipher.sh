@@ -662,8 +662,18 @@ verify_rid_dependencies() {
       # (this asset's is @rpath/libe_sqlcipher.dylib), not a dependency; otool -D returns exactly
       # that one line. Excluding only this entry -- rather than every @rpath/ entry, as before --
       # keeps a genuine @rpath/ dependency (a dynamically linked libcrypto, say) visible to the
-      # comparison below instead of discarding it unseen.
-      self_id="$(otool -D "${file}" | tail -n +2)"
+      # comparison below instead of discarding it unseen. Same status-capture reasoning as the
+      # otool -L call above: without it, a failing otool -D aborts the whole script under set -e,
+      # with no FAIL line and no summary, instead of reporting the failure honestly.
+      self_id="$(otool -D "${file}" | tail -n +2)" || otool_status=$?
+
+      if [ "${otool_status}" -ne 0 ]; then
+
+        fail "${rid}: otool -D exited ${otool_status} against ${file}; cannot verify dynamic dependencies"
+
+        return
+
+      fi
 
       local unexpected=0
 
