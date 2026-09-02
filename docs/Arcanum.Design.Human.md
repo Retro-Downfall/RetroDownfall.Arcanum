@@ -415,7 +415,7 @@ Metrics use bounded labels. High-cardinality identities, prompt fragments, paths
 
 ## 14. Native AOT, packaging, and configuration
 
-Source-generated JSON, request delegates, generated regexes, and trimming annotations are design constraints, not cleanup tasks. Windows and Linux publish the CLI as Native AOT. macOS ships a self-contained folder while retaining the same AOT-safe code shape.
+Source-generated JSON, request delegates, generated regexes, and trimming annotations are design constraints, not cleanup tasks. Windows publishes the CLI as Native AOT, and so does macOS arm64 when LLVM `lld` is installed; without it macOS falls back to a self-contained folder while retaining the same AOT-safe code shape. Linux is not a shipping RID at all — the hermetic SQLCipher targets map a filename only for an `osx-` or `win-` prefix.
 
 Package and distribution scripts live under `scripts/packaging`. Signing and notarization are platform workflows; unsigned local artifacts retain the operating system's normal trust warnings. On macOS a developer can also sign a build with the Apple certificate already installed in Keychain Access by passing `--local-sign`, which is enough to confirm the signed application actually starts on that machine. Apple only notarizes certificates issued for distribution, so such a build is deliberately not notarized and stays trusted only where that certificate is already trusted — it is a check, not a release.
 
@@ -463,7 +463,7 @@ Keep these boundaries in mind:
 - retention and factory reset provide logical deletion, not physical secure erasure or backup destruction;
 - Comm Link webhooks are not HMAC-signed;
 - the product is single-operator; `PromptId` acts as the human-input ownership capability;
-- macOS packaging is self-contained rather than Native AOT;
+- macOS packaging is Native AOT when LLVM `lld` is installed and self-contained otherwise;
 - SQLCipher tests may skip when the native asset is unavailable.
 
 The complete and more precise limitations list is [`Arcanum.DESIGN.md` §16](Arcanum.DESIGN.md#16-known-limitations-and-operator-constraints).
