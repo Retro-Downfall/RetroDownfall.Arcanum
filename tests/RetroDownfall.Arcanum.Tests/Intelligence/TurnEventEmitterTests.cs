@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -132,6 +133,58 @@ public sealed class TurnEventEmitterTests
             PartialText: null));
 
         Assert.False(emitter.TerminalEmitted);
+    }
+
+    // W1-1 added an OperationCanceledException catch (guarded by cancellationToken.IsCancellationRequested)
+    // to EmitAsync, but nothing before this exercised it directly: the abandonment test's cancellation
+    // happens elsewhere in the pump, never inside a blocked WriteAsync. This blocks the channel at
+    // capacity 1, cancels the second write's own token while it is parked waiting for room, and asserts
+    // EmitAsync completes without throwing.
+    [Fact]
+    public async Task EmitAsync_TokenCancelledWhileBlockedOnFullChannel_DoesNotThrow()
+    {
+        await using TurnEventEmitter emitter = new(Guid.NewGuid(), capacity: 1);
+
+        await emitter.EmitAsync(new TurnStatusChanged(emitter.NextCorrelation(), "first"));
+
+        using CancellationTokenSource cts = new();
+
+        Task emitTask = emitter
+            .EmitAsync(new TurnStatusChanged(emitter.NextCorrelation(), "second"), cts.Token)
+            .AsTask();
+
+        await Task.Delay(100);
+
+        Assert.False(emitTask.IsCompleted);
+
+        await cts.CancelAsync();
+
+        await emitTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Pins the catch's scope from the other side: an emit that is merely blocked on a full channel —
+    // no cancellation of its own token involved — must keep waiting rather than being swallowed as if
+    // it had been cancelled. Only draining the channel, not the passage of time, unblocks it.
+    [Fact]
+    public async Task EmitAsync_UncancelledTokenOnFullChannel_StaysBlockedUntilDrained()
+    {
+        await using TurnEventEmitter emitter = new(Guid.NewGuid(), capacity: 1);
+
+        await emitter.EmitAsync(new TurnStatusChanged(emitter.NextCorrelation(), "first"));
+
+        Task emitTask = emitter
+            .EmitAsync(new TurnStatusChanged(emitter.NextCorrelation(), "second"), CancellationToken.None)
+            .AsTask();
+
+        await Task.Delay(100);
+
+        Assert.False(emitTask.IsCompleted);
+
+        ChannelReader<TurnEvent> reader = emitter.Reader;
+
+        _ = await reader.ReadAsync();
+
+        await emitTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     private static async Task<List<TurnEvent>> ReadAllAsync(TurnEventEmitter emitter)

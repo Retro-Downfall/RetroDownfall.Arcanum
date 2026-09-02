@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Collections.Concurrent;
@@ -1268,6 +1269,142 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W1-5: EnsureContextBudgetWithMaterializations' trim loop re-estimated the entire (shrinking)
+    /// transcript on every removed pair, so an over-budget round paid one full-transcript
+    /// EstimateContext call per pair removed rather than one small, removed-slice-sized call. A
+    /// round with many parallel tool calls that blow the budget exercises many removals in a
+    /// single trim, making the difference observable through a counting estimator double.
+    /// </summary>
+    [Fact]
+    public async Task StreamingToolLoop_ManyPairsNeedTrimming_EstimatesRemovedSlicesNotWholeTranscript()
+    {
+
+        const string progressToolName = "record_progress";
+
+        const int parallelToolCalls = 20;
+
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateProgressMcpTool(progressToolName));
+
+        List<AIContent> manyCalls = [];
+
+        for (int i = 0; i < parallelToolCalls; i++)
+        {
+
+            manyCalls.Add(
+                new FunctionCallContent(
+                    $"call-{i}",
+                    progressToolName,
+                    new Dictionary<string, object?> { ["evidence"] = i }));
+
+        }
+
+        chat.EnqueueStreamUpdates(new ChatResponseUpdate(ChatRole.Assistant, manyCalls));
+
+        chat.EnqueueStreamTokens("done");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { ContextWindowLimit = 2_400 }],
+        };
+
+        InferenceTokenizerResolver resolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
+
+        CountingModelTokenEstimator counting = new(new ModelTokenEstimator(resolver));
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            mcp: mcp,
+            modelTokenEstimator: counting);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "trim me", SkipSpellRouting = true });
+
+        // A trim loop that exits early because it mistook the estimator's fixed per-call overhead
+        // (reserved tokens, tool schema) for a removed run's own contribution still satisfies a
+        // call-count assertion — it just leaves the transcript over budget, and the turn fails
+        // instead of completing. Pinning the successful outcome first makes the call-count
+        // assertion below mean what it claims.
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        // Only the initial over-budget check and the post-trim authoritative breakdown should ever
+        // see a large share of the transcript; a trim that removed most of parallelToolCalls pairs
+        // without inflating this count proves each removal re-estimated its own small slice rather
+        // than the shrinking whole list.
+        int wholeTranscriptCalls = counting.EstimateContextMessageCounts.Count(static c => c > 6);
+
+        Assert.True(
+            wholeTranscriptCalls <= 3,
+            "expected only a handful of whole-transcript estimates, saw "
+                + $"{wholeTranscriptCalls} of {counting.EstimateContextCalls} total calls: "
+                + $"[{string.Join(", ", counting.EstimateContextMessageCounts)}]");
+
+    }
+
+    /// <summary>
+    /// V-2 (important): HumanPromptLiveEmitterAmbient.Current was set at the top of
+    /// RunInferenceAttemptAsync -- an async iterator -- but the very next yield return (the
+    /// ToolCall frame, before any tool executes) discarded it: an AsyncLocal write survives an
+    /// await but not a yield return. No tool invocation could ever observe it non-null, so the
+    /// real MCP ElicitationHandler always declined elicitation during attended streaming turns.
+    /// The fix re-establishes the ambient inside ProcessWithLiveWardsAsync, a plain non-yielding
+    /// local function invoked with zero intervening yields after each tool call's own ToolCall
+    /// frame. This also exercises W1-7's held human-channel wait across several re-arms for the
+    /// first time -- previously nothing could ever write to that channel to trigger one.
+    /// </summary>
+    [Fact]
+    public async Task StreamingToolCall_ObservesNonNullHumanPromptAmbientAndAllFramesArriveInOrder()
+    {
+
+        const string toolName = "emit_human_frames";
+
+        const int frameCount = 5;
+
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateHumanFrameEmittingTool(toolName, frameCount));
+
+        chat.EnqueueStreamUpdates(
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new FunctionCallContent("call-1", toolName, new Dictionary<string, object?>())]));
+
+        chat.EnqueueStreamTokens("done");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "emit frames", SkipSpellRouting = true });
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        IntelligenceEvent toolResult = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.ToolResult);
+
+        Assert.Equal("ambient-non-null", toolResult.Data);
+
+        List<string> humanFrames = events
+            .Where(static e => e.Type == IntelligenceEventType.Status
+                && (e.Message?.StartsWith("human-frame-", StringComparison.Ordinal) ?? false))
+            .Select(static e => e.Message)
+            .ToList();
+
+        Assert.Equal(
+            Enumerable.Range(0, frameCount).Select(static i => $"human-frame-{i}").ToArray(),
+            humanFrames);
+
+    }
+
     [Fact]
     public async Task Scenario20_AttachedFilesBeyondFormerCountCeiling_AreAccepted()
     {
@@ -2084,6 +2221,46 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         chat.EnqueueStreamTokens("retried");
 
         WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "retry stream", SkipSpellRouting = true, DisableMcpTools = true });
+
+        Assert.Contains(
+            events,
+            static e => e.Type == IntelligenceEventType.Status
+                && e.Message.Contains("does not support tools", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "retried");
+
+    }
+
+    /// <summary>
+    /// W1-9: the no-tools restart used to fire only on an English substring match against the
+    /// provider's error text, so a provider wording the same condition differently (this test's
+    /// "tool calling is not available for this model" -- deliberately missing "does not support
+    /// tools") never triggered it. The model entry's own declared SupportsTools: false is now an
+    /// independent, authoritative signal.
+    /// </summary>
+    [Fact]
+    public async Task StreamToolUnsupported_DeclaredCapabilityWithoutMatchingSubstring_StillRetriesWithoutTools()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueImmediateStreamFailure(
+            new InvalidOperationException("tool calling is not available for this model"));
+
+        chat.EnqueueStreamTokens("retried");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsTools: false)] }],
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
@@ -3787,6 +3964,87 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W1-6: ModelCallExecutor.ExecuteStreamingAsync had no try/finally around its provider
+    /// enumeration, so a stream that faults after already reporting usage skipped reconciliation,
+    /// prompt-cache, and delegated-usage recording entirely — that telemetry population is exactly
+    /// what an operator investigating provider trouble wants counted.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_ProviderFaultsAfterUsage_StillRecordsPromptCacheMetrics()
+    {
+
+        string marker = Guid.NewGuid().ToString("N");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Name = marker }],
+        };
+
+        UsageDetails usage = new()
+        {
+            InputTokenCount = 50,
+            OutputTokenCount = 5,
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueUpdatesThenStreamFailure(
+            [
+                new ChatResponseUpdate(ChatRole.Assistant, [new UsageContent(usage)]),
+            ],
+            new InvalidOperationException("provider dropped mid-stream"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        ConcurrentQueue<long> captured = new();
+
+        using System.Diagnostics.Metrics.MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) => activeListener.EnableMeasurementEvents(instrument),
+        };
+
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+
+            if (instrument.Name != "arcanum_prompt_cache_calls_total")
+            {
+
+                return;
+
+            }
+
+            foreach (KeyValuePair<string, object?> tag in tags)
+            {
+
+                if (tag.Key == "provider" && tag.Value is string s && s == marker)
+                {
+
+                    captured.Enqueue(measurement);
+
+                }
+
+            }
+
+        });
+
+        listener.Start();
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "usage then fault",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            });
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(1, Assert.Single(captured));
+
+    }
+
     [Fact]
     public async Task Streaming_tool_interaction_is_persisted_before_tool_result_can_be_disposed()
     {
@@ -3866,6 +4124,123 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
             throw new InvalidOperationException(
                 "The stream ended before a tool result.");
+        }
+
+    }
+
+    /// <summary>
+    /// W1-1: a disconnected client must not orphan a tool call. The provider proposes a tool call
+    /// that blocks on a test barrier (modeling a slow/uncancelled MCP tool); the client abandons
+    /// the enumerator right after the first ward frame, while the tool is still running. Disposal
+    /// must observe the tool task — bounded by a grace period — rather than returning immediately
+    /// and leaving it to run unobserved, and the ward pump must not spin while it waits: on the
+    /// unfixed code this test times out because the pump never stops re-polling an already-
+    /// cancelled channel wait, so DisposeAsync never returns while the barrier stays closed.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_AbandonedAtFirstWardFrame_ObservesToolTaskAndDoesNotSpinPastGrace()
+    {
+
+        TaskCompletionSource barrier = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource toolInvoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        const string toolName = "barrier_tool";
+
+        async Task<string> BarrierToolAsync()
+        {
+
+            toolInvoked.TrySetResult();
+
+            await barrier.Task.ConfigureAwait(false);
+
+            return "released";
+
+        }
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(AIFunctionFactory.Create(BarrierToolAsync, toolName, "blocks on a test barrier"));
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamToolCall(toolName);
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        IAsyncEnumerator<IntelligenceEvent> enumerator = wizard
+            .StreamPromptAsync(
+                BaseRequest() with { Prompt = "block please", SkipSpellRouting = true },
+                InvocationContexts.AttendedSession(),
+                CancellationToken.None)
+            .GetAsyncEnumerator();
+
+        Task? disposeTask = null;
+
+        try
+        {
+
+            bool sawWarded = false;
+
+            while (await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)))
+            {
+
+                if (enumerator.Current.Type == IntelligenceEventType.Warded)
+                {
+
+                    sawWarded = true;
+
+                    break;
+
+                }
+
+            }
+
+            Assert.True(sawWarded, "expected a Warded frame before abandoning the enumerator");
+
+            // Confirms the tool call is genuinely in flight (blocked on the barrier, not merely
+            // proposed) before the client walks away.
+            await toolInvoked.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Stopwatch abandonment = Stopwatch.StartNew();
+
+            disposeTask = enumerator.DisposeAsync().AsTask();
+
+            // Unfixed code busy-spins the ward pump for as long as the barrier stays closed, so
+            // this times out long before the fix's bounded grace lets disposal return.
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(8));
+
+            abandonment.Stop();
+
+            Assert.InRange(
+                abandonment.Elapsed,
+                TimeSpan.FromSeconds(1.5),
+                TimeSpan.FromSeconds(8));
+
+        }
+        finally
+        {
+
+            barrier.TrySetResult();
+
+            if (disposeTask is not null)
+            {
+
+                try
+                {
+
+                    await disposeTask.WaitAsync(TimeSpan.FromSeconds(15));
+
+                }
+                catch
+                {
+
+                    // Best-effort cleanup only — must not mask an assertion failure above.
+
+                }
+
+            }
+
         }
 
     }
@@ -4329,6 +4704,88 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 maxOutputTokens: 1_000,
                 reasoningBudgetTokens: 600),
             request.ReservedUsd);
+    }
+
+    /// <summary>
+    /// W1-3: a client disconnect must not make a round that already streamed real provider usage
+    /// look like it spent nothing. Usage arrives, the provider then goes quiet, and the caller
+    /// cancels — the round must reconcile the observed usage rather than releasing the reservation
+    /// as though nothing happened.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_CancelledAfterUsageArrives_ReconcilesInsteadOfReleasing()
+    {
+
+        UsageDetails usage = new()
+        {
+            InputTokenCount = 100,
+            OutputTokenCount = 20,
+        };
+
+        TaskCompletionSource aboutToBlock = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueUsageThenBlock(usage, aboutToBlock);
+
+        RecordingTurnRunWriter turnRuns = new();
+
+        RecordingBudgetReservationService reservations = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        using CancellationTokenSource cancellation = new();
+
+        IAsyncEnumerator<IntelligenceEvent> enumerator = wizard
+            .StreamPromptAsync(
+                BaseRequest() with
+                {
+                    Prompt = "usage then cancel",
+                    SkipSpellRouting = true,
+                    DisableMcpTools = true,
+                },
+                InvocationContexts.AttendedSession(),
+                cancellation.Token)
+            .GetAsyncEnumerator();
+
+        try
+        {
+
+            // GetAsyncEnumerator does not start the pipeline by itself — an async iterator is
+            // lazy until its first MoveNextAsync — so the drain has to run concurrently with (not
+            // after) waiting for the barrier, or nothing ever reaches EnqueueUsageThenBlock.
+            async Task DrainAsync()
+            {
+                while (await enumerator.MoveNextAsync())
+                {
+                }
+            }
+
+            Task drainTask = DrainAsync();
+
+            // Fires only after the usage chunk has already been folded into the round's update
+            // accumulator (see EnqueueUsageThenBlock), so cancelling here cannot race the fix.
+            await aboutToBlock.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await cancellation.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drainTask)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+        }
+        finally
+        {
+
+            await enumerator.DisposeAsync();
+
+        }
+
+        Assert.Equal(1, reservations.ReconcileCount);
+        Assert.False(reservations.WasReleased);
+
     }
 
     [Fact]
@@ -8252,7 +8709,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ILogger<ToolExecutionPipeline>? toolLogger = null,
         ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
         ISessionAttachmentStore? sessionAttachmentStore = null,
-        FixtureOrdinaryConnectionFactory? ordinaryConnections = null)
+        FixtureOrdinaryConnectionFactory? ordinaryConnections = null,
+        IModelTokenEstimator? modelTokenEstimator = null)
     {
         settings ??= DefaultSettings();
 
@@ -8358,7 +8816,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             budgetReservationService: budgetReservationService,
             webResearchProviderCatalog: new WebResearchProviderCatalog([]),
             sessionAttachmentRetrieval: sessionAttachmentRetrieval,
-            serviceProvider: ordinaryProvider);
+            serviceProvider: ordinaryProvider,
+            modelTokenEstimator: modelTokenEstimator);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
@@ -8745,6 +9204,37 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             name,
             "returns changing progress evidence");
 
+    /// <summary>
+    /// V-2 regression tool: records whether HumanPromptLiveEmitterAmbient.Current is non-null at
+    /// tool-invocation time, then (if non-null) emits <paramref name="frameCount"/> frames on it,
+    /// yielding between each so the pump's held wait (W1-7) has to resolve and re-arm repeatedly
+    /// across one tool call rather than once.
+    /// </summary>
+    private static AIFunction CreateHumanFrameEmittingTool(string name, int frameCount) =>
+        AIFunctionFactory.Create(
+            async () =>
+            {
+                IHumanPromptLiveEmitter? emitter = HumanPromptLiveEmitterAmbient.Current;
+
+                if (emitter is null)
+                {
+                    return "ambient-null";
+                }
+
+                for (int i = 0; i < frameCount; i++)
+                {
+                    await emitter.EmitAsync(
+                        new IntelligenceEvent(IntelligenceEventType.Status, $"human-frame-{i}"),
+                        CancellationToken.None);
+
+                    await Task.Yield();
+                }
+
+                return "ambient-non-null";
+            },
+            name,
+            "records ambient nullness and emits several live human-channel frames");
+
     private AIFunction CreateProductionApplyPatchTool(
         ArcanumSettings settings,
         Func<IApplyPatchPendingReceiptSink, IApplyPatchPendingReceiptSink>?
@@ -8979,6 +9469,18 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public void EnqueueSlowStream(TimeSpan delay, string token) =>
             _streaming.Enqueue(ct => SlowStream(delay, token, ct));
 
+        /// <summary>
+        /// Yields one usage-bearing update, then blocks until the caller's own token is cancelled
+        /// (rather than completing or throwing on its own) — models a provider that reports usage
+        /// mid-stream and then goes quiet, so a test can cancel the caller token while it waits.
+        /// <paramref name="aboutToBlock"/>, when supplied, completes right before the indefinite
+        /// wait starts — by then the usage update has already been folded into the caller's
+        /// round-update accumulator, so a test awaiting it before cancelling knows the usage was
+        /// observed rather than racing the cancellation against it.
+        /// </summary>
+        public void EnqueueUsageThenBlock(UsageDetails usage, TaskCompletionSource? aboutToBlock = null) =>
+            _streaming.Enqueue(ct => UsageThenBlock(usage, aboutToBlock, ct));
+
         public void EnqueueSlowBuffered(TimeSpan delay, string text) =>
             _buffered.Enqueue(async ct =>
             {
@@ -9209,6 +9711,18 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
 
             yield return new ChatResponseUpdate(ChatRole.Assistant, token);
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> UsageThenBlock(
+            UsageDetails usage,
+            TaskCompletionSource? aboutToBlock,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [new UsageContent(usage)]);
+
+            aboutToBlock?.TrySetResult();
+
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
         }
 
     }
@@ -9842,6 +10356,48 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             DateTimeOffset utcNow,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+    }
+
+    /// <summary>
+    /// Delegates every call to a real estimator while recording how many messages
+    /// <see cref="EstimateContext"/> was asked to estimate each time it ran — W1-5's counting
+    /// double, distinguishing an O(removed) trim (a few small calls) from an O(messages) one (every
+    /// call sized to the current, still-largely-untrimmed transcript).
+    /// </summary>
+    private sealed class CountingModelTokenEstimator(IModelTokenEstimator inner) : IModelTokenEstimator
+    {
+        private int _estimateContextCalls;
+
+        public int EstimateContextCalls => _estimateContextCalls;
+
+        public List<int> EstimateContextMessageCounts { get; } = [];
+
+        public ResolvedModelTokenizationProfile ResolveProfile(
+            ProviderSettings provider,
+            string canonicalModel) =>
+            inner.ResolveProfile(provider, canonicalModel);
+
+        public ResolvedModelTokenizationProfile ResolveEffectiveProfile(
+            ProviderSettings provider,
+            string canonicalModel) =>
+            inner.ResolveEffectiveProfile(provider, canonicalModel);
+
+        public TokenEstimate EstimateText(
+            ProviderSettings provider,
+            string canonicalModel,
+            string? text) =>
+            inner.EstimateText(provider, canonicalModel, text);
+
+        public ContextTokenBreakdown EstimateContext(ModelTokenizationRequest request)
+        {
+
+            _ = Interlocked.Increment(ref _estimateContextCalls);
+
+            EstimateContextMessageCounts.Add(request.Messages.Count);
+
+            return inner.EstimateContext(request);
+
+        }
     }
 
     private sealed class ConfigurableSanctumGuard : ISanctumGuard

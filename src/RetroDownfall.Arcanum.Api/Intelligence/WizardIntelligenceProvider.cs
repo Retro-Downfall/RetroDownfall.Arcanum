@@ -147,6 +147,13 @@ public sealed partial class WizardIntelligenceProvider(
     private const string AskHumanUnavailableMessage =
         "ask_human is only available during attended streaming turns with a live human-response channel.";
 
+    /// <summary>
+    /// How long the per-call `finally` waits for an abandoned tool invocation to finish before
+    /// giving up on it. Bounded so a client disconnect during a hung/uncancelled tool call cannot
+    /// block the unwind indefinitely; the tool's own cancellation behavior is a separate concern.
+    /// </summary>
+    private static readonly TimeSpan ToolTaskAbandonmentGrace = TimeSpan.FromSeconds(3);
+
     private static readonly ArcanumLocalTimeTool _localTimeTool = new();
 
     private static readonly ArcanumSystemInfoTool _systemInfoTool = new();
@@ -1588,7 +1595,6 @@ public sealed partial class WizardIntelligenceProvider(
         Stopwatch inferenceStopwatch = Stopwatch.StartNew();
 
         Channel<IntelligenceEvent>? liveHumanPromptChannel = null;
-        IHumanPromptLiveEmitter? previousHumanPromptEmitter = HumanPromptLiveEmitterAmbient.Current;
 
         TurnAccountingHandle? streamAccounting = null;
 
@@ -2439,7 +2445,13 @@ public sealed partial class WizardIntelligenceProvider(
                 await liveHumanPromptChannel.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
             };
 
-            HumanPromptLiveEmitterAmbient.Current = new ChannelHumanPromptLiveEmitter(liveHumanPromptChannel);
+            // V-2: NOT set here. This method is an async iterator, and an AsyncLocal write does
+            // not survive a `yield return` — only an `await` does. The very next yield (the
+            // ToolCall frame, before any tool executes) would silently discard this assignment,
+            // so every tool invocation would observe HumanPromptLiveEmitterAmbient.Current as
+            // null regardless. It is instead (re-)established inside ProcessWithLiveWardsAsync,
+            // a plain non-yielding local function invoked with zero intervening yields after each
+            // tool call's own ToolCall frame — see the comment there.
         }
 
         bool humanInteractionAvailable = streaming && liveHumanPromptEmit is not null;
@@ -3154,6 +3166,29 @@ public sealed partial class WizardIntelligenceProvider(
                         catch (OperationCanceledException)
                         {
 
+                            // W1-3: a client disconnect must not make a round that already
+                            // streamed real provider bytes look like it spent nothing — that
+                            // both loses the spend from budget accounting and returns the
+                            // reservation via ReleaseAsync instead of ReconcileAsync.
+                            // Reconstruct usage from whatever raw updates already arrived (the
+                            // same conversion the successful-completion path below uses), on
+                            // CancellationToken.None since inferenceToken is already cancelled,
+                            // so a usage chunk seen before the cancellation still gets recorded.
+                            if (roundUpdates.Count > 0)
+                            {
+                                ChatCompletionUsage? partialUsage = MapUsageDetails(
+                                    roundUpdates.ToChatResponse().Usage);
+
+                                await RecordProviderCallUsageAsync(
+                                        streamAccountingLocal,
+                                        partialUsage,
+                                        lease.Provider.Name,
+                                        targetModel,
+                                        streamPurpose,
+                                        CancellationToken.None)
+                                    .ConfigureAwait(false);
+                            }
+
                             throw;
 
                         }
@@ -3275,9 +3310,21 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (inferenceError is not null)
                 {
+                    // W1-9: the declared model entry is authoritative when it says anything at
+                    // all -- SupportsTools is a nullable bool specifically so "undeclared" (null,
+                    // the default for every model that predates this field) never reads the same
+                    // as an explicit "this model does not support tools" (false). Only a declared
+                    // false widens the gate; an undeclared entry falls back to the substring hint
+                    // exactly as before, so a provider that words the same failure differently is
+                    // no worse off than it was, and one with a declared capability no longer
+                    // depends on Ollama's exact English wording.
+                    bool declaredToolIncompatible =
+                        ProviderResolver.TryResolveModelEntry(lease.Provider, lease.ResolvedModel, out ModelEntry? modelEntry)
+                        && modelEntry is { SupportsTools: false };
+
                     bool allowNoToolsRestart = streamUsesTools
                         && streamingMoveNextFailure is { Message: var moveMsg }
-                        && LooksLikeModelDoesNotSupportTools(moveMsg)
+                        && (declaredToolIncompatible || LooksLikeModelDoesNotSupportTools(moveMsg))
                         && !classification.ProviderCommitted
                         && (streaming ? streamAccumulator.Length == 0 : true);
 
@@ -3433,6 +3480,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                         IHumanPromptReservation? askHumanReservation = null;
 
+                        Task<ToolExecutionPipeline.ProcessedToolCall>? processTask = null;
+
                         try
                         {
                             if (IsAskHumanTool(fcc))
@@ -3520,6 +3569,24 @@ public sealed partial class WizardIntelligenceProvider(
 
                             async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessWithLiveWardsAsync()
                             {
+                                // V-2: (re-)established here, not at the top of the attempt. This
+                                // local function is a plain, non-yielding async method invoked
+                                // (via the call below) with zero intervening yield returns since
+                                // this tool call's own ToolCall frame — so, unlike a set made
+                                // earlier in the enclosing async-iterator method, this one is
+                                // still active by the time control reaches ProcessSingleToolCallAsync
+                                // and, through it, the tool's own body: a plain method call and a
+                                // regular `await` both preserve AsyncLocal state; only a `yield
+                                // return` discards it. Re-set on every tool call (not once for the
+                                // whole attempt) because each preceding ToolCall/ToolResult/ward
+                                // frame's own yield return already discarded whatever the previous
+                                // call established.
+                                if (liveHumanPromptChannel is { } humanPromptChannel)
+                                {
+                                    HumanPromptLiveEmitterAmbient.Current =
+                                        new ChannelHumanPromptLiveEmitter(humanPromptChannel);
+                                }
+
                                 try
                                 {
                                     return await toolExecutionPipeline
@@ -3567,7 +3634,7 @@ public sealed partial class WizardIntelligenceProvider(
                                 }
                             }
 
-                            Task<ToolExecutionPipeline.ProcessedToolCall> processTask = ProcessWithLiveWardsAsync();
+                            processTask = ProcessWithLiveWardsAsync();
 
                             // Pump wards and elicitation/HITL frames concurrently while the tool runs.
                             // Elicitation emits ask_human-shaped ToolCall frames on the per-turn channel
@@ -3671,6 +3738,48 @@ public sealed partial class WizardIntelligenceProvider(
                             if (askHumanReservation is not null)
                             {
                                 await askHumanReservation.DisposeAsync().ConfigureAwait(false);
+                            }
+
+                            if (processTask is { IsCompleted: false } pendingToolTask)
+                            {
+                                // Reached only on abandonment — the happy path already awaited
+                                // processTask above. A disconnected client must not orphan this
+                                // tool call, so wait for it here, bounded so a hung/uncancelled
+                                // tool cannot block the unwind forever.
+                                using CancellationTokenSource graceCts = new();
+
+                                try
+                                {
+                                    await Task.WhenAny(
+                                            pendingToolTask,
+                                            Task.Delay(ToolTaskAbandonmentGrace, graceCts.Token))
+                                        .ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    // Stop the grace timer the instant the race is decided. An
+                                    // uncancelled Task.Delay keeps its timer alive for the full grace
+                                    // period even after WhenAny already returned because
+                                    // pendingToolTask won — this cancels it out from under that case.
+                                    await graceCts.CancelAsync().ConfigureAwait(false);
+                                }
+
+                                if (!pendingToolTask.IsCompleted)
+                                {
+                                    // Still running past the grace: never await it directly here —
+                                    // that would replace whatever exception is already unwinding
+                                    // this finally. Attach a silent observer instead, so an eventual
+                                    // fault never surfaces as an unobserved Task exception.
+                                    _ = pendingToolTask.ContinueWith(
+                                        static observed => _ = observed.Exception,
+                                        CancellationToken.None,
+                                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                                        TaskScheduler.Default);
+                                }
+                                else if (pendingToolTask.IsFaulted)
+                                {
+                                    _ = pendingToolTask.Exception;
+                                }
                             }
                         }
                     }
@@ -4179,8 +4288,6 @@ public sealed partial class WizardIntelligenceProvider(
         {
             streamCovenantStaging?.Dispose();
 
-            HumanPromptLiveEmitterAmbient.Current = previousHumanPromptEmitter;
-
             liveHumanPromptChannel?.Writer.TryComplete();
 
             SessionAttachmentTurnBudget.EndTurn();
@@ -4382,8 +4489,21 @@ public sealed partial class WizardIntelligenceProvider(
         Task processTask,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        // W1-7: the human-prompt channel is per-turn, not per-call — it is created once and
+        // completed only when the whole streaming turn ends, so a fresh WaitToReadAsync abandoned
+        // on every pump iteration (as `wards`'s call-scoped one below still is) parks one more
+        // queued reader and one more cancellationToken registration for the remaining life of the
+        // turn. Hold a single wait and only re-create it once it actually resolves.
+        Task<bool>? humanWait = humans?.WaitToReadAsync(cancellationToken).AsTask();
+
         while (true)
         {
+            // Checked first on every iteration: once the caller's token is cancelled, a
+            // WaitToReadAsync built from it below resolves instantly (already-cancelled), so
+            // without this the loop would busy-spin allocating a List and 2-3 Tasks per pass for
+            // the rest of the tool call instead of unwinding through the per-call finally.
+            cancellationToken.ThrowIfCancellationRequested();
+
             while (wards.TryRead(out IntelligenceEvent? ward) && ward is not null)
             {
                 yield return ward;
@@ -4415,10 +4535,25 @@ public sealed partial class WizardIntelligenceProvider(
                 yield break;
             }
 
-            List<Task> waits = [processTask, wards.WaitToReadAsync(cancellationToken).AsTask()];
-            if (humans is not null)
+            // Re-arm only once the held wait actually resolved, and only when it resolved with
+            // Result: true (a write is available to read). A completed-but-unread wait can also
+            // resolve successfully with Result: false — the channel itself completed, meaning no
+            // write is coming, ever — and a wait that completed unsuccessfully (the token was
+            // cancelled, or the channel completed with an exception) must likewise not be handed
+            // to Task.WhenAny again below: either one is an already-completed task, so WhenAny
+            // would resolve instantly on it forever, busy-spinning this loop exactly as the
+            // un-hoisted per-iteration wait did before this fix.
+            if (humanWait is { IsCompleted: true })
             {
-                waits.Add(humans.WaitToReadAsync(cancellationToken).AsTask());
+                humanWait = humanWait is { IsCompletedSuccessfully: true, Result: true }
+                    ? humans!.WaitToReadAsync(cancellationToken).AsTask()
+                    : null;
+            }
+
+            List<Task> waits = [processTask, wards.WaitToReadAsync(cancellationToken).AsTask()];
+            if (humanWait is not null)
+            {
+                waits.Add(humanWait);
             }
 
             _ = await Task.WhenAny(waits).ConfigureAwait(false);
