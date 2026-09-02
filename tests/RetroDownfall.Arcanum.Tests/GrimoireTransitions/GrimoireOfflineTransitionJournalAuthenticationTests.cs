@@ -274,7 +274,12 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
             GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch
             * GrimoireOfflineTransitionJournalAuthenticator.MaxRevision;
 
-        Assert.True(maximumSealsPerKey <= 1UL << 32);
+        Assert.True(
+            maximumSealsPerKey <= 1UL << 32,
+            "MaxSlotEpoch * MaxRevision must stay at most half the SP 800-38D ceiling: a "
+            + "sealed publication that fails and is retried spends a Seal invocation the "
+            + "epoch * revision product does not itself count, and that headroom is what the "
+            + "halving buys.");
 
     }
 
