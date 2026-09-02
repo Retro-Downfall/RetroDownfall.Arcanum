@@ -1748,6 +1748,63 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // The read loop dispatches every inbound line on its own Task.Run (ArcanumInternalToolServer.cs),
+    // so line order does not imply handler order: this notification's task can reach
+    // HandleCancelledNotification before the matching tools/call's task reaches its own
+    // _inFlightToolCalls registration, even though the client always writes tools/call first. Before
+    // the fix that miss silently dropped the notification and the call ran to completion uncancelled.
+    [Fact]
+    public async Task NotificationsCancelled_arriving_before_registration_still_cancels_the_call()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        string sentinelPath = Path.Combine(_workspace.Root, "early-cancel-sentinel.txt");
+
+        (string command, string[] argumentList) = ResolveDelayedWriteCommand(sentinelPath);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "execute_command", Arguments = arguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        const int fixedId = 9191;
+
+        await session.SendCancelNotificationAsync(fixedId);
+
+        // Lets the notification's own dispatched line handling fully complete (recording its
+        // tombstone) before the tools/call for the same id is even written, the same handshake style
+        // Duplicate_in_flight_request_id_is_rejected_with_json_rpc_error already uses to let one
+        // dispatched line finish before the next is sent.
+        await Task.Delay(300);
+
+        await session.WriteRequestWithFixedIdAsync(fixedId, "tools/call", callParams);
+
+        JsonRpcResponse response = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(response.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.True(result.IsError);
+
+        Assert.Equal("Tool call was cancelled.", result.Content[0].Text);
+
+        // The tombstone is consulted before the handler ever dispatches, so the child that would
+        // have written this sentinel after its own delay never starts (stronger proof than "was
+        // killed": here it never ran at all).
+        Assert.False(
+            File.Exists(sentinelPath),
+            "execute_command ran despite a cancellation that arrived before the call registered.");
+
+    }
+
     [Fact]
     public async Task Duplicate_in_flight_request_id_is_rejected_with_json_rpc_error()
     {

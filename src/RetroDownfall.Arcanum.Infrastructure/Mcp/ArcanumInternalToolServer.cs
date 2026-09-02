@@ -140,6 +140,24 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _inFlightToolCalls = new(StringComparer.Ordinal);
 
+    private static readonly TimeSpan EarlyCancelTombstoneTtl = TimeSpan.FromSeconds(5);
+
+    private static readonly TimeSpan EarlyCancelTombstoneSweepInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Tombstones a <c>notifications/cancelled</c> that names a request id not yet in
+    /// <see cref="_inFlightToolCalls"/>, so the tools/call that is about to register under that id
+    /// can consult it instead of the cancellation being silently lost to the ordering race described
+    /// on <see cref="HandleCancelledNotification(JsonElement)"/>. The short TTL bounds how long a
+    /// tombstone can outlive the call it was actually meant for, so a late notification for an id that
+    /// already finished cannot poison that id's next reuse on this connection (request ids repeat over
+    /// a long-lived connection, per §10.14).
+    /// </summary>
+    private readonly ExpiringRequestBindingStore<bool> _earlyCancelTombstones = new(
+        EarlyCancelTombstoneTtl.Ticks,
+        EarlyCancelTombstoneSweepInterval.Ticks,
+        static () => DateTime.UtcNow.Ticks);
+
     private readonly int _maxJsonRpcLineBytes;
 
     private readonly string _executeCommandToolDescription;
@@ -719,8 +737,12 @@ internal sealed partial class ArcanumInternalToolServer
 
     /// <summary>
     /// Handles an inbound <c>notifications/cancelled</c> line: resolves <c>params.requestId</c> to the
-    /// matching in-flight <c>tools/call</c> and cancels its linked token. Malformed or unmatched
-    /// notifications are silently ignored (best-effort, matching the notification's fire-and-forget contract).
+    /// matching in-flight <c>tools/call</c> and cancels its linked token. A notification whose id is not
+    /// yet in-flight is not necessarily malformed or stale: the read loop dispatches every inbound line
+    /// on its own <c>Task.Run</c> (no ordering guarantee across worker threads), so this notification's
+    /// task can reach here before the matching tools/call's task has reached its own registration. That
+    /// case tombstones the id instead of dropping the notification, so the call about to register can
+    /// consult it (<see cref="BuildToolsCallResponseAsync"/>) rather than running to completion uncancelled.
     /// </summary>
     private void HandleCancelledNotification(JsonElement root)
     {
@@ -735,6 +757,8 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (!_inFlightToolCalls.TryGetValue(requestKey, out CancellationTokenSource? cts))
         {
+            _earlyCancelTombstones.Bind(_ambientConnectionKey, requestKey, true);
+
             return;
         }
 
@@ -1129,6 +1153,19 @@ internal sealed partial class ArcanumInternalToolServer
                     Data = null,
                 },
             };
+        }
+
+        if (_earlyCancelTombstones.TryResolve(_ambientConnectionKey, requestKey, out _))
+        {
+            // notifications/cancelled for this id reached HandleCancelledNotification before this
+            // call's own task reached the TryAdd above — the race the tombstone exists to close.
+            // Consuming it here (rather than leaving it for the TTL sweep) means a retry that reuses
+            // this id after the tombstone expires is never affected by it.
+            _earlyCancelTombstones.Unbind(_ambientConnectionKey, requestKey);
+
+            _inFlightToolCalls.TryRemove(requestKey, out _);
+
+            return BuildToolsCallResponse(rpcId, ToolError("Tool call was cancelled."));
         }
 
         Guid? previousAmbient = SessionAttachmentToolAmbient.CurrentSessionId;
