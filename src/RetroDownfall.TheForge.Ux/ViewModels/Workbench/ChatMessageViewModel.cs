@@ -17,6 +17,8 @@ public sealed partial class ChatMessageViewModel : ObservableObject
 
     private const int PublishChunkThreshold = 32;
 
+    private const long PublishIntervalMs = 75;
+
     private readonly int _maxContentChars;
 
     private readonly string _truncationMarker;
@@ -26,6 +28,8 @@ public sealed partial class ChatMessageViewModel : ObservableObject
     private string _content = string.Empty;
 
     private int _pendingContentChunks;
+
+    private long _lastPublishTicks = Environment.TickCount64;
 
     private bool _contentTruncated;
 
@@ -132,7 +136,7 @@ public sealed partial class ChatMessageViewModel : ObservableObject
         _pendingContentChunks++;
         if (_contentTruncated
             || _pendingContentChunks >= PublishChunkThreshold
-            || data.Contains('\n', StringComparison.Ordinal))
+            || Environment.TickCount64 - _lastPublishTicks >= PublishIntervalMs)
         {
             PublishPendingContent();
         }
@@ -147,6 +151,7 @@ public sealed partial class ChatMessageViewModel : ObservableObject
 
         Content = _contentBuilder!.ToString();
         _pendingContentChunks = 0;
+        _lastPublishTicks = Environment.TickCount64;
     }
 
     public void CompleteStreamingContent()
