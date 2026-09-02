@@ -957,6 +957,20 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             Result<GrimoireOfflineTransitionJournalPublication> next =
                 AuthenticateOneAhead(location, evidence.Working, anchor);
 
+            if (current.IsFailure && current.Error.Code == ErrorCodes.Covenant.Unavailable)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(current.Error);
+
+            }
+
+            if (next.IsFailure && next.Error.Code == ErrorCodes.Covenant.Unavailable)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(next.Error);
+
+            }
+
             if (current.IsSuccess && next.IsSuccess
                 && evidence.Previous is null && evidence.Retiring is null)
             {
@@ -983,6 +997,20 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             Result<GrimoireOfflineTransitionJournalPublication> predecessor =
                 AuthenticateEvidence(location, evidence.Working, anchor);
+
+            if (workingOneAhead.IsFailure && workingOneAhead.Error.Code == ErrorCodes.Covenant.Unavailable)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(workingOneAhead.Error);
+
+            }
+
+            if (predecessor.IsFailure && predecessor.Error.Code == ErrorCodes.Covenant.Unavailable)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(predecessor.Error);
+
+            }
 
             if (workingOneAhead.IsFailure || predecessor.IsFailure
                 || evidence.Previous is not null || evidence.Retiring is not null)
