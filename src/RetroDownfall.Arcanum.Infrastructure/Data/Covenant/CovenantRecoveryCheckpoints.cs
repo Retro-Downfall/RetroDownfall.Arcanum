@@ -159,6 +159,8 @@ public sealed record DataRetentionFactoryResetCheckpointV1(
 [JsonSerializable(typeof(CovenantFamilyReinitializeCheckpointV1))]
 [JsonSerializable(typeof(DataRetentionMutationCheckpointV3))]
 [JsonSerializable(typeof(DataRetentionFactoryResetCheckpointV1))]
+[JsonSerializable(typeof(CovenantOfflineTransitionLaunchV4))]
+[JsonSerializable(typeof(DataRetentionFactoryTransitionLaunchV2))]
 public sealed partial class CovenantRecoveryJsonContext : JsonSerializerContext
 {
 
@@ -185,7 +187,7 @@ public sealed partial class CovenantRecoveryJsonContext : JsonSerializerContext
 /// <para>Nothing here throws. Recovery runs before readiness, so an exception escaping the decoder
 /// would take down a host over a payload the correct answer to is "leave this operation alone".</para>
 /// </remarks>
-public static class CovenantRecoveryCheckpointCodec
+public static partial class CovenantRecoveryCheckpointCodec
 {
 
     public static byte[] Encode(CovenantIndexRebuildCheckpointV1 checkpoint) =>

@@ -26,6 +26,9 @@ public sealed class CovenantErasureDurableStateTests
         typeof(CovenantResetEffectArmV1),
         typeof(DataRetentionMutationCheckpointV3),
         typeof(DataRetentionFactoryResetCheckpointV1),
+        typeof(CovenantOfflineTransitionEpochsV1),
+        typeof(CovenantOfflineTransitionLaunchV4),
+        typeof(DataRetentionFactoryTransitionLaunchV2),
         typeof(LocalErasureWorkItemRow),
     ];
 

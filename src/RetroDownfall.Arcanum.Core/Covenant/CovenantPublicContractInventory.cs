@@ -334,6 +334,15 @@ public static class CovenantPublicContractInventory
 
         new(InfrastructureNamespace + "DataRetentionFactoryResetCheckpointV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
             "A healthy-catalog factory erasure's owner and the storage phase it reached."),
+
+        new(InfrastructureNamespace + "CovenantOfflineTransitionEpochsV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
+            "The three persisted epochs as one value, so a source and a target compare as wholes."),
+
+        new(InfrastructureNamespace + "CovenantOfflineTransitionLaunchV4", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
+            "What a Covenant offline transition was launched against, and the target state it preselected."),
+
+        new(InfrastructureNamespace + "DataRetentionFactoryTransitionLaunchV2", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
+            "The same immutable launch binding, filed under the factory erasure's own durable kind."),
     ];
 
 }
