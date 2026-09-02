@@ -1798,6 +1798,53 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // Sanctum's ResourceLimits.ProcessTimeoutSeconds is operator-settable, clamped, and persisted,
+    // but nothing under src/ used to read it: every model-directed child runner was handed
+    // Timeout.InfiniteTimeSpan, so a configured ceiling had no effect on a child blocked on a socket
+    // or an infinite loop that never touches the CPU-time rlimit. No cancellation is sent here — the
+    // configured process timeout alone must end the call well short of the child's own 10-second sleep.
+    [Fact]
+    public async Task ExecuteCommand_is_bounded_by_the_configured_process_timeout()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            resourceLimits: new ResourceLimits(ProcessTimeoutSeconds: 1));
+
+        (string command, string[] argumentList) = ResolveSleepCommand(seconds: 10);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "execute_command", Arguments = arguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        JsonRpcResponse? response = await session.SendRequestWithTimeoutAsync(
+            "tools/call",
+            callParams,
+            TimeSpan.FromSeconds(8));
+
+        Assert.True(
+            response is not null,
+            "execute_command returned no response within 8s for a 1-second configured process "
+            + "timeout; the child ran unbounded toward its own 10-second sleep.");
+
+        Assert.Null(response!.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.True(result.IsError);
+
+        Assert.Contains(
+            "deadline",
+            result.Content[0].Text,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
     [Fact]
     public async Task Duplicate_in_flight_request_id_leaves_the_first_calls_bindings_intact()
     {
@@ -3343,7 +3390,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         IA2AClientService? a2aClientService = null,
         CodingToolsSettings? codingToolsSettings = null,
         IWorkspaceCheckRuntime? workspaceCheckRuntime = null,
-        IGrimoireRepository? grimoireRepository = null)
+        IGrimoireRepository? grimoireRepository = null,
+        ResourceLimits? resourceLimits = null)
     {
 
         string? normalizedRoot = configureWorkspace
@@ -3361,7 +3409,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         services.AddSingleton<IMemoryScopeResolver>(new FakeMemoryScopeResolver());
 
-        services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
+        services.AddSingleton<ISanctumGuard>(new PermissiveSanctumGuard(resourceLimits ?? new ResourceLimits()));
 
         services.AddSingleton<RetroDownfall.Arcanum.Core.Platform.IProcessResourceLimiter, ProcessResourceLimiter>();
 
@@ -3589,6 +3637,20 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         }
 
         return ("/bin/sh", ["-c", $"sleep 5 && echo done > '{sentinelPath}'"]);
+
+    }
+
+    private static (string Command, string[] ArgumentList) ResolveSleepCommand(int seconds)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return ("powershell.exe", ["-NoProfile", "-Command", $"Start-Sleep -Seconds {seconds}"]);
+
+        }
+
+        return ("/bin/sh", ["-c", $"sleep {seconds}"]);
 
     }
 
@@ -4146,7 +4208,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 "A canceled receipt probe must not reach handoff.");
     }
 
-    private sealed class PermissiveSanctumGuard : ISanctumGuard
+    private sealed class PermissiveSanctumGuard(ResourceLimits resourceLimits) : ISanctumGuard
     {
 
         public Task<SanctumResult> ValidatePathAsync(
@@ -4168,7 +4230,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             Task.FromResult(new SanctumResult { Allowed = true });
 
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
-            Task.FromResult(new ResourceLimits());
+            Task.FromResult(resourceLimits);
 
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,

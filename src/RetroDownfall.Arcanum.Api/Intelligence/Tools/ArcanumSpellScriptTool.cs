@@ -312,11 +312,19 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             _allowUnsandboxedToolChildren,
             windowsPathBoundaryRequired: boundary?.PathBoundaryRequired == true);
 
+        // No Sanctum context (resourceLimits null) leaves resource-limit enforcement skipped for
+        // this invocation rather than applying an unconfigured default, so the wall-clock ceiling is
+        // skipped the same way; 0 is the documented "unlimited" spelling everywhere else in
+        // ResourceLimits.
+        TimeSpan processTimeout = resourceLimits is { ProcessTimeoutSeconds: > 0 } limits
+            ? TimeSpan.FromSeconds(limits.ProcessTimeoutSeconds)
+            : Timeout.InfiniteTimeSpan;
+
         CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
             _toolOutputCapBytes,
-            Timeout.InfiniteTimeSpan,
+            processTimeout,
             resourceLimits,
             _resourceLimiter,
             cancellationToken,
