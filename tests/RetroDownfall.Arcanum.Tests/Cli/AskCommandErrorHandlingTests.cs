@@ -79,6 +79,39 @@ public sealed class AskCommandErrorHandlingTests
 
     }
 
+    /// <summary>
+    /// W10-6 mutation-strength gap: the test above throws an <see cref="IOException"/>, which
+    /// <see cref="CliFailureMapper"/> classifies as <see cref="CliExitCode.GenericError"/> — the same
+    /// numeric value (1) the old hardcoded <c>return 1;</c> produced, so reverting to that literal
+    /// while still constructing a <c>SafeMessage</c> from somewhere would leave that test green. An
+    /// exception the mapper classifies to a <em>different</em> code closes that gap: this only passes
+    /// if the exit code actually comes from the mapper's classification.
+    /// </summary>
+    [Fact]
+    public void Ask_maps_a_network_exception_to_the_network_exit_code()
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+
+        services.AddSingleton<IEyeOfTheWorld>(
+            new ThrowingEyeWith(new HttpRequestException("Connection refused")));
+
+        CliTestResult result = CliTestHarness.Run(services, "run", "hello");
+
+        CliFailure expected = CliFailureMapper.Map(new HttpRequestException("Connection refused"));
+
+        Assert.Equal((int)expected.ExitCode, result.ExitCode);
+
+        Assert.Contains(expected.SafeMessage, result.Error, StringComparison.Ordinal);
+
+    }
+
     private sealed class ThrowingEye : IEyeOfTheWorld
     {
 
