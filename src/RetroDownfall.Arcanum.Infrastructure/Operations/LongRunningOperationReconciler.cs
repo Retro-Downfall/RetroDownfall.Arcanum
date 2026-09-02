@@ -281,14 +281,16 @@ public sealed class LongRunningOperationReconciler(
     {
         if (!handlersForOperation.TryGetValue(operation.Kind, out ILongRunningOperationRecoveryHandler? handler))
         {
-            if (operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.AbandonSafely)
-            {
-                return LongRunningOperationRecoveryResult.Abandoned();
-            }
-
             logger.LogWarning(
                 "No recovery handler is registered for durable operation kind {OperationKind}.",
                 operation.Kind);
+
+            if (operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.AbandonSafely)
+            {
+                return LongRunningOperationRecoveryResult.Abandoned(
+                    LongRunningOperationErrorCodes.RecoveryHandlerMissing);
+            }
+
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 LongRunningOperationErrorCodes.RecoveryHandlerMissing);
         }

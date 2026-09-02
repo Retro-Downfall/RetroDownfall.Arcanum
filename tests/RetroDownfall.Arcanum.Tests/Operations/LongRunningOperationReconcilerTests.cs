@@ -208,6 +208,32 @@ public sealed class LongRunningOperationReconcilerTests
     }
 
     /// <summary>
+    /// W5-3: BackupCreate is AbandonSafely, so a registration regression that drops its handler out of
+    /// a resolved scope must still be visible in the ledger. Before this fix the row closed as
+    /// Abandoned with a null TerminalErrorCode and no log line — indistinguishable from a successful
+    /// recovery; the non-AbandonSafely arm two lines below already names the same condition.
+    /// </summary>
+    [Fact]
+    public async Task AbandonSafely_kind_with_no_handler_is_abandoned_with_a_named_error_code()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        LongRunningOperation seeded = store.Seed(
+            LongRunningOperationKinds.BackupCreate,
+            LongRunningOperationRecoveryPolicy.AbandonSafely);
+
+        LongRunningOperationReconciler reconciler = CreateReconciler(store, time);
+        _ = await reconciler.ReconcileNowAsync("test-owner");
+
+        LongRunningOperation recovered = Assert.Single(
+            store.Operations,
+            operation => operation.Id == seeded.Id);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, recovered.State);
+        Assert.Equal(LongRunningOperationErrorCodes.RecoveryHandlerMissing, recovered.TerminalErrorCode);
+    }
+
+    /// <summary>
     /// Acceptance: repeated reconciliation must not repeat external work. A terminal operation is
     /// no longer expired, so a second pass must not reach the handler again.
     /// </summary>
