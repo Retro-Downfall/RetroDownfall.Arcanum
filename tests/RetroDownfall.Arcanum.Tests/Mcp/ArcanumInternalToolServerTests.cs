@@ -3299,6 +3299,86 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // Round 3: a refused out-of-scope descent must say so in the response, not vanish silently. Forcing
+    // ReservedOverheadBytesForTests absurdly high makes the very first out-of-scope TryRecord call
+    // refuse, on a fixture that otherwise fits in one page (no continuation at all) -- exactly the shape
+    // the reviewer measured as "IsError false, one page, no continuation marker, no truncation text,
+    // indistinguishable from a complete listing".
+    [Fact]
+    public async Task ToolsCall_list_directory_reports_a_truncation_marker_when_the_out_of_scope_budget_refuses_a_descent()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string targetDirectory = _workspace.CreateSubdir("dirX");
+
+        _workspace.WriteFile("dirX/f.txt", "x");
+
+        string scopeDirectory = _workspace.CreateSubdir("scope");
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(scopeDirectory, "scopelink0"),
+            targetDirectory);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        session.Server.ReservedOverheadBytesForTests = 100_000_000;
+
+        try
+        {
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams { RelativePath = "scope", Recursive = true },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            // The alias itself is still shown -- only its content is missing.
+            Assert.Contains(
+                "scope/scopelink0",
+                text.Split('\n'),
+                StringComparer.Ordinal);
+
+            Assert.DoesNotContain(
+                "scope/scopelink0/f.txt",
+                text,
+                StringComparison.Ordinal);
+
+            // The exact scenario the reviewer measured: everything fit in one page, so there is no
+            // continuation to hang an incompleteness signal off of -- the truncation marker is the only
+            // thing that can say so.
+            Assert.DoesNotContain(
+                "[MORE:",
+                text,
+                StringComparison.Ordinal);
+
+            Assert.Contains(
+                "[TRUNCATED: scope/scopelink0 was not listed because its contents did not fit the continuation token's byte budget.]",
+                text,
+                StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            session.Server.ReservedOverheadBytesForTests = 4_096;
+
+        }
+
+    }
+
     [Fact]
     public async Task ToolsCall_list_directory_rejects_file_path()
     {

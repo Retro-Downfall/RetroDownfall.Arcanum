@@ -23,6 +23,14 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     internal Action<string>? ListDirectoryEntryValidationObserverForTests { get; set; }
 
+    // The production default (4,096) headroom OutOfScopeDescentTracker reserves for the fingerprint
+    // and the page's eventual lastPath -- see the type's own remarks. A non-nullable settable with the
+    // production value already assigned, not a nullable override requiring a null-coalesce at every
+    // read site: tests lower it to force TryRecord's budget refusal deterministically, then restore it
+    // in a finally block. Instance-scoped, matching every other test seam on this class -- a fresh
+    // ArcanumInternalToolServer per test session means no cross-test leakage even without that finally.
+    internal int ReservedOverheadBytesForTests { get; set; } = 4_096;
+
     private async Task<McpToolsCallResultWire> ExecuteReadFileChunkAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
@@ -724,6 +732,22 @@ internal sealed partial class ArcanumInternalToolServer
                 outOfScopeSnapshot = outOfScopeTracker.ToRelativePaths().ToArray();
             }
 
+            // Live tracker state, not the last-kept-entry snapshot used for the continuation token above:
+            // a refusal never persists across pages (nothing about it is encoded), so when this page is
+            // the last one (hasMore false) there is no later page left to report it instead -- using the
+            // snapshot here would silently drop the report for whichever refusal the pagination lookahead
+            // itself triggered, exactly the silent-loss shape this marker exists to prevent. The one cost
+            // is a boundary alias refused by the lookahead getting reported on both this page and the
+            // next (which re-attempts the same descent fresh) -- an over-report, the safe direction,
+            // never a false claim of completeness.
+            foreach (string refused in outOfScopeTracker.RefusedEntryRelativePaths)
+            {
+
+                lines.Add(
+                    $"... [TRUNCATED: {refused} was not listed because its contents did not fit the continuation token's byte budget.]");
+
+            }
+
             if (hasMore)
             {
 
@@ -944,16 +968,19 @@ internal sealed partial class ArcanumInternalToolServer
     private sealed class OutOfScopeDescentTracker
     {
 
-        // Generous, fixed headroom for the fingerprint (32 hex characters) and the page's eventual
-        // lastPath -- neither known precisely at the point an in-progress page decides whether to
-        // descend into one more out-of-scope alias, but each individually small relative to a
-        // realistic _maxJsonRpcLineBytes. TryDecodeListDirectoryContinuation's own byte-budget check is
-        // the exact, final backstop if this estimate is ever optimistic.
-        private const int ReservedOverheadBytes = 4_096;
-
         private readonly string _workspaceRoot;
 
         private readonly int _maxTokenBytes;
+
+        // Headroom for the fingerprint (32 hex characters) and the page's eventual lastPath -- neither
+        // known precisely at the point an in-progress page decides whether to descend into one more
+        // out-of-scope alias, but each individually small relative to a realistic _maxJsonRpcLineBytes.
+        // TryDecodeListDirectoryContinuation's own byte-budget check is the exact, final backstop if
+        // this estimate is ever optimistic. Constructor-supplied rather than a fixed const so tests can
+        // force TryRecord's refusal deterministically (ArcanumInternalToolServer.
+        // ReservedOverheadBytesForTests) without needing a fixture large enough to hit the real,
+        // production-sized bound.
+        private readonly int _reservedOverheadBytes;
 
         private long _reservedEntryBytes;
 
@@ -961,12 +988,15 @@ internal sealed partial class ArcanumInternalToolServer
             IReadOnlyList<string> decodedRelativePaths,
             string workspaceRoot,
             StringComparer comparer,
-            int maxTokenBytes)
+            int maxTokenBytes,
+            int reservedOverheadBytes)
         {
 
             _workspaceRoot = workspaceRoot;
 
             _maxTokenBytes = maxTokenBytes;
+
+            _reservedOverheadBytes = reservedOverheadBytes;
 
             CanonicalDirectories = new HashSet<string>(comparer);
 
@@ -989,6 +1019,14 @@ internal sealed partial class ArcanumInternalToolServer
 
         public HashSet<string> CanonicalDirectories { get; }
 
+        // The alias path (as shown in the listing, e.g. "scope/scopelink0") for every out-of-scope
+        // descent TryRecord refused, one entry per refusal -- including more than one entry for the
+        // same underlying target when two different aliases to it were each refused in turn, since each
+        // is a separate line the reader sees and each individually needs its own "not listed" marker.
+        // Not deduplicated and not budget-checked itself (see ListDirectoryCore, which emits these): a
+        // refusal is already the failure case, not something more budget accounting should gate further.
+        public List<string> RefusedEntryRelativePaths { get; } = [];
+
         public IEnumerable<string> ToRelativePaths() =>
             CanonicalDirectories.Select(canonical =>
                 Path.GetRelativePath(_workspaceRoot, canonical)
@@ -996,10 +1034,13 @@ internal sealed partial class ArcanumInternalToolServer
 
         /// <summary>
         /// Records <paramref name="canonicalTarget"/> as descended, or reports that doing so safely is
-        /// no longer possible within this token's byte budget. The caller must not descend when this
-        /// returns <see langword="false"/> -- see the type-level remarks.
+        /// no longer possible within this token's byte budget -- in which case <paramref
+        /// name="aliasAbsolutePath"/> (the alias entry the walk was about to descend through, not the
+        /// target itself, which never appears in the listing under its own name when out of scope) is
+        /// recorded into <see cref="RefusedEntryRelativePaths"/> for the caller to report. The caller
+        /// must not descend when this returns <see langword="false"/> -- see the type-level remarks.
         /// </summary>
-        public bool TryRecord(string canonicalTarget)
+        public bool TryRecord(string canonicalTarget, string aliasAbsolutePath)
         {
 
             if (CanonicalDirectories.Contains(canonicalTarget))
@@ -1014,11 +1055,16 @@ internal sealed partial class ArcanumInternalToolServer
 
             long candidateBytes = Encoding.UTF8.GetByteCount(relative) + 1;
 
-            long projectedTokenBytes = ReservedOverheadBytes
+            long projectedTokenBytes = _reservedOverheadBytes
                 + (((_reservedEntryBytes + candidateBytes) * 4) / 3);
 
             if (projectedTokenBytes > _maxTokenBytes)
             {
+
+                string aliasRelative = Path.GetRelativePath(_workspaceRoot, aliasAbsolutePath)
+                    .Replace(Path.DirectorySeparatorChar, '/');
+
+                RefusedEntryRelativePaths.Add(aliasRelative);
 
                 return false;
 
@@ -1052,7 +1098,8 @@ internal sealed partial class ArcanumInternalToolServer
             decodedOutOfScopeDescendedRelativePaths,
             _workspaceRoot!,
             pathComparer,
-            _maxJsonRpcLineBytes);
+            _maxJsonRpcLineBytes,
+            ReservedOverheadBytesForTests);
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
                 _workspaceRoot!,
@@ -1298,7 +1345,7 @@ internal sealed partial class ArcanumInternalToolServer
                 // encountered for the first time from a seek rather than a forward push.
                 if (ancestorIsAlias
                     && !ancestorIsInScope
-                    && !outOfScopeTracker.TryRecord(canonicalAncestor))
+                    && !outOfScopeTracker.TryRecord(canonicalAncestor, matchedEntry))
                 {
 
                     return false;
@@ -1348,7 +1395,7 @@ internal sealed partial class ArcanumInternalToolServer
                     // out-of-scope descent is (W6-4 round 2).
                     bool canRecord = !checkpointIsAlias
                         || checkpointIsInScope
-                        || outOfScopeTracker.TryRecord(canonicalCheckpoint);
+                        || outOfScopeTracker.TryRecord(canonicalCheckpoint, matchedEntry);
 
                     if (!refuse
                         && canRecord
@@ -1450,7 +1497,7 @@ internal sealed partial class ArcanumInternalToolServer
                 // shown instead of re-descending into it through a different alias.
                 bool canRecord = !isAlias
                     || isInScope
-                    || outOfScopeTracker.TryRecord(canonicalDirectory);
+                    || outOfScopeTracker.TryRecord(canonicalDirectory, entry);
 
                 if (!refuse
                     && canRecord
