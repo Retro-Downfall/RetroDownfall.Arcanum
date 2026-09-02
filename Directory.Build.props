@@ -12,6 +12,20 @@
 
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
+    <!-- This also reaches NuGet's own audit-at-restore step, not only the compiler. NuGetAuditMode
+         defaults to "all" (direct and transitive dependencies, not only what this repository
+         references directly) for a net10.0+ TargetFramework, so a new advisory against any
+         package already in the restore graph, something no commit here controls since the
+         advisory feed changes independently of this repository, now fails restore everywhere
+         instead of only warning: NU1901 (low), NU1902 (moderate), NU1903 (high), NU1904
+         (critical). That is deliberate: fail closed on a dependency advisory is the posture this
+         hardening pass wants, not a quiet merge past it. When one fires, bump the flagged package
+         past the advisory; if no fixed version exists yet, add a scoped
+         NuGetAuditSuppress Include="https://github.com/advisories/GHSA-..." naming the specific
+         advisory with a comment saying why it is accepted for now, not
+         WarningsNotAsErrors covering NU1901 through NU1904, which would widen the exemption to
+         every future advisory rather than the one being triaged. -->
+
     <!-- Both default to $(TreatWarningsAsErrors) when unset (Microsoft.NETCore.Native.targets,
          Microsoft.NET.ILLink.targets), so the line above would otherwise also hand ILC its
          warnaserror flag and the trimmer TreatWarningsAsErrors during a Native AOT publish.
