@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -175,7 +176,39 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
     }
 
+    /// <summary>
+    /// Wraps the exclusive acquisition in <see cref="SqliteBusyRetry"/> (W3a-4), the same bounded
+    /// backoff <see cref="CovenantDisclosureJournal"/> already gives its own <c>BEGIN IMMEDIATE</c>.
+    /// A drain proves every handle this process knows about has closed, but that is not the same
+    /// proof as an uncontested lock - a pooled Microsoft.Data.Sqlite handle or a lingering -wal/-shm
+    /// holder can still make the acquisition itself return SQLITE_BUSY once, and retrying it is the
+    /// difference between that racing handle finishing its own close and a hard refusal on the first
+    /// attempt.
+    /// </summary>
     private async Task<Result<Guid>> ApplyOnConnectionAsync(
+        SqliteConnection connection,
+        CovenantExclusiveOperation operation,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            return await SqliteBusyRetry.ExecuteAsync(
+                () => ApplyWithinTransactionAsync(connection, operation, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (GrimoireBusyTimeoutException timedOut)
+        {
+
+            return Failure(timedOut, "erase the Covenant canonical family");
+
+        }
+
+    }
+
+    private async Task<Result<Guid>> ApplyWithinTransactionAsync(
         SqliteConnection connection,
         CovenantExclusiveOperation operation,
         CancellationToken cancellationToken)
@@ -214,7 +247,10 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             return erased;
 
         }
-        catch (SqliteException failed)
+        // SQLITE_BUSY/LOCKED propagates to SqliteBusyRetry.ExecuteAsync in ApplyOnConnectionAsync
+        // above rather than becoming a terminal Failure here - that is the whole point of wrapping
+        // the acquisition in it.
+        catch (SqliteException failed) when (failed.SqliteErrorCode is not (5 or 6))
         {
 
             return Failure(failed, "erase the Covenant canonical family");
@@ -687,5 +723,12 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             new Error(
                 ErrorCodes.Covenant.MaintenanceFailed,
                 $"A Covenant erasure could not {step}: {failed.Message}"));
+
+    private static Result<Guid> Failure(GrimoireBusyTimeoutException timedOut, string step) =>
+        Result<Guid>.Failure(
+            new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                $"A Covenant erasure could not {step}: another handle held the database for "
+                + $"{timedOut.Attempts} attempt(s) over {timedOut.Deadline}."));
 
 }
