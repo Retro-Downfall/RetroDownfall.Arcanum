@@ -2246,7 +2246,7 @@ public sealed class CovenantErasureSameProcessTests
 
                     _ = paused.TrySetResult(true);
 
-                    await release.Task;
+                    await release.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
                     return await context.BeginTurnAsync(
                         invocation,

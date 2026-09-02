@@ -110,7 +110,7 @@ public class HearthViewModelTests
             {
                 runStarted.SetResult();
 
-                await allowFinish.Task;
+                await allowFinish.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
                 return TerminalCommandResult.Completed(0);
             },
@@ -123,7 +123,7 @@ public class HearthViewModelTests
 
         Task runTask = viewModel.RunCommand.ExecuteAsync(null)!;
 
-        await runStarted.Task;
+        await runStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.True(viewModel.IsRunning);
 
@@ -428,7 +428,7 @@ public class HearthViewModelTests
 
         Task runTask = viewModel.RunCommand.ExecuteAsync(null)!;
 
-        await runStarted.Task;
+        await runStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         viewModel.Dispose();
 

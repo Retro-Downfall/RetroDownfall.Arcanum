@@ -236,7 +236,7 @@ public sealed class CovenantConnectionDrainTests
 
         firstClosing.AllowCloseReturn();
 
-        await secondClosing.Entered;
+        await secondClosing.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
         secondClosing.AllowPhysicalClose();
 
@@ -460,7 +460,7 @@ public sealed class CovenantConnectionDrainTests
 
         // The drain has read the first handle back and moved on, so the reopen below is a reopen
         // rather than a close that never landed.
-        await holding.Entered;
+        await holding.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(ConnectionState.Closed, reopened.State);
 
@@ -712,7 +712,7 @@ public sealed class CovenantConnectionDrainTests
 
             _ = _entered.TrySetResult();
 
-            await _released.Task;
+            await _released.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             await base.CloseAsync();
 
@@ -749,13 +749,13 @@ public sealed class CovenantConnectionDrainTests
 
             _entered.TrySetResult();
 
-            await _allowPhysicalClose.Task;
+            await _allowPhysicalClose.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             await base.CloseAsync();
 
             _physicallyClosed.TrySetResult();
 
-            await _allowCloseReturn.Task;
+            await _allowCloseReturn.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         }
 

@@ -698,18 +698,25 @@ public sealed class CovenantResetCheckpointInitiatorTests
                     requestedOperationId: null,
                     CancellationToken.None));
 
-        await digests.Entered;
+        await digests.Entered.WaitAsync(TimeSpan.FromSeconds(5));
 
         Task<Result<CovenantExclusiveLease>> replacement = gate.AcquireExclusiveAsync(
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
                 CancellationToken.None)
             .AsTask();
 
-        Assert.False(replacement.IsCompleted);
+        try
+        {
 
-        Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
+            Assert.False(replacement.IsCompleted);
 
-        digests.Release();
+            Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
+
+        }
+        finally
+        {
+            digests.Release();
+        }
 
         Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await preparing;
 
@@ -912,6 +919,8 @@ public sealed class CovenantResetCheckpointInitiatorTests
     private sealed class BlockingDigestCalculator : ICovenantErasureEffectDigestCalculator, IDisposable
     {
 
+        private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(30);
+
         private readonly TaskCompletionSource<bool> _entered =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -928,13 +937,23 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
             _ = _entered.TrySetResult(true);
 
-            _release.Wait();
+            // The production caller parks here while it holds its lock. A test that fails before it calls
+            // Release() disposes its harness under that same lock, so an unbounded wait would hang the
+            // whole run; the bound turns that into a red test instead.
+            _release.Wait(ReleaseTimeout);
 
             return _inner.Compute(input);
 
         }
 
-        public void Dispose() => _release.Dispose();
+        public void Dispose()
+        {
+
+            _release.Set();
+
+            _release.Dispose();
+
+        }
 
     }
 

@@ -754,6 +754,10 @@ public sealed class CovenantEnvelopeMasterKeyProviderTests
         CovenantEnvelopeKeyAccessStep blockedStep) : ICovenantEnvelopeKeyAccessCheckpoint, IDisposable
     {
 
+        private static readonly TimeSpan ReachedTimeout = TimeSpan.FromSeconds(5);
+
+        private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(30);
+
         private readonly ManualResetEventSlim _reached = new();
 
         private readonly ManualResetEventSlim _release = new();
@@ -768,16 +772,33 @@ public sealed class CovenantEnvelopeMasterKeyProviderTests
 
             _reached.Set();
 
-            _release.Wait();
+            // The production caller parks here while it holds its lock. A test that fails before it calls
+            // Release() disposes its harness under that same lock, so an unbounded wait would hang the
+            // whole run; the bound turns that into a red test instead.
+            _release.Wait(ReleaseTimeout);
 
         }
 
-        public void WaitUntilReached() => Assert.True(_reached.Wait(TimeSpan.FromSeconds(5)));
+        public void WaitUntilReached()
+        {
+
+            bool reached = _reached.Wait(ReachedTimeout);
+
+            if (!reached)
+            {
+                _release.Set();
+            }
+
+            Assert.True(reached, $"The key access did not reach {blockedStep} within {ReachedTimeout.TotalSeconds:0} seconds.");
+
+        }
 
         public void Release() => _release.Set();
 
         public void Dispose()
         {
+
+            _release.Set();
 
             _reached.Dispose();
 

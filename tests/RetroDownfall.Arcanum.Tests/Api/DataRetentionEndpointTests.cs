@@ -2094,7 +2094,7 @@ public sealed class DataRetentionEndpointTests
             if (blockDisposal)
             {
 
-                await _disposalReleased.Task;
+                await _disposalReleased.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             }
 

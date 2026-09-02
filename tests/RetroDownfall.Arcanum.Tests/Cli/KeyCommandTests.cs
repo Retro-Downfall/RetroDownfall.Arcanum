@@ -495,7 +495,7 @@ public sealed class KeyCommandTests
 
                 writeEntered.TrySetResult();
 
-                await releaseWrite.Task;
+                await releaseWrite.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             },
 

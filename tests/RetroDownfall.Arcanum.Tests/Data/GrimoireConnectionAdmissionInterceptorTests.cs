@@ -247,7 +247,7 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         Task opening = context.Database.OpenConnectionAsync();
 
-        await initializer.Entered;
+        await initializer.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
         await using IGrimoireClosingOwner closing = Begin(gate, 20);
 
@@ -331,7 +331,7 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
                 ? context.Database.OpenConnectionAsync()
                 : Task.Run(context.Database.OpenConnection);
 
-            await initializer.Entered;
+            await initializer.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
             await using IGrimoireClosingOwner closing = Begin(gate, 21);
 
@@ -511,7 +511,7 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
                 ? context.Database.OpenConnectionAsync()
                 : Task.Run(context.Database.OpenConnection);
 
-            await initializer.Entered;
+            await initializer.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
             Assert.True(new SqliteConnectionStringBuilder(connectionString).Pooling);
 
@@ -1480,7 +1480,7 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
             _entered.TrySetResult();
 
-            await _terminated.Task;
+            await _terminated.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         }
 

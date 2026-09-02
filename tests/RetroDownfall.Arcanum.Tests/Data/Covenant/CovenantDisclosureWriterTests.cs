@@ -128,7 +128,7 @@ public sealed class CovenantDisclosureWriterTests
 
         Task<Result<CovenantDisclosureReceipt>> inFlight = harness.AcknowledgeAsync(1);
 
-        await transaction.Entered;
+        await transaction.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
         SqliteConnection warm = Assert.Single(harness.FreshConnections.Opened);
 
@@ -190,7 +190,7 @@ public sealed class CovenantDisclosureWriterTests
 
         Task<Result<CovenantDisclosureReceipt>> inFlight = harness.AcknowledgeAsync(1);
 
-        await transaction.Entered;
+        await transaction.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
         SqliteConnection oldWarm = Assert.Single(harness.FreshConnections.Opened);
 
@@ -314,7 +314,7 @@ public sealed class CovenantDisclosureWriterTests
 
         Task<Result<CovenantDisclosureReceipt>> inFlight = harness.AcknowledgeAsync(1);
 
-        await transaction.Entered;
+        await transaction.Entered.WaitAsync(TimeSpan.FromSeconds(30));
 
         SqliteConnection warm = Assert.Single(harness.FreshConnections.Opened);
 

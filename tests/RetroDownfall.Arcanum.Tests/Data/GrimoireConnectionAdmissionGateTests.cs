@@ -305,7 +305,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
             nativeOpenEntered,
             allowNativeFailure);
 
-        await nativeOpenEntered.Task;
+        await nativeOpenEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         await using IGrimoireClosingOwner closing = Begin(gate, Owner(2));
 
@@ -692,7 +692,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
             refusalObserved,
             physicalCloseCompleted);
 
-        await nativeOpenEntered.Task;
+        await nativeOpenEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         await using IGrimoireClosingOwner closing = Begin(gate, Owner(3));
 
@@ -702,7 +702,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         allowNativeCompletion.TrySetResult();
 
-        await refusalObserved.Task;
+        await refusalObserved.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.False(close.IsCompleted);
 
@@ -1131,7 +1131,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Task scopeDisposal = scope.DisposeAsync().AsTask();
 
-        await databaseHolderDisposed.Task;
+        await databaseHolderDisposed.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.False(drain.IsCompleted);
 
@@ -3179,7 +3179,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
             databaseHolderDisposed.TrySetResult();
 
-            await allowScopeDisposal.Task;
+            await allowScopeDisposal.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             await inner.DisposeAsync();
 
@@ -3195,7 +3195,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         nativeOpenEntered.TrySetResult();
 
-        await allowNativeFailure.Task;
+        await allowNativeFailure.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         ticket.MarkFailed();
 
@@ -3211,7 +3211,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         nativeOpenEntered.TrySetResult();
 
-        await allowNativeCompletion.Task;
+        await allowNativeCompletion.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         Result admitted = ticket.RevalidateAfterNativeOpen();
 
@@ -3219,7 +3219,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         refusalObserved.TrySetResult();
 
-        await physicalCloseCompleted.Task;
+        await physicalCloseCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         ticket.MarkRefusedAfterOpen();
 

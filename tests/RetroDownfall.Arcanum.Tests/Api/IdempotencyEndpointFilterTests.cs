@@ -1672,7 +1672,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 {
 
                     handlerEntered.SetResult();
-                    await releaseHandler.Task;
+                    await releaseHandler.Task.WaitAsync(TimeSpan.FromSeconds(30));
                     await invocationContext.HttpContext.Response.WriteAsync(
                         """{"continued":true}""",
                         CancellationToken.None);
