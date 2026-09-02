@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
@@ -45,6 +46,27 @@ public sealed class SpellCommandTests
         Assert.Equal("/api/spells", request.RequestUri!.AbsolutePath);
 
         Assert.Contains("workspace=", request.RequestUri!.Query, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// W10-3: every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
+    /// server-down failure was indistinguishable from a real domain failure. Routed through
+    /// <c>CliFailureExit</c>, a <c>Connection.*</c> failure now exits 3 and names the address tried.
+    /// </summary>
+    [Fact]
+    public void Spell_list_reports_a_network_failure_and_names_the_configured_base_address()
+    {
+
+        RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
+
+        CliTestResult result = RunCommand(handler, ["spell", "list"]);
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings());
+
+        Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
 
     }
 

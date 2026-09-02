@@ -1,9 +1,11 @@
 using System.Buffers;
 using System.Globalization;
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
@@ -18,8 +20,13 @@ public sealed class LoreCommands(
     IThemePalette themePalette,
     IConsoleDispatcher console,
     ICliInvocationContext invocationContext,
-    IConfirmationPrompt confirmationPrompt)
+    IConfirmationPrompt confirmationPrompt,
+    IOptions<ArcanumSettings> settings)
 {
+
+    private void WriteError(Error error) =>
+        CliErrorOutput.WriteMarkupLine(
+            themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
 
     private const int SnippetMaxLength = 50;
 
@@ -32,9 +39,9 @@ public sealed class LoreCommands(
 
         if (result.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         Table table = new();
@@ -74,9 +81,9 @@ public sealed class LoreCommands(
         if (result.IsFailure)
         {
 
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -150,9 +157,9 @@ public sealed class LoreCommands(
         if (result.IsFailure)
         {
 
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
@@ -186,9 +193,9 @@ public sealed class LoreCommands(
         if (result.IsFailure)
         {
 
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            WriteError(result.Error);
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
 
         }
 
