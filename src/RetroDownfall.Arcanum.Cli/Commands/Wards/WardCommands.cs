@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -143,7 +144,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("Exactly one of --allow or --deny is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         Result<WardResolutionDto> result = await apiClient

@@ -53,6 +53,40 @@ public sealed class CampaignCommandTests
 
     }
 
+    [Fact]
+    public void Campaign_list_rejects_an_undocumented_type_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["campaign", "list", "--type", "bogus"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--type", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Campaign_create_rejects_an_undocumented_type_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["campaign", "create", "--name", "Demo", "--path", "/tmp/demo", "--type", "bogus"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--type", result.Error, StringComparison.Ordinal);
+
+    }
+
     /// <summary>
     /// W10-3: every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
     /// server-down failure was indistinguishable from a real domain failure. Routed through

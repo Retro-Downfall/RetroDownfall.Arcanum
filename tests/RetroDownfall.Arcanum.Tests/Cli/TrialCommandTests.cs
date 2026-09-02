@@ -71,7 +71,7 @@ public sealed class TrialCommandTests
 
         CliTestResult result = RunCommand(handler, ["trial", "run", "--target", "bogus", "--target-value", "x"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -47,14 +48,14 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("--target must be one of: spell, prompt, apprenticeGoal.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (string.IsNullOrWhiteSpace(targetValue))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--target-value is required.")));
 
-            return 1;
+            return (int)CliExitCode.ConfigurationError;
         }
 
         List<Inquisitor> inquisitors = new();
@@ -86,7 +87,7 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Inquisitor JSON parsed to null.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
             inquisitors.Add(parsedInquisitor);

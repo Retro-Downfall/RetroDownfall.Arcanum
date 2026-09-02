@@ -473,6 +473,25 @@ public sealed class WebWorkflowCommandTests
 
     }
 
+    [Fact]
+
+    public void Research_rejects_an_undocumented_format_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["research", "What changed?", "--format", "bogus"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--format", result.Error, StringComparison.Ordinal);
+
+    }
+
     private static HttpResponseMessage JsonResponse(
         string json,
         HttpStatusCode status = HttpStatusCode.OK) =>

@@ -423,7 +423,7 @@ public sealed class SpellCommands(
                 CliErrorOutput.WriteMarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape("--source must be one of: builtin, workspace, campaign.")));
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
             }
 
         }

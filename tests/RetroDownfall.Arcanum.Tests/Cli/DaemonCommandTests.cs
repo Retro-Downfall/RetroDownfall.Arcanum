@@ -42,7 +42,7 @@ public sealed class DaemonCommandTests
             handler,
             ["daemon", "alert", "disk full", "--severity", severity]);
 
-        Assert.NotEqual(0, result.ExitCode);
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
 

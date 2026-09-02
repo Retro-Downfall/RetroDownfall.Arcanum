@@ -62,7 +62,7 @@ public sealed class WatchCommands(
 
                 dispatcher.WriteDiagnostic("--since must be a valid Session Entry GUID.");
 
-                return 1;
+                return (int)CliExitCode.ConfigurationError;
 
             }
 
