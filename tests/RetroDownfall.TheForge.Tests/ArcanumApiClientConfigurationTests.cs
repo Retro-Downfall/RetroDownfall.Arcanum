@@ -73,18 +73,37 @@ public sealed class ArcanumApiClientConfigurationTests
     }
 
     [Fact]
-    public async Task GetSseAsync_empty_base_url_yields_nothing_instead_of_throwing()
+    public async Task GetSseAsync_empty_base_url_throws_instead_of_yielding_nothing()
     {
         ArcanumApiClient client = CreateClient(baseUrl: string.Empty);
 
-        List<SseEvent> events = [];
-
-        await foreach (SseEvent sseEvent in client.GetSseAsync("/api/sessions/stream", CancellationToken.None))
+        async Task DrainAsync()
         {
-            events.Add(sseEvent);
+            await foreach (SseEvent sseEvent in client.GetSseAsync("/api/sessions/stream", CancellationToken.None))
+            {
+                _ = sseEvent;
+            }
         }
 
-        Assert.Empty(events);
+        // Same class of silent failure as a non-2xx response (W11-2): a malformed BaseUrl must not
+        // read as "stream completed with zero frames".
+        await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
+    }
+
+    [Fact]
+    public async Task GetSseAsync_missing_api_key_throws_instead_of_yielding_nothing()
+    {
+        ArcanumApiClient client = CreateClient(apiKey: string.Empty);
+
+        async Task DrainAsync()
+        {
+            await foreach (SseEvent sseEvent in client.GetSseAsync("/api/sessions/stream", CancellationToken.None))
+            {
+                _ = sseEvent;
+            }
+        }
+
+        await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
     }
 
     [Fact]
