@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 public static class PingRequestBoundsValidator
 {
 
-    public static Result Validate(PingRequest request, ArcanumSettings settings)
+    public static Result Validate(PingRequest request)
     {
 
         IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
@@ -153,7 +153,7 @@ public static class PingRequestBoundsValidator
     private static long Utf8Bytes(string? value) =>
         string.IsNullOrEmpty(value) ? 0L : Encoding.UTF8.GetByteCount(value);
 
-    public static Result ValidateOpenApiMessageCount(int messageCount, ArcanumSettings settings)
+    public static Result ValidateOpenApiMessageCount(int messageCount)
     {
 
         IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
