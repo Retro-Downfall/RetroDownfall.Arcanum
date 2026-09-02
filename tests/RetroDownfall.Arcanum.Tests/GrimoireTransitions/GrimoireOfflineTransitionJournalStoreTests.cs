@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using System.Text;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -121,6 +123,99 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
                 "anchor:advance-readback",
             ],
             events);
+
+    }
+
+    [Fact]
+    public async Task Begin_propagates_an_unavailable_key_during_publication_reauthentication()
+    {
+
+        SeedIdentity(Installation);
+
+        // A fresh profile's key account sees five matching reads before AuthenticatePublishedAsync's
+        // own Open call: IsPresent's genesis guard (1), CreateOrOpen's existing-check and
+        // post-write readback (2, 3), Seal's own OpenExisting (4), and finally
+        // AuthenticatePublishedAsync's Open (5) -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnFifthRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 5);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnFifthRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            1,
+            Bytes("first"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Begin_propagates_a_post_genesis_anchor_reread_failure()
+    {
+
+        SeedIdentity(Installation);
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        ArmedPrefixThrowingCredentialStore anchorCredentials = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccountPrefix);
+
+        GrimoireOfflineTransitionJournalAnchorStore anchors = new(
+            anchorCredentials,
+            afterStep: step =>
+            {
+
+                if (step == "anchor:genesis-readback")
+                {
+
+                    anchorCredentials.Arm();
+
+                }
+
+            });
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            anchors);
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            1,
+            Bytes("first"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+        GrimoireOfflineTransitionAnchorV1 genesis = Assert.IsType<
+            GrimoireOfflineTransitionAnchorV1>(
+            Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(location)));
+
+        Assert.Equal(GrimoireOfflineTransitionAnchorState.Closed, genesis.State);
+
+        Assert.Equal(0UL, genesis.SlotEpoch);
+
+        Assert.False(File.Exists(location.JournalPath));
 
     }
 
@@ -414,6 +509,97 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Advance_propagates_an_anchor_read_failure_instead_of_a_revision_conflict()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(setup);
+
+        PrefixThrowingCredentialStore anchorUnavailable = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccountPrefix);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(anchorUnavailable));
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Advance_propagates_an_unavailable_key_during_payload_verification()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(setup);
+
+        PrefixThrowingCredentialStore keyUnavailable = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailable,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Advance_propagates_an_unavailable_key_during_publication_reauthentication()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(setup);
+
+        // AdvanceAsync's own key reads before AuthenticatePublishedAsync's Open call: the
+        // payload-verification Open (1) and Seal's own OpenExisting (2) both succeed here; the
+        // third matching read is AuthenticatePublishedAsync's -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnThirdRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 3);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnThirdRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+    }
+
+    [Fact]
     public async Task Advance_requires_external_installation_identity_to_still_match()
     {
 
@@ -660,6 +846,55 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
         Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal, recovered.Outcome);
 
         Assert.Null(recovered.Publication);
+
+    }
+
+    [Fact]
+    public async Task Recover_refuses_an_absent_anchor_when_the_profile_journal_key_is_present()
+    {
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        GrimoireOfflineTransitionJournalKeyProvider keys = new(_credentials);
+
+        using (Value(keys.CreateOrOpen(_lock, _guarded, location.ProfileNamespace)))
+        {
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
+
+        Assert.Null(Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(location)));
+
+    }
+
+    [Fact]
+    public async Task Recover_routes_a_corrupt_key_beside_an_absent_anchor_through_key_failure()
+    {
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        _credentials.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(
+                location.ProfileNamespace.AccountSuffix),
+            "not-canonical");
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
 
     }
 
@@ -1258,6 +1493,330 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Recover_propagates_an_unavailable_key_during_predecessor_authentication()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication first = await BeginAsync(setup);
+
+        GrimoireOfflineTransitionJournalPublication second = Value(await setup.AdvanceAsync(
+            _lock,
+            first,
+            Bytes("second"),
+            CancellationToken.None));
+
+        byte[] predecessorBytes = Value(
+            GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(first.Envelope));
+
+        WriteOwnerOnly(second.Location.PreviousPath, predecessorBytes);
+
+        // The canonical file (second, revision 2) already matches the anchor exactly, so
+        // RecoverAsync reads the key twice before reaching IsExactPredecessor's own Open call:
+        // once for the early explicit key-presence check, once to authenticate the canonical
+        // file. The third matching read is IsExactPredecessor's -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnThirdRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 3);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnThirdRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_during_predecessor_retirement_revalidation()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication first = await BeginAsync(setup);
+
+        GrimoireOfflineTransitionJournalPublication second = Value(await setup.AdvanceAsync(
+            _lock,
+            first,
+            Bytes("second"),
+            CancellationToken.None));
+
+        byte[] predecessorBytes = Value(
+            GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(first.Envelope));
+
+        WriteOwnerOnly(second.Location.PreviousPath, predecessorBytes);
+
+        // Reaches RecoverAsync's canonical-plus-predecessor branch (the outermost of
+        // ReauthenticateCanonicalAsync's three callers, chosen because it needs no extra
+        // predecessor-file construction beyond what the sibling IsExactPredecessor test above
+        // already established). Four matching reads precede ReauthenticateCanonicalAsync's own
+        // Open call: the early explicit key-presence check (1), the canonical file's own
+        // authentication (2), IsExactPredecessor's (3) -- all three now let through -- and
+        // finally ReauthenticateCanonicalAsync's post-retirement re-read (4), the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnFourthRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 4);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnFourthRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_during_canonical_authentication()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(setup);
+
+        // The early explicit key-presence check is the first matching read; the canonical
+        // file's own AuthenticateEvidence -> Open call is the second -- the one under test. A
+        // fresh journal's canonical file matches the anchor's current revision exactly, so
+        // without the fix the failure here would otherwise fall through to AuthenticateOneAhead,
+        // which structurally rejects the same bytes for an unrelated reason and discards it.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnSecondRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 2);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnSecondRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_during_working_resume_current_authentication()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication first = await BeginAsync(setup);
+
+        // A properly-chained revision-2 envelope planted directly at the Working path (using the
+        // profile's own already-created key, exactly as SealForTest does for every other
+        // evidence-variant test in this file) with the canonical file left at revision 1 gives
+        // RecoverAsync exactly the shape its "current"/"next" resume pair expects: Canonical
+        // matches the anchor's current revision exactly, Working is one revision ahead of it.
+        GrimoireOfflineTransitionEnvelopeV1 workingEnvelope = SealForTest(
+            first.Location,
+            first.Envelope,
+            revision: 2,
+            previousDigest: first.EnvelopeDigest,
+            payload: Bytes("second"));
+
+        byte[] workingBytes = Value(
+            GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(workingEnvelope));
+
+        WriteOwnerOnly(first.Location.WorkingPath, workingBytes);
+
+        // The early explicit key-presence check is the first matching read; "current"'s own
+        // AuthenticateEvidence -> Open call (authenticating the canonical file as an exact
+        // match) is the second -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnSecondRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 2);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnSecondRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_during_working_resume_next_authentication()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication first = await BeginAsync(setup);
+
+        GrimoireOfflineTransitionEnvelopeV1 workingEnvelope = SealForTest(
+            first.Location,
+            first.Envelope,
+            revision: 2,
+            previousDigest: first.EnvelopeDigest,
+            payload: Bytes("second"));
+
+        byte[] workingBytes = Value(
+            GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(workingEnvelope));
+
+        WriteOwnerOnly(first.Location.WorkingPath, workingBytes);
+
+        // The early explicit key-presence check is the first matching read; "current"'s own
+        // Open call is the second and now succeeds; "next"'s own AuthenticateEvidence -> Open
+        // call (authenticating the Working file as one revision ahead) is the third -- the one
+        // under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnThirdRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 3);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnThirdRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_during_normalization_working_one_ahead_authentication()
+    {
+
+        GrimoireOfflineTransitionJournalStore initial = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(initial);
+
+        GrimoireOfflineTransitionJournalStore failing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(
+                failBeforeStep: step => step == "file:previous-retiring"),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Assert.True((await failing.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None)).IsFailure);
+
+        // Renaming the exchanged-out predecessor into the Working slot (the same technique
+        // Recover_converges_exchange_crashes_with_exact_working_or_previous_predecessor uses for
+        // its "working" case) gives: Canonical = revision 2 (one ahead of the still-unadvanced
+        // anchor), Working = revision 1 (matching the anchor exactly). This reaches
+        // RecoverAsync's normalization pair: workingOneAhead authenticates Canonical as one
+        // ahead, predecessor authenticates Working as the exact match.
+        Assert.True(File.Exists(current.Location.PreviousPath));
+
+        File.Move(current.Location.PreviousPath, current.Location.WorkingPath);
+
+        // The early explicit key-presence check is the first matching read; "current"/"next"
+        // both fail structurally without reaching Open (Canonical is one-ahead, not exact;
+        // Working is exact, not one-ahead -- neither matches what the resume pair expects), so
+        // neither consumes a key read. workingOneAhead's own Open call is the second matching
+        // read -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnSecondRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 2);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnSecondRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_during_normalization_predecessor_authentication()
+    {
+
+        GrimoireOfflineTransitionJournalStore initial = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(initial);
+
+        GrimoireOfflineTransitionJournalStore failing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(
+                failBeforeStep: step => step == "file:previous-retiring"),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Assert.True((await failing.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None)).IsFailure);
+
+        Assert.True(File.Exists(current.Location.PreviousPath));
+
+        File.Move(current.Location.PreviousPath, current.Location.WorkingPath);
+
+        // The early explicit key-presence check is the first matching read; workingOneAhead's
+        // own Open call is the second and now succeeds; predecessor's own AuthenticateEvidence
+        // -> Open call (authenticating the Working file as the exact match) is the third -- the
+        // one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnThirdRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 3);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnThirdRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
+    [Fact]
     public async Task Recover_normalizes_post_exchange_working_predecessor_before_adopting_one_ahead()
     {
 
@@ -1389,6 +1948,102 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     }
 
+    [Theory]
+    [InlineData("begin")]
+    [InlineData("recover")]
+    public async Task Begin_and_recover_refuse_a_closed_genesis_while_the_key_still_exists(
+        string entryPoint)
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _credentials.Delete(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(
+                    terminal.Location.ProfileNamespace.AccountSuffix)).Status);
+
+        GrimoireOfflineTransitionJournalLocation location = terminal.Location;
+
+        Result outcome = entryPoint is "begin"
+            ? await store.BeginAsync(
+                _lock,
+                _guarded,
+                Installation,
+                Operation,
+                GrimoireOfflineTransitionKind.CovenantReset,
+                1,
+                Bytes("reset"),
+                CancellationToken.None)
+            : await store.RecoverAsync(_lock, _guarded, CancellationToken.None);
+
+        Assert.True(outcome.IsFailure, entryPoint);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, outcome.Error.Code);
+
+        Assert.Null(Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(location)));
+
+        Assert.False(File.Exists(location.JournalPath));
+
+    }
+
+    [Theory]
+    [InlineData("begin")]
+    [InlineData("recover")]
+    [InlineData("retire")]
+    public async Task Begin_recover_and_retire_propagate_an_unavailable_key_credential_store(
+        string entryPoint)
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(setup);
+
+        if (entryPoint is "begin")
+        {
+
+            Assert.True((await setup.RetireAsync(_lock, current, CancellationToken.None)).IsSuccess);
+
+        }
+
+        PrefixThrowingCredentialStore keyUnavailable = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailable,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Guid nextOperation = Guid.Parse("77777777-7777-4777-8777-777777777777");
+
+        Result outcome = entryPoint switch
+        {
+            "begin" => await probing.BeginAsync(
+                _lock,
+                _guarded,
+                Installation,
+                nextOperation,
+                GrimoireOfflineTransitionKind.CovenantReset,
+                1,
+                Bytes("next"),
+                CancellationToken.None),
+            "recover" => await probing.RecoverAsync(_lock, _guarded, CancellationToken.None),
+            "retire" => await probing.RetireAsync(_lock, current, CancellationToken.None),
+            _ => throw new Xunit.Sdk.XunitException(entryPoint),
+        };
+
+        Assert.True(outcome.IsFailure, entryPoint);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, outcome.Error.Code);
+
+    }
+
     [Fact]
     public async Task Retire_writes_and_reads_closed_anchor_before_deleting_the_file()
     {
@@ -1410,6 +2065,65 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Retire_propagates_an_unavailable_key_during_active_publication_match()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(setup);
+
+        // The early explicit key-presence check is the first matching read; PublicationMatches'
+        // own AuthenticateEvidence -> Open call (validating the Active anchor's canonical file
+        // before closing it) is the second -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnSecondRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 2);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnSecondRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result result = await probing.RetireAsync(_lock, terminal, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Retire_propagates_an_anchor_read_failure()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(setup);
+
+        PrefixThrowingCredentialStore anchorUnavailable = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccountPrefix);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(anchorUnavailable));
+
+        Result result = await probing.RetireAsync(_lock, terminal, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+        byte[] canonical = Value(
+            GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(terminal.Envelope));
+
+        Assert.Equal(canonical, File.ReadAllBytes(terminal.Location.JournalPath));
+
+    }
+
+    [Fact]
     public async Task Recover_finishes_exact_file_cleanup_beneath_a_closed_anchor()
     {
 
@@ -1423,6 +2137,83 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
         Assert.Equal(
             GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
             Value(await Store().RecoverAsync(_lock, _guarded, CancellationToken.None)).Outcome);
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_while_finishing_closed_retiring_cleanup()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore(
+            failBeforeStep: step => step == "file:retiring-unlinked");
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsFailure);
+
+        // Interrupting retirement here leaves the closed anchor with its file already exchanged
+        // into the Retiring slot (not Canonical), so recovery reaches RecoverClosedAsync's
+        // *retiring* branch -- confirmed empirically: reverting only the canonical branch's fix
+        // left this test green, and reverting only the retiring branch's fix turned it red. The
+        // early explicit key-presence check is the first matching read; that branch's own
+        // AuthenticateEvidence -> Open call is the second -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnSecondRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 2);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnSecondRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Recover_propagates_an_unavailable_key_while_finishing_closed_canonical_cleanup()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore(
+            failBeforeStep: step => step == "file:retiring-moved");
+
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(store);
+
+        Assert.True((await store.RetireAsync(_lock, terminal, CancellationToken.None)).IsFailure);
+
+        // Interrupting one step earlier than the retiring-cleanup sibling above -- before the
+        // file is moved out of the Canonical slot at all -- leaves the closed anchor durably
+        // written (per the retirement crash matrix, "anchor:closed-readback" and every later
+        // boundary up to but excluding "file:retiring-moved" already converges to NoActive with
+        // the file still at Canonical) so recovery reaches RecoverClosedAsync's *canonical*
+        // branch instead. The early explicit key-presence check is the first matching read;
+        // that branch's own AuthenticateEvidence -> Open call is the second -- the one under test.
+        CountedPrefixThrowingCredentialStore keyUnavailableOnSecondRead = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccountPrefix,
+            throwOnOccurrence: 2);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            keyUnavailableOnSecondRead,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await probing.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
 
     }
 
@@ -1768,6 +2559,56 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     }
 
+    [Fact]
+    public void Private_open_requires_an_explicit_trusted_installation_id_parameter()
+    {
+
+        MethodInfo open = typeof(GrimoireOfflineTransitionJournalStore).GetMethod(
+            "Open",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new Xunit.Sdk.XunitException(
+                "GrimoireOfflineTransitionJournalStore no longer declares a private Open method.");
+
+        ParameterInfo[] parameters = open.GetParameters();
+
+        Assert.Equal(3, parameters.Length);
+
+        Assert.Equal(typeof(Guid), parameters[1].ParameterType);
+
+        Assert.Equal("expectedInstallationId", parameters[1].Name);
+
+    }
+
+    [Fact]
+    public async Task Open_refuses_a_genuinely_mismatched_expected_installation_id()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication published = await BeginAsync(store);
+
+        MethodInfo open = typeof(GrimoireOfflineTransitionJournalStore).GetMethod(
+            "Open",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new Xunit.Sdk.XunitException(
+                "GrimoireOfflineTransitionJournalStore no longer declares a private Open method.");
+
+        Guid mismatchedInstallationId = Guid.Parse("88888888-8888-4888-8888-888888888888");
+
+        // published.Envelope genuinely carries Installation (unmutated, exactly as sealed); this
+        // invokes the store's private Open directly -- bypassing every caller's own independent
+        // installation check -- with an expectation that disagrees with the real envelope, so
+        // only Open's own comparison against expectedInstallationId can refuse it.
+        object? invoked = open.Invoke(
+            store,
+            [published.Location, mismatchedInstallationId, published.Envelope]);
+
+        Result<byte[]> result = Assert.IsType<Result<byte[]>>(invoked);
+
+        Assert.True(result.IsFailure);
+
+    }
+
     private GrimoireOfflineTransitionJournalStore ReadyStore(
         List<string>? events = null,
         Func<string, bool>? failBeforeStep = null)
@@ -2066,5 +2907,104 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
     private static T Value<T>(Result<T> result) =>
         result.IsSuccess ? result.Value : throw new Xunit.Sdk.XunitException(result.Error.Message);
+
+    /// <summary>
+    /// Delegates every read to <paramref name="inner"/> except for the one account prefix under
+    /// test, which throws to simulate a transient OS credential store outage for that secret alone.
+    /// </summary>
+    private sealed class PrefixThrowingCredentialStore(
+        IOsCredentialStore inner,
+        string throwingAccountPrefix) : IOsCredentialStore
+    {
+
+        public bool IsAvailable => inner.IsAvailable;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            account.StartsWith(throwingAccountPrefix, StringComparison.Ordinal)
+                ? throw new IOException("The credential store is unavailable for this account.")
+                : inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            inner.Delete(service, account);
+
+    }
+
+    /// <summary>
+    /// Delegates every read to <paramref name="inner"/> until <see cref="Arm"/> is called, then
+    /// throws for the one account prefix under test. Lets earlier, legitimate reads of the same
+    /// account succeed before the one under test is made to fail.
+    /// </summary>
+    private sealed class ArmedPrefixThrowingCredentialStore(
+        IOsCredentialStore inner,
+        string throwingAccountPrefix) : IOsCredentialStore
+    {
+
+        private bool _armed;
+
+        public bool IsAvailable => inner.IsAvailable;
+
+        internal void Arm() => _armed = true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            _armed && account.StartsWith(throwingAccountPrefix, StringComparison.Ordinal)
+                ? throw new IOException("The credential store is unavailable for this account.")
+                : inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            inner.Delete(service, account);
+
+    }
+
+    /// <summary>
+    /// Delegates every read to <paramref name="inner"/> except for one account prefix, which
+    /// throws only on its <paramref name="throwOnOccurrence"/>-th matching read. Lets a fixed
+    /// number of legitimate earlier reads of the same account succeed before the read under
+    /// test is made to fail, when the exact occurrence to fail is known but no diagnostic step
+    /// exists to arm on.
+    /// </summary>
+    private sealed class CountedPrefixThrowingCredentialStore(
+        IOsCredentialStore inner,
+        string throwingAccountPrefix,
+        int throwOnOccurrence) : IOsCredentialStore
+    {
+
+        private int _matchingCalls;
+
+        public bool IsAvailable => inner.IsAvailable;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+
+            if (account.StartsWith(throwingAccountPrefix, StringComparison.Ordinal))
+            {
+
+                _matchingCalls++;
+
+                if (_matchingCalls == throwOnOccurrence)
+                {
+
+                    throw new IOException("The credential store is unavailable for this account.");
+
+                }
+
+            }
+
+            return inner.TryGet(service, account);
+
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            inner.Delete(service, account);
+
+    }
 
 }

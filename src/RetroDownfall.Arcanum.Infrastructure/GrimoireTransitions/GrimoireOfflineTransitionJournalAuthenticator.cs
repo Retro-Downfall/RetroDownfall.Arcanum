@@ -37,9 +37,14 @@ internal static class GrimoireOfflineTransitionJournalAuthenticator
 
     internal const int MaxAnchorCharacters = 2048;
 
-    internal const ulong MaxRevision = 1_000_000;
+    // Bounded at roughly half the NIST SP 800-38D ceiling for random 96-bit-IV GCM (2^32 seals
+    // under one key) rather than exactly at it, because the product below counts logical
+    // revisions, not Seal invocations: a Seal that succeeds but whose downstream durable
+    // publication fails and is retried spends a second nonce under the same key for what the
+    // anchor still records as one revision. The halving is the headroom that retry consumes.
+    internal const ulong MaxRevision = 32_768;
 
-    internal const ulong MaxSlotEpoch = 1_000_000;
+    internal const ulong MaxSlotEpoch = 65_536;
 
     internal const string JournalLocationDomain =
         "Arcanum.GrimoireOfflineTransition.JournalLocation.v1";

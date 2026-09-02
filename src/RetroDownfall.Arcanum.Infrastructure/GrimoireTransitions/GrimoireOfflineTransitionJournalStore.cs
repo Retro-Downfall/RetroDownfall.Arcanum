@@ -289,6 +289,23 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             }
 
+            Result<bool> keyPresentBeforeGenesis = _keys.IsPresent(location.ProfileNamespace);
+
+            if (keyPresentBeforeGenesis.IsFailure)
+            {
+
+                return KeyFailure<GrimoireOfflineTransitionJournalPublication>(
+                    keyPresentBeforeGenesis.Error);
+
+            }
+
+            if (keyPresentBeforeGenesis.Value)
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+            }
+
             Result<GrimoireOfflineTransitionJournalKeyLease> created = _keys.CreateOrOpen(
                 heldInstallationLock,
                 location.GuardedDirectory,
@@ -324,7 +341,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             Result<GrimoireOfflineTransitionAnchorV1?> reread = _anchors.Read(location);
 
-            if (reread.IsFailure || reread.Value is null)
+            if (reread.IsFailure)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalPublication>.Failure(reread.Error);
+
+            }
+
+            if (reread.Value is null)
             {
 
                 return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
@@ -381,7 +405,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (present.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+                return KeyFailure<GrimoireOfflineTransitionJournalPublication>(present.Error);
 
             }
 
@@ -516,7 +540,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (published.IsFailure)
         {
 
-            return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(published.Error);
 
         }
 
@@ -599,7 +623,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         Result<GrimoireOfflineTransitionAnchorV1?> anchorResult = _anchors.Read(current.Location);
 
-        if (anchorResult.IsFailure || anchorResult.Value != current.Anchor
+        if (anchorResult.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalPublication>.Failure(anchorResult.Error);
+
+        }
+
+        if (anchorResult.Value != current.Anchor
             || current.Anchor.State is not GrimoireOfflineTransitionAnchorState.Active)
         {
 
@@ -657,10 +688,17 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         Result<byte[]> currentPayload = Open(
             current.Location,
+            current.Envelope.InstallationId,
             current.Envelope);
 
-        if (currentPayload.IsFailure
-            || !currentPayload.Value.AsSpan().SequenceEqual(current.PayloadBytes))
+        if (currentPayload.IsFailure)
+        {
+
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(currentPayload.Error);
+
+        }
+
+        if (!currentPayload.Value.AsSpan().SequenceEqual(current.PayloadBytes))
         {
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
@@ -751,9 +789,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     cancellationToken)
                 .ConfigureAwait(false);
 
-        if (published.IsFailure || _anchors.RequireMatches(
-                current.Location,
-                current.Anchor).IsFailure)
+        if (published.IsFailure)
+        {
+
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(published.Error);
+
+        }
+
+        if (_anchors.RequireMatches(current.Location, current.Anchor).IsFailure)
         {
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
@@ -825,11 +868,28 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (anchorResult.Value is null)
         {
 
-            return AllAbsent(evidence)
-                ? new GrimoireOfflineTransitionJournalRecoveryState(
+            if (!AllAbsent(evidence))
+            {
+
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+
+            }
+
+            Result<bool> keyPresentWithoutAnchor = _keys.IsPresent(location.ProfileNamespace);
+
+            if (keyPresentWithoutAnchor.IsFailure)
+            {
+
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(
+                    keyPresentWithoutAnchor.Error);
+
+            }
+
+            return keyPresentWithoutAnchor.Value
+                ? RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>()
+                : new GrimoireOfflineTransitionJournalRecoveryState(
                     GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
-                    Publication: null)
-                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                    Publication: null);
 
         }
 
@@ -852,7 +912,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (key.IsFailure)
         {
 
-            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+            return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(key.Error);
 
         }
 
@@ -897,6 +957,20 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             Result<GrimoireOfflineTransitionJournalPublication> next =
                 AuthenticateOneAhead(location, evidence.Working, anchor);
 
+            if (current.IsFailure && current.Error.Code == ErrorCodes.Covenant.Unavailable)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(current.Error);
+
+            }
+
+            if (next.IsFailure && next.Error.Code == ErrorCodes.Covenant.Unavailable)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(next.Error);
+
+            }
+
             if (current.IsSuccess && next.IsSuccess
                 && evidence.Previous is null && evidence.Retiring is null)
             {
@@ -923,6 +997,20 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             Result<GrimoireOfflineTransitionJournalPublication> predecessor =
                 AuthenticateEvidence(location, evidence.Working, anchor);
+
+            if (workingOneAhead.IsFailure && workingOneAhead.Error.Code == ErrorCodes.Covenant.Unavailable)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(workingOneAhead.Error);
+
+            }
+
+            if (predecessor.IsFailure && predecessor.Error.Code == ErrorCodes.Covenant.Unavailable)
+            {
+
+                return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(predecessor.Error);
+
+            }
 
             if (workingOneAhead.IsFailure || predecessor.IsFailure
                 || evidence.Previous is not null || evidence.Retiring is not null)
@@ -973,7 +1061,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (revalidated.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(revalidated.Error);
 
             }
 
@@ -993,6 +1081,13 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         Result<GrimoireOfflineTransitionJournalPublication> canonical =
             AuthenticateEvidence(location, evidence.Canonical, anchor);
 
+        if (canonical.IsFailure && canonical.Error.Code == ErrorCodes.Covenant.Unavailable)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(canonical.Error);
+
+        }
+
         if (canonical.IsSuccess && evidence.Previous is null && evidence.Retiring is null)
         {
 
@@ -1009,7 +1104,16 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 ? GrimoireOfflineTransitionJournalRetirementSource.Previous
                 : GrimoireOfflineTransitionJournalRetirementSource.Retiring;
 
-            if (!IsExactPredecessor(location, predecessor, canonical.Value))
+            Result<bool> exactPredecessor = IsExactPredecessor(location, predecessor, canonical.Value);
+
+            if (exactPredecessor.IsFailure)
+            {
+
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(exactPredecessor.Error);
+
+            }
+
+            if (!exactPredecessor.Value)
             {
 
                 return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
@@ -1031,9 +1135,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     .ConfigureAwait(false)
                 : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
 
-            return revalidated.IsSuccess
-                ? Authenticated(revalidated.Value)
-                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+            if (revalidated.IsFailure)
+            {
+
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(revalidated.Error);
+
+            }
+
+            return Authenticated(revalidated.Value);
 
         }
 
@@ -1043,7 +1152,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (oneAhead.IsFailure)
         {
 
-            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+            return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(oneAhead.Error);
 
         }
 
@@ -1062,7 +1171,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (anchoredPredecessor.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(anchoredPredecessor.Error);
 
             }
 
@@ -1090,7 +1199,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (revalidated.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(revalidated.Error);
 
             }
 
@@ -1149,7 +1258,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (key.IsFailure)
         {
 
-            return RecoveryRequired();
+            return KeyFailure(key.Error);
 
         }
 
@@ -1161,7 +1270,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         Result<GrimoireOfflineTransitionAnchorV1?> currentResult = _anchors.Read(
             terminal.Location);
 
-        if (currentResult.IsFailure || currentResult.Value is null)
+        if (currentResult.IsFailure)
+        {
+
+            return Result.Failure(currentResult.Error);
+
+        }
+
+        if (currentResult.Value is null)
         {
 
             return RecoveryRequired();
@@ -1200,8 +1316,23 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (evidence.Canonical is null
                 || evidence.Working is not null
                 || evidence.Previous is not null
-                || evidence.Retiring is not null
-                || !PublicationMatches(terminal, evidence.Canonical))
+                || evidence.Retiring is not null)
+            {
+
+                return RecoveryRequired();
+
+            }
+
+            Result<bool> activePublicationMatches = PublicationMatches(terminal, evidence.Canonical);
+
+            if (activePublicationMatches.IsFailure)
+            {
+
+                return KeyFailure(activePublicationMatches.Error);
+
+            }
+
+            if (!activePublicationMatches.Value)
             {
 
                 return RecoveryRequired();
@@ -1227,38 +1358,72 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (evidence.Canonical is not null
             && evidence.Working is null
             && evidence.Previous is null
-            && evidence.Retiring is null
-            && PublicationMatches(terminal with { Anchor = closed }, evidence.Canonical))
+            && evidence.Retiring is null)
         {
 
-            return await _files.CompleteRetirementAsync(
-                    heldInstallationLock,
-                    terminal.Location,
-                    GrimoireOfflineTransitionJournalRetirementSource.Canonical,
-                    evidence.Canonical.Metadata,
-                    evidence.Canonical.Bytes,
-                    requireCanonicalAfter: false,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            Result<bool> canonicalPublicationMatches = PublicationMatches(
+                terminal with { Anchor = closed },
+                evidence.Canonical);
+
+            if (canonicalPublicationMatches.IsFailure)
+            {
+
+                return KeyFailure(canonicalPublicationMatches.Error);
+
+            }
+
+            if (canonicalPublicationMatches.Value)
+            {
+
+                return await _files.CompleteRetirementAsync(
+                        heldInstallationLock,
+                        terminal.Location,
+                        GrimoireOfflineTransitionJournalRetirementSource.Canonical,
+                        evidence.Canonical.Metadata,
+                        evidence.Canonical.Bytes,
+                        requireCanonicalAfter: false,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+
+            return RecoveryRequired();
 
         }
 
         if (evidence.Canonical is null
             && evidence.Working is null
             && evidence.Previous is null
-            && evidence.Retiring is not null
-            && PublicationMatches(terminal with { Anchor = closed }, evidence.Retiring))
+            && evidence.Retiring is not null)
         {
 
-            return await _files.CompleteRetirementAsync(
-                    heldInstallationLock,
-                    terminal.Location,
-                    GrimoireOfflineTransitionJournalRetirementSource.Retiring,
-                    evidence.Retiring.Metadata,
-                    evidence.Retiring.Bytes,
-                    requireCanonicalAfter: false,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            Result<bool> retiringPublicationMatches = PublicationMatches(
+                terminal with { Anchor = closed },
+                evidence.Retiring);
+
+            if (retiringPublicationMatches.IsFailure)
+            {
+
+                return KeyFailure(retiringPublicationMatches.Error);
+
+            }
+
+            if (retiringPublicationMatches.Value)
+            {
+
+                return await _files.CompleteRetirementAsync(
+                        heldInstallationLock,
+                        terminal.Location,
+                        GrimoireOfflineTransitionJournalRetirementSource.Retiring,
+                        evidence.Retiring.Metadata,
+                        evidence.Retiring.Bytes,
+                        requireCanonicalAfter: false,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+
+            return RecoveryRequired();
 
         }
 
@@ -1302,7 +1467,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (canonical.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(canonical.Error);
 
             }
 
@@ -1337,7 +1502,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             if (retiring.IsFailure)
             {
 
-                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(retiring.Error);
 
             }
 
@@ -1386,17 +1551,22 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result<byte[]> payload = Open(location, decoded.Value);
+        Result<byte[]> payload = Open(location, anchor.InstallationId, decoded.Value);
 
-        return payload.IsSuccess
-            ? new GrimoireOfflineTransitionJournalPublication(
-                location,
-                decoded.Value,
-                digest.Value,
-                payload.Value,
-                anchor,
-                file.Metadata)
-            : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+        if (payload.IsFailure)
+        {
+
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(payload.Error);
+
+        }
+
+        return new GrimoireOfflineTransitionJournalPublication(
+            location,
+            decoded.Value,
+            digest.Value,
+            payload.Value,
+            anchor,
+            file.Metadata);
 
     }
 
@@ -1423,8 +1593,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         Result<GrimoireOfflineTransitionJournalPublication> authenticated =
             AuthenticateEvidence(location, canonical, expected.Anchor);
 
-        return authenticated.IsSuccess
-            && FileHandleIdentity.IdentitiesMatch(
+        if (authenticated.IsFailure)
+        {
+
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(authenticated.Error);
+
+        }
+
+        return FileHandleIdentity.IdentitiesMatch(
                 expected.FileMetadata.Identity,
                 authenticated.Value.FileMetadata.Identity)
             && authenticated.Value.Envelope == expected.Envelope
@@ -1485,7 +1661,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
     }
 
-    private bool IsExactPredecessor(
+    private Result<bool> IsExactPredecessor(
         GrimoireOfflineTransitionJournalLocation location,
         GrimoireOfflineTransitionJournalFileRead file,
         GrimoireOfflineTransitionJournalPublication current)
@@ -1522,13 +1698,20 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result<byte[]> opened = Open(location, decoded.Value);
+        Result<byte[]> opened = Open(location, current.Envelope.InstallationId, decoded.Value);
 
-        return opened.IsSuccess;
+        if (opened.IsFailure)
+        {
+
+            return Result<bool>.Failure(opened.Error);
+
+        }
+
+        return true;
 
     }
 
-    private bool PublicationMatches(
+    private Result<bool> PublicationMatches(
         GrimoireOfflineTransitionJournalPublication terminal,
         GrimoireOfflineTransitionJournalFileRead file)
     {
@@ -1536,8 +1719,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         Result<GrimoireOfflineTransitionJournalPublication> authenticated =
             AuthenticateEvidence(terminal.Location, file, terminal.Anchor);
 
-        return authenticated.IsSuccess
-            && authenticated.Value.Envelope == terminal.Envelope
+        if (authenticated.IsFailure)
+        {
+
+            return Result<bool>.Failure(authenticated.Error);
+
+        }
+
+        return authenticated.Value.Envelope == terminal.Envelope
             && authenticated.Value.EnvelopeDigest == terminal.EnvelopeDigest
             && authenticated.Value.PayloadBytes.AsSpan().SequenceEqual(terminal.PayloadBytes)
             && FileHandleIdentity.IdentitiesMatch(
@@ -1642,12 +1831,12 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result<byte[]> opened = Open(location, envelope);
+        Result<byte[]> opened = Open(location, anchor.InstallationId, envelope);
 
         if (opened.IsFailure)
         {
 
-            return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(opened.Error);
 
         }
 
@@ -1707,9 +1896,16 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result<byte[]> payload = Open(location, decoded.Value);
+        Result<byte[]> payload = Open(location, anchor.InstallationId, decoded.Value);
 
-        if (payload.IsFailure || !payload.Value.AsSpan().SequenceEqual(expectedPayload.Span))
+        if (payload.IsFailure)
+        {
+
+            return KeyFailure<GrimoireOfflineTransitionJournalPublication>(payload.Error);
+
+        }
+
+        if (!payload.Value.AsSpan().SequenceEqual(expectedPayload.Span))
         {
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
@@ -1767,6 +1963,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
     private Result<byte[]> Open(
         GrimoireOfflineTransitionJournalLocation location,
+        Guid expectedInstallationId,
         GrimoireOfflineTransitionEnvelopeV1 envelope)
     {
 
@@ -1785,7 +1982,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         return GrimoireOfflineTransitionJournalAuthenticator.Open(
             opening,
             location.ProfileNamespace.Digest,
-            envelope.InstallationId,
+            expectedInstallationId,
             location.JournalLocationDigest,
             envelope);
 
@@ -1920,5 +2117,15 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
     private static Result RecoveryRequired() => new Error(
         ErrorCodes.Covenant.ManualRecoveryRequired,
         "The transition journal has durable evidence that requires exact recovery.");
+
+    private static Result<T> KeyFailure<T>(Error error) =>
+        error.Code == ErrorCodes.Covenant.Unavailable
+            ? Result<T>.Failure(error)
+            : RecoveryRequired<T>();
+
+    private static Result KeyFailure(Error error) =>
+        error.Code == ErrorCodes.Covenant.Unavailable
+            ? Result.Failure(error)
+            : RecoveryRequired();
 
 }

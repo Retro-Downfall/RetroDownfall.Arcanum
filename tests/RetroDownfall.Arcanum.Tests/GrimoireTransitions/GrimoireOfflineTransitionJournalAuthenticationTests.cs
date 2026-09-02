@@ -216,9 +216,9 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
         Assert.Equal(2048, GrimoireOfflineTransitionJournalAuthenticator.MaxAnchorCharacters);
 
-        Assert.Equal(1_000_000UL, GrimoireOfflineTransitionJournalAuthenticator.MaxRevision);
+        Assert.Equal(32_768UL, GrimoireOfflineTransitionJournalAuthenticator.MaxRevision);
 
-        Assert.Equal(1_000_000UL, GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch);
+        Assert.Equal(65_536UL, GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch);
 
         using GrimoireOfflineTransitionJournalKeyLease lease = CreateLease();
 
@@ -263,6 +263,26 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
     }
 
+    [Fact]
+    public void Slot_epoch_and_revision_bounds_stay_under_the_random_nonce_seal_budget()
+    {
+
+        // NIST SP 800-38D caps random 96-bit-IV GCM at 2^32 invocations under one key; the
+        // transition journal key is stable across every slot epoch and never rotates, so the
+        // total number of Seal calls one key can ever see is bounded only by these two caps.
+        ulong maximumSealsPerKey =
+            GrimoireOfflineTransitionJournalAuthenticator.MaxSlotEpoch
+            * GrimoireOfflineTransitionJournalAuthenticator.MaxRevision;
+
+        Assert.True(
+            maximumSealsPerKey <= 1UL << 32,
+            "MaxSlotEpoch * MaxRevision must stay at most half the SP 800-38D ceiling: a "
+            + "sealed publication that fails and is retried spends a Seal invocation the "
+            + "epoch * revision product does not itself count, and that headroom is what the "
+            + "halving buys.");
+
+    }
+
     [Theory]
     [InlineData("profile")]
     [InlineData("installation")]
@@ -278,10 +298,12 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
 
         GrimoireOfflineTransitionEnvelopeV1 envelope = Seal();
 
+        Guid changedInstallationId = Guid.NewGuid();
+
         GrimoireOfflineTransitionEnvelopeV1 changed = header switch
         {
             "profile" => envelope with { ProfileNamespaceDigest = Digest(10) },
-            "installation" => envelope with { InstallationId = Guid.NewGuid() },
+            "installation" => envelope with { InstallationId = changedInstallationId },
             "epoch" => envelope with { SlotEpoch = 2 },
             "operation" => envelope with { OperationId = Guid.NewGuid() },
             "kind" => envelope with { Kind = GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure },
@@ -292,14 +314,66 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
             _ => throw new ArgumentOutOfRangeException(nameof(header)),
         };
 
+        // The three fields Open pre-checks before AES-GCM ever runs must be passed as the
+        // *changed* expectation so that pre-check passes and only the AAD-bound tag can reject;
+        // otherwise these three cases would still pass with the AAD field deleted entirely.
+        CovenantDigest expectedProfile = header is "profile" ? Digest(10) : Digest(1);
+
+        Guid expectedInstallation = header is "installation" ? changedInstallationId : Installation;
+
+        CovenantDigest expectedLocation = header is "location" ? Digest(8) : Digest(3);
+
         using GrimoireOfflineTransitionJournalKeyLease opening = OpenLease();
 
         Assert.True(GrimoireOfflineTransitionJournalAuthenticator.Open(
             opening,
-            Digest(1),
-            Installation,
-            Digest(3),
+            expectedProfile,
+            expectedInstallation,
+            expectedLocation,
             changed).IsFailure);
+
+    }
+
+    [Theory]
+    [InlineData("profile")]
+    [InlineData("installation")]
+    [InlineData("location")]
+    public void Open_refuses_a_mismatched_expectation_for_each_pre_checked_field(string header)
+    {
+
+        // Unlike Envelope_aad_rejects_each_changed_header_field, the envelope here is exactly
+        // as sealed -- untampered, so its AAD reconstructs identically and the tag verifies.
+        // Only a caller-supplied expectation that genuinely disagrees with the envelope's own
+        // (unmodified) field can make Open refuse here, which is what proves the pre-check at
+        // Open:239-241 still exists and still runs before AES-GCM, independent of AAD coverage.
+        GrimoireOfflineTransitionEnvelopeV1 envelope = Seal();
+
+        using GrimoireOfflineTransitionJournalKeyLease opening = OpenLease();
+
+        Result<byte[]> result = header switch
+        {
+            "profile" => GrimoireOfflineTransitionJournalAuthenticator.Open(
+                opening,
+                Digest(10),
+                Installation,
+                Digest(3),
+                envelope),
+            "installation" => GrimoireOfflineTransitionJournalAuthenticator.Open(
+                opening,
+                Digest(1),
+                Guid.Parse("99999999-9999-4999-8999-999999999999"),
+                Digest(3),
+                envelope),
+            "location" => GrimoireOfflineTransitionJournalAuthenticator.Open(
+                opening,
+                Digest(1),
+                Installation,
+                Digest(8),
+                envelope),
+            _ => throw new ArgumentOutOfRangeException(nameof(header)),
+        };
+
+        Assert.True(result.IsFailure);
 
     }
 
