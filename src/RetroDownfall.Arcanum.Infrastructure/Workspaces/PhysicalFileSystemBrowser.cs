@@ -435,7 +435,7 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         try
         {
             string entryRelativePath =
-                Path.GetRelativePath(workspaceRoot, resolvedPath);
+                NormalizeRelativePathSeparators(Path.GetRelativePath(workspaceRoot, resolvedPath));
 
             return new FileReadResult(
                 entryRelativePath,
@@ -626,7 +626,7 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
                 DirectoryInfo dirInfo = new(fullPath);
 
-                string relativePath = FileBrowserContinuationCursor.NormalizeRelativePath(
+                string relativePath = NormalizeRelativePathSeparators(
                     Path.GetRelativePath(workspaceRoot, fullPath));
 
                 return new FileEntry(
@@ -643,7 +643,7 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
                 FileInfo fileInfo = new(fullPath);
 
-                string relativePath = FileBrowserContinuationCursor.NormalizeRelativePath(
+                string relativePath = NormalizeRelativePathSeparators(
                     Path.GetRelativePath(workspaceRoot, fullPath));
 
                 return new FileEntry(
@@ -682,8 +682,23 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
             return string.Empty;
         }
 
-        return FileBrowserContinuationCursor.NormalizeRelativePath(
+        return NormalizeRelativePathSeparators(
             Path.GetRelativePath(workspaceRoot, parentFull));
     }
+
+    /// <summary>
+    /// Folds the host's own path separator to '/' for wire-serialized relative paths (FileEntry,
+    /// FileListResult.ParentPath, FileReadResult), matching the MCP list_directory tool
+    /// (ArcanumInternalToolServer.FileTools.cs). This is a no-op on POSIX, where
+    /// Path.DirectorySeparatorChar is already '/' — deliberately: a backslash inside a POSIX path
+    /// segment is ordinary filename content (POSIX has no reserved separator but '/'), not a
+    /// separator, and WorkspacePathResolver.ResolveRelativePath does not fold it on input either, so
+    /// folding it here would silently corrupt the one string a client needs to round-trip the entry
+    /// back into this same API. On Windows, Path.DirectorySeparatorChar is '\', which can never be
+    /// legal filename content there, so every '\' in Path.GetRelativePath's output is genuinely a
+    /// separator and folding it is lossless.
+    /// </summary>
+    private static string NormalizeRelativePathSeparators(string relativePath) =>
+        relativePath.Replace(Path.DirectorySeparatorChar, '/');
 
 }
