@@ -281,9 +281,13 @@ public sealed class SagaExtractionService(
 
                     }
 
-                    await Task.Delay(delay, stoppingToken).ConfigureAwait(false);
-
-                    EnqueueExtraction(request);
+                    // Re-enqueue on a background task after the backoff instead of blocking this
+                    // single-reader loop: every other queued session would otherwise sit unread for the
+                    // whole delay, up to MaximumAutomaticRetryDelay, behind one failing session (W8-3).
+                    // Task.Delay yields at its first await, so this needs no Task.Run; the discarded
+                    // task cannot fault — Task.Delay only ever throws OperationCanceledException, and
+                    // EnqueueExtraction already catches everything itself.
+                    _ = RetryAfterDelayAsync(request, delay, stoppingToken);
 
                     continue;
 
@@ -329,6 +333,29 @@ public sealed class SagaExtractionService(
         return seconds >= MaximumAutomaticRetryDelay.TotalSeconds
             ? MaximumAutomaticRetryDelay
             : TimeSpan.FromSeconds(seconds);
+
+    }
+
+    // Waits out the backoff off the consumer loop, then re-enqueues. EnqueueExtraction re-merges with
+    // anything that arrived for the same session while this was waiting, so nothing queued during the
+    // delay is lost.
+    private async Task RetryAfterDelayAsync(SagaExtractionRequest request, TimeSpan delay, CancellationToken stoppingToken)
+    {
+
+        try
+        {
+
+            await Task.Delay(delay, stoppingToken).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return;
+
+        }
+
+        EnqueueExtraction(request);
 
     }
 

@@ -893,6 +893,75 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ExecuteAsync_RetryBackoffForOneSession_DoesNotBlockAnotherSessionsFirstAttempt()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid blockedSessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(blockedSessionId, "content this extraction model can never parse");
+
+        Guid healthySessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(healthySessionId, "content this extraction model can never parse");
+
+        FakeWeaveService weave = new();
+
+        // Every attempt fails identically, forever; the only thing under test is whether the second
+        // session's first attempt has to wait behind the first session's retry backoff (W8-3).
+        FakeIntelligenceProvider intelligence = new() { NextText = "not valid json at all" };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance)
+        {
+
+            // Long enough that a consumer loop blocked on its own backoff could not possibly reach
+            // the second session within the poll window below.
+            RetryBaseDelayForTests = TimeSpan.FromSeconds(2),
+
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+
+            service.EnqueueExtraction(blockedSessionId);
+
+            service.EnqueueExtraction(healthySessionId);
+
+            DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1.5);
+
+            while (intelligence.CallCount < 2 && DateTimeOffset.UtcNow < deadline)
+            {
+
+                await Task.Delay(TimeSpan.FromMilliseconds(50));
+
+            }
+
+            // A single-reader loop that awaits its own retry backoff inline starves every other
+            // queued session for the whole delay. Reaching two calls well inside the 2-second backoff
+            // proves the healthy session's first attempt did not queue behind the blocked one's wait.
+            Assert.Equal(2, intelligence.CallCount);
+
+        }
+        finally
+        {
+
+            await hosted.StopAsync(CancellationToken.None);
+
+        }
+
+    }
+
+    [SkippableFact]
     public async Task EnqueueExtraction_BeyondFormerQueueCapacity_EventuallyProcessesEverySession()
     {
 
