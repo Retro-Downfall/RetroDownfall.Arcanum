@@ -688,6 +688,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         Result<byte[]> currentPayload = Open(
             current.Location,
+            current.Envelope.InstallationId,
             current.Envelope);
 
         if (currentPayload.IsFailure
@@ -1441,7 +1442,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result<byte[]> payload = Open(location, decoded.Value);
+        Result<byte[]> payload = Open(location, anchor.InstallationId, decoded.Value);
 
         return payload.IsSuccess
             ? new GrimoireOfflineTransitionJournalPublication(
@@ -1577,7 +1578,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result<byte[]> opened = Open(location, decoded.Value);
+        Result<byte[]> opened = Open(location, current.Envelope.InstallationId, decoded.Value);
 
         return opened.IsSuccess;
 
@@ -1697,7 +1698,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result<byte[]> opened = Open(location, envelope);
+        Result<byte[]> opened = Open(location, anchor.InstallationId, envelope);
 
         if (opened.IsFailure)
         {
@@ -1762,7 +1763,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result<byte[]> payload = Open(location, decoded.Value);
+        Result<byte[]> payload = Open(location, anchor.InstallationId, decoded.Value);
 
         if (payload.IsFailure || !payload.Value.AsSpan().SequenceEqual(expectedPayload.Span))
         {
@@ -1822,6 +1823,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
     private Result<byte[]> Open(
         GrimoireOfflineTransitionJournalLocation location,
+        Guid expectedInstallationId,
         GrimoireOfflineTransitionEnvelopeV1 envelope)
     {
 
@@ -1840,7 +1842,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         return GrimoireOfflineTransitionJournalAuthenticator.Open(
             opening,
             location.ProfileNamespace.Digest,
-            envelope.InstallationId,
+            expectedInstallationId,
             location.JournalLocationDigest,
             envelope);
 

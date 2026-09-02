@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using System.Text;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -2003,6 +2005,26 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
             await Store().RecoverAsync(_lock, _guarded, CancellationToken.None),
             boundary,
             expected);
+
+    }
+
+    [Fact]
+    public void Private_open_requires_an_explicit_trusted_installation_id_parameter()
+    {
+
+        MethodInfo open = typeof(GrimoireOfflineTransitionJournalStore).GetMethod(
+            "Open",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new Xunit.Sdk.XunitException(
+                "GrimoireOfflineTransitionJournalStore no longer declares a private Open method.");
+
+        ParameterInfo[] parameters = open.GetParameters();
+
+        Assert.Equal(3, parameters.Length);
+
+        Assert.Equal(typeof(Guid), parameters[1].ParameterType);
+
+        Assert.Equal("expectedInstallationId", parameters[1].Name);
 
     }
 
