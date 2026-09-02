@@ -34,7 +34,7 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
     private const string RecoveryOwner = "task-9-recovery-process";
 
-    [Fact]
+    [SkippableFact]
     public async Task Inventory_checkpoint_is_adopted_before_readiness_and_completed_by_the_fresh_process()
     {
 

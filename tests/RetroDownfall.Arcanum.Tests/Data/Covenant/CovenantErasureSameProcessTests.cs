@@ -39,7 +39,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 public sealed class CovenantErasureSameProcessTests
 {
 
-    [Fact]
+    [SkippableFact]
     public async Task Factory_named_operation_creates_server_identity_and_commits_requested_checkpoint_proof()
     {
 
@@ -105,7 +105,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Factory_named_completed_replay_precedes_inventory_and_does_not_erase_again()
     {
 
@@ -159,7 +159,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Factory_named_replay_with_a_different_plan_is_an_idempotency_conflict()
     {
 
@@ -197,7 +197,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Factory_maintains_lease_before_checkpoint(bool named)
@@ -269,7 +269,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Healthy_factory_erasure_composes_protected_and_ordinary_cleanup_with_exact_public_result()
     {
 
@@ -347,7 +347,7 @@ public sealed class CovenantErasureSameProcessTests
     /// about half its runs and arm64 never did. Held open across the apply, the same failure is
     /// deterministic on every platform, which is what makes it fixable here.</para>
     /// </remarks>
-    [Fact]
+    [SkippableFact]
     public async Task Factory_erasure_completes_while_a_non_Covenant_scope_holds_the_Grimoire_open()
     {
 
@@ -385,7 +385,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Factory_catalog_change_after_planning_refuses_before_exclusive_or_any_effect()
     {
 
@@ -429,7 +429,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Factory_coordinator_failure_blocks_ordinary_deletion()
     {
 
@@ -458,7 +458,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Factory_ordinary_cleanup_remains_inside_provider_and_writer_exclusion()
     {
 
@@ -507,7 +507,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Factory_daemon_history_blocks_while_running_and_clears_after_terminal()
     {
 
@@ -578,7 +578,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Factory_daemon_start_waits_for_ordinary_cleanup_gate()
     {
 
@@ -639,7 +639,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(5)]
     [InlineData(6)]
     public async Task Factory_new_daemon_conflict_at_apply_boundary_terminalizes_before_deletion(
@@ -695,7 +695,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Factory_when_managed_log_publication_wins_deletes_the_counted_append(
@@ -773,7 +773,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Factory_when_reset_wins_waiting_managed_log_publishes_after_reset(
@@ -956,7 +956,7 @@ public sealed class CovenantErasureSameProcessTests
 
         };
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_checkpoints_the_exact_owner_before_gate_entry_and_returns_content_free_success()
     {
 
@@ -1040,7 +1040,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_drain_failure_preserves_rows_artifacts_and_managed_file_state()
     {
 
@@ -1077,7 +1077,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(
         RouteFailure.Rollback,
         LongRunningOperationState.Failed,
@@ -1128,7 +1128,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_rejects_the_original_expected_plan_mismatch_before_starting_an_operation()
     {
 
@@ -1148,7 +1148,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_caller_cancellation_after_proof_still_terminalizes_the_reopened_operation()
     {
 
@@ -1180,7 +1180,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_rejects_an_installation_coverage_lease_of_the_wrong_kind()
     {
 
@@ -1204,7 +1204,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_renews_its_durable_lease_while_the_coordinator_is_running()
     {
 
@@ -1248,7 +1248,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_cancellation_does_not_park_an_owner_adopted_by_recovery()
     {
 
@@ -1271,7 +1271,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(RouteStoreFault.ThrowBeforeCheckpoint, LongRunningOperationState.Failed, 0)]
     [InlineData(
         RouteStoreFault.ThrowAfterCheckpoint,
@@ -1306,7 +1306,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_normalizes_planning_lease_release_failure_after_checkpoint()
     {
 
@@ -1334,7 +1334,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_retries_completed_cas_after_committed_reopen()
     {
 
@@ -1362,7 +1362,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Reopened_verified_recovery_reacquires_an_already_reopened_gate_after_finalizer_failure()
     {
 
@@ -1400,7 +1400,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Direct_retention_reset_drains_an_inflight_heartbeat_before_completed_releases_the_lease()
     {
 
@@ -1464,7 +1464,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Successful_erasure_reopens_status_crud_inference_and_disclosure_on_the_fresh_dataset()
     {
 

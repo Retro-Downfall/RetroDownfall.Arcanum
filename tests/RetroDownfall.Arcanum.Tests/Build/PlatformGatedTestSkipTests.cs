@@ -50,6 +50,35 @@ public sealed class PlatformGatedTestSkipTests
 
     }
 
+    /// <summary>
+    /// A method that calls <c>Skip.</c> under a plain <c>[Fact]</c> or <c>[Theory]</c> does not skip.
+    /// </summary>
+    /// <remarks>
+    /// <c>Skip.If</c> and its siblings work by throwing, and only <c>[SkippableFact]</c> /
+    /// <c>[SkippableTheory]</c> install the discoverer that recognizes that throw as a skip. Under a
+    /// plain attribute the same call is an unhandled exception, so the runner reports a failure —
+    /// the opposite of the silent pass the rule above catches, and just as wrong, because the source
+    /// reads identically either way. An author who wrote a skip has to get one.
+    /// </remarks>
+    [Fact]
+    public void Test_methods_that_call_Skip_carry_a_skippable_attribute()
+    {
+
+        List<string> offenders = [];
+
+        foreach (ProductionSource source in ProductionSourceInventory.TestSuiteSources())
+        {
+
+            offenders.AddRange(PlatformGatedEarlyReturnScan.FindUnskippableSkipCallers(source));
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            string.Join("\n", offenders.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)));
+
+    }
+
 }
 
 /// <summary>
@@ -117,6 +146,19 @@ internal static class PlatformGatedEarlyReturnScan
     // `(`), so the guard is invisible to the scan rather than evaluated and exempted or flagged.
     private const string NestedParens =
         @"(?:[^()]|\((?:[^()]|\([^()]*\))*\))*";
+
+    private static readonly Regex SkippableAttribute = new(
+        @"\[(?:SkippableFact|SkippableTheory)\b",
+        RegexOptions.Compiled,
+        TimeSpan.FromSeconds(5));
+
+    // Deliberately looser than SkipCall below, which needs the condition and so needs the comma that
+    // separates it from the message: Skip.IfNot(cond) with no message is a real call this rule has to
+    // see, and so is any future Skip. member.
+    private static readonly Regex AnySkipCall = new(
+        @"\bSkip\.\w+\s*\(",
+        RegexOptions.Compiled,
+        TimeSpan.FromSeconds(5));
 
     private static readonly Regex SkipCall = new(
         @"\bSkip\.(If|IfNot)\s*\(\s*(" + NestedParens + @")\s*,",
@@ -197,6 +239,49 @@ internal static class PlatformGatedEarlyReturnScan
                     + "instead of calling Skip.If/Skip.IfNot");
 
             }
+
+        }
+
+        return offenders;
+
+    }
+
+    /// <summary>
+    /// Test methods that call <c>Skip.</c> without carrying a skippable attribute.
+    /// </summary>
+    /// <remarks>
+    /// The attribute the method actually carries is read from the match that found it, not searched
+    /// for near it: a <c>[SkippableFact]</c> a few lines above an unconverted <c>[Fact]</c> would
+    /// otherwise exempt its neighbour, which is exactly the shape a partly converted file has.
+    /// </remarks>
+    internal static IReadOnlyList<string> FindUnskippableSkipCallers(ProductionSource source)
+    {
+
+        List<string> offenders = [];
+
+        string text = WithoutLiterals(source.Text);
+
+        foreach (Match attribute in TestAttribute.Matches(text))
+        {
+
+            if (SkippableAttribute.IsMatch(attribute.Value))
+            {
+
+                continue;
+
+            }
+
+            if (!TryReadMethod(text, attribute.Index, out string name, out string body)
+                || !AnySkipCall.IsMatch(body))
+            {
+
+                continue;
+
+            }
+
+            offenders.Add(
+                $"{source.RelativePath} :: {name} calls Skip. under {attribute.Value}] — a "
+                + "SkipException is a failure, not a skip, without [SkippableFact]/[SkippableTheory]");
 
         }
 
