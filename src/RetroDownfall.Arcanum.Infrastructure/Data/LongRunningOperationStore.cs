@@ -101,9 +101,9 @@ internal sealed class LongRunningOperationStore(
                 Add(cmd, "@policy", (int)request.RecoveryPolicy);
                 Add(cmd, "@root", FormatNullable(request.RootOperationId));
                 Add(cmd, "@parent", FormatNullable(request.ParentOperationId));
-                Add(cmd, "@session", FormatNullable(request.SessionId));
-                Add(cmd, "@run", FormatNullable(request.RunId));
-                Add(cmd, "@inference", FormatNullable(request.InferenceRunId));
+                Add(cmd, "@session", FormatReferenceNullable(request.SessionId));
+                Add(cmd, "@run", FormatReferenceNullable(request.RunId));
+                Add(cmd, "@inference", FormatReferenceNullable(request.InferenceRunId));
                 Add(cmd, "@reservation", FormatNullable(request.BudgetReservationId));
                 Add(cmd, "@claim", FormatNullable(request.IdempotencyClaimId));
                 Add(cmd, "@created", Format(request.CreatedAt));
@@ -286,9 +286,9 @@ internal sealed class LongRunningOperationStore(
                     Add(insert, "@policy", (int)request.RecoveryPolicy);
                     Add(insert, "@root", FormatNullable(request.RootOperationId));
                     Add(insert, "@parent", FormatNullable(request.ParentOperationId));
-                    Add(insert, "@session", FormatNullable(request.SessionId));
-                    Add(insert, "@run", FormatNullable(request.RunId));
-                    Add(insert, "@inference", FormatNullable(request.InferenceRunId));
+                    Add(insert, "@session", FormatReferenceNullable(request.SessionId));
+                    Add(insert, "@run", FormatReferenceNullable(request.RunId));
+                    Add(insert, "@inference", FormatReferenceNullable(request.InferenceRunId));
                     Add(insert, "@reservation", FormatNullable(request.BudgetReservationId));
                     Add(insert, "@claim", FormatNullable(request.IdempotencyClaimId));
                     Add(insert, "@created", Format(request.CreatedAt));
@@ -466,11 +466,11 @@ internal sealed class LongRunningOperationStore(
 
                 Add(command, "@parent", FormatNullable(request.ParentOperationId));
 
-                Add(command, "@session", FormatNullable(request.SessionId));
+                Add(command, "@session", FormatReferenceNullable(request.SessionId));
 
-                Add(command, "@run", FormatNullable(request.RunId));
+                Add(command, "@run", FormatReferenceNullable(request.RunId));
 
-                Add(command, "@inference", FormatNullable(request.InferenceRunId));
+                Add(command, "@inference", FormatReferenceNullable(request.InferenceRunId));
 
                 Add(command, "@reservation", FormatNullable(request.BudgetReservationId));
 
@@ -1148,7 +1148,13 @@ internal sealed class LongRunningOperationStore(
     private static DateTimeOffset? ReadDate(DbDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : ParseDate(reader.GetString(ordinal));
 
-    private static Guid ParseGuid(string value) => Guid.ParseExact(value, "N");
+    // Guid.Parse rather than Guid.ParseExact(value, "N"): SessionId, RunId, and InferenceRunId are
+    // written through FormatReference in the canonical "D" spelling their referenced EF tables use
+    // (W3b-5), while every other identity here - Id, RootOperationId, ParentOperationId,
+    // BudgetReservationId, IdempotencyClaimId - stays in Format's "N" spelling. One column-agnostic
+    // reader has to accept both, since which format a given row holds depends on which column it
+    // came from rather than on anything the reader can see ahead of time.
+    private static Guid ParseGuid(string value) => Guid.Parse(value);
 
     private static DateTimeOffset ParseDate(string value) =>
         DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
@@ -1156,6 +1162,21 @@ internal sealed class LongRunningOperationStore(
     private static string Format(Guid value) => value.ToString("N");
 
     private static object? FormatNullable(Guid? value) => value is null ? null : Format(value.Value);
+
+    /// <summary>
+    /// The spelling for a column that names a row in another EF-mapped table (<c>SessionId</c>,
+    /// <c>RunId</c>, <c>InferenceRunId</c>) rather than this table's own identity.
+    /// </summary>
+    /// <remarks>
+    /// EF's SQLite value binder renders every primary key it writes uppercase-dashed, unconditionally.
+    /// A reference column that used <see cref="Format"/> instead would hold the same identity in a
+    /// spelling its own referenced table never does, so a join written the obvious way - without a
+    /// <c>lower(replace(...))</c> normalization on both sides - would always come back empty (W3b-5).
+    /// </remarks>
+    private static string FormatReference(Guid value) => value.ToString("D").ToUpperInvariant();
+
+    private static object? FormatReferenceNullable(Guid? value) =>
+        value is null ? null : FormatReference(value.Value);
 
     private static string Format(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
