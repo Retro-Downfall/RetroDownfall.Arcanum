@@ -995,10 +995,14 @@ public sealed class BackupRestoreServiceTests : IDisposable
     /// exception costs the operator everything that matters here — the reason, the path, and the one
     /// sentence that says the current installation was never touched.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public async Task A_staging_root_that_cannot_be_created_is_a_typed_refusal_rather_than_an_exception()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
@@ -1070,10 +1074,14 @@ public sealed class BackupRestoreServiceTests : IDisposable
     /// if the directory removal then fails, an intact Stage-phase journal is exactly what the next start
     /// picks up and resumes — for a restore that never touched the installation.
     /// </remarks>
-    [Fact]
+    [SkippableFact]
     public async Task An_undeletable_staging_root_is_left_without_a_journal_for_the_startup_sweep()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "The sealed staging root relies on Unix owner-only mode bits.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only call in the finally block below.
         if (OperatingSystem.IsWindows())
         {
 
