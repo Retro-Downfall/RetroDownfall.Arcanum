@@ -211,7 +211,11 @@ public sealed class SagaExtractionService(
             await foreach (Guid sessionId in _channel.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false))
             {
 
-                if (!_pending.TryRemove(sessionId, out SagaExtractionRequest? request))
+                // Peek rather than remove: the key must stay reserved for the whole attempt so a
+                // concurrent EnqueueExtraction call for this session merges into it instead of racing a
+                // second channel write for the same session (W8-12). Released below, once the attempt
+                // (success, retry, or skip) is finished.
+                if (!_pending.TryGetValue(sessionId, out SagaExtractionRequest? request))
                 {
 
                     continue;
@@ -235,6 +239,8 @@ public sealed class SagaExtractionService(
                             embeddings.SagaEnabled,
                             embeddings.Saga.ExtractionEnabled);
 
+                        _ = _pending.TryRemove(sessionId, out _);
+
                         _ = _retryAttempts.TryRemove(sessionId, out _);
 
                         continue;
@@ -254,6 +260,13 @@ public sealed class SagaExtractionService(
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
 
+                    // Host shutdown mid-attempt: release the dedup key and retry ladder here too
+                    // (review round 1), the same way the disabled-skip branch above does, rather than
+                    // leaving them held by a session nothing will ever read from _pending again.
+                    _ = _pending.TryRemove(sessionId, out _);
+
+                    _ = _retryAttempts.TryRemove(sessionId, out _);
+
                     return;
 
                 }
@@ -265,6 +278,13 @@ public sealed class SagaExtractionService(
                     retry = true;
 
                 }
+
+                // Release the key now that the attempt is finished, capturing anything a concurrent
+                // EnqueueExtraction call merged into it while this was in flight. MergeRequests always
+                // returns a new instance, so ReferenceEquals below is exactly "did anything merge in".
+                SagaExtractionRequest latest = _pending.TryRemove(sessionId, out SagaExtractionRequest? merged)
+                    ? merged
+                    : request;
 
                 if (retry)
                 {
@@ -281,15 +301,30 @@ public sealed class SagaExtractionService(
 
                     }
 
-                    await Task.Delay(delay, stoppingToken).ConfigureAwait(false);
-
-                    EnqueueExtraction(request);
+                    // Re-enqueue on a background task after the backoff instead of blocking this
+                    // single-reader loop: every other queued session would otherwise sit unread for the
+                    // whole delay, up to MaximumAutomaticRetryDelay, behind one failing session (W8-3).
+                    // Task.Delay yields at its first await, so this needs no Task.Run; the discarded
+                    // task cannot fault — Task.Delay only ever throws OperationCanceledException, and
+                    // EnqueueExtraction already catches everything itself. latest (not request) carries
+                    // forward anything that merged in while this attempt was running.
+                    _ = RetryAfterDelayAsync(latest, delay, stoppingToken);
 
                     continue;
 
                 }
 
                 _ = _retryAttempts.TryRemove(sessionId, out _);
+
+                if (!ReferenceEquals(latest, request))
+                {
+
+                    // Something merged in while this attempt was running; a plain release would drop it
+                    // silently. Re-enqueueing the remainder is cheap - the next pass skips without an
+                    // LLM call once nothing is left unsummarized (W8-12).
+                    EnqueueExtraction(latest);
+
+                }
 
             }
 
@@ -329,6 +364,29 @@ public sealed class SagaExtractionService(
         return seconds >= MaximumAutomaticRetryDelay.TotalSeconds
             ? MaximumAutomaticRetryDelay
             : TimeSpan.FromSeconds(seconds);
+
+    }
+
+    // Waits out the backoff off the consumer loop, then re-enqueues. EnqueueExtraction re-merges with
+    // anything that arrived for the same session while this was waiting, so nothing queued during the
+    // delay is lost.
+    private async Task RetryAfterDelayAsync(SagaExtractionRequest request, TimeSpan delay, CancellationToken stoppingToken)
+    {
+
+        try
+        {
+
+            await Task.Delay(delay, stoppingToken).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return;
+
+        }
+
+        EnqueueExtraction(request);
 
     }
 

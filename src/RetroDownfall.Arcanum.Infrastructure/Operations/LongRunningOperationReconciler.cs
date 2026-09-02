@@ -150,9 +150,15 @@ public sealed class LongRunningOperationReconciler(
                 lease.Operation,
                 ct).ConfigureAwait(false);
 
+            // Once the handler has returned, persisting its outcome is compensation: the pass token is
+            // often the reason compensation is running at all (a startup budget that just expired, a
+            // background pass whose host is shutting down), so recording the result must not be lost
+            // because that same token is now cancelled. Compensating work runs on CancellationToken.None
+            // (the recurring-root-cause pattern; ct stays scoped to the handler call and the lease
+            // acquisition above) (#40).
             LongRunningOperation latest = await operationStore.GetAsync(
                 lease.Operation.Id,
-                ct).ConfigureAwait(false)
+                CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
             bool transitioned = await operationStore.TryTransitionAsync(
@@ -162,7 +168,7 @@ public sealed class LongRunningOperationReconciler(
                 result.State,
                 timeProvider.GetUtcNow(),
                 result.ErrorCode,
-                ct).ConfigureAwait(false);
+                CancellationToken.None).ConfigureAwait(false);
 
             if (!transitioned)
             {
@@ -275,14 +281,16 @@ public sealed class LongRunningOperationReconciler(
     {
         if (!handlersForOperation.TryGetValue(operation.Kind, out ILongRunningOperationRecoveryHandler? handler))
         {
-            if (operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.AbandonSafely)
-            {
-                return LongRunningOperationRecoveryResult.Abandoned();
-            }
-
             logger.LogWarning(
                 "No recovery handler is registered for durable operation kind {OperationKind}.",
                 operation.Kind);
+
+            if (operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.AbandonSafely)
+            {
+                return LongRunningOperationRecoveryResult.Abandoned(
+                    LongRunningOperationErrorCodes.RecoveryHandlerMissing);
+            }
+
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 LongRunningOperationErrorCodes.RecoveryHandlerMissing);
         }

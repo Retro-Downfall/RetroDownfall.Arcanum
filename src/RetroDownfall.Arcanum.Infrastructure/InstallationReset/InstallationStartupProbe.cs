@@ -99,6 +99,43 @@ internal sealed class InstallationStartupProbe(
     public Result<bool> IsFreshInstallation()
     {
 
+        // The file-only check runs first because it is local and cheap, while the active-reset read
+        // below reaches the OS credential store on nearly every invocation (its own fast path only
+        // fires when the guarded root's parent is absent, which is rare — see ReadActiveResetAsync).
+        // On any installation that has already been set up, an authoritative file is present and this
+        // loop answers the question without a credential-store round trip at all.
+        string[] authoritativePaths =
+        [
+            configurationPath,
+            databasePath,
+            databasePath + ".kdf",
+            databasePath + ".kdf.pending",
+            protectedMasterStatePath,
+        ];
+
+        foreach (string path in authoritativePaths)
+        {
+
+            Result<AuthoritativePathState> state = ClassifyAuthoritativePath(
+                path,
+                exactMustBeDirectory: false);
+
+            if (state.IsFailure)
+            {
+
+                return Result<bool>.Failure(state.Error);
+
+            }
+
+            if (state.Value is AuthoritativePathState.Present)
+            {
+
+                return Result<bool>.Success(false);
+
+            }
+
+        }
+
         Result<ActiveInstallationReset?> active;
 
         try
@@ -131,38 +168,6 @@ internal sealed class InstallationStartupProbe(
         {
 
             return Result<bool>.Success(false);
-
-        }
-
-        string[] authoritativePaths =
-        [
-            configurationPath,
-            databasePath,
-            databasePath + ".kdf",
-            databasePath + ".kdf.pending",
-            protectedMasterStatePath,
-        ];
-
-        foreach (string path in authoritativePaths)
-        {
-
-            Result<AuthoritativePathState> state = ClassifyAuthoritativePath(
-                path,
-                exactMustBeDirectory: false);
-
-            if (state.IsFailure)
-            {
-
-                return Result<bool>.Failure(state.Error);
-
-            }
-
-            if (state.Value is AuthoritativePathState.Present)
-            {
-
-                return Result<bool>.Success(false);
-
-            }
 
         }
 

@@ -365,6 +365,14 @@ public sealed class PrometheusMetricsExporter : IDisposable
             static _ => new ConcurrentDictionary<string, MetricValueState>(StringComparer.Ordinal));
 
         string labelKey = BuildLabelString(tags);
+
+        if (!TryReserveSeries(series, labelKey))
+        {
+
+            return;
+
+        }
+
         MetricValueState valueState = series.GetOrAdd(labelKey, static _ => new MetricValueState());
 
         valueState.Set(value);

@@ -174,6 +174,58 @@ public sealed class CovenantSchemaRepairTests
 
     }
 
+    /// <summary>
+    /// W8-9: <c>intent.Owner</c> constructs a <c>CovenantExclusiveRecoveryOwner</c>, whose constructor
+    /// throws ArgumentException("The identifier cannot be empty.") for an empty OperationId
+    /// (CovenantValidation.RequireNonEmpty) before AdoptDurableRecoveryOwner's body - and its own
+    /// object-initialized error - ever runs. Before this fix, PrepareBeforeEffectsAsync's catch
+    /// discarded whichever ArgumentException reached it and returned the same generic sentence for
+    /// all of them, so an operator refused at startup could not tell which invariant refused.
+    /// </summary>
+    [Fact]
+    public async Task Invalid_owner_failure_names_the_invariant_that_refused_it()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        // Committed directly with an empty OperationId rather than through fixture.CommitAsync(): the
+        // row is otherwise entirely well-formed, so the journal read succeeds and reaches
+        // AdoptDurableRecoveryOwner rather than failing content-free validation the way the
+        // malformed-values test below does.
+        CovenantSchemaRepairIntent invalidOwner =
+            fixture.Intent(CovenantSchemaRepairPhase.Prepared) with { OperationId = Guid.Empty };
+
+        Result committed = await CovenantSchemaRepairJournal.CommitPreparedAsync(
+            fixture.Connection,
+            CovenantSqliteConnectionInitializer.Instance,
+            invalidOwner,
+            DateTimeOffset.UnixEpoch,
+            Token);
+
+        Assert.True(committed.IsSuccess, committed.Error.Message);
+
+        using MaintenanceLockScope heldLock = fixture.AcquireLock();
+
+        StubSchemaRepairExecutor executor = new();
+
+        Result<CovenantSchemaRepairStartupRecoveryPreparation> prepared = await fixture
+            .Recovery(executor)
+            .PrepareBeforeEffectsAsync(
+                heldLock.Lock,
+                heldLock.Directory,
+                fixture.Connection,
+                Token);
+
+        Assert.True(prepared.IsFailure);
+
+        Assert.NotEqual(
+            "Covenant schema-repair ownership could not be reconstructed safely.",
+            prepared.Error.Message);
+
+        Assert.Contains("identifier cannot be empty", prepared.Error.Message, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task Malformed_journal_values_fail_content_free_before_any_effect()
     {
