@@ -962,6 +962,96 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task EnqueueExtraction_ArrivingWhileTheSameSessionIsInFlight_MergesInsteadOfDuplicating()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content worth extracting");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            Entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+            Gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance);
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+
+            Guid firstAttachmentId = Guid.NewGuid();
+
+            Guid secondAttachmentId = Guid.NewGuid();
+
+            AttachmentMemoryProvenance firstProvenance = new(
+                sessionId,
+                firstAttachmentId,
+                "logical-key-one",
+                1,
+                "hash-one",
+                DateTimeOffset.UtcNow,
+                "note",
+                AttachmentSourceAvailability.Available);
+
+            service.EnqueueExtraction(new SagaExtractionRequest(sessionId, [firstProvenance], HadUnprovenancedAttachmentContent: false));
+
+            await intelligence.Entered!.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // The first attempt is now blocked mid-flight on Gate. A second arrival for the same
+            // session must merge into the still-reserved dedup key instead of racing a duplicate
+            // channel write for the same session (W8-12): dequeuing used to remove the key immediately,
+            // so a concurrent enqueue found nothing to merge into and queued a second, separate entry.
+            AttachmentMemoryProvenance secondProvenance = new(
+                sessionId,
+                secondAttachmentId,
+                "logical-key-two",
+                1,
+                "hash-two",
+                DateTimeOffset.UtcNow,
+                "note",
+                AttachmentSourceAvailability.Available);
+
+            service.EnqueueExtraction(new SagaExtractionRequest(sessionId, [secondProvenance], HadUnprovenancedAttachmentContent: false));
+
+            SagaExtractionRequest pending = Assert.Single(service.PendingRequestsForTests);
+
+            Assert.Equal(sessionId, pending.SessionId);
+
+            Assert.Contains(pending.MaterializedAttachments, item => item.AttachmentId == firstAttachmentId);
+
+            Assert.Contains(pending.MaterializedAttachments, item => item.AttachmentId == secondAttachmentId);
+
+        }
+        finally
+        {
+
+            // Unconditionally, even if an assertion above threw: the fake is parked on Gate with no
+            // cancellation wiring of its own, and StopAsync(CancellationToken.None) waits for
+            // ExecuteAsync to finish, so a still-held gate would hang the test forever instead of
+            // reporting the assertion failure.
+            intelligence.Gate!.TrySetResult(true);
+
+            await hosted.StopAsync(CancellationToken.None);
+
+        }
+
+    }
+
+    [SkippableFact]
     public async Task EnqueueExtraction_BeyondFormerQueueCapacity_EventuallyProcessesEverySession()
     {
 
@@ -1394,7 +1484,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public List<string> StatelessUserContents { get; } = [];
 
-        public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
+        /// <summary>Signaled the moment a call enters <see cref="ExecutePromptAsync"/>, before <see cref="Gate"/> is awaited. Null unless a test needs to observe a call as in-flight.</summary>
+        public TaskCompletionSource<bool>? Entered { get; set; }
+
+        /// <summary>When set, held calls block here until the test completes it, so a test can inspect state while an extraction is in flight.</summary>
+        public TaskCompletionSource<bool>? Gate { get; set; }
+
+        public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
         {
 
             int callCount = Interlocked.Increment(ref _callCount);
@@ -1412,14 +1508,23 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             }
 
-            if (NextFailure is { } failure)
+            Entered?.TrySetResult(true);
+
+            if (Gate is { } gate)
             {
 
-                return Task.FromResult(Result<PromptTurnResult>.Failure(failure));
+                await gate.Task.ConfigureAwait(false);
 
             }
 
-            return Task.FromResult(Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null)));
+            if (NextFailure is { } failure)
+            {
+
+                return Result<PromptTurnResult>.Failure(failure);
+
+            }
+
+            return Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null));
 
         }
 
