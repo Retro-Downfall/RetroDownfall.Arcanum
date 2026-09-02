@@ -49,6 +49,9 @@ internal static class TheForgeAtomicJsonFile
                 Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
             };
 
+            // Windows has no UnixCreateMode equivalent; its owner-only restriction is the ACL
+            // TheForgeOwnerOnlyPermissions.TrySetFile applies below, after the file exists (its own
+            // OperatingSystem.IsWindows() branch calls TryApplyFileAcl there).
             if (!OperatingSystem.IsWindows())
             {
 

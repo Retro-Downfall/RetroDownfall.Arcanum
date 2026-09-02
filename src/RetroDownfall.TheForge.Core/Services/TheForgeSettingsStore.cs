@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.TheForge.Core.IO;
 using RetroDownfall.TheForge.Core.Models;
 
 namespace RetroDownfall.TheForge.Core.Services;
@@ -185,7 +186,7 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
 
             Directory.CreateDirectory(directory);
 
-            TrySetUnixDirectoryMode(directory);
+            TheForgeOwnerOnlyPermissions.TrySetDirectory(directory);
 
         }
 
@@ -208,6 +209,9 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
                 Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
             };
 
+            // Windows has no UnixCreateMode equivalent; its owner-only restriction is the ACL
+            // TheForgeOwnerOnlyPermissions.TrySetFile applies below, after the file exists (its own
+            // OperatingSystem.IsWindows() branch calls TryApplyFileAcl there).
             if (!OperatingSystem.IsWindows())
             {
 
@@ -226,11 +230,11 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
 
             }
 
-            TrySetUnixFileMode(tempPath);
+            TheForgeOwnerOnlyPermissions.TrySetFile(tempPath);
 
             File.Move(tempPath, SettingsPath, overwrite: true);
 
-            TrySetUnixFileMode(SettingsPath);
+            TheForgeOwnerOnlyPermissions.TrySetFile(SettingsPath);
 
         }
         catch
@@ -262,54 +266,6 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         {
 
             // Best-effort cleanup of temp file.
-        }
-
-    }
-
-    private static void TrySetUnixFileMode(string path)
-    {
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
-
-        try
-        {
-
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-
-            // Best-effort — some filesystems reject chmod.
-        }
-
-    }
-
-    private static void TrySetUnixDirectoryMode(string path)
-    {
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
-
-        try
-        {
-
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-
-            // Best-effort.
         }
 
     }
