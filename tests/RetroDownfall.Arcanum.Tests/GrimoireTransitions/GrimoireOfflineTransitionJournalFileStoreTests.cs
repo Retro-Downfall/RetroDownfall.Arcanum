@@ -932,14 +932,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
-    public async Task Retiring_substitution_during_the_delegated_window_is_detected_and_never_reported_absent()
-    {
-
-        await Compare_unlink_detects_a_substitution_in_the_delegated_unlink_window();
-
-    }
-
-    [Fact]
     public async Task Publication_failure_before_exchange_preserves_current_and_removes_exact_working_file()
     {
 
