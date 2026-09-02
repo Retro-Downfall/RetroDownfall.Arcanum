@@ -303,13 +303,25 @@ public sealed class GrimoireDbContextCompositionTests
     private static bool BuildsArcanumDbContextOptions(ProductionSource source) =>
         source.Names("DbContextOptionsBuilder<ArcanumDbContext>")
         || InstallsTheServingConfigurator(source)
-        || source.Names("ArcanumDbContextOptionsConfigurator.ConfigureNonServingFallback(");
+        || source.Names("ArcanumDbContextOptionsConfigurator.ConfigureNonServingFallback(")
+
+        // The provider call itself, because the bypass this inventory exists to catch need not name
+        // the builder type at all: `AddDbContext<ArcanumDbContext>((sp, o) => o.UseSqlite(...))`
+        // configures serving options through the lambda's parameter and matches none of the tokens
+        // above. That shape shipped past this test until it was added.
+        || source.Names(".UseSqlite(");
 
     /// <summary>
     /// The serving composition: options built by the configurator that installs the interceptor.
     /// </summary>
+    /// <remarks>
+    /// The configurator's own file counts. It is where the serving provider call and the interceptor
+    /// registration live, so it names its own method rather than calling it, and it is the one file
+    /// that could not be an exemption without exempting serving composition itself.
+    /// </remarks>
     private static bool InstallsTheServingConfigurator(ProductionSource source) =>
-        source.Names("ArcanumDbContextOptionsConfigurator.Configure(");
+        source.Names("ArcanumDbContextOptionsConfigurator.Configure(")
+        || source.Is("ArcanumDbContextOptionsConfigurator.cs");
 
     private static bool IsNamedNonServingOptionsPath(ProductionSource source) =>
 
