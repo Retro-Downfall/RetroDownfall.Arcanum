@@ -1,7 +1,11 @@
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
-/// Per-turn ambient for the live HITL emitter. The MCP client <c>ElicitationHandler</c> stays a
+/// Per-tool-call ambient for the live HITL emitter — (re-)established fresh before each tool
+/// invocation (see <c>WizardIntelligenceProvider.ProcessWithLiveWardsAsync</c>) because an
+/// <see cref="AsyncLocal{T}"/> write does not survive the <c>yield return</c> between one tool
+/// call and the next, so nothing set here persists across a whole turn on its own; the channel it
+/// wraps is still created once per turn. The MCP client <c>ElicitationHandler</c> stays a
 /// singleton registration; it reads this <see cref="AsyncLocal{T}"/> so buffered/unattended turns
 /// (no emitter) decline immediately instead of registering an invisible waiter.
 /// </summary>

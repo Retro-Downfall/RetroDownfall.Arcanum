@@ -48,7 +48,12 @@ public sealed record ModelEntry
     /// and should fall back to some other signal instead. Only an explicit
     /// <see langword="false"/> is an authoritative "this model does not support tools".
     /// </summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    /// <remarks>
+    /// No <c>[JsonIgnore]</c> here: <see cref="ModelEntry"/> carries a type-level
+    /// <see cref="JsonConverterAttribute"/>, so <c>System.Text.Json</c> never consults
+    /// property-level attributes for it — <see cref="ModelEntryJsonConverter.Write"/>'s own
+    /// conditional write is what omits this property when unset.
+    /// </remarks>
     public bool? SupportsTools { get; set; }
 
     /// <summary>
@@ -71,10 +76,11 @@ public sealed record ModelEntry
 
 /// <summary>
 /// AOT-safe converter accepting either a bare JSON string (<c>"gpt-4o"</c>, back-compat form —
-/// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c> and reasoning remains unconfigured)
-/// or a factual object with `name`/`supportsVision` and optional `reasoning` (only `wireDialect` and
-/// `maxBudgetTokens`). Writes are always the object form and include the reasoning object only when
-/// it was declared.
+/// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c>, <see cref="ModelEntry.SupportsTools"/>
+/// stays undeclared, and reasoning remains unconfigured) or a factual object with
+/// `name`/`supportsVision`/`supportsTools` and optional `reasoning` (only `wireDialect` and
+/// `maxBudgetTokens`). Writes are always the object form and include `supportsTools` only when
+/// declared and the reasoning object only when it was declared.
 /// </summary>
 public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 {
@@ -186,7 +192,7 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 
             default:
                 throw new JsonException(
-                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'reasoning' (got {reader.TokenType}).");
+                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'supportsTools'/'reasoning' (got {reader.TokenType}).");
         }
     }
 
