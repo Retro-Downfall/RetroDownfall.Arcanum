@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
 using Xunit;
@@ -170,6 +171,7 @@ public class TheForgeSettingsStoreTests
     }
 
     [Fact]
+    [UnsupportedOSPlatform("windows")]
     public async Task SaveAsync_NeverExposesTheTempFileToGroupOrOtherWhileWriting()
     {
 
@@ -178,6 +180,8 @@ public class TheForgeSettingsStoreTests
 
             // File.GetUnixFileMode throws on Windows; TrySetUnixFileMode already no-ops there and the
             // ordering race this test targets is POSIX-only (Windows has no equivalent ACL fix here).
+            // [UnsupportedOSPlatform] above only quiets CA1416 for the GetUnixFileMode call below —
+            // xUnit still discovers and runs this method on Windows, so the runtime guard stays.
             return;
 
         }
