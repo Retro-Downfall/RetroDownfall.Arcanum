@@ -737,12 +737,19 @@ public static class IdempotencyEndpointFilters
         && statusCode != StatusCodes.Status408RequestTimeout;
 
     /// <summary>
-    /// Whether a response with this content type is safe to cache: the claim is stored as a UTF-8
-    /// string (<see cref="PersistClaimAsync"/>) and replayed by re-encoding it
-    /// (<see cref="IdempotencyReplayResult.ExecuteAsync"/>), so anything that is not guaranteed valid
-    /// UTF-8 text would round-trip lossy. Every route this filter attaches to today emits one of
-    /// these three text shapes — plain JSON, NDJSON, or SSE — all of which this class's own remarks
-    /// document as cached the same way, so this is not a narrowing of existing behavior.
+    /// Whether a response with this content type is safe to cache. This is a closed allowlist of
+    /// the three media types production actually emits on a filtered route — plain JSON,
+    /// NDJSON, or SSE, all of which this class's own remarks document as cached the same way — not
+    /// a general test for "is this UTF-8." The claim is stored as a UTF-8 string
+    /// (<see cref="PersistClaimAsync"/>) and replayed by re-encoding it
+    /// (<see cref="IdempotencyReplayResult.ExecuteAsync"/>), so UTF-8 safety is *why* these three are
+    /// admitted, not the rule this predicate checks: it matches on the media type substring, so a
+    /// UTF-8-safe type outside the three — <c>text/plain; charset=utf-8</c>, for example — is
+    /// refused and the request re-executes rather than replaying, even though nothing about it would
+    /// round-trip lossy. That is deliberate: production never emits that shape today, and widening
+    /// the check to "anything UTF-8" would reopen the exact unbounded surface W2-9 narrowed this to
+    /// close, admitting a future non-JSON/NDJSON/SSE route's response the first time someone attaches
+    /// this filter to one, rather than requiring it to be added here explicitly.
     /// </summary>
     internal static bool IsReplayableContentType(string? contentType) =>
         contentType is not null
