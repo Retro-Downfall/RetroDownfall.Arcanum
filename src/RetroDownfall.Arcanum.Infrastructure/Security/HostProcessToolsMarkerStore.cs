@@ -386,13 +386,15 @@ internal sealed class HostProcessToolsMarkerResetAdapter : IHostToolsMarkerPairR
 
             }
 
-            // The capability below takes ownership of this exact array and zeroes it on its own
-            // disposal; the finally must not zero what the caller now owns.
+            ResetOsCapability ownedCapability = new(_mintTicket, capability, encoded);
+
+            // ownedCapability now owns this exact array and zeroes it on its own disposal; the
+            // finally must not zero what the caller now owns. Constructed above, before this
+            // null-out, so a throwing constructor would leave encodedToZero set and the finally
+            // would still zero an array nothing ended up owning.
             encodedToZero = null;
 
-            return HostToolsMarkerPairResetOsOpenResult.Opened(
-                evidence,
-                new ResetOsCapability(_mintTicket, capability, encoded));
+            return HostToolsMarkerPairResetOsOpenResult.Opened(evidence, ownedCapability);
 
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
