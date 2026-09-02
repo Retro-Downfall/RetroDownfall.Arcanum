@@ -75,6 +75,74 @@ public sealed class ModelEntryJsonConverterTests
     }
 
     [Fact]
+    public void Read_ObjectForm_ReadsSupportsToolsFalse()
+    {
+
+        Utf8JsonReader reader = CreateReader("""{"name":"local.gguf","supportsTools":false}""");
+
+        reader.Read();
+
+        ModelEntry? entry = _converter.Read(ref reader, typeof(ModelEntry), Options);
+
+        Assert.NotNull(entry);
+
+        Assert.False(entry!.SupportsTools);
+
+    }
+
+    [Fact]
+    public void Read_ObjectFormMissingSupportsTools_DefaultsNull()
+    {
+
+        Utf8JsonReader reader = CreateReader("""{"name":"local.gguf"}""");
+
+        reader.Read();
+
+        ModelEntry? entry = _converter.Read(ref reader, typeof(ModelEntry), Options);
+
+        Assert.NotNull(entry);
+
+        Assert.Null(entry!.SupportsTools);
+
+    }
+
+    [Fact]
+    public void Write_WithSupportsToolsFalse_IncludesSupportsToolsInOutput()
+    {
+
+        using MemoryStream stream = new();
+
+        using Utf8JsonWriter writer = new(stream);
+
+        _converter.Write(writer, new ModelEntry("gpt-4o", SupportsTools: false), Options);
+
+        writer.Flush();
+
+        string json = Encoding.UTF8.GetString(stream.ToArray());
+
+        Assert.Equal("""{"name":"gpt-4o","supportsVision":false,"supportsTools":false}""", json);
+
+    }
+
+    [Fact]
+    public void Write_WithSupportsToolsUndeclared_OmitsSupportsToolsFromOutput()
+    {
+
+        using MemoryStream stream = new();
+
+        using Utf8JsonWriter writer = new(stream);
+
+        _converter.Write(writer, new ModelEntry("gpt-4o"), Options);
+
+        writer.Flush();
+
+        string json = Encoding.UTF8.GetString(stream.ToArray());
+
+        Assert.DoesNotContain("supportsTools", json, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public void Read_InvalidToken_ThrowsJsonException()
     {
 
