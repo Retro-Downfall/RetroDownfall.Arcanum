@@ -6029,7 +6029,6 @@ internal sealed partial class DataRetentionService
             "Entries_fts",
             EntryFtsProbePredicate,
             cancellationToken,
-            ("@id", entryId.ToString("N")),
             ("@rowid", entryRowId)).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(

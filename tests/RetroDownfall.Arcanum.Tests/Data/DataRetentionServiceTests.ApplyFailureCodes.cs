@@ -168,6 +168,93 @@ public sealed partial class DataRetentionServiceTests
     }
 
     /// <summary>
+    /// A row left for durable recovery is a row the recovery machinery actually adopts.
+    /// </summary>
+    /// <remarks>
+    /// The quarantine ending tells its caller "quarantined bytes will be finalized by durable
+    /// recovery", and that sentence is only true if the durable row it leaves behind is one
+    /// <see cref="ILongRunningOperationStore"/> re-selects. Its recovery predicate matches on one
+    /// exact <c>TerminalErrorCode</c>, and <c>TryStartSingleFlightAsync</c> refuses every new
+    /// retention operation while a <c>ReconciliationRequired</c> retention row exists — so a row
+    /// stamped with a code the predicate does not match is not merely unrecovered, it blocks prune,
+    /// delete-session, reset-memory and factory-reset indefinitely until a person resets it.
+    ///
+    /// <para>The stamp is taken from the service's own constant rather than restated here, so this
+    /// fails if the service ever stamps something the store cannot adopt. Both halves of the
+    /// contract are exercised through the store's production API: the reconciler's
+    /// <see cref="ILongRunningOperationStore.FindExpiredAsync"/> sweep, and the
+    /// <see cref="ILongRunningOperationStore.TryAcquireLeaseAsync"/> claim that follows it.</para>
+    ///
+    /// <para>The gap this leaves is recorded rather than hidden: the quarantine arm itself cannot be
+    /// forced from a test — <c>TryDeleteQuarantined</c> fails only if the quarantined file's identity
+    /// or link count changes between the rename and the delete, and only a database commit sits
+    /// between them — so what is pinned here is the argument that arm passes, not the arm running.
+    /// </para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_retention_row_left_for_durable_recovery_is_adopted_by_the_store()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
+
+        DateTimeOffset started = DateTimeOffset.UtcNow.AddMinutes(-10);
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Quarantine recovery contract.",
+                started));
+
+        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            "quarantine-contract-test",
+            started,
+            started.AddMinutes(5));
+
+        Assert.True(lease.Acquired);
+
+        // Exactly what the quarantine ending does to its row, with the code it actually stamps.
+        Assert.True(
+            await operations.TryTransitionAsync(
+                operation.Id,
+                lease.Operation.Revision,
+                "quarantine-contract-test",
+                LongRunningOperationState.ReconciliationRequired,
+                started,
+                DataRetentionService.RetentionRecoveryTerminalCode,
+                CancellationToken.None));
+
+        DateTimeOffset afterLease = started.AddMinutes(30);
+
+        IReadOnlyList<LongRunningOperation> expired = await operations.FindExpiredAsync(
+            afterLease,
+            limit: 50);
+
+        Assert.Contains(expired, candidate => candidate.Id == operation.Id);
+
+        LongRunningOperationLeaseResult adopted = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            "durable-recovery",
+            afterLease,
+            afterLease.AddMinutes(5));
+
+        Assert.True(adopted.Acquired);
+
+        // The caller-facing code stays distinct on purpose: the operator is told which ending this
+        // was, and the row carries the one code recovery matches on.
+        Assert.NotEqual(
+            ErrorCodes.Data.QuarantineRecoveryRequired,
+            DataRetentionService.RetentionRecoveryTerminalCode);
+
+    }
+
+    /// <summary>
     /// A store that refuses exactly one transition: the one that closes a successful operation.
     /// </summary>
     /// <remarks>

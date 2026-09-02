@@ -75,6 +75,23 @@ internal sealed partial class DataRetentionService(
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : IDataRetentionService
 {
 
+    /// <summary>
+    /// The terminal code every retention row left for durable recovery is stamped with.
+    /// </summary>
+    /// <remarks>
+    /// Not a message to the caller — the store's recovery contract. <c>FindExpiredAsync</c> and
+    /// <c>TryAcquireLeaseAsync</c> re-select a <c>ReconciliationRequired</c> retention row only when
+    /// its <c>TerminalErrorCode</c> is this exact value, while <c>TryStartSingleFlightAsync</c>
+    /// refuses every new retention operation while such a row exists at all. Stamping the row with
+    /// the code the caller was handed instead strands it: nothing adopts it, and prune,
+    /// delete-session, reset-memory and factory-reset all answer <c>Data.Conflict</c> until a person
+    /// resets it by hand.
+    ///
+    /// <para>So the two are deliberately different values. The caller is told exactly which ending it
+    /// hit; the row carries the one code the recovery machinery matches on.</para>
+    /// </remarks>
+    internal const string RetentionRecoveryTerminalCode = ErrorCodes.Data.ReconciliationFailed;
+
     private static readonly int[] ActiveOperationStates =
     [
         (int)LongRunningOperationState.Pending,
@@ -1134,7 +1151,7 @@ internal sealed partial class DataRetentionService(
                 ownerId,
                 LongRunningOperationState.ReconciliationRequired,
                 timeProvider.GetUtcNow(),
-                ErrorCodes.Data.QuarantineRecoveryRequired,
+                RetentionRecoveryTerminalCode,
                 CancellationToken.None).ConfigureAwait(false);
 
             return Result<DataRetentionApplyResult>.Failure(
