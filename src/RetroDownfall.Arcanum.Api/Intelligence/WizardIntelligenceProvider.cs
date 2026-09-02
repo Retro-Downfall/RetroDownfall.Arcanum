@@ -4443,6 +4443,13 @@ public sealed partial class WizardIntelligenceProvider(
         Task processTask,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        // W1-7: the human-prompt channel is per-turn, not per-call — it is created once and
+        // completed only when the whole streaming turn ends, so a fresh WaitToReadAsync abandoned
+        // on every pump iteration (as `wards`'s call-scoped one below still is) parks one more
+        // queued reader and one more cancellationToken registration for the remaining life of the
+        // turn. Hold a single wait and only re-create it once it actually resolves.
+        Task<bool>? humanWait = humans?.WaitToReadAsync(cancellationToken).AsTask();
+
         while (true)
         {
             // Checked first on every iteration: once the caller's token is cancelled, a
@@ -4482,10 +4489,25 @@ public sealed partial class WizardIntelligenceProvider(
                 yield break;
             }
 
-            List<Task> waits = [processTask, wards.WaitToReadAsync(cancellationToken).AsTask()];
-            if (humans is not null)
+            // Re-arm only once the held wait actually resolved, and only when it resolved with
+            // Result: true (a write is available to read). A completed-but-unread wait can also
+            // resolve successfully with Result: false — the channel itself completed, meaning no
+            // write is coming, ever — and a wait that completed unsuccessfully (the token was
+            // cancelled, or the channel completed with an exception) must likewise not be handed
+            // to Task.WhenAny again below: either one is an already-completed task, so WhenAny
+            // would resolve instantly on it forever, busy-spinning this loop exactly as the
+            // un-hoisted per-iteration wait did before this fix.
+            if (humanWait is { IsCompleted: true })
             {
-                waits.Add(humans.WaitToReadAsync(cancellationToken).AsTask());
+                humanWait = humanWait is { IsCompletedSuccessfully: true, Result: true }
+                    ? humans!.WaitToReadAsync(cancellationToken).AsTask()
+                    : null;
+            }
+
+            List<Task> waits = [processTask, wards.WaitToReadAsync(cancellationToken).AsTask()];
+            if (humanWait is not null)
+            {
+                waits.Add(humanWait);
             }
 
             _ = await Task.WhenAny(waits).ConfigureAwait(false);
