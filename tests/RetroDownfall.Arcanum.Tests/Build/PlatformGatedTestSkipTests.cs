@@ -87,18 +87,28 @@ public sealed class PlatformGatedTestSkipTests
 /// return as a guard clause and does not understand that <c>Skip.If</c> already exited the method on
 /// the same condition; without it, a call to a platform-annotated API later in the body is a build
 /// warning (an error, on this tree). This scan exempts exactly that shape: a guard is compliant only
-/// when a <c>Skip.If</c>/<c>Skip.IfNot</c> call earlier in the same method carries the same condition
-/// (for <c>Skip.IfNot</c>, the guard must carry its logical negation, since <c>IfNot</c> skips when its
-/// argument is false and a dead guard reads true in exactly the case the skip already covered). The
-/// match is textual, not semantic, so the dead guard must repeat the skip's condition verbatim (with
-/// the single leading <c>!</c> for the <c>IfNot</c> case) — a differently-worded but equivalent
-/// condition is not recognized and is reported as a fresh offender.</para>
+/// when a <c>Skip.If</c>/<c>Skip.IfNot</c> call earlier in the same method, written as an unconditional
+/// top-level statement of the method body (brace depth 0 — not nested inside any further <c>if</c>,
+/// <c>try</c>, <c>using</c>, lambda, or other block), carries the same condition (for <c>Skip.IfNot</c>,
+/// the guard must carry its logical negation, since <c>IfNot</c> skips when its argument is false and a
+/// dead guard reads true in exactly the case the skip already covered). The match is textual, not
+/// semantic, so the dead guard must repeat the skip's condition verbatim (with the single leading
+/// <c>!</c> for the <c>IfNot</c> case) — a differently-worded but equivalent condition is not
+/// recognized and is reported as a fresh offender.</para>
 ///
-/// <para>The exemption is position-sensitive (the <c>Skip.</c> call must precede the guard) but not
-/// depth-sensitive: a <c>Skip.If</c> written inside an unrelated nested <c>if</c> or lambda would still
-/// exempt a later top-level guard with the same condition text. Every precedent in this tree keeps both
-/// the skip and its dead guard at the method's top level, so this is a theoretical gap rather than an
-/// observed one, and closing it would cost real complexity for a shape nothing here uses.</para>
+/// <para>The top-level requirement exists because the exemption is otherwise a bare textual
+/// position-plus-condition match with no notion of whether the preceding <c>Skip.</c> call is actually
+/// reached: a <c>Skip.If</c> nested inside an always-false <c>if</c> — dead itself, never runs — would
+/// still exempt a later, genuinely-reachable early return elsewhere in the method that shares its
+/// condition text, silently passing the exact bug this scanner exists to catch. Requiring brace depth 0
+/// closes that gap while still exempting every dead guard this tree actually pairs with a <c>Skip.</c>
+/// call, since every such pairing keeps the <c>Skip.</c> call itself at the method's own top level —
+/// including the one case, <c>MultiFileCommitCoordinatorTests</c>, where the dead guard it protects
+/// sits inside a nested lambda: only the guard is nested there, not the skip. Depth is brace-counted,
+/// not fully parsed: a <c>Skip.</c> call nested under a braceless single-statement <c>if</c>/<c>for</c>/
+/// <c>else</c> (no <c>{ }</c> at all) would still read as depth 0, since brace depth is the only
+/// nesting signal tracked. No site in this tree writes a block without braces, so this is a known,
+/// deliberately unaddressed gap rather than a parser upgrade worth its complexity here.</para>
 /// </remarks>
 internal static class PlatformGatedEarlyReturnScan
 {
@@ -153,12 +163,15 @@ internal static class PlatformGatedEarlyReturnScan
 
             }
 
-            List<(int Start, string Method, string Condition)> skipCalls = [];
+            int[] depths = ComputeBraceDepths(body);
+
+            List<(int Start, int Depth, string Method, string Condition)> skipCalls = [];
 
             foreach (Match skip in SkipCall.Matches(body))
             {
 
-                skipCalls.Add((skip.Index, skip.Groups[1].Value, Normalize(skip.Groups[2].Value)));
+                skipCalls.Add(
+                    (skip.Index, depths[skip.Index], skip.Groups[1].Value, Normalize(skip.Groups[2].Value)));
 
             }
 
@@ -182,6 +195,7 @@ internal static class PlatformGatedEarlyReturnScan
 
                 bool matchedByAPrecedingSkip = skipCalls.Any(
                     call => call.Start < guard.Index
+                        && call.Depth == 0
                         && IsSatisfiedBy(normalizedGuard, call.Method, call.Condition));
 
                 if (matchedByAPrecedingSkip)
@@ -219,6 +233,55 @@ internal static class PlatformGatedEarlyReturnScan
 
     private static string Normalize(string condition) =>
         WhitespaceRun.Replace(condition, " ").Trim();
+
+    /// <summary>
+    /// Brace depth at every position in <paramref name="body"/>, relative to the method's own
+    /// top-level statement list. <paramref name="body"/> starts with the method's own opening brace and
+    /// ends with its matching close (see <see cref="ReadBracedRun"/>); that outer pair is the frame, not
+    /// a nesting level, so a statement written directly in the method body reads depth 0, one written
+    /// inside a further <c>{ }</c> — an <c>if</c>, <c>try</c>, <c>using</c>, lambda, or local-function
+    /// block, any construct that opens one — reads depth 1, and so on.
+    /// </summary>
+    private static int[] ComputeBraceDepths(string body)
+    {
+
+        int[] depths = new int[body.Length];
+
+        int depth = -1;
+
+        for (int index = 0; index < body.Length; index++)
+        {
+
+            char current = body[index];
+
+            if (current == '{')
+            {
+
+                depths[index] = depth;
+
+                depth++;
+
+            }
+            else if (current == '}')
+            {
+
+                depth--;
+
+                depths[index] = depth;
+
+            }
+            else
+            {
+
+                depths[index] = depth;
+
+            }
+
+        }
+
+        return depths;
+
+    }
 
     /// <summary>
     /// Reads the method whose attribute list contains the one found at <paramref name="attributeStart"/>:
