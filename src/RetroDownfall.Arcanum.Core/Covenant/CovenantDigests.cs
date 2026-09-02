@@ -15,26 +15,12 @@ public static class CovenantDigests
         uint placement = Code(input.Placement, nameof(input.Placement));
         RequireInitialized(input.Items, nameof(input.Items));
         RequireInitialized(input.RenderedBytes, nameof(input.RenderedBytes));
-        int maximumEntries;
-        int maximumBytes;
 
-        switch (input.Placement)
-        {
-            case CovenantPlacement.GlobalConfirmed:
-                maximumEntries = CovenantLimits.MaxGlobalConfirmedEntries;
-                maximumBytes = CovenantLimits.MaxGlobalConfirmedRenderedBytes;
-                break;
-            case CovenantPlacement.CampaignConfirmed:
-                maximumEntries = CovenantLimits.MaxCampaignConfirmedEntries;
-                maximumBytes = CovenantLimits.MaxCampaignConfirmedRenderedBytes;
-                break;
-            case CovenantPlacement.CampaignProposed:
-                maximumEntries = CovenantLimits.MaxCampaignProposedEntries;
-                maximumBytes = CovenantLimits.MaxCampaignProposedRenderedBytes;
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(input));
-        }
+        // The placement-to-ceiling mapping lives only in CovenantSectionCapacity; a second copy
+        // here would be free to drift from it and either refuse a write that would have fitted or
+        // accept one that renders over the bound (CovenantSectionCapacity.cs's own remarks).
+        int maximumEntries = CovenantSectionCapacity.MaximumEntries(input.Placement);
+        int maximumBytes = CovenantSectionCapacity.MaximumRenderedBytes(input.Placement);
 
         if (input.Items.Length > maximumEntries || input.RenderedBytes.Length > maximumBytes)
         {
