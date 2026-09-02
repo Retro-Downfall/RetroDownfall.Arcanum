@@ -78,13 +78,22 @@ public sealed class SessionManagementCommandTests
     public void Session_list_reports_a_network_failure_and_names_the_configured_base_address()
     {
 
+        // A default HostSettings() and this harness's own default configuration resolve to the
+        // same address, so asserting against the default alone would also pass a hardcoded
+        // "http://localhost:5001" literal in the annotation path. Configuring a non-default port
+        // makes the assertion load-bearing on the code actually reading Arcanum:Host from DI.
+        const int ConfiguredPort = 19999;
+
         RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
 
-        CliTestResult result = RunCommand(handler, ["session", "list"]);
+        CliTestResult result = RunCommand(
+            handler,
+            ["session", "list"],
+            configureServices: services => services.Configure<ArcanumSettings>(s => s.Host.Port = ConfiguredPort));
 
         Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
 
-        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings());
+        string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
 
         Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
 
@@ -690,7 +699,10 @@ public sealed class SessionManagementCommandTests
 
     }
 
-    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(
+        RecordingHandler handler,
+        string[] args,
+        Action<ServiceCollection>? configureServices = null)
     {
 
         ServiceCollection services = new();
@@ -706,6 +718,8 @@ public sealed class SessionManagementCommandTests
         services.RemoveAll<ISecretStore>();
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
 
