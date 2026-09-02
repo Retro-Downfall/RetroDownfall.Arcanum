@@ -859,8 +859,15 @@ internal sealed partial class ArcanumInternalToolServer
             string remainder = payload[(separator + 1)..];
 
             // A third, optional segment -- the out-of-scope-descent set -- follows the checkpoint path
-            // after a second '\n'; entries within it are '\u001f'-joined (never '\n'-joined) so a
-            // checkpoint path itself is never ambiguous with the boundary between the two segments.
+            // after a second '\n'; entries within it are length-prefixed ("{charCount}:{entry}", back
+            // to back with no separator at all -- see ParseLengthPrefixedEntries), not joined by any
+            // separator character. A workspace-relative path can legally contain any byte a filesystem
+            // allows, including one that used to collide with the single-character join separator this
+            // replaced: a target reached only through an alias whose own relative path happened to
+            // contain that separator byte would decode back into fragments, silently losing that
+            // target's identity (it could then be redescended on a later page, since the fragments never
+            // matched anything TrySeekListDirectoryEntries actually looks up) -- length-prefixing has no
+            // separator byte for any content to collide with, so this is unconditionally unambiguous.
             int entriesSeparator = remainder.IndexOf('\n');
 
             afterPath = entriesSeparator < 0
@@ -885,7 +892,7 @@ internal sealed partial class ArcanumInternalToolServer
 
                 outOfScopeDescendedRelativePaths = entriesPortion.Length == 0
                     ? []
-                    : entriesPortion.Split('\u001f', StringSplitOptions.RemoveEmptyEntries);
+                    : ParseLengthPrefixedEntries(entriesPortion);
 
             }
 
@@ -918,11 +925,97 @@ internal sealed partial class ArcanumInternalToolServer
         if (outOfScopeDescendedRelativePaths.Count > 0)
         {
 
-            payload += "\n" + string.Join('\u001f', outOfScopeDescendedRelativePaths);
+            payload += "\n" + string.Concat(
+                outOfScopeDescendedRelativePaths.Select(EncodeLengthPrefixedEntry));
 
         }
 
         return Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
+
+    }
+
+    // "{charCount}:{entry}", back to back with no join separator -- see the decode-side comment in
+    // TryDecodeListDirectoryContinuation for why a single separator character cannot safely stand in
+    // for this. entry.Length (UTF-16 code units) is what the decoder's Substring call will consume, not
+    // entry's UTF-8 byte count, which can differ for any non-ASCII content -- using anything else here
+    // would desynchronize ParseLengthPrefixedEntries starting from the first non-ASCII entry.
+    private static string EncodeLengthPrefixedEntry(string entry) =>
+        entry.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + entry;
+
+    /// <summary>
+    /// Inverse of <see cref="EncodeLengthPrefixedEntry"/>. Throws <see cref="FormatException"/> on any
+    /// malformed input (missing digits, missing colon, a length that overruns what remains of
+    /// <paramref name="entriesPortion"/>) -- the caller's existing catch clause already treats that
+    /// exception as "the opaque continuation token is malformed", the same outcome a corrupted Base64
+    /// payload or an invalid UTF-8 byte sequence earlier in the same decode already produces, so this
+    /// reuses that path rather than introducing a second, parallel way to report the same thing.
+    /// </summary>
+    private static string[] ParseLengthPrefixedEntries(string entriesPortion)
+    {
+
+        List<string> entries = [];
+
+        int i = 0;
+
+        while (i < entriesPortion.Length)
+        {
+
+            int digitsStart = i;
+
+            while (i < entriesPortion.Length
+                   && entriesPortion[i] is >= '0' and <= '9')
+            {
+
+                i++;
+
+            }
+
+            if (i == digitsStart
+                || i >= entriesPortion.Length
+                || entriesPortion[i] != ':')
+            {
+
+                throw new FormatException(
+                    "list_directory continuation: malformed length-prefixed out-of-scope entry.");
+
+            }
+
+            int length = 0;
+
+            for (int digit = digitsStart; digit < i; digit++)
+            {
+
+                length = (length * 10) + (entriesPortion[digit] - '0');
+
+                if (length < 0
+                    || length > entriesPortion.Length)
+                {
+
+                    throw new FormatException(
+                        "list_directory continuation: out-of-scope entry length prefix out of range.");
+
+                }
+
+            }
+
+            int contentStart = i + 1;
+
+            if (contentStart + length > entriesPortion.Length)
+            {
+
+                throw new FormatException(
+                    "list_directory continuation: out-of-scope entry length prefix overruns the token.");
+
+            }
+
+            entries.Add(
+                entriesPortion.Substring(contentStart, length));
+
+            i = contentStart + length;
+
+        }
+
+        return [.. entries];
 
     }
 
@@ -1009,7 +1102,8 @@ internal sealed partial class ArcanumInternalToolServer
                 if (CanonicalDirectories.Add(canonical))
                 {
 
-                    _reservedEntryBytes += Encoding.UTF8.GetByteCount(relative) + 1;
+                    _reservedEntryBytes += Encoding.UTF8.GetByteCount(relative)
+                        + LengthPrefixOverheadBytes(relative);
 
                 }
 
@@ -1032,6 +1126,13 @@ internal sealed partial class ArcanumInternalToolServer
                 Path.GetRelativePath(_workspaceRoot, canonical)
                     .Replace(Path.DirectorySeparatorChar, '/'));
 
+        // Matches EncodeLengthPrefixedEntry's own "{charCount}:" prefix byte-for-byte -- both count in
+        // UTF-16 code units (relative.Length), the unit the eventual encode/decode round trip actually
+        // uses, and both charge one ASCII byte per digit plus one for the colon, with no separate
+        // component-length tracked for the digits themselves versus the colon.
+        private static int LengthPrefixOverheadBytes(string relative) =>
+            relative.Length.ToString(System.Globalization.CultureInfo.InvariantCulture).Length + 1;
+
         /// <summary>
         /// Records <paramref name="canonicalTarget"/> as descended, or reports that doing so safely is
         /// no longer possible within this token's byte budget -- in which case <paramref
@@ -1053,7 +1154,8 @@ internal sealed partial class ArcanumInternalToolServer
             string relative = Path.GetRelativePath(_workspaceRoot, canonicalTarget)
                 .Replace(Path.DirectorySeparatorChar, '/');
 
-            long candidateBytes = Encoding.UTF8.GetByteCount(relative) + 1;
+            long candidateBytes = Encoding.UTF8.GetByteCount(relative)
+                + LengthPrefixOverheadBytes(relative);
 
             long projectedTokenBytes = _reservedOverheadBytes
                 + (((_reservedEntryBytes + candidateBytes) * 4) / 3);

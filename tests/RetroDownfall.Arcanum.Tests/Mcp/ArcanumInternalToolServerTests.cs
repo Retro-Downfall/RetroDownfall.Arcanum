@@ -3379,6 +3379,152 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // Round 3, item 2: the continuation token's out-of-scope-descent segment used to join entries with
+    // a single separator byte. A workspace-relative path can legally contain any byte a POSIX filesystem
+    // allows (NUL and '/' excepted) -- including that exact separator byte, built here via a numeric
+    // cast rather than typed as an escape sequence, since typing that escape sequence directly in source
+    // has twice landed the raw byte on disk instead during this same body of work (see the report's
+    // "tooling hazard" note). A target directory named with that byte embedded, reached through two
+    // different aliases with a page boundary forced between them, exercises exactly the shape the
+    // reviewer measured: the separator-joined token decodes the target's single recorded identity back
+    // into two garbled fragments, neither of which matches the target's real canonical path, so the
+    // second alias's checkpoint-itself seek does not recognize it as already shown and redescends.
+    [Fact]
+    public async Task ToolsCall_list_directory_preserves_an_out_of_scope_targets_identity_when_its_name_contains_the_tokens_prefix_boundary_byte()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string weirdName = "weird" + (char)0x1F + "dir";
+
+        string targetDirectory = _workspace.CreateSubdir(weirdName);
+
+        _workspace.WriteFile(weirdName + "/f.txt", "x");
+
+        string scopeDirectory = _workspace.CreateSubdir("scope");
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(scopeDirectory, "scopelinkA"),
+            targetDirectory);
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(scopeDirectory, "scopelinkB"),
+            targetDirectory);
+
+        // Sorts after both aliases ("z" > "s") and is a plain file, not a directory symlink: it does
+        // not touch the out-of-scope tracker at all. Its only job is giving the page-one lookahead a
+        // real fourth item to discard so hasMore genuinely becomes true -- without it, scopelinkB's own
+        // (correctly refused, live-state) descend decision leaves nothing else in the walk, hasMore
+        // never becomes true, no continuation token is ever encoded, and the encode/decode round trip
+        // this test exists to exercise never runs at all. Confirmed by getting a false GREEN against the
+        // unfixed separator-based encoding before adding this and diagnosing why.
+        _workspace.WriteFile("scope/zzz.txt", "x");
+
+        await using TestMcpSession oracleSession = await CreateSessionAsync(
+            listDirectoryMaxPaths: 100_000);
+
+        JsonElement oracleArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams { RelativePath = "scope", Recursive = true },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire oracleResult = await oracleSession.CallToolAsync(
+            "list_directory",
+            oracleArguments);
+
+        Assert.False(oracleResult.IsError);
+
+        string oracleText = Assert.Single(oracleResult.Content).Text!;
+
+        int oracleCount = oracleText.Split('\n').Length;
+
+        // Page size 3: page one keeps scopelinkA, scopelinkA's own child (its descent is legitimately
+        // decided producing that child, not a page-boundary peek), and scopelinkB itself -- so the
+        // target's identity is recorded into the outgoing token from scopelinkA's fully-page-one-owned
+        // descent, and scopelinkB's own descent decision is deferred whole to page two's checkpoint-
+        // itself seek, with no mid-ancestor walk through scopelinkA on the way there to mask the bug by
+        // incidentally re-deriving the target's identity fresh.
+        await using TestMcpSession session = await CreateSessionAsync(
+            listDirectoryMaxPaths: 3);
+
+        List<string> allLines = new();
+
+        int pages = 0;
+
+        string? continuation = null;
+
+        do
+        {
+
+            pages++;
+
+            Assert.True(pages <= 50, "Runaway paging -- aborting the test.");
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams
+                {
+                    RelativePath = "scope",
+                    Recursive = true,
+                    Continuation = continuation,
+                },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            foreach (string line in text.Split('\n'))
+            {
+
+                if (!line.StartsWith("...", StringComparison.Ordinal))
+                {
+
+                    allLines.Add(line);
+
+                }
+
+            }
+
+            const string cursorPrefix = "continuation=";
+
+            int cursorStart = text.LastIndexOf(cursorPrefix, StringComparison.Ordinal);
+
+            if (cursorStart < 0)
+            {
+
+                break;
+
+            }
+
+            cursorStart += cursorPrefix.Length;
+
+            int cursorEnd = text.IndexOf(';', cursorStart);
+
+            continuation = text[cursorStart..cursorEnd];
+
+        } while (true);
+
+        // The whole check: the target's content shown exactly once. A fragmented decode loses the
+        // target's identity, so the second alias's checkpoint does not recognize it as already shown
+        // and redescends -- one extra "scope/scopelinkB/f.txt" line, allLines.Count above oracleCount.
+        Assert.True(
+            allLines.Count == oracleCount,
+            $"Expected {oracleCount} entries across all continuations but observed {allLines.Count} over " +
+            $"{pages} pages. A continuation token entry containing the length-prefix boundary byte must " +
+            "round-trip intact, not fragment into pieces that fail to match the target's real identity. " +
+            $"Lines observed: [{string.Join(", ", allLines)}].");
+
+    }
+
     [Fact]
     public async Task ToolsCall_list_directory_rejects_file_path()
     {
