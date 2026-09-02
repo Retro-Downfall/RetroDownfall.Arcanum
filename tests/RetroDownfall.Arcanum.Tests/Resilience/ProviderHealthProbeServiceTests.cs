@@ -41,6 +41,16 @@ public sealed class ProviderHealthProbeServiceTests
 
         await Task.Delay(TimeSpan.FromMilliseconds(300));
 
+        // Assert.InRange(AccessCount, 1, 5) alone cannot tell "backed off" apart from "faulted after
+        // one tick": a regression that lets the tick's exception propagate (e.g. a stray `throw;` in
+        // the scheduler's catch) would also leave AccessCount at exactly 1, forever, and still pass
+        // that range check. Checking the loop is still alive closes that gap (review round 1).
+        Task? executeTask = service.ExecuteTask;
+
+        Assert.NotNull(executeTask);
+
+        Assert.False(executeTask.IsCompleted, "the scheduler loop must still be alive");
+
         await service.StopAsync(CancellationToken.None);
 
         Assert.InRange(options.AccessCount, 1, 5);
