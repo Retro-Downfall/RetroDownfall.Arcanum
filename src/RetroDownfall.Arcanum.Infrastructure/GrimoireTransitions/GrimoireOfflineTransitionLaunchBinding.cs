@@ -46,6 +46,31 @@ internal sealed record GrimoireOfflineTransitionLaunchBinding(
 }
 
 /// <summary>
+/// What an observed database state is, measured against the launch that preselected its target.
+/// </summary>
+/// <remarks>
+/// Three answers rather than two, because the canonical family transaction is not blindly
+/// idempotent: it stamps a new random dataset generation and advances all three epochs, so a
+/// process that finds the family already replaced cannot tell its own commit from an unrelated one
+/// by inspecting the result. Preselecting the target before the effect is what turns that into a
+/// decidable question, and everything the two committed tuples do not describe stays
+/// <see cref="Ambiguous"/> rather than being rounded toward the nearer of them.
+/// </remarks>
+internal enum GrimoireOfflineTransitionObservedState : byte
+{
+
+    /// <summary>The exact source generation and epoch tuple: the transaction did not commit.</summary>
+    ExactlyNotApplied = 1,
+
+    /// <summary>The exact preselected target generation and epoch tuple: this transition's own commit.</summary>
+    ExactlyApplied = 2,
+
+    /// <summary>Anything else. The transition stays closed and requires reconciliation.</summary>
+    Ambiguous = 3,
+
+}
+
+/// <summary>
 /// The one way a durable launch checkpoint becomes journal authority.
 /// </summary>
 /// <remarks>
@@ -153,6 +178,50 @@ internal static class GrimoireOfflineTransitionLaunch
                     checked((ulong)expectedDatabaseOperationRevision),
                     parentReceiptBindingDigest))
             : Result<GrimoireOfflineTransitionBinding>.Failure(Unresumable());
+
+    /// <summary>
+    /// Classifies an observed generation and epoch tuple against this launch's committed pair.
+    /// </summary>
+    /// <remarks>
+    /// Both halves have to match together. A target generation carrying a source epoch, or a source
+    /// generation carrying one advanced epoch, is the shape a transaction that partly committed or
+    /// that somebody else ran would leave, and calling either of those "applied" would accept a
+    /// database this transition never produced. A state past the target is ambiguous for the same
+    /// reason rather than more-applied-than-expected.
+    ///
+    /// <para>An absent generation is ambiguous rather than a missing source. A zero generation is
+    /// the value an uninitialized read produces, and treating it as "not applied" would authorize
+    /// running the effect against a database nobody has established the state of.</para>
+    /// </remarks>
+    internal static GrimoireOfflineTransitionObservedState Classify(
+        GrimoireOfflineTransitionLaunchBinding launch,
+        Guid observedDatasetGeneration,
+        GrimoireOfflineTransitionEpochTuple observedEpochs)
+    {
+
+        ArgumentNullException.ThrowIfNull(launch);
+
+        if (observedDatasetGeneration == Guid.Empty || observedEpochs is null)
+        {
+
+            return GrimoireOfflineTransitionObservedState.Ambiguous;
+
+        }
+
+        if (observedDatasetGeneration == launch.SourceDatasetGeneration
+            && observedEpochs == launch.SourceEpochs)
+        {
+
+            return GrimoireOfflineTransitionObservedState.ExactlyNotApplied;
+
+        }
+
+        return observedDatasetGeneration == launch.TargetDatasetGeneration
+            && observedEpochs == launch.TargetEpochs
+                ? GrimoireOfflineTransitionObservedState.ExactlyApplied
+                : GrimoireOfflineTransitionObservedState.Ambiguous;
+
+    }
 
     /// <summary>
     /// The domain-separated digest of one launch binding.

@@ -428,6 +428,100 @@ public sealed class GrimoireOfflineTransitionLaunchBindingTests
 
     }
 
+    /// <summary>
+    /// The whole point of preselecting a target: a later process can tell an untouched database from
+    /// a replaced one by comparing what it observes against two values committed before the effect.
+    /// </summary>
+    [Fact]
+    public void An_unchanged_source_state_is_exactly_not_applied()
+    {
+
+        Assert.Equal(
+            GrimoireOfflineTransitionObservedState.ExactlyNotApplied,
+            GrimoireOfflineTransitionLaunch.Classify(
+                Binding(),
+                Source,
+                new GrimoireOfflineTransitionEpochTuple(11, 22, 33)));
+
+    }
+
+    [Fact]
+    public void The_exact_preselected_target_state_is_exactly_applied()
+    {
+
+        Assert.Equal(
+            GrimoireOfflineTransitionObservedState.ExactlyApplied,
+            GrimoireOfflineTransitionLaunch.Classify(
+                Binding(),
+                Target,
+                new GrimoireOfflineTransitionEpochTuple(12, 23, 34)));
+
+    }
+
+    /// <summary>
+    /// Everything else is ambiguous rather than nearly-applied. A generation that matches while an
+    /// epoch does not is the state a transaction that ran twice, or that somebody else ran, would
+    /// leave — and the safe answer to both is to stay closed rather than to run the effect again.
+    /// </summary>
+    [Theory]
+    [InlineData("source-generation-with-target-epochs")]
+    [InlineData("target-generation-with-source-epochs")]
+    [InlineData("target-generation-one-epoch-short")]
+    [InlineData("source-generation-one-epoch-advanced")]
+    [InlineData("unrelated-generation")]
+    [InlineData("epochs-past-the-target")]
+    [InlineData("transposed-target-epochs")]
+    public void Any_other_observed_state_is_ambiguous(string observed)
+    {
+
+        (Guid generation, GrimoireOfflineTransitionEpochTuple epochs) = observed switch
+        {
+
+            "source-generation-with-target-epochs" =>
+                (Source, new GrimoireOfflineTransitionEpochTuple(12, 23, 34)),
+
+            "target-generation-with-source-epochs" =>
+                (Target, new GrimoireOfflineTransitionEpochTuple(11, 22, 33)),
+
+            "target-generation-one-epoch-short" =>
+                (Target, new GrimoireOfflineTransitionEpochTuple(12, 22, 34)),
+
+            "source-generation-one-epoch-advanced" =>
+                (Source, new GrimoireOfflineTransitionEpochTuple(12, 22, 33)),
+
+            "unrelated-generation" => (
+                Guid.Parse("77777777-7777-4777-8777-777777777777"),
+                new GrimoireOfflineTransitionEpochTuple(12, 23, 34)),
+
+            "epochs-past-the-target" =>
+                (Target, new GrimoireOfflineTransitionEpochTuple(13, 24, 35)),
+
+            _ => (Target, new GrimoireOfflineTransitionEpochTuple(23, 34, 12)),
+
+        };
+
+        Assert.Equal(
+            GrimoireOfflineTransitionObservedState.Ambiguous,
+            GrimoireOfflineTransitionLaunch.Classify(Binding(), generation, epochs));
+
+    }
+
+    /// <summary>
+    /// An absent generation is not a source that happens to be missing.
+    /// </summary>
+    [Fact]
+    public void An_absent_observed_generation_is_ambiguous()
+    {
+
+        Assert.Equal(
+            GrimoireOfflineTransitionObservedState.Ambiguous,
+            GrimoireOfflineTransitionLaunch.Classify(
+                Binding(),
+                Guid.Empty,
+                new GrimoireOfflineTransitionEpochTuple(11, 22, 33)));
+
+    }
+
     private static GrimoireOfflineTransitionLaunchBinding Binding() =>
         GrimoireOfflineTransitionLaunch.FromLaunch(Reset()).Value;
 
