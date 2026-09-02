@@ -5,6 +5,7 @@ using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
+using RetroDownfall.TheForge.Ux.Views.Controls;
 using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
@@ -780,3 +781,49 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
     }
 
 }
+
+/// <summary>
+/// <c>TryCreateLinkedCts</c> needs no Avalonia platform (it is pure CancellationTokenSource
+/// plumbing), unlike the rest of IlluminationView, which requires a live platform to construct
+/// (InitializeComponent loads compiled XAML) — this is the one piece of W11-10 this repo's lack of
+/// Avalonia.Headless does not block.
+/// </summary>
+public class IlluminationViewTryCreateLinkedCtsTests
+{
+
+    [Fact]
+    public void TryCreateLinkedCts_WhenTheSourceIsAlreadyDisposed_ReturnsNullInsteadOfThrowing()
+    {
+
+        CancellationTokenSource source = new();
+
+        source.Dispose();
+
+        CancellationTokenSource? result = IlluminationView.TryCreateLinkedCts(CancellationToken.None, source);
+
+        Assert.Null(result);
+
+    }
+
+    [Fact]
+    public void TryCreateLinkedCts_WhenTheSourceIsLive_ReturnsALinkedSourceObservingBoth()
+    {
+
+        using CancellationTokenSource external = new();
+
+        using CancellationTokenSource source = new();
+
+        using CancellationTokenSource? linked = IlluminationView.TryCreateLinkedCts(external.Token, source);
+
+        Assert.NotNull(linked);
+
+        Assert.False(linked.IsCancellationRequested);
+
+        source.Cancel();
+
+        Assert.True(linked.IsCancellationRequested);
+
+    }
+
+}
+

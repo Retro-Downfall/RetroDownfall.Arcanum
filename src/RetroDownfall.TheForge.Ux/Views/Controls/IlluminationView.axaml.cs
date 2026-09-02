@@ -261,8 +261,11 @@ public partial class IlluminationView : UserControl
 
         // A still-overlapping superseding call can dispose renderCts between the field assignment
         // above and this read; null means exactly that — treat it like losing the generation /
-        // cancellation race checked below, not as a fault.
-        CancellationTokenSource? linkedCtsOrNull = TryCreateLinkedCts(cancellationToken, renderCts.Token);
+        // cancellation race checked below, not as a fault. renderCts itself (not its .Token) is
+        // passed through so the disposed-source read happens inside TryCreateLinkedCts's own try —
+        // reading renderCts.Token here at the call site would throw ObjectDisposedException outside
+        // any guard, defeating the point of the helper.
+        CancellationTokenSource? linkedCtsOrNull = TryCreateLinkedCts(cancellationToken, renderCts);
 
         if (linkedCtsOrNull is null)
         {
@@ -393,13 +396,20 @@ public partial class IlluminationView : UserControl
 
     }
 
-    private static CancellationTokenSource? TryCreateLinkedCts(CancellationToken a, CancellationToken b)
+    /// <summary>
+    /// internal (not private) so IlluminationViewTests can drive it directly — it needs no Avalonia
+    /// platform, unlike the rest of this view.
+    /// </summary>
+    internal static CancellationTokenSource? TryCreateLinkedCts(CancellationToken external, CancellationTokenSource source)
     {
 
         try
         {
 
-            return CancellationTokenSource.CreateLinkedTokenSource(a, b);
+            // source.Token must be read in here, not by the caller: a disposed CancellationTokenSource
+            // throws ObjectDisposedException from its Token getter, and that has to land inside this
+            // try to be the "still-overlapping call disposed it" case this helper exists to catch.
+            return CancellationTokenSource.CreateLinkedTokenSource(external, source.Token);
 
         }
         catch (ObjectDisposedException)
