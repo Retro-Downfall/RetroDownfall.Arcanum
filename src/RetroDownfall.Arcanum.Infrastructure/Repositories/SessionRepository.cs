@@ -1152,7 +1152,6 @@ public sealed class SessionRepository(
 
         internal static readonly UncomposedOrdinaryConnectionAdmission Instance = new();
 
-        [GrimoireConnectionAcquisitionRoute]
         public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
             SqliteConnection connection,
             CovenantSqliteConnectionMode mode,
@@ -1160,7 +1159,6 @@ public sealed class SessionRepository(
             throw new InvalidOperationException(
                 "This session repository was composed without ordinary Grimoire connection admission.");
 
-        [GrimoireConnectionAcquisitionRoute]
         public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
             GrimoireOrdinaryFreshConnectionKind kind,
             CancellationToken cancellationToken) =>
