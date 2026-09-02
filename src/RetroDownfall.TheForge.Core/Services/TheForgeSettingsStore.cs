@@ -194,13 +194,28 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         try
         {
 
-            await using (FileStream stream = new(
-                tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 4096,
-                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            // The temp file can carry the full settings payload, including a legacy plaintext
+            // ApiKey (SavePatchAsync round-trips it). Setting UnixCreateMode makes the owner-only
+            // mode part of the file's creation syscall instead of a chmod applied after the write —
+            // create-then-chmod leaves a window where the default (umask-controlled) mode is
+            // group/other-readable for the entire write duration.
+            FileStreamOptions options = new()
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                BufferSize = 4096,
+                Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+            };
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+            }
+
+            await using (FileStream stream = new(tempPath, options))
             {
 
                 await JsonSerializer

@@ -169,6 +169,106 @@ public class TheForgeSettingsStoreTests
 
     }
 
+    [Fact]
+    public async Task SaveAsync_NeverExposesTheTempFileToGroupOrOtherWhileWriting()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            // File.GetUnixFileMode throws on Windows; TrySetUnixFileMode already no-ops there and the
+            // ordering race this test targets is POSIX-only (Windows has no equivalent ACL fix here).
+            return;
+
+        }
+
+        string path = Path.Combine(Path.GetTempPath(), $"forge-settings-mode-{Guid.NewGuid():N}.json");
+
+        string directory = Path.GetDirectoryName(path)!;
+
+        string tempFilePattern = Path.GetFileName(path) + ".*.tmp";
+
+        try
+        {
+
+            TheForgeSettingsStore store = new(
+                path,
+                ImmediateTheForgeLocalMutationRunner.Instance);
+
+            List<UnixFileMode> samples = [];
+
+            using ManualResetEventSlim stop = new(initialState: false);
+
+            Thread sampler = new(() =>
+            {
+
+                while (!stop.IsSet)
+                {
+
+                    foreach (string candidate in Directory.EnumerateFiles(directory, tempFilePattern))
+                    {
+
+                        try
+                        {
+
+                            samples.Add(File.GetUnixFileMode(candidate));
+
+                        }
+                        catch (IOException)
+                        {
+
+                            // The store moved or deleted the temp file between the listing and the
+                            // stat call — the race this test targets, not a sample of it.
+                        }
+
+                    }
+
+                }
+
+            });
+
+            sampler.Start();
+
+            try
+            {
+
+                // A large payload (the legacy plaintext ApiKey round-trips through here too, per
+                // SavePatchAsync) stretches the buffered-write duration so the sampler thread has a
+                // real window to observe the temp file's mode while content is still being written.
+                await store.SaveAsync(new TheForgeSettings
+                {
+                    ApiKey = "test-master-api-key",
+                    LayoutState = new string('x', 10_000_000),
+                });
+
+            }
+            finally
+            {
+
+                stop.Set();
+
+                sampler.Join();
+
+            }
+
+            const UnixFileMode GroupOrOtherAccess =
+                UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+
+            Assert.NotEmpty(samples);
+
+            Assert.DoesNotContain(samples, mode => (mode & GroupOrOtherAccess) != 0);
+
+        }
+        finally
+        {
+
+            TryDelete(path);
+
+        }
+
+    }
+
     private static void TryDelete(string path)
     {
 
