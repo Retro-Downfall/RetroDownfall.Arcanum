@@ -626,7 +626,8 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
                 DirectoryInfo dirInfo = new(fullPath);
 
-                string relativePath = Path.GetRelativePath(workspaceRoot, fullPath);
+                string relativePath = FileBrowserContinuationCursor.NormalizeRelativePath(
+                    Path.GetRelativePath(workspaceRoot, fullPath));
 
                 return new FileEntry(
                     dirInfo.Name,
@@ -642,7 +643,8 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
                 FileInfo fileInfo = new(fullPath);
 
-                string relativePath = Path.GetRelativePath(workspaceRoot, fullPath);
+                string relativePath = FileBrowserContinuationCursor.NormalizeRelativePath(
+                    Path.GetRelativePath(workspaceRoot, fullPath));
 
                 return new FileEntry(
                     fileInfo.Name,
@@ -680,7 +682,8 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
             return string.Empty;
         }
 
-        return Path.GetRelativePath(workspaceRoot, parentFull);
+        return FileBrowserContinuationCursor.NormalizeRelativePath(
+            Path.GetRelativePath(workspaceRoot, parentFull));
     }
 
 }

@@ -170,15 +170,61 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
-        // Built from Path.DirectorySeparatorChar rather than written with '/': RelativePath is
-        // whatever Path.GetRelativePath produced, so the entry reads container\deeper\match.txt on
-        // Windows. What this test pins is that a non-matching directory was still traversed, and
-        // that is true under either separator.
+        // RelativePath is normalized to '/' regardless of host OS (see the backslash-normalization
+        // tests below), so this pins to a literal slash-joined suffix rather than Path.Combine, which
+        // would build a backslash-joined suffix on Windows. What this test pins is that a
+        // non-matching directory was still traversed.
         Assert.Contains(
             result.Value!.Entries,
             static entry => entry.RelativePath.EndsWith(
-                Path.Combine("container", "deeper", "match.txt"),
+                "container/deeper/match.txt",
                 StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public async Task ListAsync_recursive_NormalizesBackslashesInEntryRelativePaths()
+    {
+
+        // Path.DirectorySeparatorChar is '/' on this host, so a real Windows separator cannot be
+        // reproduced here. A directory name containing a literal backslash is legal on POSIX
+        // (backslash is not a separator there) and stands in for it: Path.GetRelativePath returns
+        // the backslash unchanged today, exactly as it would for a genuine Windows separator.
+        _workspace.WriteFile("weird\\name/leaf.txt", "leaf");
+
+        Result<FileListResult> result = await CreateBrowser().ListAsync(
+            MakeWorkspace(),
+            null,
+            recursive: true,
+            searchPattern: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.All(
+            result.Value!.Entries,
+            static entry => Assert.DoesNotContain('\\', entry.RelativePath));
+
+    }
+
+    [Fact]
+    public async Task ListAsync_ParentPath_NormalizesBackslashesUnderPathWithBackslashInName()
+    {
+
+        _workspace.WriteFile("weird\\name/child/deep.txt", "deep");
+
+        Result<FileListResult> result = await CreateBrowser().ListAsync(
+            MakeWorkspace(),
+            "weird\\name/child",
+            recursive: false,
+            searchPattern: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.NotNull(result.Value!.ParentPath);
+
+        Assert.DoesNotContain('\\', result.Value.ParentPath!);
 
     }
 
