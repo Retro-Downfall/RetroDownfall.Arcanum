@@ -376,12 +376,25 @@ public sealed class ApiBootstrapperRateLimitTests : IDisposable
     // builds a minimal host (WebApplication.CreateSlimBuilder + UseTestServer, the same pattern
     // ApiDomainSplitContractTests.RouteGraph uses) around the real UseArcanumRateLimiter extension
     // method — the production entry point named by the finding — and asserts that two requests
-    // carrying different X-Forwarded-For values, from what UseTestServer reports as a loopback peer,
-    // are seen downstream as their own distinct addresses rather than the one peer address.
+    // carrying different X-Forwarded-For values are seen downstream as their own distinct addresses
+    // rather than the one peer address.
+    //
+    // The peer this in-memory TestServer transport reports is not a loopback address — it is null
+    // (confirmed by this finding's own RED-verification: with UseForwardedHeaders removed, the probe
+    // returned "unknown", i.e. Connection.RemoteIpAddress?.ToString() ?? "unknown" hit the fallback).
+    // ForwardedHeadersMiddleware still honors the header in that case, so this test demonstrates the
+    // middleware is correctly wired into the pipeline and processes X-Forwarded-For end-to-end, which
+    // is what the fix required — but it does not exercise the specific default-KnownProxies/
+    // KnownIPNetworks loopback-allowlist check a real reverse-proxy deployment would hit (where
+    // Connection.RemoteIpAddress is a genuine 127.0.0.1), because this harness never populates
+    // Connection.RemoteIpAddress with any address, loopback or otherwise, to check against that list.
     [Fact]
-    public async Task UseArcanumRateLimiter_LoopbackPeer_HonorsForwardedForFromTheDefaultTrustedProxy()
+    public async Task UseArcanumRateLimiter_UnknownRemotePeer_HonorsForwardedForFromTheDefaultTrustedProxy()
     {
 
+        // No local restore needed: this class's ctor captures ARCANUM_HOST_ANY and Dispose()
+        // restores it after every test (see the top of this class), the same as every other test
+        // here that touches it.
         global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", "true");
 
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
