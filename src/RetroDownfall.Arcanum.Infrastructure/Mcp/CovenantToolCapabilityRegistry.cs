@@ -140,15 +140,30 @@ public sealed class CovenantToolCapabilityRegistry
     }
 
     /// <summary>
+    /// Test seam: invoked in <see cref="ReleaseUnsent"/> immediately before the winning release
+    /// removes its dictionary entry -- the same point in the control flow whether that release just
+    /// won a compare-and-swap against a concurrent <see cref="TryTake"/> or (on the pre-fix shape this
+    /// existed to reproduce) already lost one without knowing it. A test callback that itself calls
+    /// <see cref="TryTake"/> from here exercises the exact interleaving the state-then-act version of
+    /// this method was vulnerable to, with no thread timing involved.
+    /// </summary>
+    internal Action? ReleaseUnsentObserverForTests { get; set; }
+
+    /// <summary>
     /// Releases one connection-and-request-id's registration when the frame that would have carried
     /// it to a handler never left the client — a failed transport send, before any handler could
     /// have reached <see cref="TryTake"/> for this id. No nonce is required: the caller here is the
     /// send path itself, not a handler that took the capability.
     /// </summary>
     /// <remarks>
-    /// A no-op once the registration has been taken (mirrors the state guard in
-    /// <see cref="SweepExpired"/>), so a handler that is still draining a capability it already took
-    /// keeps its own bounded cancellation lifetime.
+    /// A no-op once the registration has been taken. The state check and the transition off
+    /// <see cref="CovenantToolCapabilityState.Registered"/> happen together, atomically, inside
+    /// <see cref="CovenantToolInvocationContext.TryReleaseUnsent"/> — not as a separate read of
+    /// <see cref="CovenantToolInvocationContext.State"/> here followed by a decision, which a
+    /// concurrent <see cref="TryTake"/> could fall between and win after this method had already
+    /// decided to remove the registration. Mirrors the equivalent state guard in
+    /// <see cref="SweepExpired"/>, so a handler that is still draining a capability it already took
+    /// keeps its own bounded cancellation lifetime either way.
     /// </remarks>
     public bool ReleaseUnsent(string connectionKey, string requestId)
     {
@@ -161,10 +176,12 @@ public sealed class CovenantToolCapabilityRegistry
         string key = ComposeKey(connectionKey, requestId);
 
         if (!_byRequest.TryGetValue(key, out Registration? registration)
-            || registration.Capability.State != CovenantToolCapabilityState.Registered)
+            || !registration.Capability.TryReleaseUnsent())
         {
             return false;
         }
+
+        ReleaseUnsentObserverForTests?.Invoke();
 
         return RemoveExact(key, registration);
 

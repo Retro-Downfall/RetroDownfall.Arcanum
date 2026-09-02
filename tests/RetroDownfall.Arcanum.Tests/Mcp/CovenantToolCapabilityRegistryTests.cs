@@ -271,6 +271,51 @@ public sealed class CovenantToolCapabilityRegistryTests
         }
     }
 
+    // W8-2: ReleaseUnsent used to decide whether to remove a registration from a bare read of
+    // Capability.State, taken before RemoveExact rather than atomically with it. A TryTake landing in
+    // that gap could claim the capability (a legitimate handler about to drain it) after ReleaseUnsent
+    // had already decided -- based on a now-stale read -- to free the id out from under it. Firing
+    // ReleaseUnsentObserverForTests immediately before RemoveExact reproduces exactly that interleaving
+    // deterministically, with no thread timing involved: the callback's own TryTake call lands at
+    // precisely the point a concurrent one could have landed.
+    [Fact]
+    public async Task A_release_racing_a_take_never_frees_a_registration_the_take_already_claimed()
+    {
+        CovenantToolCapabilityRegistry registry = NewRegistry(out _);
+
+        await using CovenantToolInvocationContext capability = Capability(out CovenantToolCapabilityNonce nonce);
+
+        _ = registry.TryRegister(Connection, "1", capability, nonce);
+
+        Result<CovenantToolCapabilityGrant>? raced = null;
+
+        registry.ReleaseUnsentObserverForTests = () =>
+        {
+            raced = registry.TryTake(Connection, "1");
+        };
+
+        try
+        {
+            bool released = registry.ReleaseUnsent(Connection, "1");
+
+            Assert.NotNull(raced);
+
+            // The whole invariant this closes: a release and a take can never both succeed for the
+            // same registration.
+            Assert.False(
+                released && raced.IsSuccess,
+                "ReleaseUnsent freed the registration after a concurrent TryTake had already claimed it.");
+
+            Assert.True(raced.IsFailure, "TryTake unexpectedly succeeded racing a release.");
+
+            Assert.Equal(CovenantToolCapabilityState.Disposed, capability.State);
+        }
+        finally
+        {
+            registry.ReleaseUnsentObserverForTests = null;
+        }
+    }
+
     [Fact]
     public async Task Concurrent_takes_of_one_registration_admit_exactly_one_handler()
     {
