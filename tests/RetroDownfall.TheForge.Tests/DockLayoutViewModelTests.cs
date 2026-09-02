@@ -283,15 +283,24 @@ public class DockLayoutViewModelTests
 
             layout.MoveTool(layout.FindTool(DockToolId.Gatehouse)!, DockRegion.Left);
 
+            // No poll: production disposes and the process exits with nothing waiting on the flush
+            // (App.axaml.cs:78 -> Program.cs:31), so the save has to be complete the instant Dispose
+            // returns, not merely "eventually" true within some grace window.
             layout.Dispose();
 
-            TheForgeSettings loaded = await WaitForPersistedLayoutAsync(store);
+            TheForgeSettings loaded = await store.LoadAsync();
 
             Assert.Equal("light", loaded.Theme);
 
             Assert.False(string.IsNullOrWhiteSpace(loaded.LayoutState));
 
             Assert.Contains(DockToolId.Gatehouse, loaded.LayoutState!, StringComparison.Ordinal);
+
+            string directory = Path.GetDirectoryName(path)!;
+
+            string tempFilePattern = Path.GetFileName(path) + ".*.tmp";
+
+            Assert.Empty(Directory.EnumerateFiles(directory, tempFilePattern));
 
         }
         finally

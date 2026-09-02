@@ -485,7 +485,13 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
         if (hadPendingPersist)
         {
 
-            _ = FlushPersistAsync();
+            // Dispose runs synchronously on the shutdown path (App.axaml.cs's MainWindow.Closed ->
+            // MainViewModel.Dispose), and nothing downstream awaits it before the process exits
+            // (Program.cs disposes the container and Main returns) — an unawaited flush here is
+            // therefore abandoned mid-write more often than not. Block on a thread-pool task instead
+            // of awaiting in place: FlushPersistAsync's chain is ConfigureAwait(false) throughout, so
+            // this cannot deadlock even if Dispose runs on a thread with a synchronization context.
+            Task.Run(FlushPersistAsync).GetAwaiter().GetResult();
 
         }
 
