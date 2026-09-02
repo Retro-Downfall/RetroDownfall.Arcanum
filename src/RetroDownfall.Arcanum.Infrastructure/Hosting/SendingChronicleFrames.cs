@@ -53,7 +53,7 @@ internal static class SendingChronicleFrames
         }
 
         // Distinct instants, not one shared `now`: collapsing them onto a single timestamp made remote
-        // wall-clock underivable from the Chronicle, which is the only place it is ever recorded (#60).
+        // wall-clock underivable from the Chronicle, which is the only place it is ever recorded.
         DateTimeOffset dispatchedAt = payload.DispatchedAt ?? fallbackNow;
 
         DateTimeOffset settledAt = payload.SettledAt ?? fallbackNow;

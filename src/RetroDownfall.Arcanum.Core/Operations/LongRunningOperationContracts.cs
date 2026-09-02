@@ -52,7 +52,7 @@ public static class LongRunningOperationKinds
     public const string DataRetentionFactoryReset = "data-retention-factory-reset";
 
     /// <summary>
-    /// Discarding and rebuilding the derived Covenant inspection index (#87).
+    /// Discarding and rebuilding the derived Covenant inspection index.
     /// </summary>
     /// <remarks>
     /// Server-generated identity only. A rebuild replaces a derived accelerator and never a canonical
@@ -62,7 +62,7 @@ public static class LongRunningOperationKinds
     public const string CovenantIndexRebuild = "covenant-index-rebuild";
 
     /// <summary>
-    /// Dropping and reinstalling the whole Covenant schema family after protected erasure (#87).
+    /// Dropping and reinstalling the whole Covenant schema family after protected erasure.
     /// </summary>
     /// <remarks>
     /// The one Covenant kind that carries a caller-supplied durable identity, because it replaces a
@@ -71,10 +71,10 @@ public static class LongRunningOperationKinds
     /// </remarks>
     public const string CovenantFamilyReinitialize = "covenant-family-reinitialize";
 
-    /// <summary>An inbound A2A Sending: a peer's task id bound to the Apprentice serving it (#62).</summary>
+    /// <summary>An inbound A2A Sending: a peer's task id bound to the Apprentice serving it.</summary>
     public const string A2AInboundSending = "a2a-inbound-sending";
 
-    /// <summary>An outbound A2A Sending: a remote task id this instance is waiting on (#62).</summary>
+    /// <summary>An outbound A2A Sending: a remote task id this instance is waiting on.</summary>
     public const string A2AOutboundSending = "a2a-outbound-sending";
 }
 
@@ -88,14 +88,14 @@ public static class LongRunningOperationErrorCodes
 
     /// <summary>
     /// The ledger row is missing the domain id its handler needs (inference run, claim, reservation).
-    /// Recovery cannot guess which entity the crashed work owned, so an operator has to look (#40).
+    /// Recovery cannot guess which entity the crashed work owned, so an operator has to look.
     /// </summary>
     public const string MissingOperationLink = "operation.link_missing";
 }
 
 /// <summary>
 /// Named terminal codes recorded by the shared recovery handlers, so <c>arcanum operation list</c>
-/// says what actually happened instead of a bare "abandoned" (#40).
+/// says what actually happened instead of a bare "abandoned".
 /// </summary>
 public static class LongRunningOperationRecoveryOutcomes
 {
@@ -113,7 +113,7 @@ public static class LongRunningOperationRecoveryOutcomes
 
     /// <summary>
     /// An inbound A2A Sending parked at <c>input-required</c>: the peer relay died with its process, but
-    /// the escalated Apprentice is still there and the peer's answer can still resume it (#68).
+    /// the escalated Apprentice is still there and the peer's answer can still resume it.
     /// </summary>
     /// <remarks>
     /// Deliberately non-terminal. The row stays re-leasable — see
@@ -134,7 +134,7 @@ public static class LongRunningOperationRecoveryOutcomes
 /// <summary>
 /// Policy column of <see cref="LongRunningOperationRecoveryRegistry"/>, kept as a separate surface
 /// because callers that only need "which class does this kind recover as" should not depend on the
-/// whole descriptor. It is projected rather than duplicated, so the two cannot drift (#40).
+/// whole descriptor. It is projected rather than duplicated, so the two cannot drift.
 /// </summary>
 public static class LongRunningOperationPolicyCatalog
 {

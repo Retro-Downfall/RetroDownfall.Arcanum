@@ -781,7 +781,7 @@ internal sealed class LongRunningOperationStore(
 
                 // A Sending parked awaiting a peer's answer is flagged rather than closed, and the answer
                 // may arrive processes later — so that flagged row has to stay claimable, or the record
-                // that makes the continuation work becomes unusable the moment it is recorded (#68).
+                // that makes the continuation work becomes unusable the moment it is recorded.
                 Add(cmd, "@a2aInbound", LongRunningOperationKinds.A2AInboundSending);
                 Add(cmd, "@a2aParked", LongRunningOperationRecoveryOutcomes.A2AInboundParkedAwaitingAnswer);
                 Add(cmd, "@now", Format(utcNow));

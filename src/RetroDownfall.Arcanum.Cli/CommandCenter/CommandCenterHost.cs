@@ -240,7 +240,7 @@ internal sealed class CommandCenterHost(
                 void SubmitFromInput()
                 {
                     // Sole entry into HandleSubmitAsync for composer send (see Accepting no-op below).
-                    // ClearComposer runs only after TryBeginTurn admits the turn (#10).
+                    // ClearComposer runs only after TryBeginTurn admits the turn.
                     string text = window.GetComposerText();
 
                     _ = HandleSubmitAsync(text, state, uiChannel.Writer, app, window, linked);
@@ -743,7 +743,7 @@ internal sealed class CommandCenterHost(
                 if (humanPromptCoordinator.IsActive
                     || state.Overlay == CommandCenterOverlayKind.HumanPrompt)
                 {
-                    // Bind submit to turn CTS so CancelTurn cancels in-flight submit (#8).
+                    // Bind submit to turn CTS so CancelTurn cancels in-flight submit.
                     CancellationToken submitToken = state.TurnCts?.Token ?? linked.Token;
                     _ = SubmitHumanPromptAsync(state, window, app, ui, submitToken);
                 }
@@ -1884,7 +1884,7 @@ internal sealed class CommandCenterHost(
 
         if (!state.TryBeginTurn())
         {
-            // Admission denied — preserve composer text and staged attachments (#10).
+            // Admission denied — preserve composer text and staged attachments.
             state.Log.Append(SessionLogEntryKind.Status, "Already generating — Ctrl+C to cancel.");
             await ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), linked.Token)
                 .ConfigureAwait(false);

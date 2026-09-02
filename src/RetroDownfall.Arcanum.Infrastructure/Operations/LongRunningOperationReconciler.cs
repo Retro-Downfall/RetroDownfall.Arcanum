@@ -24,7 +24,7 @@ public sealed class LongRunningOperationReconciler(
 
     /// <summary>
     /// Restore-class kinds own whole directories under the state root, so they must settle before an
-    /// ordinary durable workload appends to a tree that is about to be rolled back or replaced (#40).
+    /// ordinary durable workload appends to a tree that is about to be rolled back or replaced.
     /// </summary>
     /// <remarks>
     /// The ordering is per-page. <see cref="ILongRunningOperationStore.FindExpiredAsync"/> has no
@@ -46,7 +46,7 @@ public sealed class LongRunningOperationReconciler(
     /// <summary>
     /// Registered kinds with no owning handler. A non-empty set is a registration bug rather than a
     /// runtime condition, so operator surfaces name it instead of waiting for an operation to strand
-    /// against a missing handler (#40).
+    /// against a missing handler.
     /// </summary>
     public IReadOnlyList<string> MissingHandlerKinds { get; } = BuildMissingHandlerKinds(handlers);
 
@@ -155,7 +155,7 @@ public sealed class LongRunningOperationReconciler(
             // background pass whose host is shutting down), so recording the result must not be lost
             // because that same token is now cancelled. Compensating work runs on CancellationToken.None
             // (the recurring-root-cause pattern; ct stays scoped to the handler call and the lease
-            // acquisition above) (#40).
+            // acquisition above).
             LongRunningOperation latest = await operationStore.GetAsync(
                 lease.Operation.Id,
                 CancellationToken.None).ConfigureAwait(false)
@@ -297,7 +297,7 @@ public sealed class LongRunningOperationReconciler(
 
         // The handler declares the newest payload it writes; the registry declares the oldest it still
         // understands. A checkpoint outside that window is unreadable in either direction, and handing
-        // it to handler code risks acting on a misparsed payload rather than failing safely (#40).
+        // it to handler code risks acting on a misparsed payload rather than failing safely.
         LongRunningOperationRecoveryDescriptor? descriptor =
             LongRunningOperationRecoveryRegistry.Find(operation.Kind);
 

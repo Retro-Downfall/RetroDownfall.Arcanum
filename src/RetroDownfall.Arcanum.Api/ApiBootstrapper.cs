@@ -489,7 +489,7 @@ public static class ApiBootstrapper
         services.AddSingleton<IBatchRecoveryService, BatchRecoveryService>();
 
         // The batch kind's recovery handler lives here rather than in Infrastructure because the
-        // reconciliation it delegates to is owned by Api (#40).
+        // reconciliation it delegates to is owned by Api.
         services.AddScoped<ILongRunningOperationRecoveryHandler, BatchOperationRecoveryHandler>();
 
         services.AddInstallationResetRecoveryAwareHostedService<BatchProcessingService>();

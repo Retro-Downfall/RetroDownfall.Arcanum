@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
 /// <summary>
-/// Closes a workspace-index operation that died mid-pass (#40).
+/// Closes a workspace-index operation that died mid-pass.
 /// </summary>
 /// <remarks>
 /// Indexing is idempotent by file identity and content hash, and the persisted chunk rows are the

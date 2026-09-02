@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Core.Conclave;
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
 /// <summary>
-/// Hands a crashed Apprentice back to its own documented checkpoint resume path (#40).
+/// Hands a crashed Apprentice back to its own documented checkpoint resume path.
 /// </summary>
 /// <remarks>
 /// Unlike every other kind here, an Apprentice already survives a restart on its own: its plan, step
