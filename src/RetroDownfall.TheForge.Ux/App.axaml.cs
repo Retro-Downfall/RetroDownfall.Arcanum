@@ -206,7 +206,20 @@ public partial class App : Application
             },
         };
 
-        await dialog.ShowDialog(owner);
+        try
+        {
+
+            await dialog.ShowDialog(owner);
+
+        }
+        catch (Exception)
+        {
+
+            // async void reposts an unhandled throw to the UI synchronization context instead of
+            // returning it to a caller, which crashes the process — a stale owner (window closing or
+            // already torn down) must not take the app down just because the About dialog could not
+            // be shown. Mirrors Compendium's App.axaml.cs OnAboutClick.
+        }
 
     }
 

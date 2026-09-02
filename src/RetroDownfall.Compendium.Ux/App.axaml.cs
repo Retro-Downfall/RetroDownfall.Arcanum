@@ -68,7 +68,7 @@ public partial class App : Application
 
     }
 
-    private async void OnAboutClick(object? sender, EventArgs e)
+    internal async void OnAboutClick(object? sender, EventArgs e)
     {
 
         if (_services is null)
@@ -82,9 +82,21 @@ public partial class App : Application
 
         IDialogService dialogs = _services.GetRequiredService<IDialogService>();
 
-        await dialogs.ShowAlertAsync(
-            "About Compendium",
-            $"Compendium — Arcanum configuration editor\nVersion {version}");
+        try
+        {
+
+            await dialogs.ShowAlertAsync(
+                "About Compendium",
+                $"Compendium — Arcanum configuration editor\nVersion {version}");
+
+        }
+        catch (Exception)
+        {
+
+            // async void reposts an unhandled throw to the UI synchronization context instead of
+            // returning it to a caller, which crashes the process — matching MainWindow.axaml.cs's
+            // OnWindowClosing, failing to show the dialog is not worth taking the app down for.
+        }
 
     }
 
