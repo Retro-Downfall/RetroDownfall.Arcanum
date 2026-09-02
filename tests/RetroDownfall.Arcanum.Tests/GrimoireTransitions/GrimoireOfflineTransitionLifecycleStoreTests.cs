@@ -204,6 +204,47 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
     }
 
     [Fact]
+    public void Encoding_and_decoding_a_resumed_payload_round_trips_resolution_evidence_byte_exact()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 prepared = PreparedPayload();
+
+        CovenantResetOfflineTransitionPayloadV1 resumedReset = prepared with
+        {
+            Lifecycle = prepared.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.Applying,
+                ClosingEvidence = new(
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    prepared.Binding.SourceDatasetGeneration),
+            },
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
+        };
+
+        AssertByteExactRoundTrip(resumedReset);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 resumedFactory = new(
+            prepared.Binding with
+            {
+                Kind = GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            },
+            resumedReset.Lifecycle,
+            prepared.LastCompletedPhase,
+            InFlightPhase: null,
+            InFlightBeforeState: null,
+            ReplacementEvidence: null,
+            OrdinaryFactoryContinuationCompleted: false,
+            BlockerResolutionEvidence: new(Digest(0x71), Digest(0x71)));
+
+        AssertByteExactRoundTrip(resumedFactory);
+
+    }
+
+    [Fact]
     public async Task Facade_refuses_retirement_before_typed_retirement_readiness()
     {
 
@@ -1021,6 +1062,28 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         Assert.True(result.IsSuccess, result.Error.Code + ":" + result.Error.Message);
 
         return result.Value;
+
+    }
+
+    private static void AssertByteExactRoundTrip<TPayload>(TPayload payload)
+        where TPayload : class, IGrimoireOfflineTransitionPayload
+    {
+
+        byte[] encoded = Value(GrimoireOfflineTransitionHandlerRegistry.Production.Encode(payload));
+
+        GrimoireOfflineTransitionDecodedPayload decoded = Value(
+            GrimoireOfflineTransitionHandlerRegistry.Production.DecodeAuthenticated(
+                payload.Binding.Kind,
+                payload.Binding.PayloadVersion,
+                encoded,
+                payload.Binding.OperationId,
+                payload.Binding.SlotEpoch));
+
+        Assert.Equal(payload, decoded.Payload);
+
+        byte[] reEncoded = Value(GrimoireOfflineTransitionHandlerRegistry.Production.Encode(decoded.Payload));
+
+        Assert.Equal(encoded, reEncoded);
 
     }
 
