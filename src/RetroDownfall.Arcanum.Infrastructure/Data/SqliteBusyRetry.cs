@@ -171,8 +171,14 @@ internal static class SqliteBusyRetry
 /// The Grimoire did not become available within <see cref="ExecuteAsync{T}"/>'s deadline — a
 /// connection somewhere is holding an exclusive or reserved lock for longer than any ordinary
 /// maintenance operation should. Distinct from letting the underlying <see cref="SqliteException"/>
-/// propagate forever, which is the failure W3b-4 exists to close: an unbounded retry loop never
-/// surfaces this as anything the endpoint layer can map to a maintenance-unavailable response.
+/// propagate forever: an unbounded retry loop never surfaces the contention as anything a caller
+/// can act on, so this bounds the wait and names it.
+///
+/// <para>Only <see cref="Covenant.CovenantCanonicalErasureTransaction"/> catches it today, turning
+/// it into that erasure's own typed refusal. Every other <c>SqliteBusyRetry</c> caller lets it
+/// propagate, so on an HTTP path it reaches <c>ArcanumExceptionHandler</c> and is reported as a
+/// generic <c>500</c>. There is no endpoint mapping from this exception to a
+/// maintenance-unavailable response; adding one is separate work.</para>
 /// </summary>
 internal sealed class GrimoireBusyTimeoutException : Exception
 {
