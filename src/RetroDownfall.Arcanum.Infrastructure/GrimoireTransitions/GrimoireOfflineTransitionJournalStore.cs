@@ -616,7 +616,14 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         Result<GrimoireOfflineTransitionAnchorV1?> anchorResult = _anchors.Read(current.Location);
 
-        if (anchorResult.IsFailure || anchorResult.Value != current.Anchor
+        if (anchorResult.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalPublication>.Failure(anchorResult.Error);
+
+        }
+
+        if (anchorResult.Value != current.Anchor
             || current.Anchor.State is not GrimoireOfflineTransitionAnchorState.Active)
         {
 

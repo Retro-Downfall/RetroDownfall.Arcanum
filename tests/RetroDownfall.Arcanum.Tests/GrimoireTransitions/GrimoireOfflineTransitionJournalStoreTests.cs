@@ -414,6 +414,35 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Advance_propagates_an_anchor_read_failure_instead_of_a_revision_conflict()
+    {
+
+        GrimoireOfflineTransitionJournalStore setup = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(setup);
+
+        PrefixThrowingCredentialStore anchorUnavailable = new(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccountPrefix);
+
+        GrimoireOfflineTransitionJournalStore probing = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(anchorUnavailable));
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await probing.AdvanceAsync(
+            _lock,
+            current,
+            Bytes("second"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+    }
+
+    [Fact]
     public async Task Advance_requires_external_installation_identity_to_still_match()
     {
 
