@@ -933,6 +933,80 @@ public sealed class IdempotencyEndpointFilterTests
 
     }
 
+    [SkippableFact]
+    public async Task PostChatCompletions_LargeKeyedBody_DoesNotMaterializeWholeBodyInManagedMemory()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory largeBodyFactory = new();
+
+        largeBodyFactory.FakeIntelligence.NextFailure = null;
+
+        largeBodyFactory.FakeIntelligence.NextText = "large-body-probe-response";
+
+        HttpClient client = largeBodyFactory.CreateAuthenticatedClient();
+
+        const int contentSize = 8 * 1024 * 1024;
+
+        string payload = "{\"model\":\"mistral:latest\",\"messages\":[{\"role\":\"user\",\"content\":\""
+            + new string('a', contentSize)
+            + "\"}]}";
+
+        HttpRequestMessage BuildRequest()
+        {
+
+            HttpRequestMessage req = new(HttpMethod.Post, "/v1/chat/completions")
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+
+            req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, $"large-body-{Guid.NewGuid():N}");
+
+            return req;
+
+        }
+
+        // Warm up the request pipeline (JIT, first-request DI graph construction) on the same shape
+        // of request so the measured call below isolates per-request allocation behavior rather than
+        // one-time host startup cost.
+        HttpRequestMessage warmRequest = BuildRequest();
+
+        HttpRequestMessage measuredRequest = BuildRequest();
+
+        HttpResponseMessage warmResponse = await client.SendAsync(warmRequest);
+
+        _ = await warmResponse.Content.ReadAsStringAsync();
+
+        GC.Collect();
+
+        GC.WaitForPendingFinalizers();
+
+        GC.Collect();
+
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+
+        HttpResponseMessage measuredResponse = await client.SendAsync(measuredRequest);
+
+        _ = await measuredResponse.Content.ReadAsStringAsync();
+
+        long after = GC.GetTotalAllocatedBytes(precise: true);
+
+        long allocated = after - before;
+
+        // Measured directly against this exact test (git stash the fix, rerun): the old ForRawBody
+        // (EnableBuffering's spool, then a doubling-growth MemoryStream, then a final ToArray()) here
+        // allocates ~10.5x the 8 MiB body (~88 MB) on top of whatever TestServer's own in-memory
+        // transport and request/response processing account for; the fix measures ~4.0x (~34 MB) for
+        // the same body — TestServer's own baseline, not this filter. 5x leaves ~20% headroom above
+        // the fix's measured cost and stays well under half the old code's, so it separates a real
+        // regression back to materializing the body from ordinary run-to-run GC noise.
+        Assert.True(
+            allocated < 5L * contentSize,
+            $"Expected allocated bytes well under the old code's ~10x multiple of the 8 MiB body; observed {allocated:N0} bytes for a {contentSize:N0}-byte body.");
+
+    }
+
 }
 
 public sealed class IdempotencyEndpointFilterOwnershipTests

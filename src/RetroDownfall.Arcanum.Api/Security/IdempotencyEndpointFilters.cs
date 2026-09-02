@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -104,20 +105,51 @@ public static class IdempotencyEndpointFilters
 
         request.EnableBuffering();
 
-        byte[] bodyBytes;
-
-        using (MemoryStream buffer = new())
-        {
-
-            await request.Body.CopyToAsync(buffer, context.HttpContext.RequestAborted).ConfigureAwait(false);
-
-            bodyBytes = buffer.ToArray();
-
-        }
+        // W2-2: hashed incrementally instead of materialized (no MemoryStream, no ToArray()), so a
+        // large keyed request (up to the 16 MiB route ceiling) retains only a 32-byte digest rather
+        // than 2-3x its own size in managed memory for the whole handler execution. The digest is a
+        // fingerprint-equivalent substitute for the raw bytes — collision-resistant, so folding it
+        // into ComputeFingerprintHash's own prefix+hash construction is exactly as strong a
+        // fingerprint as folding in the body itself.
+        byte[] bodyDigest = await ComputeBodyDigestAsync(request.Body, context.HttpContext.RequestAborted)
+            .ConfigureAwait(false);
 
         request.Body.Position = 0;
 
-        return await InvokeCoreAsync(context, next, key!, bodyBytes).ConfigureAwait(false);
+        return await InvokeCoreAsync(context, next, key!, bodyDigest).ConfigureAwait(false);
+
+    }
+
+    private static async Task<byte[]> ComputeBodyDigestAsync(Stream body, CancellationToken cancellationToken)
+    {
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent(81920);
+
+        try
+        {
+
+            int read;
+
+            while ((read = await body.ReadAsync(rented.AsMemory(0, rented.Length), cancellationToken)
+                    .ConfigureAwait(false))
+                > 0)
+            {
+
+                hash.AppendData(rented.AsSpan(0, read));
+
+            }
+
+        }
+        finally
+        {
+
+            ArrayPool<byte>.Shared.Return(rented);
+
+        }
+
+        return hash.GetHashAndReset();
 
     }
 
