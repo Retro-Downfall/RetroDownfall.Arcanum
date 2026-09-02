@@ -189,7 +189,13 @@ internal static class TurnContextGuards
             messages.RemoveRange(removeAt, removeCount);
         }
 
-        return currentTokens <= maxTokens;
+        // Measured, not accumulated. currentTokens is a running approximation - the estimator
+        // applies its safety margin as a ceiling over the whole input, and a ceiling does not
+        // distribute over addition, so the removed runs' own margins never sum to exactly the share
+        // they contributed - and a verdict answered from it can disagree with the authoritative
+        // breakdown the caller takes on the very next line. One more estimate settles it against
+        // the list that was actually left, and it is one, not one per removed run.
+        return countTokens(messages) <= maxTokens;
     }
 
     public static Result CheckContextBudget(
