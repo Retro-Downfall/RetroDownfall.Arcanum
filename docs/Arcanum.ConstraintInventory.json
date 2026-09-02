@@ -3892,9 +3892,9 @@
         "ArcanumSettingClamps.ListDirectoryMaxDepth": "Former 1-256 recursive directory-depth clamp; removed",
         "ArcanumRuntimeDefaults.WorkspaceListDirectoryMaxDepth": "Former code-owned default depth 64; removed"
       },
-      "currentValue": "Former depth 64 default and 1-256 clamp removed; iterative breadth-first traversal uses canonical resolved-directory identity deduplication",
+      "currentValue": "Former depth 64 default and 1-256 clamp removed; an iterative depth-first walk over a stack of directory enumerators uses canonical resolved-directory identity deduplication, and the returned page is ordered by relative path rather than by walk order",
       "owner": "product",
-      "enforcementPoint": "PhysicalFileSystemBrowser iterative breadth-first traversal",
+      "enforcementPoint": "PhysicalFileSystemBrowser iterative depth-first traversal",
       "userVisibleBehavior": "Contained paths deeper than 64 levels remain discoverable without symlink-cycle recursion.",
       "originalRationale": "The depth counter prevented recursive cycles by making depth a total-work cutoff.",
       "threatOrFailureModel": "Canonical resolved-directory identity deduplication, containment, and caller cancellation address cycles and unsafe traversal directly.",
@@ -3940,7 +3940,7 @@
       "threatOrFailureModel": "Workspace containment, scope-bound cursor validation, exact checkpoint identity, canonical resolved-directory identity deduplication, cancellation, the API's bounded 501-candidate heap, and one protocol-owned materialized response page/output budget remain concrete boundaries; total contained path count and directory depth are not.",
       "classification": "Arbitrary product restriction",
       "action": "replace with adaptive behavior",
-      "replacementOrContinuation": "List all deterministic contained entries, yield a contained directory symlink once without following a repeated canonical identity, and continue after the exact last entry through an opaque token bound to the unchanged list scope. Keep the 500-entry API page with one bounded lookahead and the MCP protocol-owned page/output boundary. Earlier mutations cannot shift an offset; a vanished checkpoint fails with an explicit restart action.",
+      "replacementOrContinuation": "List all deterministic contained entries, yield a contained directory symlink exactly once per listing without following a repeated canonical identity, and continue after the exact last entry through an opaque token bound to the unchanged list scope. Cycle detection is per listing rather than across a paged sequence: each page walks the same root under the same rule with its own visited-identity set. Keep the 500-entry API page with one bounded lookahead and the MCP protocol-owned page/output boundary. Earlier mutations cannot shift an offset; a vanished checkpoint fails with an explicit restart action.",
       "tests": [
         "PhysicalFileSystemBrowserTests.ListAsync_returns_entries_beyond_the_former_total_path_cap",
         "PhysicalFileSystemBrowserTests.ListAsync_pages_without_skipping_when_an_earlier_entry_is_added",
@@ -8985,15 +8985,15 @@
       "symbolValues": {
         "SqliteBusyRetry.MaxAttempts+MaxTotalDelay": "Former 5 attempts and 10 seconds of scheduled delay"
       },
-      "currentValue": "Former 5 attempts and 10 seconds of scheduled delay",
+      "currentValue": "Former 5 attempts and 10 seconds of scheduled delay; retries are now bounded by an elapsed-time deadline the caller may supply, defaulting to two minutes",
       "owner": "product",
       "enforcementPoint": "SqliteBusyRetry.MaxAttempts+MaxTotalDelay",
-      "userVisibleBehavior": "Transient SQLite busy/locked work retries with cancellable backoff while the lock condition persists.",
+      "userVisibleBehavior": "Transient SQLite busy/locked work retries with cancellable backoff while the lock condition persists, and fails with a typed busy-timeout error once the deadline for the call elapses.",
       "originalRationale": "A fixed attempt/delay total could fail healthy work under temporary contention.",
-      "threatOrFailureModel": "Caller cancellation and SQLite's own integrity/locking semantics remain authoritative.",
+      "threatOrFailureModel": "Caller cancellation and SQLite's own integrity/locking semantics remain authoritative; the deadline exists so a caller with no cancellation of its own cannot wait forever behind a handle that will not let go.",
       "classification": "Arbitrary product restriction",
       "action": "replace with adaptive behavior",
-      "replacementOrContinuation": "Retry with capped per-delay backoff until success, a non-transient database failure, or cancellation.",
+      "replacementOrContinuation": "Retry with capped per-delay backoff until success, a non-transient database failure, cancellation, or the elapsed deadline for this call. The deadline is a caller parameter and defaults to two minutes, several multiples of the per-attempt bound Microsoft.Data.Sqlite applies, so an ordinary exclusive-maintenance hold still resolves normally while an unbounded wait fails closed.",
       "tests": [
         "SqliteBusyRetryTests"
       ],
