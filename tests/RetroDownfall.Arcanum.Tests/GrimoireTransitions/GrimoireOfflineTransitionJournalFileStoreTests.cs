@@ -1261,6 +1261,156 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
+    public async Task Resume_after_a_crash_before_permissions_verification_returns_recovery_required_rather_than_throwing()
+    {
+
+        (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
+                FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
+                FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
+            await ArrangeCanonicalBesideWorkingAsync();
+
+        using (held)
+        {
+
+            GrimoireOfflineTransitionJournalFileStore resuming = new(
+                failBeforeStep: step => step == "file:permissions-verified");
+
+            Result result = await resuming.ResumeWorkingPublicationAsync(
+                held,
+                location,
+                expectedCurrent,
+                expectedCurrentBytes,
+                expectedNext,
+                expectedNextBytes,
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Normalize_working_predecessor_with_a_pre_cancelled_token_returns_recovery_required_rather_than_throwing()
+    {
+
+        (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
+                FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
+                FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
+            await ArrangeCanonicalBesideWorkingAsync();
+
+        using (held)
+        {
+
+            using CancellationTokenSource cancelled = new();
+
+            cancelled.Cancel();
+
+            GrimoireOfflineTransitionJournalFileStore normalizing = new();
+
+            Result result = await normalizing.NormalizeWorkingPredecessorAsync(
+                held,
+                location,
+                expectedCurrent,
+                expectedCurrentBytes,
+                expectedNext,
+                expectedNextBytes,
+                cancelled.Token);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Publishes a genesis revision, then crashes a second publication through the production
+    /// <c>afterStep</c> seam right after the working file is written and flushed but before the
+    /// atomic exchange, with an exception the store's own catch clause does not filter. That leaves
+    /// an authentic canonical and an authentic working file side by side on disk — the exact
+    /// precondition <c>ResumeWorkingPublicationAsync</c> and <c>NormalizeWorkingPredecessorAsync</c>
+    /// both require — without hand-building either file.
+    /// </summary>
+    private async Task<(
+        ArcanumMaintenanceLock Held,
+        GrimoireOfflineTransitionJournalLocation Location,
+        FileHandleMetadata Canonical,
+        byte[] CanonicalBytes,
+        FileHandleMetadata Working,
+        byte[] WorkingBytes)> ArrangeCanonicalBesideWorkingAsync()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] currentBytes = Bytes("resume-current-" + Guid.NewGuid().ToString("N")).ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            currentBytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleIdentity currentIdentity;
+
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            currentIdentity = current.Metadata.Identity;
+
+        }
+
+        GrimoireOfflineTransitionJournalFileStore crashing = new(
+            afterStep: step =>
+            {
+
+                if (step == "file:temporary-flushed")
+                {
+
+                    throw new InvalidOperationException(
+                        "synthetic hard crash leaving working beside canonical");
+
+                }
+
+            });
+
+        byte[] nextBytes = Bytes("resume-next-" + Guid.NewGuid().ToString("N")).ToArray();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => crashing.ReplaceDurablyAsync(held, location, nextBytes, currentIdentity, CancellationToken.None));
+
+        using GrimoireOfflineTransitionJournalEvidence crashed = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.NotNull(crashed.Canonical);
+
+        Assert.NotNull(crashed.Working);
+
+        Assert.Null(crashed.Previous);
+
+        Assert.Null(crashed.Retiring);
+
+        return (
+            held,
+            location,
+            crashed.Canonical.Metadata,
+            crashed.Canonical.Bytes.ToArray(),
+            crashed.Working.Metadata,
+            crashed.Working.Bytes.ToArray());
+
+    }
+
+    [Fact]
     public void Production_windows_layout_uses_retained_handle_acl_and_synchronous_streams()
     {
 
