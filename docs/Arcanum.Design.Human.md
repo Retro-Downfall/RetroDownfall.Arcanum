@@ -463,7 +463,7 @@ Keep these boundaries in mind:
 - retention and factory reset provide logical deletion, not physical secure erasure or backup destruction;
 - Comm Link webhooks are not HMAC-signed;
 - the product is single-operator; `PromptId` acts as the human-input ownership capability;
-- macOS packaging is self-contained rather than Native AOT;
+- macOS packaging is Native AOT when LLVM `lld` is installed and self-contained otherwise;
 - SQLCipher tests may skip when the native asset is unavailable.
 
 The complete and more precise limitations list is [`Arcanum.DESIGN.md` §16](Arcanum.DESIGN.md#16-known-limitations-and-operator-constraints).
