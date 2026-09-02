@@ -28,12 +28,35 @@ internal sealed class ProviderHealthProbeService(
         while (!stoppingToken.IsCancellationRequested)
         {
 
+            // Defaults true (the longer, "avoid hammering a down provider" interval) so a tick that
+            // throws before ever reaching the tracker still backs off like an unhealthy pass, rather
+            // than the delay below being skipped entirely and the loop spinning hot (W8-7).
+            bool anyUnhealthy = true;
+
             try
             {
 
                 await ProbeAllProvidersAsync(stoppingToken).ConfigureAwait(false);
 
-                bool anyUnhealthy = tracker.GetAllStatuses().Any(static status => !status.IsHealthy);
+                anyUnhealthy = tracker.GetAllStatuses().Any(static status => !status.IsHealthy);
+
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+
+                break;
+
+            }
+            catch (Exception ex)
+            {
+
+                logger.LogError(ex, "Provider health probe scheduler tick failed; continuing.");
+
+            }
+
+            try
+            {
+
                 ResilienceSettings defaults = ArcanumRuntimeDefaults.Resilience;
 
                 int intervalSeconds = anyUnhealthy
@@ -49,12 +72,6 @@ internal sealed class ProviderHealthProbeService(
             {
 
                 break;
-
-            }
-            catch (Exception ex)
-            {
-
-                logger.LogError(ex, "Provider health probe scheduler tick failed; continuing.");
 
             }
 
