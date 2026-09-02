@@ -2835,6 +2835,265 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToolsCall_list_directory_does_not_duplicate_content_reached_through_multiple_directory_symlinks_across_pages()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        // Reproduces the reviewer's W6-4 regression shape: a handful of real directories densely
+        // cross-linked by directory symlinks. A resume that reseeds cycle detection from only the
+        // checkpoint's ancestor chain has no memory of canonical directories a *prior* page already
+        // descended into, so a symlink alias encountered again on a later page re-triggers a full
+        // re-descent -- and with many aliases pointing at few real targets, that re-descent compounds
+        // across pages instead of staying bounded.
+        const int directoryCount = 6;
+
+        const int filesPerDirectory = 8;
+
+        const int symlinksPerDirectory = directoryCount - 1;
+
+        const int symlinkCount = directoryCount * symlinksPerDirectory;
+
+        string[] directories = new string[directoryCount];
+
+        for (int d = 0; d < directoryCount; d++)
+        {
+
+            directories[d] = _workspace.CreateSubdir($"dir{d}");
+
+            for (int f = 0; f < filesPerDirectory; f++)
+            {
+
+                _workspace.WriteFile($"dir{d}/f{f:D3}.txt", "x");
+
+            }
+
+        }
+
+        // Complete directed graph: every directory holds one symlink to each of the other five, so any
+        // one of them can be reached through five different aliases in addition to its own name -- dense
+        // cross-linking, not a handful of disjoint pairs.
+        int linkIndex = 0;
+
+        for (int source = 0; source < directoryCount; source++)
+        {
+
+            for (int k = 0; k < symlinksPerDirectory; k++)
+            {
+
+                int target = (source + 1 + k) % directoryCount;
+
+                Directory.CreateSymbolicLink(
+                    Path.Combine(directories[source], $"link{linkIndex}"),
+                    directories[target]);
+
+                linkIndex++;
+
+            }
+
+        }
+
+        Assert.Equal(symlinkCount, linkIndex);
+
+        // Defensive, not currently load-bearing on macOS/Linux CI: Directory.ResolveLinkTarget has been
+        // observed here to return the *stored* symlink target verbatim (readlink semantics), matching
+        // _workspace.Root's own raw (non-realpath'd) form, so canonicalRoot below normally equals
+        // rawRoot exactly. If a runtime ever resolves through an ancestor symlink too (e.g. macOS's own
+        // /var -> private/var, which the .NET API here has not been seen to cross), a directory reached
+        // through one of this fixture's symlinks would canonicalize differently than the *same* directory
+        // reached directly under _workspace.Root -- an artifact of this oracle's own path comparisons,
+        // nothing to do with the tool under test. Map both forms into the same space before ever adding
+        // one to a HashSet or comparing it, so the oracle stays correct either way.
+        string rawRoot = Path.GetFullPath(_workspace.Root);
+
+        string canonicalRoot;
+        {
+
+            string probeLink = Path.Combine(Path.GetTempPath(), $"arcanum-oracle-probe-{Guid.NewGuid():N}");
+
+            Directory.CreateSymbolicLink(probeLink, Path.GetTempPath());
+
+            try
+            {
+
+                canonicalRoot = Path.Combine(
+                    Directory.ResolveLinkTarget(probeLink, returnFinalTarget: true)!.FullName,
+                    Path.GetRelativePath(Path.GetTempPath(), _workspace.Root));
+
+            }
+            finally
+            {
+
+                // Deletes only the probe symlink itself (unlink), never Path.GetTempPath()'s contents.
+                Directory.Delete(probeLink);
+
+            }
+
+        }
+
+        string Normalize(string path)
+        {
+
+            string full = Path.GetFullPath(path);
+
+            return full.StartsWith(rawRoot, StringComparison.Ordinal)
+                ? canonicalRoot + full[rawRoot.Length..]
+                : full;
+
+        }
+
+        // Oracle: the fixture is synthetic and fully connected, so the correct total is arithmetic, not
+        // just "whatever a second walk happens to produce" -- one entry per directory at the level it is
+        // first reached, plus each directory's own files and outgoing symlinks shown exactly once, when
+        // (and only when) that directory's content is shown. +3 for the class-wide baseline every test's
+        // _workspace already carries by the time it runs (see InitializeAsync above): the "folder" and
+        // "notes" entries at the root, plus "notes/alpha.txt".
+        const int baselineFixtureEntries = 3;
+
+        const int expectedCount = baselineFixtureEntries
+            + directoryCount
+            + (directoryCount * (filesPerDirectory + symlinksPerDirectory));
+
+        int oracleCount = 0;
+
+        HashSet<string> oracleVisited = new(StringComparer.Ordinal)
+        {
+            Normalize(_workspace.Root),
+        };
+
+        void WalkOracle(string directory)
+        {
+
+            foreach (string entry in Directory.EnumerateFileSystemEntries(directory)
+                         .OrderBy(static p => p, StringComparer.Ordinal))
+            {
+
+                oracleCount++;
+
+                if (Directory.Exists(entry))
+                {
+
+                    string canonical = Normalize(
+                        Directory.ResolveLinkTarget(entry, returnFinalTarget: true)?.FullName ?? entry);
+
+                    if (oracleVisited.Add(canonical))
+                    {
+
+                        WalkOracle(entry);
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        WalkOracle(_workspace.Root);
+
+        Assert.Equal(expectedCount, oracleCount);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        List<string> allLines = new();
+
+        int pages = 0;
+
+        string? continuation = null;
+
+        const int pageSafetyCap = 500;
+
+        do
+        {
+
+            pages++;
+
+            Assert.True(
+                pages <= pageSafetyCap,
+                $"Aborting after {pageSafetyCap} pages without reaching the end of the listing. That is itself " +
+                "the failure: bounded re-descent should finish in a small, small-multiple-of-oracleCount/64 " +
+                "number of pages, not run away.");
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams
+                {
+                    RelativePath = ".",
+                    Recursive = true,
+                    Continuation = continuation,
+                },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            foreach (string line in text.Split('\n'))
+            {
+
+                if (!line.StartsWith("...", StringComparison.Ordinal))
+                {
+
+                    allLines.Add(line);
+
+                }
+
+            }
+
+            const string cursorPrefix = "continuation=";
+
+            int cursorStart = text.LastIndexOf(cursorPrefix, StringComparison.Ordinal);
+
+            if (cursorStart < 0)
+            {
+
+                break;
+
+            }
+
+            cursorStart += cursorPrefix.Length;
+
+            int cursorEnd = text.IndexOf(';', cursorStart);
+
+            Assert.True(cursorEnd > cursorStart);
+
+            continuation = text[cursorStart..cursorEnd];
+
+        } while (true);
+
+        // The whole check: every real path shown exactly once. A resume that loses track of canonical
+        // directories visited on an earlier page re-descends into content reachable through more than one
+        // directory symlink, which shows up here as extra lines -- allLines.Count above expectedCount --
+        // not as literal duplicate strings (re-descended content is emitted under a different alias
+        // prefix each time, e.g. dir0/link0/f000.txt alongside dir1/f000.txt, so it never collides in a
+        // plain HashSet of the emitted lines themselves). The count alone does not say how many pages
+        // it took to get there, so report both together -- that pairing is what the RED evidence needs.
+        Assert.True(
+            allLines.Count == expectedCount,
+            $"Expected {expectedCount} entries across all continuations but observed {allLines.Count} over " +
+            $"{pages} pages. A resume that loses track of canonical directories visited on an earlier page " +
+            "re-descends into content reachable through more than one directory symlink.");
+
+        int pageBound = (expectedCount / 64) + 3;
+
+        Assert.True(
+            pages <= pageBound,
+            $"Expected at most {pageBound} pages for {expectedCount} real entries, but observed {pages} pages. " +
+            "Page count running far past the entry count confirms combinatorial re-descent, not just a few " +
+            "extra duplicate pages.");
+
+    }
+
+    [Fact]
     public async Task ToolsCall_list_directory_rejects_file_path()
     {
 

@@ -885,11 +885,17 @@ internal sealed partial class ArcanumInternalToolServer
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
 
+        // The same resolution the containment check above just used for absolutePath itself, so a
+        // directory's canonical identity and this root are never compared across a raw-vs-resolved
+        // mismatch (e.g. a workspace root reached through its own ancestor symlink).
+        string canonicalScopeRoot = Path.GetFullPath(
+            resolvedRoot ?? absolutePath);
+
         HashSet<string> visitedCanonicalDirectories = new(
             pathComparer);
 
         _ = visitedCanonicalDirectories.Add(
-            Path.GetFullPath(resolvedRoot ?? absolutePath));
+            canonicalScopeRoot);
 
         Stack<(string Directory, string[] Entries, int Index)> stack = new();
 
@@ -902,6 +908,7 @@ internal sealed partial class ArcanumInternalToolServer
         }
         else if (!TrySeekToListDirectoryCheckpoint(
                      absolutePath,
+                     canonicalScopeRoot,
                      afterPath,
                      recursive,
                      visitedCanonicalDirectories,
@@ -917,6 +924,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         entries = WalkListDirectoryEntries(
             stack,
+            canonicalScopeRoot,
             visitedCanonicalDirectories,
             recursive,
             cancellationToken);
@@ -942,6 +950,7 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     private bool TrySeekToListDirectoryCheckpoint(
         string scopeAbsolutePath,
+        string canonicalScopeRoot,
         string afterPath,
         bool recursive,
         HashSet<string> visitedCanonicalDirectories,
@@ -1060,8 +1069,29 @@ internal sealed partial class ArcanumInternalToolServer
 
                 }
 
+                string canonicalAncestor = Path.GetFullPath(
+                    resolvedAncestor ?? matchedEntry);
+
+                // An honest checkpoint's ancestor was descended into on the page that emitted it, and the
+                // forward walk (WalkListDirectoryEntries below) never descends into a directory symlink
+                // whose target sits inside the listing scope -- the target's own real name owns that
+                // content instead. An ancestor segment that resolves to an in-scope alias here cannot be
+                // a position the walk ever produced; treat it exactly like any other checkpoint that does
+                // not resolve to a real position.
+                if (!visitedCanonicalDirectories.Comparer.Equals(
+                        canonicalAncestor,
+                        Path.GetFullPath(matchedEntry))
+                    && WorkspacePathPolicy.IsPathUnderWorkspace(
+                        canonicalScopeRoot,
+                        canonicalAncestor))
+                {
+
+                    return false;
+
+                }
+
                 _ = visitedCanonicalDirectories.Add(
-                    Path.GetFullPath(resolvedAncestor ?? matchedEntry));
+                    canonicalAncestor);
 
                 currentDirectory = matchedEntry;
 
@@ -1080,7 +1110,19 @@ internal sealed partial class ArcanumInternalToolServer
                     string canonicalCheckpoint = Path.GetFullPath(
                         resolvedCheckpoint ?? matchedEntry);
 
-                    if (visitedCanonicalDirectories.Add(canonicalCheckpoint))
+                    // Descend only via the canonical path: an in-scope alias is emitted (it already was,
+                    // as the checkpoint itself, on the page before this one) but never recursed into --
+                    // the target's own real name owns its content, exactly as WalkListDirectoryEntries
+                    // decides below for the same shape encountered on a forward (non-resumed) walk.
+                    bool isInScopeAlias = !visitedCanonicalDirectories.Comparer.Equals(
+                            canonicalCheckpoint,
+                            Path.GetFullPath(matchedEntry))
+                        && WorkspacePathPolicy.IsPathUnderWorkspace(
+                            canonicalScopeRoot,
+                            canonicalCheckpoint);
+
+                    if (!isInScopeAlias
+                        && visitedCanonicalDirectories.Add(canonicalCheckpoint))
                     {
 
                         stack.Push(
@@ -1106,6 +1148,7 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     private IEnumerable<string> WalkListDirectoryEntries(
         Stack<(string Directory, string[] Entries, int Index)> stack,
+        string canonicalScopeRoot,
         HashSet<string> visitedCanonicalDirectories,
         bool recursive,
         CancellationToken cancellationToken)
@@ -1153,7 +1196,21 @@ internal sealed partial class ArcanumInternalToolServer
                 string canonicalDirectory = Path.GetFullPath(
                     resolvedEntry ?? entry);
 
-                if (visitedCanonicalDirectories.Add(
+                // Descend only via the canonical path. A directory symlink is always emitted as an entry,
+                // but recursed into only when its target sits outside the listing scope -- inside the
+                // scope, the target's own real name will (or already did) own that content, so descending
+                // through a symlink alias too can only duplicate it. This makes the resume's per-page
+                // visited set irrelevant for in-scope targets: whether to descend one is never a function
+                // of what an earlier page already saw, so a fresh page has nothing to forget.
+                bool isInScopeAlias = !visitedCanonicalDirectories.Comparer.Equals(
+                        canonicalDirectory,
+                        Path.GetFullPath(entry))
+                    && WorkspacePathPolicy.IsPathUnderWorkspace(
+                        canonicalScopeRoot,
+                        canonicalDirectory);
+
+                if (!isInScopeAlias
+                    && visitedCanonicalDirectories.Add(
                         canonicalDirectory))
                 {
 
