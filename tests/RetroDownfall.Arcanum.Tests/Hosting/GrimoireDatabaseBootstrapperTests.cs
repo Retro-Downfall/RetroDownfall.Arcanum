@@ -662,7 +662,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(LockedStartupTopology.DirectRootSymlink)]
     [InlineData(LockedStartupTopology.AncestorSymlink)]
     [InlineData(LockedStartupTopology.NonDirectoryAncestor)]
@@ -671,6 +671,12 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         LockedStartupTopology topology)
     {
 
+        Skip.If(
+            topology is LockedStartupTopology.InaccessibleAncestor && OperatingSystem.IsWindows(),
+            "The inaccessible-ancestor topology relies on Unix owner-only mode bits.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls in the switch below.
         if (topology is LockedStartupTopology.InaccessibleAncestor
             && OperatingSystem.IsWindows())
         {

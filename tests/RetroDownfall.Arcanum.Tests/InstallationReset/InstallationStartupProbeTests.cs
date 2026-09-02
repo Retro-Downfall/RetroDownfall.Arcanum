@@ -346,10 +346,14 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Inaccessible_ancestor_of_the_guarded_root_fails_closed_without_mutation()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what makes the ancestor inaccessible here.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 

@@ -833,10 +833,14 @@ public sealed class CliCompletionTests
     /// <c>site-functions</c> directory, or a home directory. A completion script is not a secret, so
     /// installing one must never silently re-permission the directory it lands in.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Completion_install_leaves_an_existing_target_directory_permissions_alone()
     {
 
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
 
