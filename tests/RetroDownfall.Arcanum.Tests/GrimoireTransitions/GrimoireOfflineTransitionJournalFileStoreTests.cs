@@ -1362,6 +1362,60 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
+    public async Task Resume_reports_recovery_required_when_enumeration_fails_with_an_io_exception()
+    {
+
+        (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
+                FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
+                FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
+            await ArrangeCanonicalBesideWorkingAsync();
+
+        using (held)
+        {
+
+            GrimoireOfflineTransitionJournalFileStore resuming = new(
+                afterStep: null,
+                failBeforeStep: null,
+                beforeAtomicReplace: null,
+                openPrimitives: currentLocation =>
+                {
+
+                    Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                        GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                            Path.GetDirectoryName(currentLocation.JournalPath)!,
+                            currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                    if (opened.IsFailure)
+                    {
+
+                        return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                            opened.Error);
+
+                    }
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(
+                        new ThrowingEnumerationPrimitives(opened.Value));
+
+                });
+
+            Result result = await resuming.ResumeWorkingPublicationAsync(
+                held,
+                location,
+                expectedCurrent,
+                expectedCurrentBytes,
+                expectedNext,
+                expectedNextBytes,
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+        }
+
+    }
+
+    [Fact]
     public async Task Normalize_working_predecessor_with_a_pre_cancelled_token_returns_recovery_required_rather_than_throwing()
     {
 
@@ -1722,12 +1776,16 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     /// <summary>
-    /// A revision publication issues six inspections through the primitives layer (the initial
-    /// evidence check, the final pre-replace validation, the landed check, the retirement's own
-    /// inspection, and two residue-absence proofs), and each inspection performs a full directory
-    /// enumeration; this bounds the total rather than pinning it exactly, so an implementation that
-    /// legitimately trades one inspection for another does not have to touch this test, but a pattern
-    /// that starts re-scanning per file (rather than per inspection) will still trip it.
+    /// A revision publication issues six evidence inspections through the primitives layer (the
+    /// initial precondition check, the pre-replace validation, the post-exchange landed check, the
+    /// permissions reread, the predecessor retirement, and the residue-absence proof). Each inspection
+    /// performs one broad EnumerateExactChildren call across the four slot names, then one further
+    /// targeted EnumerateExactChildren call per file slot it found present, to reread and reverify
+    /// that file -- so an inspection touching two slots costs three enumerations, not one, and the
+    /// observed total for one revision is 14, not six. This bounds the total rather than pinning it
+    /// exactly, so an implementation that legitimately trades one inspection for another does not have
+    /// to touch this test, but a pattern that starts re-scanning per file (rather than per inspection)
+    /// will still trip it.
     /// </summary>
     [Fact]
     public async Task Publication_bounds_the_number_of_directory_enumerations_per_revision()
@@ -2508,6 +2566,48 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             return FlushParentOverride?.Invoke() ?? inner.FlushParent();
 
         }
+
+        public void Dispose() => inner.Dispose();
+
+    }
+
+    private sealed class ThrowingEnumerationPrimitives(IGrimoireOfflineTransitionJournalFilePrimitives inner)
+        : IGrimoireOfflineTransitionJournalFilePrimitives
+    {
+
+        public FileHandleMetadata ParentMetadata => inner.ParentMetadata;
+
+        public Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(
+            string workingLeaf) => inner.CreateWorkingExclusive(workingLeaf);
+
+        public Result PublishFirstNoReplace(string journalLeaf, string workingLeaf) =>
+            inner.PublishFirstNoReplace(journalLeaf, workingLeaf);
+
+        public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(
+            string journalLeaf,
+            string workingLeaf,
+            string previousLeaf) =>
+            inner.ExchangeRetainingPrevious(journalLeaf, workingLeaf, previousLeaf);
+
+        public Result MoveNoReplace(string sourceLeaf, string destinationLeaf) =>
+            inner.MoveNoReplace(sourceLeaf, destinationLeaf);
+
+        public Result ApplyOwnerOnlyAndVerify(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.ApplyOwnerOnlyAndVerify(expected, relativeLeaf);
+
+        public Result CompareUnlink(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
+
+        public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
+            IReadOnlyList<string> exactLeaves) =>
+            throw new IOException("synthetic enumeration failure for catch-breadth pinning");
+
+        public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>
+            inner.FlushWorking(file);
+
+        public Result FlushParent() => inner.FlushParent();
 
         public void Dispose() => inner.Dispose();
 
