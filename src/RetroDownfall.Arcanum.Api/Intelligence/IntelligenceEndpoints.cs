@@ -52,7 +52,7 @@ internal static class IntelligenceEndpoints
                     statusCode: StatusCodes.Status400BadRequest);
             }
 
-            Result pingBounds = PingRequestBoundsValidator.Validate(body, settings.Value);
+            Result pingBounds = PingRequestBoundsValidator.Validate(body);
 
             if (pingBounds.IsFailure)
             {
@@ -265,9 +265,7 @@ internal static class IntelligenceEndpoints
                 return;
             }
 
-            ArcanumSettings arcSettings = httpContext.RequestServices.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>().Value;
-
-            Result streamPingBounds = PingRequestBoundsValidator.Validate(body, arcSettings);
+            Result streamPingBounds = PingRequestBoundsValidator.Validate(body);
 
             if (streamPingBounds.IsFailure)
             {
@@ -457,11 +455,7 @@ internal static class IntelligenceEndpoints
 
                     UnattendedMode: body.UnattendedMode);
 
-                Result previewBounds = PingRequestBoundsValidator.Validate(
-
-                    previewTurn,
-
-                    settings.Value);
+                Result previewBounds = PingRequestBoundsValidator.Validate(previewTurn);
 
                 if (previewBounds.IsFailure)
 

@@ -118,6 +118,74 @@ public sealed class SessionAttachmentPathSanitizerTests
     }
 
     [Fact]
+    public void TrySanitize_trims_a_trailing_dot_so_windows_normalisation_cannot_collide_two_logical_keys()
+    {
+
+        bool dottedOk = SessionAttachmentPathSanitizer.TrySanitize("notes.", out string dotted, out _);
+
+        bool plainOk = SessionAttachmentPathSanitizer.TrySanitize("notes", out string plain, out _);
+
+        if (dottedOk && plainOk)
+        {
+
+            Assert.Equal(plain, dotted);
+
+        }
+        else
+        {
+
+            Assert.False(dottedOk);
+
+            Assert.False(plainOk);
+
+        }
+
+    }
+
+    [Fact]
+    public void TrySanitize_trims_a_trailing_dot_exposed_by_stripping_a_trailing_unsafe_character()
+    {
+
+        Assert.True(SessionAttachmentPathSanitizer.TrySanitize("report", out string expected, out _));
+
+        Assert.True(SessionAttachmentPathSanitizer.TrySanitize("report.|", out string sanitized, out _));
+
+        Assert.Equal(expected, sanitized);
+
+    }
+
+    [Fact]
+    public void TrySanitize_trims_a_trailing_dot_exposed_by_truncation()
+    {
+
+        // 121 chars; truncating to the 120-char cap drops the trailing 'b' and would leave a
+        // trailing '.' if nothing re-trimmed after the cut.
+        string aDotB = new string('a', 119) + ".b";
+
+        string aOnly = new string('a', 119);
+
+        bool longOk = SessionAttachmentPathSanitizer.TrySanitize(aDotB, out string longSanitized, out _);
+
+        bool shortOk = SessionAttachmentPathSanitizer.TrySanitize(aOnly, out string shortSanitized, out _);
+
+        if (longOk && shortOk)
+        {
+
+            Assert.Equal(shortSanitized, longSanitized);
+
+        }
+        else
+        {
+
+            Assert.False(longOk);
+
+            Assert.False(shortOk);
+
+        }
+
+    }
+
+    [Fact]
     public void TrySanitize_strips_control_characters()
     {
 

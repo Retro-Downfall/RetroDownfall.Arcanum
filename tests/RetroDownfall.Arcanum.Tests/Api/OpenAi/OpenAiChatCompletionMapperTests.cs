@@ -232,7 +232,7 @@ public sealed class OpenAiChatCompletionMapperTests
 
         PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(request);
 
-        Result result = PingRequestBoundsValidator.Validate(ping, new ArcanumSettings());
+        Result result = PingRequestBoundsValidator.Validate(ping);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : string.Empty);
     }

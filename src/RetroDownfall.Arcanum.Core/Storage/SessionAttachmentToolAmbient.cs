@@ -37,9 +37,15 @@ public static class SessionAttachmentToolAmbient
 
     private static TimeSpan _bindingTtl = DefaultBindingTtl;
 
-    private static Func<long> _utcTicksNow = static () => DateTime.UtcNow.Ticks;
+    // Monotonic (Environment.TickCount64, time-since-boot), not wall clock: DateTime.UtcNow can
+    // step backward or jump forward on an NTP correction or a suspend/resume, which corrupts a
+    // simple "now - createdAt" TTL comparison in either direction. TickCount64 is immune to clock
+    // changes, so a bind stamped just before send and resolved microseconds later on the in-process
+    // MCP channel can never be perturbed by a wall-clock discontinuity in between. Scaled by
+    // TicksPerMillisecond so the result stays in the same 100ns-tick unit DefaultBindingTtl uses.
+    private static Func<long> _ticksNow = static () => global::System.Environment.TickCount64 * TimeSpan.TicksPerMillisecond;
 
-    private readonly record struct AmbientBinding(Guid SessionId, long CreatedUtcTicks);
+    private readonly record struct AmbientBinding(Guid SessionId, long CreatedTicks);
 
     /// <summary>Current session for attachment tool resolution on the inference async context.</summary>
     public static Guid? CurrentSessionId
@@ -52,14 +58,14 @@ public static class SessionAttachmentToolAmbient
     internal static void SetBindingTtlForTests(TimeSpan ttl) => _bindingTtl = ttl;
 
     /// <summary>Test seam: override the clock used for TTL. Call <see cref="ResetTestSeams"/> in teardown.</summary>
-    internal static void SetUtcTicksNowForTests(Func<long> utcTicksNow) =>
-        _utcTicksNow = utcTicksNow ?? throw new ArgumentNullException(nameof(utcTicksNow));
+    internal static void SetTicksNowForTests(Func<long> ticksNow) =>
+        _ticksNow = ticksNow ?? throw new ArgumentNullException(nameof(ticksNow));
 
     /// <summary>Test seam: restore production TTL/clock defaults and clear maps.</summary>
     internal static void ResetTestSeams()
     {
         _bindingTtl = DefaultBindingTtl;
-        _utcTicksNow = static () => DateTime.UtcNow.Ticks;
+        _ticksNow = static () => global::System.Environment.TickCount64 * TimeSpan.TicksPerMillisecond;
         SessionByConnectionRequest.Clear();
         SessionByOpaqueToken.Clear();
     }
@@ -84,6 +90,9 @@ public static class SessionAttachmentToolAmbient
         }
     }
 
+    /// <summary>Test hook: the current value of the (possibly faked) tick source.</summary>
+    internal static long CurrentTicksNowForTests => _ticksNow();
+
     /// <summary>
     /// Binds <paramref name="sessionId"/> to an MCP JSON-RPC request id scoped by connection.
     /// Called at the client send boundary when the SDK request id is available.
@@ -97,7 +106,7 @@ public static class SessionAttachmentToolAmbient
         SweepExpired();
 
         SessionByConnectionRequest[ComposeRequestKey(connectionKey, requestId)] =
-            new AmbientBinding(sessionId, _utcTicksNow());
+            new AmbientBinding(sessionId, _ticksNow());
 
     }
 
@@ -161,7 +170,7 @@ public static class SessionAttachmentToolAmbient
 
         string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
 
-        SessionByOpaqueToken[token] = new AmbientBinding(sessionId, _utcTicksNow());
+        SessionByOpaqueToken[token] = new AmbientBinding(sessionId, _ticksNow());
 
         return token;
 
@@ -218,12 +227,12 @@ public static class SessionAttachmentToolAmbient
     /// <summary>Removes expired request-id and opaque-token bindings.</summary>
     public static void SweepExpired()
     {
-        long now = _utcTicksNow();
+        long now = _ticksNow();
         long ttlTicks = _bindingTtl.Ticks;
 
         foreach (KeyValuePair<string, AmbientBinding> pair in SessionByConnectionRequest)
         {
-            if (now - pair.Value.CreatedUtcTicks > ttlTicks)
+            if (now - pair.Value.CreatedTicks > ttlTicks)
             {
                 SessionByConnectionRequest.TryRemove(pair.Key, out _);
             }
@@ -231,7 +240,7 @@ public static class SessionAttachmentToolAmbient
 
         foreach (KeyValuePair<string, AmbientBinding> pair in SessionByOpaqueToken)
         {
-            if (now - pair.Value.CreatedUtcTicks > ttlTicks)
+            if (now - pair.Value.CreatedTicks > ttlTicks)
             {
                 SessionByOpaqueToken.TryRemove(pair.Key, out _);
             }
@@ -239,7 +248,7 @@ public static class SessionAttachmentToolAmbient
     }
 
     private static bool IsExpired(AmbientBinding binding) =>
-        _utcTicksNow() - binding.CreatedUtcTicks > _bindingTtl.Ticks;
+        _ticksNow() - binding.CreatedTicks > _bindingTtl.Ticks;
 
     private static string ComposeRequestKey(string connectionKey, string requestId) =>
         connectionKey + "\u001f" + requestId;
