@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
@@ -57,7 +58,30 @@ public sealed class LongRunningOperationSpellingEvolutionTests
 
         Assert.Equal(1L, await JoinedOperationCountAsync(connection));
 
-        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+        // The installer reports an unhealthy tier rather than throwing, and a refused step rolls back
+        // silently - so the health is asserted here rather than inferred from the row counts below. A
+        // step that was refused leaves the counts exactly as a step that ran and repaired nothing, and
+        // the difference between those two is the whole of what this suite is for.
+        GrimoireSchemaInstallResult evolved =
+            await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+
+        Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.Core.Health);
+
+        Assert.Equal(6, evolved.Core.SchemaVersion);
+
+        Assert.Equal(2L, await JoinedOperationCountAsync(connection));
+
+        // The second startup, which is where a version step's layout mistakes actually surface. The
+        // evolving run above validated the head manifest before recording the version; this takes the
+        // Converge arm instead - re-run the idempotent head DDL and re-validate - so an object whose
+        // stored declaration came from ALTER TABLE ... ADD COLUMN is compared against the head file
+        // once more, against a database the step has already finished with. A column spliced into the
+        // head file in any shape but the one ALTER produces normalizes differently here and refuses
+        // with DefinitionDrift, on every evolved installation and on none of the fresh ones.
+        GrimoireSchemaInstallResult converged =
+            await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+
+        Assert.Equal(GrimoireSchemaTierHealth.Healthy, converged.Core.Health);
 
         Assert.Equal(2L, await JoinedOperationCountAsync(connection));
 

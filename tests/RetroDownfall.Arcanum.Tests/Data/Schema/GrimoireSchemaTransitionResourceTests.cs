@@ -209,6 +209,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "entry_embeddings_EntryId_norm_index",
                 "SessionAttachments_SessionId_norm_index",
                 "SessionAttachments_Id_norm_index",
+                "workspace_file_chunks_file_length",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",
