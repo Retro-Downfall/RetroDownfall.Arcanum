@@ -1186,9 +1186,15 @@ internal sealed partial class ArcanumInternalToolServer
             // this id after the tombstone expires is never affected by it.
             _earlyCancelTombstones.Unbind(_ambientConnectionKey, requestKey);
 
-            _inFlightToolCalls.TryRemove(requestKey, out _);
-
+            // Bound before the id leaves _inFlightToolCalls below, not after: the two calls are not
+            // atomic with each other, and a cancel notification landing in the gap must always find the
+            // id in at least one of the two stores. Binding first means it is briefly in both (harmless
+            // — HandleCancelledNotification checks _inFlightToolCalls first) rather than briefly in
+            // neither (which would tombstone this id's completion and poison its next reuse, the exact
+            // defect this store exists to close).
             _recentlyCompletedToolCalls.Bind(_ambientConnectionKey, requestKey, true);
+
+            _inFlightToolCalls.TryRemove(requestKey, out _);
 
             return BuildToolsCallResponse(rpcId, ToolError("Tool call was cancelled."));
         }
@@ -1303,9 +1309,11 @@ internal sealed partial class ArcanumInternalToolServer
                 _ambientConnectionKey,
                 requestKey);
 
-            _inFlightToolCalls.TryRemove(requestKey, out _);
-
+            // Bound before the id leaves _inFlightToolCalls below, not after -- see the matching
+            // comment on the early-tombstone-shortcut path above.
             _recentlyCompletedToolCalls.Bind(_ambientConnectionKey, requestKey, true);
+
+            _inFlightToolCalls.TryRemove(requestKey, out _);
         }
     }
 
