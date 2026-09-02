@@ -42,7 +42,7 @@ public sealed class AskCommandErrorHandlingTests
     }
 
     /// <summary>
-    /// W10-6: the bare <c>catch (Exception ex)</c> around the ask turn used to print
+    /// The bare <c>catch (Exception ex)</c> around the ask turn used to print
     /// <c>ex.Message</c> verbatim, so an <see cref="IOException"/> naming a local path reached the
     /// operator's stderr unredacted, and the exit code was a hardcoded 1 rather than
     /// <see cref="CliFailureMapper"/>'s classification. Routed through the mapper, only its safe
@@ -80,7 +80,7 @@ public sealed class AskCommandErrorHandlingTests
     }
 
     /// <summary>
-    /// W10-6 mutation-strength gap: the test above throws an <see cref="IOException"/>, which
+    /// The mutation-strength gap the test above leaves: it throws an <see cref="IOException"/>, which
     /// <see cref="CliFailureMapper"/> classifies as <see cref="CliExitCode.GenericError"/> — the same
     /// numeric value (1) the old hardcoded <c>return 1;</c> produced, so reverting to that literal
     /// while still constructing a <c>SafeMessage</c> from somewhere would leave that test green. An

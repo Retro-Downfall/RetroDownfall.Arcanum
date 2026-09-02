@@ -405,7 +405,7 @@ public sealed class A2APushNotificationTests : IDisposable
         // The peer finishes and its notification is lost in transit — nothing ever signals this instance.
         agentHandler.Release("an answer nobody was told about");
 
-        // There is no whole-operation deadline (#55), so the Sending keeps waiting rather than inventing
+        // There is no whole-operation deadline, so the Sending keeps waiting rather than inventing
         // an outcome…
         await Task.Delay(500);
 

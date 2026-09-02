@@ -201,7 +201,7 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
 
         // The blocker's ResolutionBindingDigest and ExpectedStateDigest are both Digest(0x71)
         // in this fixture, so the resume evidence's CanonicalStateDigest legitimately matches
-        // ExpectedStateDigest (D5-2's real acceptance check) even though it is written as the
+        // ExpectedStateDigest - the field acceptance actually turns on - even though it is written as the
         // same literal as the binding digest below - the two fields are equal here by fixture
         // choice, not because the comparison still accepts either one.
         CovenantResetOfflineTransitionPayloadV1 resumed = applying with

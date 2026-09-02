@@ -439,7 +439,7 @@ internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
 /// every gate suite substitutes.
 /// </summary>
 /// <remarks>
-/// W8-4: replacing <see cref="CovenantCampaignScopeProbe.HasDeletionEventAsync"/> with a hard-coded
+/// Replacing <see cref="CovenantCampaignScopeProbe.HasDeletionEventAsync"/> with a hard-coded
 /// answer keeps every other suite green, because no test anywhere constructs the real probe. This is
 /// that test.
 /// </remarks>

@@ -331,7 +331,7 @@ public sealed class CovenantScopeCensusTests
     }
 
     /// <summary>
-    /// W15-2: the finally block's rollback must run on <see cref="CancellationToken.None"/>, not the
+    /// The finally block's rollback must run on <see cref="CancellationToken.None"/>, not the
     /// caller's token. When the caller's token is already cancelled by the time the finally block
     /// runs, rolling back on that token throws a fresh <see cref="OperationCanceledException"/> that
     /// discards whatever the try block had already built — a well-formed <see cref="Result{T}"/>,

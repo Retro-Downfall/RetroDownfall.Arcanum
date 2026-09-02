@@ -6,7 +6,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 /// <summary>
-/// GET /api/scalar (W2-11) — the Content-Security-Policy the Scalar sub-group emits must actually
+/// GET /api/scalar — the Content-Security-Policy the Scalar sub-group emits must actually
 /// admit the inline bootstrap script Scalar's own rendered page ships, or the page silently renders
 /// an empty shell with only a console CSP violation and no in-page explanation.
 /// </summary>

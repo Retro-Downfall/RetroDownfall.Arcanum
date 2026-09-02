@@ -189,7 +189,7 @@ public sealed class FileEncryptionKeyProviderTests
     }
 
     /// <summary>
-    /// W7-8: TryFindKey used to allocate two ASCII byte[] per candidate key on every read, so an
+    /// TryFindKey used to allocate two ASCII byte[] per candidate key on every read, so an
     /// unknown key id — the shape every miss takes, order-independent of dictionary enumeration —
     /// walked and allocated across the whole ring. A dictionary lookup does not; this asserts the
     /// allocation a five-key ring's read pays does not scale past a one-key ring's.

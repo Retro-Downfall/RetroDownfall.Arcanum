@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Cli.CommandCenter;
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 /// <summary>
-/// W15-7: <see cref="CommandCenterApp"/>'s viewport-size probe drains a child process's redirected
+/// <see cref="CommandCenterApp"/>'s viewport-size probe drains a child process's redirected
 /// pipes with a one-second deadline. Before the fix, both pipes were read synchronously to EOF
 /// before <see cref="Process.WaitForExit(int)"/> was ever consulted, so a child that never writes
 /// and never exits blocked the calling thread forever — the deadline and the

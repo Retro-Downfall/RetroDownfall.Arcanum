@@ -71,7 +71,7 @@ public sealed class RecoveryHandlerCoverageTests
 
     /// <summary>
     /// Every registered <see cref="ILongRunningOperationRecoveryHandler"/> descriptor beyond one per
-    /// expected kind, closed-generic or factory alike (W5-8). A factory registration's
+    /// expected kind, closed-generic or factory alike. A factory registration's
     /// <see cref="ServiceDescriptor.ImplementationType"/> is null, so grouping by that property — the
     /// way <see cref="RegisteredHandlerTypes"/> projects it — silently drops a factory-registered
     /// duplicate from the inventory; counting descriptors for the service type instead is what keeps
@@ -127,7 +127,7 @@ public sealed class RecoveryHandlerCoverageTests
     }
 
     /// <summary>
-    /// W5-8: <see cref="ServiceDescriptor.ImplementationType"/> is null for a factory registration, so
+    /// <see cref="ServiceDescriptor.ImplementationType"/> is null for a factory registration, so
     /// grouping by that property — as a naive duplicate guard would — drops it from the inventory
     /// entirely: a handler that already has a closed-generic registration and gains a second,
     /// factory-based one looks like a single registration. <see cref="DuplicateHandlerRegistrations"/>

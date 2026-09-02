@@ -785,7 +785,7 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 /// <summary>
 /// <c>TryCreateLinkedCts</c> needs no Avalonia platform (it is pure CancellationTokenSource
 /// plumbing), unlike the rest of IlluminationView, which requires a live platform to construct
-/// (InitializeComponent loads compiled XAML) — this is the one piece of W11-10 this repo's lack of
+/// (InitializeComponent loads compiled XAML) — this is the one piece of the view this repo's lack of
 /// Avalonia.Headless does not block.
 /// </summary>
 public class IlluminationViewTryCreateLinkedCtsTests

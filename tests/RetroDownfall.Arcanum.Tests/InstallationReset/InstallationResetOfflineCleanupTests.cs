@@ -630,7 +630,7 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W5-7: a resumed pass whose file pass already finished deletes only now-empty directories.
+    /// A resumed pass whose file pass already finished deletes only now-empty directories.
     /// Directory deletions were never counted, so the cancel-compensation predicate read a
     /// directory-only mutation as "nothing was touched" and rethrew a bare OperationCanceledException
     /// instead of reporting the resumable Incomplete/RecoveryRequired shape every other cancellation
@@ -670,7 +670,7 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W5-7 (residual, review round 1): FailureOrIncomplete's own discriminator was
+    /// FailureOrIncomplete's own discriminator was
     /// <c>filesDeleted == 0</c>, so a directory-only mutation followed by a *later* directory-loop
     /// failure (not cancellation - the case above already covers that) reported a clean hard Failure,
     /// discarding the fact that a directory really was deleted. Same misread as the cancellation

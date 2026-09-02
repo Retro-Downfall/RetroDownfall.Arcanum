@@ -144,7 +144,7 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     }
 
     /// <summary>
-    /// W7-9: a shutdown concurrent with an in-flight read must not turn into an
+    /// A shutdown concurrent with an in-flight read must not turn into an
     /// ObjectDisposedException thrown out of the read's own finally block, replacing whatever the
     /// operation was actually doing.
     /// </summary>

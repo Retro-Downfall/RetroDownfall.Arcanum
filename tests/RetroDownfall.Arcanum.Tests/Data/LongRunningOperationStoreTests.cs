@@ -93,7 +93,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W3b-5: <c>LongRunningOperations.SessionId</c> names a row in <c>Sessions</c>, an EF-mapped
+    /// <c>LongRunningOperations.SessionId</c> names a row in <c>Sessions</c>, an EF-mapped
     /// table whose SQLite value binder writes every identity uppercase-dashed unconditionally. A
     /// reference column that spelled the same identity any other way would hold a value its own
     /// referenced table never does, so an ordinary join - without a <c>lower(replace(...))</c>

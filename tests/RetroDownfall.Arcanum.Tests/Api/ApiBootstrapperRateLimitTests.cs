@@ -369,7 +369,7 @@ public sealed class ApiBootstrapperRateLimitTests : IDisposable
 
     }
 
-    // W2-10: UseArcanumRateLimiter's partition key is Connection.RemoteIpAddress
+    // UseArcanumRateLimiter's partition key is Connection.RemoteIpAddress
     // (ResolveRateLimitPartitionKey above), read straight off the connection with no
     // forwarded-headers processing in front of it. Behind the reverse proxy ListenAny's own remarks
     // name as the expected topology, that collapses every caller into the proxy's one address. This

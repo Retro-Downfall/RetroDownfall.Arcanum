@@ -135,8 +135,8 @@ public sealed class TurnEventEmitterTests
         Assert.False(emitter.TerminalEmitted);
     }
 
-    // W1-1 added an OperationCanceledException catch (guarded by cancellationToken.IsCancellationRequested)
-    // to EmitAsync, but nothing before this exercised it directly: the abandonment test's cancellation
+    // EmitAsync's OperationCanceledException catch (guarded by cancellationToken.IsCancellationRequested)
+    // has no other test that exercises it directly: the abandonment test's cancellation
     // happens elsewhere in the pump, never inside a blocked WriteAsync. This blocks the channel at
     // capacity 1, cancels the second write's own token while it is parked waiting for room, and asserts
     // EmitAsync completes without throwing.

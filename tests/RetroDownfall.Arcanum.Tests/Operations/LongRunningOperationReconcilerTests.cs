@@ -208,7 +208,7 @@ public sealed class LongRunningOperationReconcilerTests
     }
 
     /// <summary>
-    /// W5-3: BackupCreate is AbandonSafely, so a registration regression that drops its handler out of
+    /// BackupCreate is AbandonSafely, so a registration regression that drops its handler out of
     /// a resolved scope must still be visible in the ledger. Before this fix the row closed as
     /// Abandoned with a null TerminalErrorCode and no log line — indistinguishable from a successful
     /// recovery; the non-AbandonSafely arm two lines below already names the same condition.
@@ -337,7 +337,7 @@ public sealed class LongRunningOperationReconcilerTests
     }
 
     /// <summary>
-    /// W5-1: once a handler has returned an outcome, persisting it is compensation — the pass token
+    /// Once a handler has returned an outcome, persisting it is compensation — the pass token
     /// is often the very reason compensation is running (a startup budget expiring, a background pass
     /// whose host is shutting down), so recording the result must not be lost because that same token
     /// is now cancelled. A handler that cancels the pass token immediately before returning
@@ -389,7 +389,7 @@ public sealed class LongRunningOperationReconcilerTests
     }
 
     /// <summary>
-    /// W5-4: the registry exists so an operator can learn what recovery does without reading the
+    /// The registry exists so an operator can learn what recovery does without reading the
     /// handler's source (registry header comment). <see cref="WorkspaceIndexRecoveryHandler"/> closes
     /// the row and re-enumerates nothing, deferring to the next background tick — the descriptor's
     /// operator-facing text has to say that, not its opposite, and has to name the service that
@@ -412,7 +412,8 @@ public sealed class LongRunningOperationReconcilerTests
 
 /// <summary>
 /// Wraps <see cref="FakeLongRunningOperationStore"/> so <c>GetAsync</c> and <c>TryTransitionAsync</c> —
-/// the two calls W5-1 names — observe cancellation the way the real SQLite-backed store does: both
+/// the two calls a reconciled outcome is persisted through — observe cancellation the way the real
+/// SQLite-backed store does: both
 /// open their connection on the supplied token (LongRunningOperationStore.cs), so a caller whose token
 /// is already cancelled faults before either reaches the database. Every other member is outside
 /// <see cref="LongRunningOperationReconciler.ReconcileAsync"/>'s call shape for a single-page,

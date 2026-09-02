@@ -85,7 +85,7 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// W5-6: an authoritative file already proves the installation non-fresh, so the credential-backed
+    /// An authoritative file already proves the installation non-fresh, so the credential-backed
     /// active-reset read (which reaches the OS credential store on every ordinary invocation, per the
     /// finding) must never run for it — checking the cheap, local file state first is what keeps an
     /// established installation off the credential store's potentially slow or interactive round trip

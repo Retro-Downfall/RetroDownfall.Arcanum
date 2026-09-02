@@ -628,7 +628,7 @@ public sealed class InferenceExecuteWriterTests
 }
 
 /// <summary>
-/// POST /api/intelligence/ping through the real host (W2-4) — the buffered failure/success envelope
+/// POST /api/intelligence/ping through the real host — the buffered failure/success envelope
 /// contract this route builds inline, replacing the deleted InferenceExecuteWriter.WriteBufferedAsync
 /// (no production caller) and the two dead tests that exercised it directly.
 /// </summary>

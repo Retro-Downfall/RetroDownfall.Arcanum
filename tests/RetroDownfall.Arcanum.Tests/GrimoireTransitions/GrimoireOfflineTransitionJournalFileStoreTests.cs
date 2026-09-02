@@ -2154,7 +2154,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     /// <summary>
-    /// D6-6's own RED case: weakening a published file's ACL is untested on the platform the owner-only
+    /// Weakening a published file's ACL is otherwise untested on the platform the owner-only
     /// posture is named after. Granting a second SID read access, rather than gutting a method, is the
     /// change an actual attacker or misconfiguration would produce.
     /// </summary>

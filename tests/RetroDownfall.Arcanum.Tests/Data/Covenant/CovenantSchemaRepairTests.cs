@@ -175,7 +175,7 @@ public sealed class CovenantSchemaRepairTests
     }
 
     /// <summary>
-    /// W8-9: <c>intent.Owner</c> constructs a <c>CovenantExclusiveRecoveryOwner</c>, whose constructor
+    /// <c>intent.Owner</c> constructs a <c>CovenantExclusiveRecoveryOwner</c>, whose constructor
     /// throws ArgumentException("The identifier cannot be empty.") for an empty OperationId
     /// (CovenantValidation.RequireNonEmpty) before AdoptDurableRecoveryOwner's body - and its own
     /// object-initialized error - ever runs. Before this fix, PrepareBeforeEffectsAsync's catch

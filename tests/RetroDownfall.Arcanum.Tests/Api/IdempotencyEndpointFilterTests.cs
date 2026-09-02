@@ -933,12 +933,11 @@ public sealed class IdempotencyEndpointFilterTests
 
     }
 
-    // Fix round 1, item 1 (spec fail on W2-1's streaming arm). A provider that yields
+    // A provider that yields
     // IntelligenceEvent(Error, ...) as an ordinary element of its own async-enumerable stream — the
-    // reviewer's exact probe shape, and FakeIntelligenceProvider's own NextFailure path — completes
+    // shape FakeIntelligenceProvider's own NextFailure path produces — completes
     // InferenceExecuteWriter.WriteStreamAsync's await foreach normally, the same as a genuine
-    // success: no exception is thrown, so the two catch-block fixes from the first W2-1 round never
-    // ran. Status stays 200 (headers already sent), content type stays NDJSON, and the body is the
+    // success: no exception is thrown, so neither catch-block ever runs. Status stays 200 (headers already sent), content type stays NDJSON, and the body is the
     // non-empty error frame, so this reached the surviving unconditional MarkIdempotencyTerminal call
     // and cached the failure as a permanently replayable "success" for the claim's whole TTL.
     [SkippableFact]
@@ -1006,7 +1005,7 @@ public sealed class IdempotencyEndpointFilterTests
 
     // The sibling gap: a provider whose enumerator THROWS (rather than yielding an Error event)
     // reaches InferenceExecuteWriter's general catch (Exception ex) arm, which already omitted
-    // MarkIdempotencyTerminal after the first W2-1 round — but PersistClaimAsync's buffered/aborted
+    // MarkIdempotencyTerminal — but PersistClaimAsync's buffered/aborted
     // fallback treats a non-empty, non-aborted body as terminal regardless, so omission alone was
     // never sufficient here either. This is the same root cause and lever as the test above; kept
     // separate because it exercises a structurally different path (an exception aborting the
@@ -1145,7 +1144,7 @@ public sealed class IdempotencyEndpointFilterTests
 
     }
 
-    // Fix round 1, item 3: ComputeBodyDigestAsync reads the body through an 80 KiB (81920-byte)
+    // ComputeBodyDigestAsync reads the body through an 80 KiB (81920-byte)
     // pooled buffer, one ReadAsync per iteration. Nothing pinned that the loop actually consumes
     // every byte of every chunk rather than, say, only the start of each read — a bug shaped exactly
     // like that would still pass every existing test, none of which sends a body over one buffer's
@@ -2583,7 +2582,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         // Every fake handler built on this context writes a JSON-shaped body directly via
         // Response.WriteAsync, bypassing Results.Json (which would set this for a real handler) --
-        // matching that here keeps IsReplayableContentType's W2-9 gate from seeing an untyped
+        // matching that here keeps IsReplayableContentType's content-type gate from seeing an untyped
         // response and treating a genuinely-JSON test body as unsafe to cache.
         httpContext.Response.ContentType = "application/json";
 

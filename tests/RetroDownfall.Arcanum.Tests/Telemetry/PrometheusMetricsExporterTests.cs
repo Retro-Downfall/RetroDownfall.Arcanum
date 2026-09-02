@@ -221,7 +221,7 @@ public sealed class PrometheusMetricsExporterTests
     }
 
     /// <summary>
-    /// W8-10: RegisterManualGauge is the path RenderMetricsAsync uses for the arcanum_operations gauge
+    /// RegisterManualGauge is the path RenderMetricsAsync uses for the arcanum_operations gauge
     /// fed by <c>operationCounts</c> straight from the database (MetricsEndpoints.cs -&gt;
     /// LongRunningOperationStore.GetCountsAsync). A legacy, restored, or hand-edited row carrying a
     /// Kind outside the registered catalog mints a new label set here; unlike every other recording

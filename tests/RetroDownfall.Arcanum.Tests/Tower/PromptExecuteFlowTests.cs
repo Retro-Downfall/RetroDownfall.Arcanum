@@ -142,7 +142,7 @@ public sealed class PromptExecuteFlowTests
 }
 
 /// <summary>
-/// POST /api/prompts/{id}/execute through the real host (W2-4) — the buffered failure-envelope
+/// POST /api/prompts/{id}/execute through the real host — the buffered failure-envelope
 /// contract this route builds inline, replacing the deleted InferenceExecuteWriter.WriteBufferedAsync
 /// (no production caller) and the dead test that exercised it.
 /// </summary>
