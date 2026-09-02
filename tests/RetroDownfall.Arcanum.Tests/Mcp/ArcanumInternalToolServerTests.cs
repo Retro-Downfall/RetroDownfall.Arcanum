@@ -1106,6 +1106,69 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // The former whole-file read decoded the entire capped read in one pass, so invalid UTF-8 anywhere
+    // in the file -- not just inside the requested range -- failed the call. The streaming read stops
+    // decoding once it has enough for the requested range, so a request whose own range is valid text
+    // now succeeds even when the file contains invalid UTF-8 further down, never reached by this
+    // request. Recorded per the ruling on task-15's report: a behavior change flagged as a concern
+    // there, now asserted directly.
+    [Fact]
+    public async Task ToolsCall_read_file_chunk_succeeds_when_invalid_utf8_lies_outside_the_requested_range()
+    {
+
+        const string relativePath = "notes/valid-head-invalid-tail.txt";
+
+        string[] requestedLines =
+        [
+            "line one",
+            "line two",
+            "line three",
+        ];
+
+        // StreamReader's own internal byte buffer (bufferSize: 8192 in the production code) fills from
+        // the underlying stream in one pass per ReadAsync call, decoding everything it pulls in --
+        // proven directly below: an earlier version of this fixture with only the three requested lines
+        // ahead of the invalid tail failed, because that first internal-buffer fill reached past line
+        // three into the invalid bytes before the line-three terminator ever got a chance to stop the
+        // walk. A large valid filler block keeps every byte the first (and likely several) ReadAsync
+        // calls actually touch inside valid content, so this fixture is testing the range, not
+        // accidentally relying on the invalid tail already being unreachable for unrelated reasons.
+        string filler = string.Concat(Enumerable.Repeat("filler line well past the requested range\n", 1_000));
+
+        string head = string.Join('\n', requestedLines) + "\n" + filler;
+
+        byte[] headBytes = Encoding.UTF8.GetBytes(head);
+
+        // 0xFF is never a valid UTF-8 leading or continuation byte, anywhere in a UTF-8 byte stream.
+        byte[] invalidTail = new byte[64 * 1024];
+
+        Array.Fill(invalidTail, (byte)0xFF);
+
+        string fullPath = Path.Combine(_workspace.Root, relativePath);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+
+        await File.WriteAllBytesAsync(fullPath, [.. headBytes, .. invalidTail]);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "read_file_chunk",
+            JsonSerializer.SerializeToElement(
+                new ReadFileChunkParams
+                {
+                    RelativePath = relativePath,
+                    StartLine = 1,
+                    EndLine = 3,
+                },
+                McpJsonSerializerContext.Default.ReadFileChunkParams));
+
+        Assert.False(result.IsError);
+
+        Assert.Equal(string.Join('\n', requestedLines), result.Content![0].Text);
+
+    }
+
     [Fact]
     public async Task ToolsCall_read_file_chunk_returns_requested_lines()
     {
