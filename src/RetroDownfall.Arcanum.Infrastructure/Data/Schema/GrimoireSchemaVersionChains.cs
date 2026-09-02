@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 6 and declares five steps, Covenant canonical is at version 2 and declares one,
+/// Core is at version 6 and declares five steps, Covenant canonical is at version 3 and declares two,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
