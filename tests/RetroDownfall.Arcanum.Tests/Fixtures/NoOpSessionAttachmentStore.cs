@@ -13,7 +13,8 @@ internal sealed class NoOpSessionAttachmentStore(
     Func<Guid, IReadOnlyList<SessionAttachmentForkCopyPlan>, CancellationToken, Task>? insertForkPage = null,
     IReadOnlyDictionary<Guid, SessionAttachmentRecord>? records = null,
     Func<SessionAttachmentRecord, CancellationToken, Task<ReadOnlyMemory<byte>>>? readBytes = null,
-    Func<SessionAttachmentRecord, CancellationToken, Task<Stream>>? openRead = null) : ISessionAttachmentStore
+    Func<SessionAttachmentRecord, CancellationToken, Task<Stream>>? openRead = null,
+    Func<Guid, IReadOnlyList<Guid>, CancellationToken, Task>? clearEntryIds = null) : ISessionAttachmentStore
 {
 
     public int PersistNewCallCount { get; private set; }
@@ -158,7 +159,8 @@ internal sealed class NoOpSessionAttachmentStore(
         Guid sessionId,
         IReadOnlyList<Guid> entryIds,
         CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
+        clearEntryIds?.Invoke(sessionId, entryIds, cancellationToken)
+        ?? Task.CompletedTask;
 
     public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
         Guid sourceSessionId,

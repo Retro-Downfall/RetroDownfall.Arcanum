@@ -316,7 +316,7 @@ public sealed class CampaignRepository : ICampaignRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
         }

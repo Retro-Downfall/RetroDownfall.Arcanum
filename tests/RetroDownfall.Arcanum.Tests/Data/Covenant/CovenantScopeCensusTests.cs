@@ -330,6 +330,38 @@ public sealed class CovenantScopeCensusTests
 
     }
 
+    /// <summary>
+    /// W15-2: the finally block's rollback must run on <see cref="CancellationToken.None"/>, not the
+    /// caller's token. When the caller's token is already cancelled by the time the finally block
+    /// runs, rolling back on that token throws a fresh <see cref="OperationCanceledException"/> that
+    /// discards whatever the try block had already built — a well-formed <see cref="Result{T}"/>,
+    /// success or failure — and unwinds the read-only status request the method's own contract says
+    /// must never unwind.
+    /// </summary>
+    [Fact]
+    public async Task ReadScopeCensusAsync_still_returns_a_result_when_the_token_cancels_before_the_rollback()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease lease =
+            (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        using CancellationTokenSource cts = new();
+
+        // Cancels exactly where the census readers have already drained and the finally block is the
+        // only thing left standing between the built result and the caller, matching the finding's
+        // own interleaving.
+        fixture.Store.BeforeReadScopeCensusRollbackForTesting = cts.Cancel;
+
+        Result<CovenantScopeCensus> census = await fixture.Store.ReadScopeCensusAsync(lease, cts.Token);
+
+        Assert.True(census.IsSuccess, census.IsFailure ? census.Error.Message : string.Empty);
+
+    }
+
     private static long RowBytes(CovenantScopeCensus census, CovenantScope scope, CovenantLane lane) =>
         census.Rows.Single(row => row.Scope == scope && row.Lane == lane).RenderedBytes;
 

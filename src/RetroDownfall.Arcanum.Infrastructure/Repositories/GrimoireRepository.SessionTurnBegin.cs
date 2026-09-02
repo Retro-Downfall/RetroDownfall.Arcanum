@@ -89,7 +89,7 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             _logger.LogWarning(exception, "A bound Session could not be created.");
 
@@ -222,7 +222,7 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             _logger.LogWarning(
                 exception,

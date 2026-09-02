@@ -1253,6 +1253,60 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W15-1: a compensating rollback must run on <see cref="CancellationToken.None"/>, not the
+    /// caller's token. When the caller's token is already cancelled by the time the catch block's
+    /// rollback runs, rolling back on that token throws a fresh <see cref="OperationCanceledException"/>
+    /// before <c>throw;</c> can re-raise the original failure, so the caller never learns why the write
+    /// actually failed.
+    /// </summary>
+    [SkippableFact]
+    public async Task DeleteEntryAsync_surfaces_the_original_failure_when_the_token_cancels_before_rollback()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using CancellationTokenSource cts = new();
+
+        InvalidOperationException synthetic = new("synthetic clear failure for the RED test");
+
+        NoOpSessionAttachmentStore attachments = new(
+            clearEntryIds: (_, _, _) =>
+            {
+
+                // Cancels exactly where BeginTransactionAsync has already succeeded and the write
+                // has not yet committed, matching the finding's own interleaving.
+                cts.Cancel();
+
+                return Task.FromException(synthetic);
+
+            });
+
+        GrimoireRepository repository = CreateRepository(attachments: attachments);
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "delete me under cancellation",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(
+            assistantEntryId,
+            "delete me under cancellation reply",
+            CancellationToken.None);
+
+        InvalidOperationException observed = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.DeleteEntryAsync(sessionId, assistantEntryId, cts.Token));
+
+        Assert.Same(synthetic, observed);
+
+        // The rollback actually ran (rather than being skipped by a cancelled token), so the entry
+        // is still there and the connection is left with no open transaction to trip a later call.
+        Assert.NotNull(
+            await repository.GetEntryByIdAsync(sessionId, assistantEntryId, CancellationToken.None));
+
+    }
+
     [SkippableFact]
     public async Task SetEntryPinnedAsync_toggles_pinned_flag()
     {
@@ -1690,13 +1744,14 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     private GrimoireRepository CreateRepository(
         ArcanumDbContext? db = null,
         ILogger<GrimoireRepository>? logger = null,
-        FixtureOrdinaryConnectionFactory? connections = null)
+        FixtureOrdinaryConnectionFactory? connections = null,
+        ISessionAttachmentStore? attachments = null)
     {
         ArcanumDbContext context = db ?? _db!;
 
         return new GrimoireRepository(
             context,
-            new NoOpSessionAttachmentStore(),
+            attachments ?? new NoOpSessionAttachmentStore(),
             logger ?? NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,

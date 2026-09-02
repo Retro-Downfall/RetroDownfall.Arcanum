@@ -750,7 +750,7 @@ internal sealed partial class CovenantManagedFileErasureKernel(
         catch (SqliteException exception)
         {
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return Result<LocalErasureWorkItemRow>.Failure(
                 new Error(ErrorCodes.Covenant.ManualArtifactErasureRequired, exception.Message));

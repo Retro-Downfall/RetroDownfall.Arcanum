@@ -193,7 +193,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             }
             catch
             {
-                await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
                 throw;
             }
@@ -337,7 +337,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
         }
@@ -410,7 +410,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
     }
@@ -497,7 +497,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
     }
@@ -870,7 +870,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
         }
@@ -1456,7 +1456,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
         }

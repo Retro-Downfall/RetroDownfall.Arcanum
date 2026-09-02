@@ -27,6 +27,13 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
+    /// <summary>
+    /// Runs, if set, immediately before <see cref="ReadScopeCensusAsync"/> rolls back its read-only
+    /// transaction — the one point a test can make the caller's token go cancelled exactly where the
+    /// finally block is the only thing standing between a built result and the caller.
+    /// </summary>
+    internal Action? BeforeReadScopeCensusRollbackForTesting { get; set; }
+
     public async ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
         CanonicalCampaignContext campaign,
         ICovenantSnapshotReadLease readLease,
@@ -1057,7 +1064,9 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         finally
         {
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            BeforeReadScopeCensusRollbackForTesting?.Invoke();
+
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
         }
 
