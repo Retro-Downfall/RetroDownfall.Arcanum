@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -156,20 +157,21 @@ public sealed class CovenantArchitectureBoundaryTests
 
     }
 
+    /// <summary>
+    /// Scans every authored source file in the repository, not one project. A writer added under
+    /// <c>Api</c> or <c>Cli</c> can reach this table today: <c>ICovenantConnectionSource</c> and
+    /// <c>CovenantSearchSql</c> are <c>internal</c>, and Infrastructure grants both projects
+    /// <c>InternalsVisibleTo</c>, so a project-scoped scan cannot see a writer added there. Core
+    /// cannot reach it - the dependency direction is Cli -&gt; Api -&gt; Infrastructure -&gt; Core -
+    /// but the scan covers it anyway rather than special-casing the two that can.
+    /// </summary>
     [Fact]
     public void Only_the_outbox_worker_and_rebuilder_write_accelerator_state()
     {
 
-        string[] writers = [.. Directory
-            .EnumerateFiles(
-                Path.Combine(RepositoryRoot(), "src", "RetroDownfall.Arcanum.Infrastructure"),
-                "*.cs",
-                SearchOption.AllDirectories)
-            .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Where(static path => File.ReadAllText(path)
-                .Contains("covenant_search_documents", StringComparison.Ordinal))
-            .Select(static path => Path.GetFileName(path))
+        string[] writers = [.. ProductionSourceInventory.Sources()
+            .Where(static source => source.Names("covenant_search_documents"))
+            .Select(static source => source.RelativePath)
             .Order(StringComparer.Ordinal)];
 
         Assert.Equal(
@@ -181,7 +183,7 @@ public sealed class CovenantArchitectureBoundaryTests
                 // anything but the projection's owners from mutating it while the applied FTS tuple
                 // claims it is current — and a purge runs against a database whose applied tuple is
                 // null, before it becomes anybody's live installation.
-                "BackupRestoreProtectedStateInspector.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreProtectedStateInspector.cs",
 
                 // The second declared exception, and it is not a live writer either. A canonical
                 // erasure empties the projection in the same transaction that deletes the heads it
@@ -190,12 +192,12 @@ public sealed class CovenantArchitectureBoundaryTests
                 // the same statement (§10.20.5). It runs on its own exclusive maintenance connection
                 // with the family's admission already closed, which is the one condition under which
                 // clearing the projection is not a race against the workers that own it.
-                "CovenantCanonicalErasureTransaction.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalErasureTransaction.cs",
 
-                "CovenantIndexRebuilder.cs",
-                "CovenantSearchIndex.cs",
-                "CovenantSearchOutboxWorker.cs",
-                "CovenantSearchSql.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantIndexRebuilder.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchIndex.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchOutboxWorker.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchSql.cs",
             ],
             writers);
 
