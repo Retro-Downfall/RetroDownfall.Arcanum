@@ -2044,16 +2044,18 @@ public sealed class GrimoireConnectionAdmissionGateTests
     }
 
     /// <summary>
-    /// Disposing a tracked maintenance handle reports the terminal state its caller never reached.
+    /// Disposing a handle whose native open never started completes it, because that much is known.
     /// </summary>
     /// <remarks>
-    /// Every other capability the closed lease issues is <c>IAsyncDisposable</c>, so a phase can
-    /// guard it with <c>await using</c>. The tracked handle was the one that was not, which left a
-    /// caller no way to write the guard at all: a throw between consuming the capability and
-    /// reporting the outcome leaked the handle by construction rather than by mistake.
+    /// Every other authority the closed lease issues is disposable, so a phase can guard it with
+    /// <c>await using</c>. The tracked handle was the one that was not, which left a caller no way to
+    /// write the guard at all: a throw between consuming the capability and reporting the outcome
+    /// leaked the handle by construction rather than by mistake. A handle that never started an open
+    /// has no connection to be wrong about, so disposal may complete it and the owner may
+    /// disposition.
     /// </remarks>
     [Fact]
-    public async Task Disposing_a_tracked_maintenance_handle_completes_its_physical_open_lifetime()
+    public async Task Disposing_a_never_opened_maintenance_handle_completes_its_lifetime()
     {
 
         const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
@@ -2086,17 +2088,13 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane).Value;
 
-        IAsyncDisposable guard = Assert.IsAssignableFrom<IAsyncDisposable>(handle);
+        await handle.DisposeAsync();
 
-        Assert.True(handle.ReportOpenStarted().IsSuccess);
-
-        await guard.DisposeAsync();
-
-        Assert.True(handle.ReportPhysicallyClosed().IsFailure);
+        Assert.True(handle.ReportOpenStarted().IsFailure);
 
         // The clock is never advanced: the lane's drain has to be already satisfied, which is only
-        // true if disposal genuinely completed the handle's physical-open lifetime rather than the
-        // bounded wait quietly giving up on it.
+        // true if disposal genuinely completed the handle's lifetime rather than the bounded wait
+        // quietly giving up on it.
         await lane.DisposeAsync().AsTask().WaitAsync(BoundedWait);
 
         Result keptClosed = await closed.CompleteAsync(
@@ -2104,6 +2102,86 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    /// <summary>
+    /// Disposing a handle whose open had started may not report a closure nobody observed.
+    /// </summary>
+    /// <remarks>
+    /// The guard runs on the way out of a phase that threw, and it has not looked at the connection.
+    /// Completing such a handle as physically closed would empty the closure's live set, let the
+    /// owner disposition, and reopen ordinary admission over a maintenance connection that may still
+    /// be physically open - which is the exact outcome the closed lease exists to prevent. Disposal
+    /// records the abandonment and leaves the handle live, so the disposition stays refused until
+    /// something that did observe the connection reports it.
+    /// </remarks>
+    [Fact]
+    public async Task Disposing_an_open_maintenance_handle_leaves_the_lease_undispositionable()
+    {
+
+        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        CovenantExclusiveRecoveryOwner owner = Owner(49);
+
+        await using IGrimoireExclusiveClosedLease closed = await Close(gate, owner);
+
+        IGrimoireMaintenanceIoLane lane =
+            (await closed.AcquireMaintenanceIoLaneAsync(
+                static (_, _, _) => ValueTask.FromResult(true),
+                CancellationToken.None)).Value;
+
+        await using IGrimoireMaintenanceConnectionCapability capability =
+            closed.IssueMaintenanceConnectionCapability(
+                CanonicalPath,
+                CovenantMaintenanceConnectionMode.ReadWrite,
+                CovenantMaintenanceConnectionPurpose.Compaction,
+                lane).Value;
+
+        IGrimoireTrackedMaintenanceHandle handle = capability.Consume(
+            owner,
+            closed.Generation,
+            CanonicalPath,
+            CovenantMaintenanceConnectionMode.ReadWrite,
+            CovenantMaintenanceConnectionPurpose.Compaction,
+            lane).Value;
+
+        Assert.True(handle.ReportOpenStarted().IsSuccess);
+
+        await handle.DisposeAsync();
+
+        // Disposal is not a report: an abandoned open cannot be reported closed after the fact
+        // either, because that caller no longer knows any more than the guard did.
+        Assert.True(handle.ReportPhysicallyClosed().IsFailure);
+
+        // The lane goes first, and it does give the shared adoption interlock back - on its bounded
+        // wait rather than on a drain that will never complete. Releasing it also removes the other
+        // reason a disposition can be refused, so what the assertion below sees is the handle alone.
+        Task release = lane.DisposeAsync().AsTask();
+
+        Task scheduled = clock.WaitForScheduledTimerCountAsync(1);
+
+        if (await Task.WhenAny(release, scheduled).WaitAsync(BoundedWait) == scheduled)
+        {
+
+            clock.Advance(OpeningTimeout);
+
+        }
+
+        await release.WaitAsync(BoundedWait);
+
+        Result refused = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None);
+
+        Assert.True(
+            refused.IsFailure,
+            "A disposition was allowed while a maintenance open that nobody observed closing is "
+            + "still outstanding.");
 
     }
 

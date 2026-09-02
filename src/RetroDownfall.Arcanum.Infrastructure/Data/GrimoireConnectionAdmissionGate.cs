@@ -1843,13 +1843,18 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     }
 
     /// <summary>
-    /// Ends a tracked physical-open lifetime whose phase never reported an outcome.
+    /// Records that a tracked physical-open lifetime was abandoned without reporting an outcome.
     /// </summary>
     /// <remarks>
-    /// Disposal is the caller's guard, not a second way to report: a handle that already reported is
-    /// left exactly as it is. One that did not is completed in the terminal state its own progress
-    /// implies - a native open that never started did not open, and one that started is over once
-    /// the phase holding it has unwound.
+    /// Disposal is the caller's guard, and a guard may only say what it knows. A handle that already
+    /// reported is left exactly as it is. One whose native open never started did not open, and that
+    /// is a fact disposal can establish on its own, so it completes.
+    ///
+    /// <para>A handle whose open had already started is the case this method exists to get right. It
+    /// is marked abandoned and left in its closure's live set: nothing here inspected the connection,
+    /// so nothing here may report it closed, and reporting one would let ordinary admission reopen
+    /// while a maintenance connection is possibly still physically open. Refusing the disposition
+    /// instead is the fail-closed reading, and it is the one the whole gate is built on.</para>
     /// </remarks>
     private void CompleteMaintenanceHandleOnDispose(TrackedMaintenanceHandle handle)
     {
@@ -1864,11 +1869,18 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
-            _ = CompleteMaintenanceHandleWhileLocked(
-                handle,
-                handle.State is MaintenanceHandleState.NotStarted
-                    ? MaintenanceHandleState.NotOpened
-                    : MaintenanceHandleState.PhysicallyClosed);
+            if (handle.State is MaintenanceHandleState.NotStarted)
+            {
+
+                _ = CompleteMaintenanceHandleWhileLocked(
+                    handle,
+                    MaintenanceHandleState.NotOpened);
+
+                return;
+
+            }
+
+            handle.State = MaintenanceHandleState.AbandonedWhileOpen;
 
         }
 
@@ -2128,6 +2140,16 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         NotOpened = 3,
 
         PhysicallyClosed = 4,
+
+        /// <summary>
+        /// A native open that started and whose phase unwound without ever reporting an outcome.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately not a terminal state. Nothing here observed the connection, so nothing here
+        /// may claim it closed; the handle stays in its closure's live set and keeps refusing
+        /// disposition, which is the fail-closed reading of "a physical open may still be out there".
+        /// </remarks>
+        AbandonedWhileOpen = 5,
 
     }
 

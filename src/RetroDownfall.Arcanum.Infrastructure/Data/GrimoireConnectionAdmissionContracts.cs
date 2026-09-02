@@ -386,10 +386,15 @@ internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 /// capability and reporting the outcome leaks the lifetime by construction rather than by mistake,
 /// and a leaked lifetime blocks both the closed lease's disposition and its lane's release.
 ///
-/// Disposal is the guard, not a second way to report: an implementation ends an unreported lifetime
-/// in the terminal state its own progress implies, and leaves a lifetime that already reported
-/// alone. It is required rather than defaulted, because a lifetime that owns a physical open and
-/// silently inherits a do-nothing disposal is the leak this member exists to close.
+/// Disposal is the guard, not a second way to report, and it may only say what it knows. A lifetime
+/// that already reported is left alone. One whose native open never started did not open, and
+/// disposal may complete it. One whose open had started is recorded as abandoned and stays live:
+/// disposal did not inspect the connection, so it may not claim a closure, and a closure it claimed
+/// falsely would let ordinary admission reopen over a connection that is possibly still open. The
+/// owner's disposition stays refused until something that did observe the connection reports it.
+///
+/// The member is required rather than defaulted, because a lifetime that owns a physical open and
+/// silently inherits a do-nothing disposal is the leak it exists to close.
 /// </remarks>
 internal interface IGrimoireTrackedMaintenanceHandle : IAsyncDisposable
 {
