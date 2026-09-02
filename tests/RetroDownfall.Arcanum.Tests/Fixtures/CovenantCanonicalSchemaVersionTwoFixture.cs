@@ -116,7 +116,7 @@ internal static class CovenantCanonicalSchemaVersionTwoFixture
             : definition),
     ];
 
-    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);
+    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeRawSourceFingerprint(Objects);
 
     internal static GrimoireSchemaVersionChainSet ChainSet() =>
         new(

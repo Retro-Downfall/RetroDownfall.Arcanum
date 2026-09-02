@@ -33,7 +33,7 @@ internal static class CovenantCanonicalSchemaVersionOneFixture
     ];
 
     /// <summary>The fingerprint the version-1 tree published, computed from the reconstruction above.</summary>
-    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);
+    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeRawSourceFingerprint(Objects);
 
     /// <summary>
     /// An installable version-1 chain set: the shipped Core chain, the reconstructed canonical tree at

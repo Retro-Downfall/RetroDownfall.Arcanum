@@ -98,7 +98,7 @@ internal static class CoreSchemaVersionThreeFixture
     ];
 
     /// <summary>The fingerprint the version-3 tree published, computed from the reconstruction above.</summary>
-    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);
+    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeRawSourceFingerprint(Objects);
 
     /// <summary>
     /// An installable version-3 chain set: the reconstructed Core tree at version 3 with the two steps

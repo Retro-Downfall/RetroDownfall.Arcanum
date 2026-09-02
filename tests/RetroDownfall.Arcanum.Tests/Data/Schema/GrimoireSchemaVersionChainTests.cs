@@ -40,7 +40,7 @@ public sealed class GrimoireSchemaVersionChainTests
     public void The_shipped_head_versions_are_the_ones_this_binary_declares()
     {
 
-        Assert.Equal(5, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        Assert.Equal(6, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(3, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 

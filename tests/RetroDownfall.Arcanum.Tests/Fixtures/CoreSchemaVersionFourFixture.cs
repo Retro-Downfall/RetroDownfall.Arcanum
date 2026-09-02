@@ -20,6 +20,10 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// so. A version-5 statement is the usual reason the text moves and it is not the only one: the
 /// fingerprint is taken over the file rather than over the SQL it holds, so a corrected comment moves
 /// it too.</para>
+///
+/// <para>It peels back from <see cref="CoreSchemaVersionFiveFixture"/> rather than from the shipped
+/// catalog, so each fixture undoes exactly one version and no fixture has to restate what a later one
+/// already froze. Version 6's edits reach this reconstruction through that fixture.</para>
 /// </remarks>
 internal static class CoreSchemaVersionFourFixture
 {
@@ -151,7 +155,7 @@ internal static class CoreSchemaVersionFourFixture
     /// </remarks>
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionFiveFixture.Objects
             .Where(static definition => !VersionFiveObjectNames.Contains(definition.Name, StringComparer.Ordinal))
             .Select(static definition => definition.Name switch
             {
@@ -172,7 +176,7 @@ internal static class CoreSchemaVersionFourFixture
     ];
 
     /// <summary>The fingerprint the version-4 tree published, computed from the reconstruction above.</summary>
-    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);
+    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeRawSourceFingerprint(Objects);
 
     /// <summary>
     /// An installable version-4 chain set: the reconstructed Core tree at version 4 with the three steps

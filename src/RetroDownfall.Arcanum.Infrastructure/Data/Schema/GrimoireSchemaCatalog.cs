@@ -68,9 +68,11 @@ internal static class GrimoireSchemaCatalog
             () => FilterTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
             LazyThreadSafetyMode.ExecutionAndPublication);
 
+    // Which of the two computations a value uses is decided by the version it will be recorded
+    // against, never by preference. See ComputeSourceFingerprint for the rule and the reason.
     private static readonly Lazy<string> LoadedFingerprint =
         new(
-            () => ComputeSourceFingerprint(LoadedObjects.Value),
+            () => ComputeRawSourceFingerprint(LoadedObjects.Value),
             LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static readonly Lazy<string> LoadedCoreFingerprint =
@@ -80,12 +82,12 @@ internal static class GrimoireSchemaCatalog
 
     private static readonly Lazy<string> LoadedCanonicalFingerprint =
         new(
-            () => ComputeSourceFingerprint(LoadedCanonicalObjects.Value),
+            () => ComputeRawSourceFingerprint(LoadedCanonicalObjects.Value),
             LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static readonly Lazy<string> LoadedAcceleratorFingerprint =
         new(
-            () => ComputeSourceFingerprint(LoadedAcceleratorObjects.Value),
+            () => ComputeRawSourceFingerprint(LoadedAcceleratorObjects.Value),
             LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>
@@ -651,14 +653,52 @@ internal static class GrimoireSchemaCatalog
     }
 
     /// <summary>
-    /// Frames each object with family, tier, category, resource path, and name before its exact
-    /// unresolved SQL, so two objects cannot hash alike by moving between tiers or folders.
+    /// Frames each object with family, tier, category, resource path, and name before its
+    /// <i>normalized</i> statement, so two objects cannot hash alike by moving between tiers or
+    /// folders and one object cannot hash differently for being reindented or recommented.
     /// </summary>
     /// <remarks>
-    /// Internal rather than private so a test can prove every published fingerprint is computed over
-    /// head objects alone. A test-only wrapper would be a second name for one algorithm.
+    /// A tier's fingerprint is its durable identity in <c>grimoire_feature_schemas</c>, and Core is
+    /// the tier whose refusal aborts startup, so a value that moved for an edit changing no schema
+    /// would take the host and every CLI verb down over a corrected comment. Normalizing first is
+    /// what stops that. It is not blindness: <see cref="GrimoireSqlNormalizer"/> preserves quoted
+    /// strings byte for byte and removes only comments, insignificant whitespace,
+    /// <c>IF NOT EXISTS</c> and the terminating semicolon, so a changed column, a changed abort
+    /// message or an added index still moves the value.
+    ///
+    /// <para><b>A tier adopts this computation at one version and never before it.</b> Every
+    /// fingerprint an installation already recorded was taken by
+    /// <see cref="ComputeRawSourceFingerprint"/>, and a tier whose head fingerprint changed at a
+    /// version it is not leaving would refuse every installation sitting at that version. So a tier
+    /// switches here in the same change that raises its version, and the step leaving the version
+    /// below pins the <i>raw</i> value that version published. Core adopted it at version 6;
+    /// Covenant canonical and the Covenant accelerator have not adopted it, and each stays on the raw
+    /// computation until the change that raises its own version pins its last raw value.</para>
+    ///
+    /// <para>Internal rather than private so a test can prove every published fingerprint is computed
+    /// over head objects alone. A test-only wrapper would be a second name for one algorithm.</para>
     /// </remarks>
-    internal static string ComputeSourceFingerprint(IReadOnlyList<GrimoireSchemaObject> definitions)
+    internal static string ComputeSourceFingerprint(IReadOnlyList<GrimoireSchemaObject> definitions) =>
+        Combine(definitions, static definition => GrimoireSqlNormalizer.Normalize(definition.Sql));
+
+    /// <summary>
+    /// The same framing over each object's exact unresolved SQL, which is how every pinned version
+    /// was computed.
+    /// </summary>
+    /// <remarks>
+    /// This is not superseded code. Every pin a shipped step carries was taken this way against a
+    /// head tree that no longer exists and can never be recomputed, so a fixture reconstructing one of
+    /// those trees has to hash it this way to reproduce the value, and the two Covenant tiers still
+    /// publish this way. It stops being reachable only when no tier and no pin is left that was taken
+    /// with it, which is not a state this schema can reach while any installation can still be
+    /// upgraded from a version that predates the switch.
+    /// </remarks>
+    internal static string ComputeRawSourceFingerprint(IReadOnlyList<GrimoireSchemaObject> definitions) =>
+        Combine(definitions, static definition => definition.Sql);
+
+    private static string Combine(
+        IReadOnlyList<GrimoireSchemaObject> definitions,
+        Func<GrimoireSchemaObject, string> statement)
     {
 
         StringBuilder combined = new();
@@ -677,7 +717,7 @@ internal static class GrimoireSchemaCatalog
                 .Append('/')
                 .Append(definition.Name)
                 .Append('\n')
-                .Append(definition.Sql)
+                .Append(statement(definition))
                 .Append("\n---\n");
 
         }

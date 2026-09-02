@@ -20,6 +20,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// into a space would swallow the rest of the statement into it - the normalized text would still
 /// compare equal on both sides, but it would no longer be SQL a reader could trust in a
 /// diagnostic.</para>
+///
+/// <para><b>Changing what this returns is a Core schema version step.</b> Since Core version 6 the
+/// tier's published source-definition fingerprint is computed over this function's output rather than
+/// over the file's bytes (see <see cref="GrimoireSchemaCatalog.ComputeSourceFingerprint"/>), so this
+/// return value is Core's durable identity in <c>grimoire_feature_schemas</c> - for every object at
+/// once, rather than for the one file an ordinary schema edit touches. A change here that looks purely
+/// cosmetic, such as also collapsing the space around a comma, moves that identity, and because Core is
+/// the tier whose refusal aborts startup the first symptom is every installation at the current version
+/// refusing to open with <c>SourceDefinitionMismatch</c>. So it is authored the way any object change
+/// is: raise the version, pin the currently published fingerprint for the version the step leaves
+/// before editing anything, and add the fixture that reconstructs it.
+/// <c>GrimoireSqlNormalizerTests</c> pins the exact output against a fixed input and fails with that
+/// instruction, because nothing else in the tree can - head fingerprints are never pinned by design and
+/// every version fixture hashes the raw bytes instead.</para>
 /// </remarks>
 internal static class GrimoireSqlNormalizer
 {

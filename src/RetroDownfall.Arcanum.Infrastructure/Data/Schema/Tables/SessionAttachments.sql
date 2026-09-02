@@ -52,3 +52,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS UX_SessionAttachments_Bound
 CREATE UNIQUE INDEX IF NOT EXISTS UX_SessionAttachments_Pending
   ON SessionAttachments(PendingTurnId, LogicalKey, Version)
   WHERE State = 'Pending';
+
+-- The two columns retention compares normalized. The attachment candidate scan reads SessionId that
+-- way for every candidate Session, and the pin check reads Id that way for every candidate attachment;
+-- neither can be answered from the indexes above, which key the unwrapped columns.
+CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_SessionId_Norm"
+  ON "SessionAttachments" (lower(replace("SessionId", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_Id_Norm"
+  ON "SessionAttachments" (lower(replace("Id", '-', '')));

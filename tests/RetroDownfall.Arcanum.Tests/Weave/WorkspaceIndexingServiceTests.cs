@@ -293,6 +293,54 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A file rewritten under the timestamp it was last indexed with is still re-indexed.
+    /// </summary>
+    /// <remarks>
+    /// Change detection compared <c>LastWriteTimeUtc</c> for equality and nothing else, so a rewrite
+    /// that lands on the recorded timestamp made the file invisible to every later tick - permanently,
+    /// because nothing else ever revisits it. That is not a contrived case: a coarse-granularity
+    /// filesystem stamps a rewrite within the same tick as the indexing run that recorded the old
+    /// value, an archive extraction restores the timestamp it captured, and a tool that rewrites in
+    /// place and puts the timestamp back does it deliberately.
+    ///
+    /// <para>The second signal is the file's length, recorded per file in
+    /// <c>workspace_file_chunks.FileLength</c> from Core schema version 6. It does not close the gap
+    /// completely - a rewrite that preserves both the timestamp and the byte count is still invisible -
+    /// and it is what the schema can carry without hashing every candidate on every tick.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task IndexWorkspaceAsync_ReindexesAFileRewrittenUnderTheIndexedTimestamp()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string fullPath = _workspace.WriteFile("notes.md", "version one");
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        DateTime indexedWriteTime = File.GetLastWriteTimeUtc(fullPath);
+
+        File.WriteAllText(fullPath, "version two, rewritten under the timestamp version one was indexed with");
+
+        File.SetLastWriteTimeUtc(fullPath, indexedWriteTime);
+
+        Assert.Equal(indexedWriteTime, File.GetLastWriteTimeUtc(fullPath));
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+
+        Assert.Contains("version two", string.Join(' ', await GetChunkContentsAsync("notes.md")));
+
+    }
+
     [SkippableFact]
     public async Task IndexWorkspaceAsync_ChunksEmbedsAndPersistsFile()
     {
