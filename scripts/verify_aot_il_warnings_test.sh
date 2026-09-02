@@ -111,6 +111,26 @@ expect_eq \
   "0" \
   "$(violations_for "$THIRD_PARTY_SERILOG")"
 
+# A .cs source location outside RetroDownfall. -- a generated file, or a source-included package
+# compiled into one of these projects -- used to be dropped without ever being counted or checked
+# against ALLOWED: the .cs branch counted first-party origins and `continue`d on everything else.
+# The gate has to fail closed there, or a whole class of origin passes silently.
+FOREIGN_CS_ORIGIN='/repo/obj/Generated/Vendor.Serialization.Generated.cs(88,13): warning IL2026: Using member which has '"'"'RequiresUnreferencedCodeAttribute'"'"' [/repo/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj]'
+
+expect_eq \
+  "a .cs warning whose path is not first-party and whose owner is not allow-listed is counted" \
+  "1" \
+  "$(violations_for "$FOREIGN_CS_ORIGIN")"
+
+# The other half of failing closed: the allow list still decides, so a non-first-party .cs origin
+# whose message names a component ALLOWED owns is suppressed exactly as its ILC counterpart is.
+ALLOWED_FOREIGN_CS_ORIGIN='/repo/obj/Generated/Vendor.Generated.cs(88,13): warning IL2026: Using member '"'"'Microsoft.EntityFrameworkCore.Query.QueryCompiler.Execute<TResult>(Expression)'"'"' which has '"'"'RequiresUnreferencedCodeAttribute'"'"' [/repo/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj]'
+
+expect_eq \
+  "a .cs warning outside RetroDownfall. whose message names an allow-listed owner stays suppressed" \
+  "0" \
+  "$(violations_for "$ALLOWED_FOREIGN_CS_ORIGIN")"
+
 expect_eq \
   "a clean log reports no violations" \
   "0" \
