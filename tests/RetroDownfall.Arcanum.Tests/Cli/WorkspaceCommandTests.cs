@@ -20,9 +20,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Core.Workspaces;
 
-
 namespace RetroDownfall.Arcanum.Tests.Cli;
-
 
 [Collection("GlobalConsole")]
 
@@ -35,7 +33,6 @@ public sealed class WorkspaceCommandTests
     {
 
         CliTestResult result = RunCommand(new RecordingHandler(), ["workspace", "--help"]);
-
 
         Assert.Equal(0, result.ExitCode);
 
@@ -69,7 +66,6 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     [Fact]
 
     public void Workspace_register_posts_the_server_host_path()
@@ -82,11 +78,9 @@ public sealed class WorkspaceCommandTests
             ArcanumJsonContext.Default.ApiResponseWorkspaceInfo,
             HttpStatusCode.Created));
 
-
         CliTestResult result = RunCommand(
             handler,
             ["workspace", "register", "/srv/projects/demo"]);
-
 
         Assert.Equal(0, result.ExitCode);
 
@@ -102,7 +96,6 @@ public sealed class WorkspaceCommandTests
             StringComparison.Ordinal);
 
     }
-
 
     [Fact]
 
@@ -134,6 +127,24 @@ public sealed class WorkspaceCommandTests
 
     }
 
+    [Fact]
+
+    public void Workspace_register_rejects_an_undocumented_type_without_calling_the_api()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["workspace", "register", "/srv/projects/demo", "--type", "bogus"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--type", result.Error, StringComparison.Ordinal);
+
+    }
 
     [Fact]
 
@@ -154,16 +165,13 @@ public sealed class WorkspaceCommandTests
 
             }
 
-
             return CreateResponse(
                 new ApiResponse<WorkspaceInfo>(workspace, true, null),
                 ArcanumJsonContext.Default.ApiResponseWorkspaceInfo);
 
         });
 
-
         CliTestResult result = RunCommand(handler, ["workspace", "show", "demo"]);
-
 
         Assert.Equal(0, result.ExitCode);
 
@@ -172,7 +180,6 @@ public sealed class WorkspaceCommandTests
         Assert.Equal("/api/workspaces/ws-demo", handler.Requests[^1].RequestUri!.AbsolutePath);
 
     }
-
 
     [Fact]
 
@@ -224,7 +231,6 @@ public sealed class WorkspaceCommandTests
             "/api/workspaces/ws-demo");
 
     }
-
 
     [Fact]
 
@@ -297,7 +303,6 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     [Fact]
 
     public void Workspace_read_emits_file_content_verbatim_without_console_reflow()
@@ -331,23 +336,19 @@ public sealed class WorkspaceCommandTests
 
             }
 
-
             return CreateWorkspaceApiResponse(request);
 
         });
 
-
         CliTestResult result = RunCommand(
             handler,
             ["workspace", "read", "src/App.cs", "--workspace", "ws-demo"]);
-
 
         Assert.Equal(0, result.ExitCode);
 
         Assert.Contains(content, result.Output, StringComparison.Ordinal);
 
     }
-
 
     /// <summary>
     /// `workspace read` promises the bytes the server read. Under `--output-format json` the legacy
@@ -384,16 +385,13 @@ public sealed class WorkspaceCommandTests
 
             }
 
-
             return CreateWorkspaceApiResponse(request);
 
         });
 
-
         CliTestResult result = RunCommand(
             handler,
             ["workspace", "read", "src/App.cs", "--workspace", "ws-demo", "--json"]);
-
 
         Assert.Equal(0, result.ExitCode);
 
@@ -408,7 +406,6 @@ public sealed class WorkspaceCommandTests
             document.RootElement.GetProperty("path").GetString());
 
     }
-
 
     [Fact]
 
@@ -467,7 +464,6 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     [Fact]
 
     public void Workspace_current_offers_campaign_registration_when_only_workspace_matches()
@@ -510,7 +506,6 @@ public sealed class WorkspaceCommandTests
         Assert.Contains("server-path", result.Output, StringComparison.OrdinalIgnoreCase);
 
     }
-
 
     /// <summary>
     /// A host that keeps handing back the same continuation cursor must stop the walk, not make the
@@ -565,7 +560,6 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     /// <summary>
     /// The same invariant for offset paging: a non-advancing offset must fail rather than grow the
     /// accumulated list until the process runs out of memory.
@@ -619,7 +613,6 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     private static void AssertRoute(
         string[] args,
         HttpMethod method,
@@ -650,7 +643,6 @@ public sealed class WorkspaceCommandTests
         }
 
     }
-
 
     private static HttpResponseMessage CreateWorkspaceApiResponse(
         HttpRequestMessage request)
@@ -776,7 +768,6 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     private static WorkspaceInfo Workspace() =>
         new(
             "ws-demo",
@@ -784,7 +775,6 @@ public sealed class WorkspaceCommandTests
             "/srv/projects/demo",
             WorkspaceType.Custom,
             DateTimeOffset.Parse("2026-07-31T12:00:00Z"));
-
 
     private static CliTestResult RunCommand(
         RecordingHandler handler,
@@ -811,7 +801,6 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     private static HttpResponseMessage CreateResponse<T>(
         ApiResponse<T> envelope,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
@@ -829,11 +818,9 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     private static string ReadBody(HttpRequestMessage request) =>
         request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()
         ?? string.Empty;
-
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
@@ -855,7 +842,6 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     private sealed class FakeHttpClientFactory(
         RecordingHandler handler) : IHttpClientFactory
     {
@@ -870,13 +856,11 @@ public sealed class WorkspaceCommandTests
 
     }
 
-
     private sealed class RecordingHandler(
         Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
 
         public List<HttpRequestMessage> Requests { get; } = [];
-
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -896,7 +880,6 @@ public sealed class WorkspaceCommandTests
                 snapshot.Content = new ByteArrayContent(body);
 
             }
-
 
             Requests.Add(snapshot);
 
