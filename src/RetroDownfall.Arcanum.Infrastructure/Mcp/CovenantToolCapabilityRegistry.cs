@@ -140,12 +140,12 @@ public sealed class CovenantToolCapabilityRegistry
     }
 
     /// <summary>
-    /// Test seam: invoked in <see cref="ReleaseUnsent"/> immediately before the winning release
-    /// removes its dictionary entry -- the same point in the control flow whether that release just
-    /// won a compare-and-swap against a concurrent <see cref="TryTake"/> or (on the pre-fix shape this
-    /// existed to reproduce) already lost one without knowing it. A test callback that itself calls
-    /// <see cref="TryTake"/> from here exercises the exact interleaving the state-then-act version of
-    /// this method was vulnerable to, with no thread timing involved.
+    /// Test seam: invoked in <see cref="ReleaseUnsent"/> after the atomic release has already
+    /// succeeded (<see cref="CovenantToolInvocationContext.TryReleaseUnsent"/> returned
+    /// <see langword="true"/>), immediately before the dictionary entry is removed. A test callback
+    /// that calls <see cref="TryTake"/> from here must fail -- the capability is already
+    /// <see cref="CovenantToolCapabilityState.Disposed"/> by this point -- which is exactly the
+    /// assertion the regression test for this compare-and-swap makes.
     /// </summary>
     internal Action? ReleaseUnsentObserverForTests { get; set; }
 
