@@ -386,10 +386,10 @@ internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 /// capability and reporting the outcome leaks the lifetime by construction rather than by mistake,
 /// and a leaked lifetime blocks both the closed lease's disposition and its lane's release.
 ///
-/// Disposal is the guard, not a second way to report: the gate's own handle ends an unreported
-/// lifetime in the terminal state its progress implies and leaves a reported one alone. The default
-/// implementation here does nothing, so that a recording double is not forced to invent a physical
-/// outcome it never had; any implementation that actually owns a physical open must override it.
+/// Disposal is the guard, not a second way to report: an implementation ends an unreported lifetime
+/// in the terminal state its own progress implies, and leaves a lifetime that already reported
+/// alone. It is required rather than defaulted, because a lifetime that owns a physical open and
+/// silently inherits a do-nothing disposal is the leak this member exists to close.
 /// </remarks>
 internal interface IGrimoireTrackedMaintenanceHandle : IAsyncDisposable
 {
@@ -399,8 +399,6 @@ internal interface IGrimoireTrackedMaintenanceHandle : IAsyncDisposable
     Result ReportNotOpened();
 
     Result ReportPhysicallyClosed();
-
-    ValueTask IAsyncDisposable.DisposeAsync() => ValueTask.CompletedTask;
 
 }
 
