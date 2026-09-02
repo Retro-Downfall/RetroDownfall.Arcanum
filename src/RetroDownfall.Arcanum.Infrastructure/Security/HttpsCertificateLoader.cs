@@ -81,12 +81,16 @@ public static class HttpsCertificateLoader
 
                 byte[] pkcs12 = pemCertificate.Export(X509ContentType.Pkcs12);
 
-                ExportedPkcs12ObserverForTests?.Invoke(pkcs12);
-
-                pemCertificate.Dispose();
-
+                // The try starts immediately after pkcs12 is populated: the observer invoke and
+                // pemCertificate.Dispose() below are not exception-free, and a throw from either
+                // one, before this method's own try/finally existed, would have skipped zeroing
+                // a buffer that already held the unencrypted private key.
                 try
                 {
+
+                    ExportedPkcs12ObserverForTests?.Invoke(pkcs12);
+
+                    pemCertificate.Dispose();
 
                     X509Certificate2 rehydrated = X509CertificateLoader.LoadPkcs12(
                         pkcs12,
