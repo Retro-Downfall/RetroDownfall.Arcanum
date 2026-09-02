@@ -3525,6 +3525,100 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // Round 3 follow-up (self-caught before returning): a review pass raised an int-overflow concern
+    // against ParseLengthPrefixedEntries's digit-accumulation loop. Investigated by simulating the
+    // digit-by-digit accumulation in isolation (see the report's own subsection on this) and found
+    // unreachable in practice -- the loop's own check runs after *every* digit, not once at the end, so
+    // the accumulated value can never exceed entriesPortion.Length entering any single multiply-add, and
+    // entriesPortion.Length is itself bounded well below int.MaxValue by
+    // TryDecodeListDirectoryContinuation's own byte-budget check up front. No defect, so no RED/GREEN
+    // pair for an overflow that does not occur -- what this pins instead is coverage that genuinely
+    // did not exist before: a length prefix larger than what remains of the token is rejected as
+    // malformed through the existing catch clause, not left to throw some other, unhandled exception.
+    [Fact]
+    public async Task ToolsCall_list_directory_rejects_a_continuation_whose_out_of_scope_entry_length_prefix_overruns_the_token()
+    {
+
+        string targetDirectory = _workspace.CreateSubdir("dirX");
+
+        _workspace.WriteFile("dirX/f.txt", "x");
+
+        string scopeDirectory = _workspace.CreateSubdir("scope");
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(scopeDirectory, "scopelink0"),
+            targetDirectory);
+
+        // Page size 1 forces scopelink0's own descend to be decided by the page-one lookahead and its
+        // resulting recording excluded from the snapshot (the round-2-follow-up fix), so the resulting
+        // token's third segment is empty on page one -- irrelevant here, since only a genuine,
+        // real-looking token (correct fingerprint and checkpoint path) is needed as a base to splice a
+        // forged third segment onto; its own out-of-scope content, if any, is discarded below.
+        await using TestMcpSession session = await CreateSessionAsync(
+            listDirectoryMaxPaths: 1);
+
+        JsonElement firstArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams { RelativePath = "scope", Recursive = true },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire firstResult = await session.CallToolAsync(
+            "list_directory",
+            firstArguments);
+
+        Assert.False(firstResult.IsError);
+
+        string firstText = Assert.Single(firstResult.Content).Text!;
+
+        const string cursorPrefix = "continuation=";
+
+        int cursorStart = firstText.IndexOf(cursorPrefix, StringComparison.Ordinal);
+
+        Assert.True(cursorStart >= 0, "Expected page one to need a continuation at page size 1.");
+
+        cursorStart += cursorPrefix.Length;
+
+        int cursorEnd = firstText.IndexOf(';', cursorStart);
+
+        string realToken = firstText[cursorStart..cursorEnd];
+
+        string realPayload = Encoding.UTF8.GetString(
+            Convert.FromBase64String(realToken));
+
+        int firstNewline = realPayload.IndexOf('\n');
+
+        int secondNewline = realPayload.IndexOf('\n', firstNewline + 1);
+
+        string fingerprintAndCheckpoint = secondNewline < 0
+            ? realPayload
+            : realPayload[..secondNewline];
+
+        string forgedPayload = fingerprintAndCheckpoint + "\n9999999999:x";
+
+        string forgedToken = Convert.ToBase64String(
+            Encoding.UTF8.GetBytes(forgedPayload));
+
+        JsonElement forgedArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams
+            {
+                RelativePath = "scope",
+                Recursive = true,
+                Continuation = forgedToken,
+            },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire forgedResult = await session.CallToolAsync(
+            "list_directory",
+            forgedArguments);
+
+        Assert.True(forgedResult.IsError);
+
+        Assert.Contains(
+            "malformed",
+            Assert.Single(forgedResult.Content).Text!,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
     [Fact]
     public async Task ToolsCall_list_directory_rejects_file_path()
     {

@@ -980,15 +980,21 @@ internal sealed partial class ArcanumInternalToolServer
 
             }
 
-            int length = 0;
+            // long, not int, as defense in depth only -- not because int overflows here today. The
+            // check inside this loop runs after *every* digit, not once at the end, so length can never
+            // exceed entriesPortion.Length entering any single multiply-add: a value already bounded by
+            // entriesPortion.Length, itself bounded by TryDecodeListDirectoryContinuation's own
+            // Encoding.UTF8.GetByteCount(args.Continuation) > _maxJsonRpcLineBytes check up front, comes
+            // nowhere near int.MaxValue no matter how long a forged digit run is. long removes any
+            // dependency on that outer bound if this parse is ever reused somewhere it does not apply.
+            long length = 0;
 
             for (int digit = digitsStart; digit < i; digit++)
             {
 
                 length = (length * 10) + (entriesPortion[digit] - '0');
 
-                if (length < 0
-                    || length > entriesPortion.Length)
+                if (length > entriesPortion.Length)
                 {
 
                     throw new FormatException(
@@ -998,9 +1004,11 @@ internal sealed partial class ArcanumInternalToolServer
 
             }
 
+            int contentLength = (int)length;
+
             int contentStart = i + 1;
 
-            if (contentStart + length > entriesPortion.Length)
+            if (contentStart + contentLength > entriesPortion.Length)
             {
 
                 throw new FormatException(
@@ -1009,9 +1017,9 @@ internal sealed partial class ArcanumInternalToolServer
             }
 
             entries.Add(
-                entriesPortion.Substring(contentStart, length));
+                entriesPortion.Substring(contentStart, contentLength));
 
-            i = contentStart + length;
+            i = contentStart + contentLength;
 
         }
 
