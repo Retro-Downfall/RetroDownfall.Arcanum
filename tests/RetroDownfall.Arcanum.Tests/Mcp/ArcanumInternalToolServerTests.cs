@@ -1992,6 +1992,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 offset = page.NextOffset.Value;
 
             }
+
             while (true);
 
             Assert.Equal(
@@ -3106,7 +3107,6 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
 
-
     }
 
     /// <summary>Records the arguments the continuation tool handed to the Archmage Client.</summary>
@@ -3194,7 +3194,6 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             string taskId,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
-
 
     }
 
@@ -3689,6 +3688,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             offset = page.NextOffset.Value;
 
         }
+
         while (true);
 
     }
