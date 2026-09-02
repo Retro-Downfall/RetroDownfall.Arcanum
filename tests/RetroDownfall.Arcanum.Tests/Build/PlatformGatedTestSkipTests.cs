@@ -16,11 +16,10 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// reappearing once a packet has converted the ones that existed when this file was written.
 /// </summary>
 /// <remarks>
-/// Scoped to <c>tests/RetroDownfall.Arcanum.Tests</c> rather than the whole <c>tests/</c> tree that
-/// <see cref="ProductionSourceInventory.TestSuiteSources"/> otherwise covers: the sibling test projects
-/// (<c>RetroDownfall.Compendium.Tests</c>, <c>RetroDownfall.TheForge.Tests</c>) carry the same shape in
-/// places, but neither references <c>Xunit.SkippableFact</c>, so converting them is a different
-/// packet's file to touch and a different project's package reference to add.
+/// Scoped to the whole <c>tests/</c> tree that <see cref="ProductionSourceInventory.TestSuiteSources"/>
+/// covers, sibling desktop projects included: a test that reports Passed without asserting anything is
+/// the same lie whichever project it lives in, and all three now reference <c>Xunit.SkippableFact</c>,
+/// so all three can say so honestly.
 ///
 /// <para>An already-<c>Skippable</c> method is in scope, not exempt by attribute alone: a method can
 /// legitimately call <c>Skip.IfNot</c> for one reason and still silently return early on an unrelated
@@ -35,7 +34,7 @@ public sealed class PlatformGatedTestSkipTests
 
         List<string> offenders = [];
 
-        foreach (ProductionSource source in ArcanumTestSources())
+        foreach (ProductionSource source in ProductionSourceInventory.TestSuiteSources())
         {
 
             offenders.AddRange(PlatformGatedEarlyReturnScan.FindOffenders(source));
@@ -50,18 +49,6 @@ public sealed class PlatformGatedTestSkipTests
             string.Join("\n", offenders.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)));
 
     }
-
-    /// <summary>
-    /// This project's own suites, comment- and (later, inside the scan) literal-stripped — the
-    /// sibling test projects that <see cref="ProductionSourceInventory.TestSuiteSources"/> also walks
-    /// are excluded here rather than there, since that inventory is shared with suites that do want
-    /// the whole tree.
-    /// </summary>
-    private static IEnumerable<ProductionSource> ArcanumTestSources() =>
-        ProductionSourceInventory.TestSuiteSources().Where(
-            source => source.RelativePath.StartsWith(
-                "tests/RetroDownfall.Arcanum.Tests/",
-                StringComparison.Ordinal));
 
 }
 

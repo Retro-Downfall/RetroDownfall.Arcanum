@@ -170,21 +170,17 @@ public class TheForgeSettingsStoreTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     [UnsupportedOSPlatform("windows")]
     public async Task SaveAsync_NeverExposesTheTempFileToGroupOrOtherWhileWriting()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            // File.GetUnixFileMode throws on Windows; TrySetUnixFileMode already no-ops there and the
-            // ordering race this test targets is POSIX-only (Windows has no equivalent ACL fix here).
-            // [UnsupportedOSPlatform] above only quiets CA1416 for the GetUnixFileMode call below —
-            // xUnit still discovers and runs this method on Windows, so the runtime guard stays.
-            return;
-
-        }
+        // File.GetUnixFileMode throws on Windows; TrySetUnixFileMode already no-ops there and the
+        // ordering race this test targets is POSIX-only (Windows has no equivalent ACL fix here).
+        // [UnsupportedOSPlatform] above only quiets CA1416 for the GetUnixFileMode call below —
+        // xUnit still discovers this method on Windows, so a runtime exit is still needed, and a
+        // skip is the honest one: a plain return reported Passed there without asserting anything.
+        Skip.If(OperatingSystem.IsWindows(), "The temp-file mode race this asserts on is POSIX-only.");
 
         string path = Path.Combine(Path.GetTempPath(), $"forge-settings-mode-{Guid.NewGuid():N}.json");
 
