@@ -80,7 +80,7 @@ Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](docs/A
 - **One blank line after each line of C# code** (visual breathing room) — applied throughout the codebase. Within reason. Curly braces do not require blank lines around them. Neither do control statements like if and loops, etc. Also, long-running Linq statements do not require blank lines either.
 - File-scoped namespaces; positional records for DTOs/contracts; **no `[JsonPropertyName]`** on `/api` wire types (casing comes from `[JsonSourceGenerationOptions]`); OpenAI `/v1` and MCP JSON-RPC types are explicit exceptions (API §8.2); primary constructors for DI; `IDisposable` where a service owns a `SemaphoreSlim`/`ServiceProvider`. See [DESIGN.md §12](docs/Arcanum.DESIGN.md#12-c-language-and-coding-conventions).
 
-> **Note on org-wide rules:** Corp-wide standards scoped to `Corp.Solution.*` solutions (Dapper + SQL Server stored procedures, the `Corp.Lib.*` NuGet stack, Refit "Service Libraries") **do not apply to Arcanum** — it is local-first over its own EF Core + SQLCipher Grimoire and retains AOT-safe contracts across Native AOT Windows/Linux and self-contained macOS packaging. The always-on house rules (blank lines, strict CSP, docs-in-same-change-set) still hold.
+> **Note on org-wide rules:** Corp-wide standards scoped to `Corp.Solution.*` solutions (Dapper + SQL Server stored procedures, the `Corp.Lib.*` NuGet stack, Refit "Service Libraries") **do not apply to Arcanum** — it is local-first over its own EF Core + SQLCipher Grimoire and retains AOT-safe contracts across Native AOT Windows and self-contained macOS packaging. The always-on house rules (blank lines, strict CSP, docs-in-same-change-set) still hold.
 
 ### 8. Thematic naming metaphor (D&D)
 
@@ -178,7 +178,7 @@ scripts/align-csharp-blanklines.sh       # C# blank-line formatter entrypoint
 scripts/align_csharp_blanklines.py       # C# blank-line formatter logic
 scripts/verify-aot-il-warnings.sh        # AOT IL-warning gate
 scripts/packaging/macos/                 # signed/notarized macOS arm64 packaging
-scripts/packaging/linux/                 # unsigned Linux private-beta tarballs (CLI AOT + Forge/Compendium)
+scripts/packaging/linux/                 # Linux private-beta tarballs; gated off, exits 2 with no hermetic asset
 scripts/packaging/windows/               # unsigned Windows zips (CLI AOT + Compendium; Forge optional via package-windows.ps1)
                                          # workflow: build-windows.yml (one RID per run, win-x64 or win-arm64)
 .github/workflows/release.yml            # cuts a release: all three RIDs, one draft GitHub Release
@@ -672,9 +672,9 @@ HTTP remains the default on **loopback**. `Arcanum:Host:Https:Enabled` adds a TL
 
 ## Distribution and first run
 
-Windows packages contain separate archives for Arcanum, Compendium, and The Forge plus `SHA256SUMS`; the Linux packaging script still exists but Linux has no verified hermetic SQLCipher asset, so it cannot produce one today. The `arcanum` executable is Native AOT; desktop apps are self-contained multi-file Avalonia folders. These archives are unsigned by default. Windows SmartScreen can warn; optional Authenticode requires the Windows packager's `-Sign` flag and `WINDOWS_CERT_PATH` / `WINDOWS_CERT_PASSWORD`.
+Windows packages contain separate archives for Arcanum, Compendium, and The Forge plus `SHA256SUMS`. The Linux script and workflow lane are still here but gated: with no verified hermetic SQLCipher asset for any `linux-*` RID, `package-linux.sh` exits 2 before building and the extraction steps below cannot be reached today. The `arcanum` executable is Native AOT; desktop apps are self-contained multi-file Avalonia folders. These archives are unsigned by default. Windows SmartScreen can warn; optional Authenticode requires the Windows packager's `-Sign` flag and `WINDOWS_CERT_PATH` / `WINDOWS_CERT_PASSWORD`.
 
-Linux:
+Linux (the steps a tarball would be extracted with, kept for when the lane is ungated):
 
 ```bash
 tar -xzf arcanum-linux-x64.tar.gz
@@ -713,7 +713,7 @@ Secrets are never accepted as arguments. A credential may only arrive on redirec
 
 Run as a normal user; elevation is not required. Extract the Arcanum, The Forge, and Compendium archives beneath the same parent directory. `arcanum open ...` discovers the shipped sibling folders (`the-forge-win-x64` / `compendium-win-x64`, or the matching `the-forge-linux-x64|arm64` / `compendium-linux-x64|arm64` folders for the active architecture). The applications can also be launched directly from those extracted archives. Linux shared key discovery requires `libsecret` and a running Secret Service; otherwise The Forge prompts for a key or accepts process-only `THEFORGE_ARCANUM_KEY`.
 
-Local package creation:
+Local package creation (the Linux script exits 2 until a verified `linux-*` hermetic SQLCipher asset exists):
 
 ```bash
 ./scripts/packaging/linux/package-linux.sh --version 0.1.0-beta.1 --output-dir ./dist
@@ -723,7 +723,7 @@ Local package creation:
 .\scripts\packaging\windows\package-windows.ps1 -Version 0.1.0-beta.1 -OutputDir .\dist
 ```
 
-Use `-SkipForge` for Windows Arcanum + Compendium only. Cross-OS builds are manual GitHub workflows: `Private beta release (Windows / Linux)` builds all three products; `Build Windows x64 (Arcanum + Compendium)` omits The Forge.
+Use `-SkipForge` for Windows Arcanum + Compendium only. Cross-OS builds are manual GitHub workflows: `Private beta release (Windows / Linux)` builds all three products, though its Linux job is gated off for want of a verified asset; `Build Windows x64 (Arcanum + Compendium)` omits The Forge.
 
 A push to `main` that changes `src/`, `scripts/packaging/`, `Directory.Build.props`, `Directory.Packages.props`, or the solution file cuts a beta automatically once every CI gate passes. The version lives in `Directory.Build.props`: leave `<Version>0.1.0-beta</Version>` alone and each build takes the next number (`0.1.0-beta.1`, `.2`, …); write a full version there (`0.1.0-beta.12`, or `0.1.0`) and that exact version is used. The result is a draft GitHub Release carrying all three platforms; publishing it stays a human action.
 
