@@ -1086,9 +1086,22 @@ public static class ApiBootstrapper
 
                     if (!response.Headers.ContainsKey("Content-Security-Policy"))
                     {
+                        // Scalar's rendered page ships one inline, src-less <script type="module">
+                        // bootstrap alongside its same-origin embedded bundle — script-src 'self' alone
+                        // satisfies the bundle but blocks the inline script, so the page renders an
+                        // empty <div id="app"> (W2-11). WithNonce() below makes Scalar emit a fresh
+                        // per-request nonce on every script tag, including the inline one, and stash it
+                        // on HttpContext.Items under NonceHttpContextItemKey for exactly this middleware
+                        // to read, so the CSP's nonce source matches what the page actually emits.
+                        string? nonce = context.HttpContext.Items[ScalarOptions.NonceHttpContextItemKey] as string;
+
+                        string scriptSrc = string.IsNullOrEmpty(nonce)
+                            ? "'self'"
+                            : $"'self' 'nonce-{nonce}'";
+
                         response.Headers.Append(
                             "Content-Security-Policy",
-                            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+                            $"default-src 'self'; script-src {scriptSrc}; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'");
                     }
 
                     if (!response.Headers.ContainsKey("X-Content-Type-Options"))
@@ -1099,7 +1112,7 @@ public static class ApiBootstrapper
                     return result;
                 });
 
-            scalarGroup.MapScalarApiReference();
+            scalarGroup.MapScalarApiReference(static options => options.WithNonce());
         }
 
         apiGroup.MapHealthEndpoints();
