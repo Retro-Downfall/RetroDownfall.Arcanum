@@ -156,6 +156,7 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         GrimoireOfflineTransitionBlocker blocker = new(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             GrimoireOfflineTransitionState.Applying,
+            Digest(0x71),
             Digest(0x71));
 
         CovenantResetOfflineTransitionPayloadV1 kept = applying with

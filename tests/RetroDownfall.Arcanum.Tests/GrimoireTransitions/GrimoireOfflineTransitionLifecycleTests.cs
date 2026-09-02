@@ -209,6 +209,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         GrimoireOfflineTransitionBlocker blocker = new(
             "Covenant.ManualRecoveryRequired",
             GrimoireOfflineTransitionState.Closing,
+            Digest(0x75),
             Digest(0x75));
 
         CovenantResetOfflineTransitionPayloadV1 partialKept = partial with
@@ -369,6 +370,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         GrimoireOfflineTransitionBlocker blocker = new(
             "Covenant.ManualRecoveryRequired",
             GrimoireOfflineTransitionState.Applying,
+            Digest(0x71),
             Digest(0x71));
 
         CovenantResetOfflineTransitionPayloadV1 kept = applying with
@@ -477,6 +479,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         GrimoireOfflineTransitionBlocker blocker = new(
             "Covenant.ManualRecoveryRequired",
             GrimoireOfflineTransitionState.Applying,
+            Digest(0x71),
             Digest(0x71));
 
         CovenantResetOfflineTransitionPayloadV1 kept = applying with
@@ -528,6 +531,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         GrimoireOfflineTransitionBlocker firstBlocker = new(
             "Covenant.ManualRecoveryRequired",
             GrimoireOfflineTransitionState.Applying,
+            Digest(0x71),
             Digest(0x71));
 
         CovenantResetOfflineTransitionPayloadV1 kept = applying with
@@ -551,6 +555,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         GrimoireOfflineTransitionBlocker secondBlocker = new(
             "Covenant.ManualRecoveryRequired",
             GrimoireOfflineTransitionState.Applying,
+            Digest(0x77),
             Digest(0x77));
 
         CovenantResetOfflineTransitionPayloadV1 keptAgain = resumed with
@@ -600,6 +605,78 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
         };
 
         Assert.True(factoryHandler.ValidateAdvance(factoryResumed, factoryKeptAgain).IsSuccess);
+
+    }
+
+    [Fact]
+    public void Keep_closed_resume_accepts_a_recomputed_state_digest_distinct_from_the_binding_digest()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 applying = Payload(
+            GrimoireOfflineTransitionState.Applying,
+            inFlight: CovenantResetPhase.CanonicalApplied);
+
+        // The blocker records two distinct digests: ResolutionBindingDigest (bound to the
+        // proof's own binding field) and ExpectedStateDigest (the pre-recorded target the
+        // proof's state-digest field must match). A resume producer recomputes the canonical
+        // state digest independently; it never copies ResolutionBindingDigest into that field.
+        GrimoireOfflineTransitionBlocker blocker = new(
+            "Covenant.ManualRecoveryRequired",
+            GrimoireOfflineTransitionState.Applying,
+            Digest(0x71),
+            Digest(0x78));
+
+        CovenantResetOfflineTransitionPayloadV1 kept = applying with
+        {
+            Lifecycle = applying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = blocker,
+            },
+        };
+
+        Assert.True(Handler().ValidateAdvance(applying, kept).IsSuccess);
+
+        CovenantResetOfflineTransitionPayloadV1 recomputed = applying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x78)),
+        };
+
+        Assert.True(Handler().ValidateAdvance(kept, recomputed).IsSuccess);
+
+        Assert.True(Handler().ValidateAdvance(kept, applying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x79)),
+        }).IsFailure);
+
+        HealthyCatalogFactoryErasureOfflineTransitionHandlerV1 factoryHandler = new();
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryApplying = Factory(
+            applying,
+            continuationCompleted: false);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryKept = factoryApplying with
+        {
+            Lifecycle = factoryApplying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = blocker,
+            },
+        };
+
+        Assert.True(factoryHandler.ValidateAdvance(factoryApplying, factoryKept).IsSuccess);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factoryRecomputed = factoryApplying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x78)),
+        };
+
+        Assert.True(factoryHandler.ValidateAdvance(factoryKept, factoryRecomputed).IsSuccess);
+
+        Assert.True(factoryHandler.ValidateAdvance(factoryKept, factoryApplying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x79)),
+        }).IsFailure);
 
     }
 
@@ -760,6 +837,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                     Blocker = new(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
                         GrimoireOfflineTransitionState.Verifying,
+                        Digest(0x76),
                         Digest(0x76)),
                 },
             },
@@ -834,6 +912,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                 Blocker = new(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     GrimoireOfflineTransitionState.Applying,
+                    Digest(0x73),
                     Digest(0x73)),
             },
         };
@@ -966,6 +1045,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                 Blocker = new(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     GrimoireOfflineTransitionState.Applying,
+                    Digest(0x74),
                     Digest(0x74)),
             },
         };
@@ -1048,6 +1128,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                 Blocker = new(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     GrimoireOfflineTransitionState.Applying,
+                    Digest(0x71),
                     Digest(0x71)),
             },
         };
@@ -1109,6 +1190,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                     Blocker = new(
                         "Covenant.ManualRecoveryRequired",
                         GrimoireOfflineTransitionState.Applying,
+                        Digest(0x72),
                         Digest(0x72)),
                 },
             }));
@@ -1317,6 +1399,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
             GrimoireOfflineTransitionBlocker blocker = new(
                 "Covenant.ManualRecoveryRequired",
                 LegalResumeState(to),
+                Digest(0x73),
                 Digest(0x73));
 
             payload = payload with
@@ -1342,6 +1425,7 @@ public sealed class GrimoireOfflineTransitionLifecycleTests
                     Blocker = new(
                         "Covenant.ManualRecoveryRequired",
                         LegalResumeState(from),
+                        Digest(0x74),
                         Digest(0x74)),
                 },
                 // A degenerate KeepClosed -> KeepClosed pair falls into both this block and
