@@ -188,6 +188,14 @@ public sealed class CovenantToolCapabilityRegistry
     }
 
     /// <summary>
+    /// Test seam: invoked in <see cref="SweepExpired"/> immediately after one registration's atomic
+    /// release has already succeeded, before its dictionary entry is removed -- same shape and purpose
+    /// as <see cref="ReleaseUnsentObserverForTests"/>. A callback that calls <see cref="TryTake"/> from
+    /// here must fail against the already-<see cref="CovenantToolCapabilityState.Disposed"/> capability.
+    /// </summary>
+    internal Action? SweepExpiredObserverForTests { get; set; }
+
+    /// <summary>
     /// Reclaims registrations that were installed and never taken, returning them for disposal.
     /// </summary>
     public IReadOnlyList<CovenantToolInvocationContext> SweepExpired()
@@ -200,11 +208,22 @@ public sealed class CovenantToolCapabilityRegistry
         foreach (KeyValuePair<string, Registration> pair in _byRequest)
         {
 
-            if (now - pair.Value.CreatedTimestamp <= _ttlTicks
-                || pair.Value.Capability.State != CovenantToolCapabilityState.Registered)
+            if (now - pair.Value.CreatedTimestamp <= _ttlTicks)
             {
                 continue;
             }
+
+            // The state check and the transition off Registered happen together, atomically, inside
+            // TryReleaseUnsent -- not as a separate read of Capability.State here followed by a
+            // decision, which a concurrent TryTake could fall between and win after this loop had
+            // already decided to reclaim the registration (the same compare-and-swap ReleaseUnsent
+            // needed; see its own remarks).
+            if (!pair.Value.Capability.TryReleaseUnsent())
+            {
+                continue;
+            }
+
+            SweepExpiredObserverForTests?.Invoke();
 
             if (RemoveExact(pair.Key, pair.Value))
             {

@@ -316,6 +316,53 @@ public sealed class CovenantToolCapabilityRegistryTests
         }
     }
 
+    // W8-2: SweepExpired had the identical check-then-act shape ReleaseUnsent did -- a bare
+    // Capability.State read gating a later RemoveExact, not atomic with it. It has no production
+    // caller today (see the class remarks), so this test is what pins the shape rather than a caller
+    // exercising it. Same deterministic reproduction as the ReleaseUnsent regression test above: the
+    // observer fires at the point in SweepExpired's control flow that means the same thing pre- and
+    // post-fix (nobody holds a lock there either way), so a callback racing a TryTake from inside it
+    // exercises exactly the gap a concurrent one could have landed in, with no thread timing involved.
+    [Fact]
+    public async Task A_sweep_racing_a_take_never_reclaims_a_registration_the_take_already_claimed()
+    {
+        CovenantToolCapabilityRegistry registry = NewRegistry(out FakeClock clock);
+
+        await using CovenantToolInvocationContext capability = Capability(out CovenantToolCapabilityNonce nonce);
+
+        _ = registry.TryRegister(Connection, "1", capability, nonce);
+
+        clock.Advance(TimeSpan.FromMinutes(11));
+
+        Result<CovenantToolCapabilityGrant>? raced = null;
+
+        registry.SweepExpiredObserverForTests = () =>
+        {
+            raced = registry.TryTake(Connection, "1");
+        };
+
+        try
+        {
+            IReadOnlyList<CovenantToolInvocationContext> reclaimed = registry.SweepExpired();
+
+            Assert.NotNull(raced);
+
+            // The whole invariant this closes: a sweep and a take can never both succeed for the same
+            // registration.
+            Assert.False(
+                reclaimed.Count > 0 && raced.IsSuccess,
+                "SweepExpired reclaimed the registration after a concurrent TryTake had already claimed it.");
+
+            Assert.True(raced.IsFailure, "TryTake unexpectedly succeeded racing a sweep.");
+
+            Assert.Equal(CovenantToolCapabilityState.Disposed, capability.State);
+        }
+        finally
+        {
+            registry.SweepExpiredObserverForTests = null;
+        }
+    }
+
     [Fact]
     public async Task Concurrent_takes_of_one_registration_admit_exactly_one_handler()
     {
