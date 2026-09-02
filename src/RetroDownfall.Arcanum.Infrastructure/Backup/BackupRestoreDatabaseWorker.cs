@@ -31,7 +31,7 @@ internal sealed record BackupRestoreDatabaseReconciliation(
     long StaleAttachmentSources,
     long UploadedFiles,
     long BatchFiles,
-    long EmbeddingsRebuilt,
+    long EmbeddingsToRebuild,
     long PendingOperationsCleared);
 
 /// <summary>
@@ -46,13 +46,23 @@ internal sealed record BackupRestoreDatabaseReconciliation(
 internal static class BackupRestoreDatabaseWorker
 {
 
-    private static readonly string[] EmbeddingTables =
+    /// <summary>
+    /// Every derived-vector table, paired with the accelerator mirror that projects it.
+    /// </summary>
+    /// <remarks>
+    /// The pairing is the point. A base table and its <c>*_vec</c> mirror hold one vector twice and
+    /// nothing keeps them in step — there is no trigger, and every other component that removes a base
+    /// vector removes the mirror row explicitly. A list of base tables alone is how a restore under a
+    /// different configured width came to hand the operator two tables that disagree about which rows
+    /// have vectors, with retrieval answering from the half that was left behind.
+    /// </remarks>
+    private static readonly (string Table, string Mirror, string Key)[] EmbeddingTables =
     [
-        "entry_embeddings",
-        "session_attachment_embeddings",
-        "workspace_file_embeddings",
-        "saga_memory_embeddings",
-        "tapestry_node_embeddings",
+        ("entry_embeddings", "entry_embeddings_vec", "EntryId"),
+        ("session_attachment_embeddings", "session_attachment_embeddings_vec", "ChunkId"),
+        ("workspace_file_embeddings", "workspace_file_embeddings_vec", "ChunkId"),
+        ("saga_memory_embeddings", "saga_memory_embeddings_vec", "MemoryId"),
+        ("tapestry_node_embeddings", "tapestry_node_embeddings_vec", "NodeId"),
     ];
 
     public static async Task<SqliteConnection> OpenAsync(
@@ -364,9 +374,14 @@ internal static class BackupRestoreDatabaseWorker
 
     /// <summary>
     /// Removes derived vectors whose dimension no longer matches this installation's configured
-    /// embedding size. They are recomputed on demand; transporting them would poison similarity
-    /// search with vectors from another provider or another model width.
+    /// embedding size, and the accelerator mirror rows that projected them. They are recomputed on
+    /// demand; transporting them would poison similarity search with vectors from another provider or
+    /// another model width.
     /// </summary>
+    /// <remarks>
+    /// The returned count is base-table rows only. A mirror row is the same vector projected, not a
+    /// second one, and counting it would double what the operator is told a restore left to rebuild.
+    /// </remarks>
     public static async Task<long> DropMismatchedEmbeddingsAsync(
         SqliteConnection connection,
         int embeddingDimensions,
@@ -375,7 +390,7 @@ internal static class BackupRestoreDatabaseWorker
 
         long removed = 0;
 
-        foreach (string table in EmbeddingTables)
+        foreach ((string table, string mirror, string key) in EmbeddingTables)
         {
 
             if (!await TableExistsAsync(connection, table, cancellationToken).ConfigureAwait(false))
@@ -385,17 +400,134 @@ internal static class BackupRestoreDatabaseWorker
 
             }
 
-            await using SqliteCommand command = connection.CreateCommand();
+            await using (SqliteCommand command = connection.CreateCommand())
+            {
 
-            command.CommandText = $"DELETE FROM \"{table}\" WHERE \"Dim\" <> $dim;";
+                command.CommandText = $"DELETE FROM \"{table}\" WHERE \"Dim\" <> $dim;";
 
-            _ = command.Parameters.AddWithValue("$dim", embeddingDimensions);
+                _ = command.Parameters.AddWithValue("$dim", embeddingDimensions);
 
-            removed += await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                removed += await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+
+            await DropOrphanedVectorMirrorRowsAsync(connection, table, mirror, key, cancellationToken)
+                .ConfigureAwait(false);
 
         }
 
         return removed;
+
+    }
+
+    /// <summary>
+    /// Removes every mirror row whose key no longer has a row in the table it mirrors.
+    /// </summary>
+    /// <remarks>
+    /// One pass over each table and the comparison in memory, rather than one statement that asks the
+    /// question per mirror row. The two families spell an identity differently — a mirror's key column
+    /// is deliberately outside the canonicalisation family — so the comparison has to be normalised;
+    /// doing that normalisation <em>inside</em> the statement puts a function on the base table's key
+    /// column, which makes its primary key unusable and turns the sweep into one full scan of the base
+    /// table per mirror row, under the maintenance lock, over tables as large as the Grimoire is.
+    ///
+    /// <para>The deletes stay keyed and one at a time: a mirror is a <c>vec0</c> virtual table on
+    /// builds that have the accelerator, and the keyed delete is its surface — the same shape the live
+    /// erasure kernel and the retention service use. Guarded by an existence check, so a build without
+    /// the accelerator is untouched.</para>
+    ///
+    /// <para>Written against "has no base row" rather than "was in the batch just deleted", so a
+    /// snapshot that already arrived inconsistent converges too. The base pass runs after the
+    /// mismatched rows are gone, so what it collects is what survived.</para>
+    /// </remarks>
+    private static async Task DropOrphanedVectorMirrorRowsAsync(
+        SqliteConnection connection,
+        string table,
+        string mirror,
+        string key,
+        CancellationToken cancellationToken)
+    {
+
+        if (!await TableExistsAsync(connection, mirror, cancellationToken).ConfigureAwait(false))
+        {
+
+            return;
+
+        }
+
+        HashSet<string> retained = new(StringComparer.Ordinal);
+
+        await using (SqliteCommand read = connection.CreateCommand())
+        {
+
+            read.CommandText = $"SELECT \"{key}\" FROM \"{table}\";";
+
+            await using SqliteDataReader reader = await read
+                .ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                if (!reader.IsDBNull(0))
+                {
+
+                    _ = retained.Add(CovenantIdentitySql.Key(reader.GetString(0)));
+
+                }
+
+            }
+
+        }
+
+        List<string> orphaned = [];
+
+        await using (SqliteCommand read = connection.CreateCommand())
+        {
+
+            read.CommandText = $"SELECT \"{key}\" FROM \"{mirror}\";";
+
+            await using SqliteDataReader reader = await read
+                .ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                if (reader.IsDBNull(0))
+                {
+
+                    continue;
+
+                }
+
+                string stored = reader.GetString(0);
+
+                if (!retained.Contains(CovenantIdentitySql.Key(stored)))
+                {
+
+                    // The stored spelling, not the normalised one: the delete below matches the column
+                    // exactly, which is what keeps it a keyed delete.
+                    orphaned.Add(stored);
+
+                }
+
+            }
+
+        }
+
+        foreach (string identity in orphaned)
+        {
+
+            await using SqliteCommand delete = connection.CreateCommand();
+
+            delete.CommandText = $"DELETE FROM \"{mirror}\" WHERE \"{key}\" = $identity;";
+
+            _ = delete.Parameters.AddWithValue("$identity", identity);
+
+            _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        }
 
     }
 
@@ -433,7 +565,7 @@ internal static class BackupRestoreDatabaseWorker
             stale,
             uploaded,
             batches,
-            EmbeddingsRebuilt: 0,
+            EmbeddingsToRebuild: 0,
             PendingOperationsCleared: 0);
 
     }

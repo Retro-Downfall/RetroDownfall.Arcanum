@@ -1,6 +1,10 @@
 using System.Security.Cryptography;
 
+using System.Text.Json;
+
 using Microsoft.Data.Sqlite;
+
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
@@ -23,6 +27,8 @@ using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
@@ -167,6 +173,194 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await ScalarAsync(
                 connection,
                 "SELECT CampaignId FROM saga_retirement_suppressions;"));
+
+    }
+
+    /// <summary>
+    /// A restore cancelled while it is composing the staged generation stops there rather than
+    /// finishing the copy first.
+    /// </summary>
+    /// <remarks>
+    /// Composition is the second full-size write of everything the extraction already wrote — for a
+    /// multi-gigabyte Grimoire, minutes of blocking copying inside a single phase. Entered at
+    /// <see cref="BackupRestoreService.RestoreAsync"/> with the operator's own token, because what is
+    /// under test is whether pressing Ctrl-C during that window is observed at all.
+    ///
+    /// <para>Asserted on how many entries were composed rather than on what survives on disk: the
+    /// staging root is removed as the cancellation unwinds, which is correct and also erases the
+    /// evidence, so the count is taken as the copy runs.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_cancelled_restore_stops_composing_the_staged_tree()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("compose-cancel.arcbackup");
+
+        WipeInstallation();
+
+        using CancellationTokenSource cancellation = new();
+
+        List<string> composed = [];
+
+        BackupRestoreServiceOptions options = new()
+        {
+
+            BeforeStagedEntryComposeForTests = entry =>
+            {
+
+                composed.Add(entry);
+
+                cancellation.Cancel();
+
+            },
+
+        };
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Restore(new RecordingSecretStore(), options).RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                cancellation.Token));
+
+        Assert.Single(composed);
+
+    }
+
+    /// <summary>
+    /// An archive holding two entries whose paths differ only in case is refused rather than restored
+    /// with one file standing in for both.
+    /// </summary>
+    /// <remarks>
+    /// Entered at <see cref="BackupRestoreService.RestoreAsync"/> over a real archive the real backup
+    /// service wrote, because the collision is only interesting where it is invisible: extraction
+    /// tracks entries ordinally and writes each one with a create-or-truncate open, the manifest
+    /// comparison verifies against hashes taken from the decrypted stream rather than from the files
+    /// on disk, and staging then copies both entries over each other. Every check passes and the
+    /// restore reports completed while one attachment silently carries the other's bytes.
+    ///
+    /// <para>The refusal asserted here is unconditional rather than filesystem-dependent, and that is
+    /// deliberate: whether the two entries collide on the destination volume is a property of the
+    /// machine the archive lands on rather than of the archive, and an archive that is only safe on
+    /// some volumes is not one this build should lay down on any of them.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_archive_whose_entry_paths_differ_only_in_case_is_refused()
+    {
+
+        Fixture fixture = await CreateFixtureAsync(caseCollidingAttachment: true);
+
+        string archive = await fixture.CreateBackupAsync("case-collision.arcbackup");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(result.Issues, static issue => issue.Code == "backup.invalid_archive");
+
+        // Refused before anything was laid down: the destination is as empty as the wipe left it.
+        Assert.False(File.Exists(Path.Combine(_installation, "arcanum.db")));
+
+    }
+
+    /// <summary>
+    /// A restore onto an installation configured for another embedding width takes the vector mirror
+    /// with the row it mirrors.
+    /// </summary>
+    /// <remarks>
+    /// Entered at <see cref="BackupRestoreService.RestoreAsync"/> over a real archive, because the
+    /// width the drop compares against is the restore service's own option and the staged database it
+    /// runs on only exists inside a restore.
+    ///
+    /// <para>The dropped base-table count is asserted as well as the mirror, and both matter: without
+    /// the count, a mirror that is empty because nothing ran at all would satisfy the case; without the
+    /// mirror, this is a restore that hands the operator two tables disagreeing about which entries
+    /// have vectors, which is the state a semantic search then answers from.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_restore_under_a_different_embedding_width_takes_the_vector_mirror_with_it()
+    {
+
+        Fixture fixture = await CreateFixtureAsync(mirroredEmbeddings: true);
+
+        string archive = await fixture.CreateBackupAsync("embedding-width.arcbackup");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        // The archive's vectors are 768-wide and this installation is configured for 1536, so the drop
+        // is what this restore actually did — pinned before the mirror is looked at.
+        Assert.Equal(1, result.Reconciliation?.EmbeddingsToRebuild);
+
+        await using SqliteConnection connection = await OpenRestoredAsync(fixture.GrimoireSecret);
+
+        Assert.Equal(
+            "0",
+            await ScalarAsync(connection, "SELECT COUNT(*) FROM entry_embeddings;"));
+
+        Assert.Equal(
+            "0",
+            await ScalarAsync(connection, "SELECT COUNT(*) FROM entry_embeddings_vec;"));
+
+    }
+
+    /// <summary>
+    /// The JSON restore document reports the vectors a restore dropped under a name that does not
+    /// claim it rebuilt them.
+    /// </summary>
+    /// <remarks>
+    /// Asserted over the exact document <c>--output-format json</c> emits — the same
+    /// <see cref="CliJsonContext"/> type info the command serializes through — because the field name
+    /// is the whole contract here. The count reaching it is a DELETE count: nothing in a restore
+    /// recomputes a vector, and the method that produces it says so in its own remarks. An automation
+    /// reading the old <c>embeddingsRebuilt</c> concluded the restored Grimoire had that many freshly
+    /// computed vectors when it has that many fewer than the archive carried.
+    ///
+    /// <para>The rendered text was always honest ("N embeddings to rebuild"); it was the machine-
+    /// readable half that was not, and nothing in the documentation disambiguated it.</para>
+    /// </remarks>
+    [Fact]
+    public async Task The_json_restore_document_names_dropped_vectors_without_claiming_a_rebuild()
+    {
+
+        Fixture fixture = await CreateFixtureAsync(mirroredEmbeddings: true);
+
+        string archive = await fixture.CreateBackupAsync("embedding-width-json.arcbackup");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        string document = JsonSerializer.Serialize(
+            result,
+            CliJsonContext.Default.BackupRestoreResult);
+
+        using JsonDocument parsed = JsonDocument.Parse(document);
+
+        JsonElement reconciliation = parsed.RootElement.GetProperty("reconciliation");
+
+        Assert.Equal(1, reconciliation.GetProperty("embeddingsToRebuild").GetInt64());
+
+        Assert.False(
+            reconciliation.TryGetProperty("embeddingsRebuilt", out _),
+            "The restore document still claims it rebuilt the vectors it deleted.");
 
     }
 
@@ -1161,6 +1355,112 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A selective import stopped by its third Session reports the two it already committed rather
+    /// than the status that means the destination was never touched.
+    /// </summary>
+    /// <remarks>
+    /// Entered at <see cref="BackupRestoreService.RestoreAsync"/> over a real archive and the real
+    /// live installation, because the property under test is what the operator is told about a
+    /// destination that has already changed — and that sentence is only assembled at this layer.
+    ///
+    /// <para>The refusal is a source taint, which is the one class of per-Session refusal no preflight
+    /// can answer: it is read out of that Session's own graph inside the transfer store, after the
+    /// Sessions before it have committed under their own compound leases with no outer transaction
+    /// over them. The archive carries all three, and the selection names all three.</para>
+    ///
+    /// <para>The destination is queried for what landed rather than trusting the returned counts. The
+    /// installation this archive was taken from is also the installation being imported into, so both
+    /// committed Sessions arrive beside their originals under fresh identities — two rows for each of
+    /// the titles that committed, one for the title that was refused.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_selective_import_refused_partway_reports_the_Sessions_it_already_committed()
+    {
+
+        Fixture fixture = await CreateFixtureAsync(refusableSessionTrio: true);
+
+        string archive = await fixture.CreateBackupAsync("import-partial.arcbackup");
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret },
+                ProtectedSelectiveImport())
+            .RestoreAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    BackupRestoreConflictMode.ImportSelectedSessions,
+                    SessionIds:
+                    [
+                        Fixture.CleanSessionA,
+                        Fixture.CleanSessionB,
+                        Fixture.TaintedSessionC,
+                    ],
+                    Confirmed: true,
+                    CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        // The refusal this case is about, pinned before anything else is asserted: a coverage or digest
+        // refusal would stop the import somewhere else entirely and prove nothing about a partial commit.
+        Assert.Contains(
+            result.Issues,
+            static issue => issue.Message.Contains(
+                "Covenant-derived artifacts",
+                StringComparison.Ordinal));
+
+        Assert.NotEqual(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        BackupVerifyIssue committed = Assert.Single(
+            result.Issues,
+            static issue => issue.Code == "backup.restore_import_partially_committed");
+
+        Assert.Contains(
+            Fixture.CleanSessionA.ToString("D"),
+            committed.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            Fixture.CleanSessionB.ToString("D"),
+            committed.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            Fixture.TaintedSessionC.ToString("D"),
+            committed.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        await using SqliteConnection connection = await OpenRestoredAsync(fixture.GrimoireSecret);
+
+        Assert.Equal(
+            "2",
+            await ScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Title\" = 'Session A';"));
+
+        Assert.Equal(
+            "2",
+            await ScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Title\" = 'Session B';"));
+
+        Assert.Equal(
+            "1",
+            await ScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Title\" = 'Session C';"));
+
+        // The graph, not just the Session row: an import that committed an empty Session would satisfy
+        // every count above.
+        Assert.Equal(
+            "2",
+            await ScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM \"Entries\" WHERE \"Content\" = 'ask A';"));
+
+    }
+
     [Fact]
     public async Task Importing_a_session_the_archive_does_not_contain_is_refused()
     {
@@ -1735,6 +2035,27 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The selective-import arm as a Covenant-enabled installation composes it: the real transfer
+    /// store, and a gate that grants the compound lease rather than arbitrating it.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="SelectiveImportEnabled"/>, whose store throws: that one exists for the
+    /// planning cases, where presence of the arm is all that is read. A case about what the import
+    /// commits has to run the store that commits it.
+    /// </remarks>
+    private static BackupRestoreServiceOptions ProtectedSelectiveImport() =>
+        new()
+        {
+
+            SelectiveImport = new CovenantSelectiveImportServices(
+                new BackupSessionImporterTests.ProtectedTransferGate(),
+                new ProtectedArtifactTransferStore(
+                    CovenantSqliteConnectionInitializer.Instance,
+                    TimeProvider.System)),
+
+        };
+
     private static BackupRestoreServiceOptions SelectiveImportEnabled() =>
         new()
         {
@@ -1852,12 +2173,20 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
-    private async Task<Fixture> CreateFixtureAsync(bool listenAny = false)
+    private async Task<Fixture> CreateFixtureAsync(
+        bool listenAny = false,
+        bool refusableSessionTrio = false,
+        bool mirroredEmbeddings = false,
+        bool caseCollidingAttachment = false)
     {
 
         Fixture fixture = new(_installation, _archives, Paths(), Codec());
 
-        await fixture.BuildAsync(listenAny);
+        await fixture.BuildAsync(
+            listenAny,
+            refusableSessionTrio,
+            mirroredEmbeddings,
+            caseCollidingAttachment);
 
         return fixture;
 
@@ -1877,6 +2206,26 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public static readonly Guid SessionId =
             Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        /// <summary>
+        /// The three Sessions a selective import selects together, in the order the plan sorts them.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="BackupRestoreService"/> orders the selection (<c>Distinct().Order()</c>), so the
+        /// one that is refused has to sort last by <see cref="Guid"/> comparison rather than by the
+        /// order the request happens to list — otherwise the refusal lands before anything committed
+        /// and the case proves nothing. The leading field is what that comparison reads first, and
+        /// these three increase in it. Hex letters throughout, so an identity spelled uppercase in the
+        /// archive and lowercase in the request is a difference this fixture can actually see.
+        /// </remarks>
+        public static readonly Guid CleanSessionA =
+            Guid.Parse("1a1a1a1a-2b2b-4c3c-8d4d-5e5e6f6f7070");
+
+        public static readonly Guid CleanSessionB =
+            Guid.Parse("2b2b2b2b-3c3c-4d4d-8e5e-6f6f70708181");
+
+        public static readonly Guid TaintedSessionC =
+            Guid.Parse("3c3c3c3c-4d4d-4e5e-8f6f-707081819292");
 
         public static readonly Guid CampaignId =
             Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -1915,7 +2264,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public IBackupService BackupService { get; private set; } = null!;
 
-        public async Task BuildAsync(bool listenAny)
+        public async Task BuildAsync(
+            bool listenAny,
+            bool refusableSessionTrio = false,
+            bool mirroredEmbeddings = false,
+            bool caseCollidingAttachment = false)
         {
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(installation);
@@ -1942,6 +2295,27 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await File.WriteAllTextAsync(attachment, "attachment bytes");
 
             await BuildDatabaseAsync();
+
+            if (refusableSessionTrio)
+            {
+
+                await SeedRefusableSessionTrioAsync();
+
+            }
+
+            if (mirroredEmbeddings)
+            {
+
+                await SeedMirroredEmbeddingAsync();
+
+            }
+
+            if (caseCollidingAttachment)
+            {
+
+                await SeedCaseCollidingAttachmentAsync();
+
+            }
 
             BackupService = new BackupService(
                 paths,
@@ -2069,6 +2443,179 @@ public sealed class BackupRestoreServiceTests : IDisposable
             _ = await curation.ExecuteNonQueryAsync();
 
         }
+
+        /// <summary>
+        /// Three more Sessions, of which the last carries a Covenant sensitivity label.
+        /// </summary>
+        /// <remarks>
+        /// Seeded into the installation the archive is taken from, so all three travel inside a real
+        /// archive rather than being handed to the importer directly. The label is what the protected
+        /// transfer store's own taint scan reads, and it is the refusal a selective import cannot
+        /// preflight: it is discovered while reading that Session's graph, after the Sessions before it
+        /// have already committed under their own leases.
+        ///
+        /// <para>The identities are spelled the way the object-relational writer spells one — uppercase
+        /// dashed — because that is what an ordinary archive holds and what the schema's identity guards
+        /// admit.</para>
+        /// </remarks>
+        private async Task SeedRefusableSessionTrioAsync()
+        {
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+                DatabasePath,
+                GrimoireSecret,
+                readOnly: false,
+                CancellationToken.None);
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = $"""
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{Upper(CleanSessionA)}', NULL, 'Session A', 'active',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{Upper(CleanSessionB)}', NULL, 'Session B', 'active',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{Upper(TaintedSessionC)}', NULL, 'Session C', 'active',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Entries"
+                    ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                VALUES ('{Upper(EntryOfA)}', '{Upper(CleanSessionA)}', 0, 'ask A', 'test',
+                        '2026-01-01T00:00:00Z', 1);
+
+                INSERT INTO "Entries"
+                    ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                VALUES ('{Upper(EntryOfB)}', '{Upper(CleanSessionB)}', 0, 'ask B', 'test',
+                        '2026-01-01T00:00:00Z', 1);
+
+                INSERT INTO "Entries"
+                    ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                VALUES ('{Upper(EntryOfC)}', '{Upper(TaintedSessionC)}', 0, 'ask C', 'test',
+                        '2026-01-01T00:00:00Z', 1);
+
+                INSERT INTO artifact_sensitivity
+                    ("LabelId", "ArtifactKindCode", "ArtifactId", "SensitivityCode",
+                     "ProvenanceModeCode", "ExactGenerationIds", "GenerationBloom", "SessionId",
+                     "CampaignId", "TurnId", "ArtifactRevision", "ArtifactContentDigest",
+                     "SensitivityDigest", "ProducingPlanDigest", "ProducingAdmissionDigest",
+                     "ProducingMaintenanceReceiptDigest", "ArtifactLabelDigest", "CreatedAtUtc")
+                VALUES ('{Upper(Guid.Parse("4d4d4d4d-5e5e-4f6f-8070-81819292a3a3"))}', 1,
+                        '{Upper(EntryOfC)}', 1, 1,
+                        X'000102030405060708090A0B0C0D0E0F', NULL, '{Upper(TaintedSessionC)}',
+                        NULL, NULL, 0,
+                        X'{new string('1', 64)}', X'{new string('2', 64)}', NULL, NULL, NULL,
+                        X'{new string('3', 64)}', '2026-01-01T00:00:00Z');
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync();
+
+        }
+
+        /// <summary>
+        /// A derived vector at a width this installation is not configured for, and its mirror row.
+        /// </summary>
+        /// <remarks>
+        /// The mirror is an ordinary table here rather than a <c>vec0</c> virtual one, because the
+        /// accelerator is not loadable in this suite — the same stand-in the retention suites use. What
+        /// is under test is which tables a restore reconciles, and that is decided by name and key
+        /// column rather than by whether the accelerator is present: production guards every mirror
+        /// statement with an existence check for exactly that reason.
+        ///
+        /// <para>Seeded into the installation the archive is taken from, so the width mismatch arrives
+        /// through a real archive: the database snapshot is a page copy of the whole encrypted file, so
+        /// a table joins a backup by existing.</para>
+        /// </remarks>
+        private async Task SeedMirroredEmbeddingAsync()
+        {
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+                DatabasePath,
+                GrimoireSecret,
+                readOnly: false,
+                CancellationToken.None);
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = $"""
+                INSERT INTO entry_embeddings ("EntryId", "Embedding", "Dim")
+                VALUES ('{Upper(MirroredEntryId)}', X'0000803F', 768);
+
+                CREATE TABLE IF NOT EXISTS entry_embeddings_vec (
+                    EntryId TEXT PRIMARY KEY,
+                    Embedding BLOB NOT NULL
+                );
+
+                INSERT INTO entry_embeddings_vec ("EntryId", "Embedding")
+                VALUES ('{Upper(MirroredEntryId)}', X'0000803F');
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync();
+
+        }
+
+        /// <summary>
+        /// A second attachment whose recorded path differs from the first only in case.
+        /// </summary>
+        /// <remarks>
+        /// Both paths come out of the database and go into the archive as the writer found them: an
+        /// attachment's archive path is <c>"attachments/" + RelativePath</c>, the stored relative path
+        /// carries a user-supplied logical key and file name, and the sanitizer that admits one strips
+        /// characters without ever changing case. The archive writer's own duplicate check is ordinal,
+        /// so both entries are written.
+        ///
+        /// <para>What the two entries contain depends on the volume this suite runs on, and neither
+        /// case is the point: on a case-insensitive filesystem there is one physical file and the two
+        /// rows name it twice; on a case-sensitive one there are two files holding different bytes. The
+        /// archive carries two entries whose paths collide under case folding either way, which is the
+        /// only thing the extraction has to answer for.</para>
+        /// </remarks>
+        private async Task SeedCaseCollidingAttachmentAsync()
+        {
+
+            string colliding = Path.Combine(installation, "attachments", "session", "NOTE.bin");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(colliding)!);
+
+            await File.WriteAllTextAsync(colliding, "the other attachment");
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+                DatabasePath,
+                GrimoireSecret,
+                readOnly: false,
+                CancellationToken.None);
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = """
+                INSERT INTO "SessionAttachments"
+                    ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
+                     "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                     "SourceKind", "SourceCanonicalPath", "SourceStatus", "EncryptionVersion")
+                VALUES ('66666666-6666-4666-8666-666666666666',
+                        '11111111-1111-1111-1111-111111111111', 'Bound', 'NOTE', 'NOTE.txt', 1,
+                        'session/NOTE.bin', 'def', 'text/plain', 20, 'Text',
+                        '2026-01-01T00:00:00Z', 'WorkspaceFile',
+                        'C:\Users\Old\src\project\NOTE.txt', 'Refreshable', 0);
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync();
+
+        }
+
+        public static readonly Guid MirroredEntryId =
+            Guid.Parse("5e5e5e5e-6f6f-4070-8181-9292a3a3b4b4");
+
+        public static readonly Guid EntryOfA = Guid.Parse("a1a1a1a1-b2b2-4c3c-8d4d-5e5e6f6f7071");
+
+        public static readonly Guid EntryOfB = Guid.Parse("b2b2b2b2-c3c3-4d4d-8e5e-6f6f70708182");
+
+        public static readonly Guid EntryOfC = Guid.Parse("c3c3c3c3-d4d4-4e5e-8f6f-707081819293");
+
+        private static string Upper(Guid value) => value.ToString("D").ToUpperInvariant();
 
         private sealed class FixtureSecretReader(string grimoireSecret) : IBackupSecretSnapshotReader
         {

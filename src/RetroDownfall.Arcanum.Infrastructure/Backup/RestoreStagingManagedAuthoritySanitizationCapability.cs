@@ -213,7 +213,10 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationCapability : IAs
             if (receipt.IsFailure)
             {
 
-                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                // The same compensation rule the catch below already follows: a rollback issued on a
+                // cancelled token rolls nothing back and throws over the typed refusal it was making
+                // room for.
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
                 return receipt;
 
@@ -224,7 +227,7 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationCapability : IAs
             if (before.IsFailure)
             {
 
-                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
                 return before.Error;
 

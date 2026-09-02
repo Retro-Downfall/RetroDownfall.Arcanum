@@ -290,12 +290,20 @@ public sealed record BackupRestorePlan(
     BackupRestoreDisclosureExposure? DestinationDisclosure = null);
 
 /// <summary>Post-commit reconciliation counts. Nothing here is allowed to silently skip a file.</summary>
+/// <param name="EmbeddingsToRebuild">
+/// Derived vectors the restore <em>removed</em> because their width does not match this
+/// installation's configured embedding size, and which will be recomputed on demand. Nothing in a
+/// restore computes an embedding, so this is work left to do rather than work done — the field was
+/// once named as though the vectors had been rebuilt, and an automation reading it concluded the
+/// restored Grimoire had that many fresh vectors when it has that many fewer than the archive
+/// carried.
+/// </param>
 public sealed record BackupRestoreReconciliation(
     long Attachments,
     long StaleAttachmentSources,
     long UploadedFiles,
     long BatchFiles,
-    long EmbeddingsRebuilt,
+    long EmbeddingsToRebuild,
     long PendingOperationsCleared,
     string[] Issues);
 
