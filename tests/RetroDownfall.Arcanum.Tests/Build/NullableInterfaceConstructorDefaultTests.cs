@@ -28,208 +28,221 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// The parameters this inventory does not fail on, each with the reason a reviewer can check.
     /// </summary>
     /// <remarks>
-    /// A baseline, not an endorsement. Every entry was present when this inventory was written and
-    /// each reason states the evidence that put it here rather than a judgement that it is harmless:
-    /// a diagnostic sink whose absence costs a log line; an owner the container activates whose
-    /// dependency is registered, which therefore receives it in any composed host; or an interface no
-    /// composition registers at all, which means the default is what every host receives - the shape
-    /// that hid the labelled-artifact guard, and a candidate for the packet that owns its file.
-    /// Registration is read from the files that wire a container, not from the whole tree: a type
-    /// named as a generic argument somewhere under <c>src/</c> is not a type the container can supply. The list only ever shrinks. What it buys today is the ninety-sixth
-    /// entry: a new optional interface dependency cannot be added anywhere under <c>src/</c> without
-    /// someone writing down why.
+    /// A baseline, not an endorsement. Every entry was present when this inventory was written, and
+    /// each reason states what was checked rather than a judgement that the site is harmless: whether
+    /// the null coalesces to a constructed default, whether every use of it is null-safe, whether the
+    /// container activates the owner, and whether anything registers the interface at all.
+    ///
+    /// <para>Registration is read from the files that build a container - which includes the two Ux
+    /// composition roots and the CLI application factory, not only the files that take an
+    /// <c>IServiceCollection</c> parameter - and container intrinsics such as
+    /// <c>IServiceScopeFactory</c> are treated as supplied, because nothing registers them and the
+    /// container provides them anyway. An earlier pass read registration from the whole tree, which
+    /// matched <c>Task&lt;IFoo&gt;</c> and every other generic argument, and reported nine sites as the
+    /// V-1 shape that are nothing of the kind.</para>
+    ///
+    /// <para>On the evidence above, no site left in this list is the V-1 shape: a dependency whose
+    /// absence silently disables a refusal. What the list buys is the ninety-ninth entry - a new
+    /// optional interface dependency cannot enter <c>src/</c> without someone writing down which of
+    /// those four things is true of it.</para>
     /// </remarks>
     private static readonly Dictionary<string, string> Allowed = new(StringComparer.Ordinal)
     {
-        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:encryptedBlobDiagnostics"] = "owner is container-activated and IEncryptedBlobDiagnostics is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:encryptedBlobDiagnostics"] = "owner is container-activated and IEncryptedBlobDiagnostics is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:operationDiagnosticsSource"] = "owner is container-activated and IDurableOperationDiagnostics is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:operationDiagnosticsSource"] = "every use of the IDurableOperationDiagnostics is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:providerApiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:providerApiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:workspaceCheckCapabilityReporter"] = "owner is container-activated and IWorkspaceCheckCapabilityReporter is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:workspaceCheckCapabilityReporter"] = "every use of the IWorkspaceCheckCapabilityReporter is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ChatClientFactory.cs:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ChatClientFactory.cs:ChatClientFactory:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ChatClientFactory.cs:familiarProcessRunner"] = "owner is container-activated and IFamiliarProcessRunner is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ChatClientFactory.cs:ChatClientFactory:familiarProcessRunner"] = "the null coalesces to a constructed default at the use site, so no host runs without a IFamiliarProcessRunner",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ChatClientFactory.cs:loggerFactory"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ChatClientFactory.cs:ChatClientFactory:loggerFactory"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:modelTokenEstimator"] = "owner is container-activated and IModelTokenEstimator is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:modelTokenEstimator"] = "the null coalesces to a constructed default at the use site, so no host runs without a IModelTokenEstimator",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:purger"] = "owner is container-activated and ICovenantSensitiveArtifactPurger is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:purger"] = "every use of the ICovenantSensitiveArtifactPurger is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/EmbeddingGeneratorFactory.cs:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/EmbeddingGeneratorFactory.cs:EmbeddingGeneratorFactory:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:turnCommitter"] = "owner is container-activated and IGrimoireTurnCommitter is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:GrimoireTurnWriter:turnCommitter"] = "every use of the IGrimoireTurnCommitter is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ModelCallExecutor.cs:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ModelCallExecutor.cs:ModelCallExecutor:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:attachmentSourceResolver"] = "owner is container-activated and IAttachmentSourceResolver is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:ToolExecutionPipeline:attachmentSourceResolver"] = "every use of the IAttachmentSourceResolver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:covenantAuthority"] = "owner is container-activated and ICovenantAuthoritySnapshotProvider is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:ToolExecutionPipeline:covenantAuthority"] = "every use of the ICovenantAuthoritySnapshotProvider is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:toolResultMaterializer"] = "owner is container-activated and IToolResultMaterializer is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:ToolExecutionPipeline:toolResultMaterializer"] = "every use of the IToolResultMaterializer is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumReadUrlTool.cs:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumReadUrlTool.cs:ArcanumReadUrlTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:resourceLimiter"] = "owner is constructed by hand in src; whether each site passes IProcessResourceLimiter is unverified - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:resourceLimiter"] = "IProcessResourceLimiter is registered; the owner is also constructed by hand in src, where whether each site passes it is unverified",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:sanctumGuard"] = "owner is constructed by hand in src; whether each site passes ISanctumGuard is unverified - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:sanctumGuard"] = "the null coalesces to a constructed default at the use site, so no host runs without a ISanctumGuard",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumWebSearchTool.cs:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumWebSearchTool.cs:ArcanumWebSearchTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:attachmentMemoryProvenanceStore"] = "IAttachmentMemoryProvenanceStore is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:attachmentMemoryProvenanceStore"] = "every use of the IAttachmentMemoryProvenanceStore is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:budgetReservationService"] = "IBudgetReservationService is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:budgetReservationService"] = "owner is container-activated and IBudgetReservationService is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:healthTracker"] = "IProviderHealthTracker is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:healthTracker"] = "every use of the IProviderHealthTracker is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:modelCallExecutor"] = "IModelCallExecutor is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:modelCallExecutor"] = "owner is container-activated and IModelCallExecutor is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:modelTokenEstimator"] = "IModelTokenEstimator is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:modelTokenEstimator"] = "owner is container-activated and IModelTokenEstimator is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:sessionAttachmentRetrieval"] = "ISessionAttachmentRetrievalService is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:sessionAttachmentRetrieval"] = "every use of the ISessionAttachmentRetrievalService is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:subagentRunner"] = "ISubagentRunner is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:subagentRunner"] = "every use of the ISubagentRunner is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:tapestryStore"] = "ITapestryStore is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:tapestryStore"] = "every use of the ITapestryStore is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:turnRunWriter"] = "ITurnRunWriter is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:turnRunWriter"] = "owner is container-activated and ITurnRunWriter is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:webResearchProviderCatalog"] = "IWebResearchProviderCatalog is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:webResearchProviderCatalog"] = "every use of the IWebResearchProviderCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Conclave/ApprenticeCommands.cs:resourceCatalog"] = "owner is container-activated and ICliResourceCatalog is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Conclave/ApprenticeCommands.cs:ApprenticeCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Configuration/ModelProviderCommands.cs:resourceCatalog"] = "ICliResourceCatalog is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Configuration/ModelProviderCommands.cs:ModelCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/CampaignCommands.cs:resourceCatalog"] = "owner is container-activated and ICliResourceCatalog is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Configuration/ModelProviderCommands.cs:ProviderCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/MemoryCommands.cs:resourceCatalog"] = "owner is container-activated and ICliResourceCatalog is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/CampaignCommands.cs:CampaignCodexCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/PromptCommands.cs:resourceCatalog"] = "owner is container-activated and ICliResourceCatalog is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/CampaignCommands.cs:CampaignCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/SessionCommands.cs:resourceCatalog"] = "owner is container-activated and ICliResourceCatalog is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/MemoryCommands.cs:MemoryCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/SpellCommands.cs:resourceCatalog"] = "owner is container-activated and ICliResourceCatalog is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/PromptCommands.cs:PromptCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Commands/WatchCommands.cs:resourceCatalog"] = "owner is container-activated and ICliResourceCatalog is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/SessionCommands.cs:SessionCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:contextStore"] = "owner is container-activated and ICliContextStore is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/SpellCommands.cs:SpellCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:mutationBoundary"] = "owner is container-activated and IArcanumClientMutationBoundary is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Commands/WatchCommands.cs:WatchCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Services/ConsoleAskHumanCoordinator.cs:diagnosticConsole"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:CliSessionManager:contextStore"] = "every use of the ICliContextStore is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Cli/Services/Setup/SetupPrompt.cs:secretPrompt"] = "IBackupPassphrasePrompt has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:CliSessionManager:mutationBoundary"] = "every use of the IArcanumClientMutationBoundary is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AClientService.cs:scopeFactory"] = "IServiceScopeFactory has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Cli/Services/ConsoleAskHumanCoordinator.cs:ConsoleAskHumanCoordinator:diagnosticConsole"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Configuration/ConfigurationPresetService.cs:credentialStore"] = "owner is container-activated and IWebResearchCredentialStore is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Cli/Services/Setup/SetupPrompt.cs:ConsoleSetupPrompt:secretPrompt"] = "the null coalesces to a constructed default at the use site, so no host runs without a IBackupPassphrasePrompt",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CampaignPathMarkerLifecycle.cs:recoveryKeys"] = "owner is constructed by hand in src; whether each site passes ICampaignRootIdentityRecoveryKeyProvider is unverified - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AClientService.cs:A2AClientService:scopeFactory"] = "every use of the IServiceScopeFactory is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:attachmentStore"] = "owner is container-activated and ISessionAttachmentStore is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Configuration/ConfigurationPresetService.cs:ConfigurationPresetService:credentialStore"] = "every use of the IWebResearchCredentialStore is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:covenantErasureEffectDigests"] = "owner is container-activated and ICovenantErasureEffectDigestCalculator is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CampaignPathMarkerLifecycle.cs:CampaignPathMarkerLifecycle:recoveryKeys"] = "ICampaignRootIdentityRecoveryKeyProvider is registered; the owner is also constructed by hand in src, where whether each site passes it is unverified",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:covenantGate"] = "owner is container-activated and ICovenantOperationGate is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:attachmentStore"] = "every use of the ISessionAttachmentStore is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:daemonExecutions"] = "owner is container-activated and IDaemonExecutionRepository is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:covenantErasureEffectDigests"] = "the null coalesces to a constructed default at the use site, so no host runs without a ICovenantErasureEffectDigestCalculator",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:daemonMutationGate"] = "owner is container-activated and IDaemonExecutionMutationGate is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:covenantGate"] = "owner is container-activated and ICovenantOperationGate is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:factoryApplyRequestDigests"] = "owner is container-activated and ICovenantFactoryErasureApplyRequestDigestCalculator is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:daemonExecutions"] = "every use of the IDaemonExecutionRepository is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:managedLogMutationGate"] = "owner is container-activated and IManagedLogMutationGate is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:daemonMutationGate"] = "owner is container-activated and IDaemonExecutionMutationGate is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:policyStore"] = "owner is container-activated and IDataRetentionPolicyStore is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:factoryApplyRequestDigests"] = "the null coalesces to a constructed default at the use site, so no host runs without a ICovenantFactoryErasureApplyRequestDigestCalculator",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs:covenantDrain"] = "owner is container-activated and ICovenantConnectionDrain is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:managedLogMutationGate"] = "owner is container-activated and IManagedLogMutationGate is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs:labeledArtifactGuard"] = "owner is container-activated and ICovenantLabeledArtifactGuard is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:policyStore"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDataRetentionPolicyStore",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:blobStore"] = "owner is container-activated and IEncryptedBlobStore is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs:LongRunningOperationStore:covenantDrain"] = "every use of the ICovenantConnectionDrain is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:indexQueue"] = "owner is container-activated and ISessionAttachmentIndexQueue is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs:SagaMemoryStore:labeledArtifactGuard"] = "every use of the ICovenantLabeledArtifactGuard is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:sourceResolver"] = "owner is container-activated and IAttachmentSourceResolver is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:blobStore"] = "owner is container-activated and IEncryptedBlobStore is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:startupProbe"] = "owner is constructed by hand in src; whether each site passes IInstallationStartupProbe is unverified - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:indexQueue"] = "every use of the ISessionAttachmentIndexQueue is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs:managedFiles"] = "owner is constructed by hand in src; whether each site passes IFullInstallationResetManagedFileReconciler is unverified - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:sourceResolver"] = "every use of the IAttachmentSourceResolver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:identityReader"] = "owner is container-activated and IInstallationResetDatabaseIdentityReader is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:GrimoireDatabaseHostedService:startupProbe"] = "IInstallationStartupProbe is registered; the owner is also constructed by hand in src, where whether each site passes it is unverified",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:pairReader"] = "owner is container-activated and IInstallationResetHostProcessToolsPairReader is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs:HostToolsMarkerPairResetCoordinator:managedFiles"] = "every use of the IFullInstallationResetManagedFileReconciler is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:preDataMutation"] = "owner is container-activated and IInstallationResetPreDataMutation is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:identityReader"] = "owner is container-activated and IInstallationResetDatabaseIdentityReader is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:remediationVerifier"] = "owner is container-activated and IFullInstallationResetRemediationAttestationVerifier is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:pairReader"] = "owner is container-activated and IInstallationResetHostProcessToolsPairReader is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:stateRoots"] = "owner is container-activated and IInstallationResetStateRoots is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:preDataMutation"] = "owner is container-activated and IInstallationResetPreDataMutation is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:stoppedHostDataService"] = "owner is container-activated and IInstallationResetStoppedHostDataService is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:remediationVerifier"] = "every use of the IFullInstallationResetRemediationAttestationVerifier is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:stoppedHostPairReader"] = "owner is container-activated and IInstallationResetStoppedHostProcessToolsPairReader is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:stateRoots"] = "owner is container-activated and IInstallationResetStateRoots is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:workspaceResolver"] = "owner is container-activated and IInstallationResetWorkspaceResolver is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:stoppedHostDataService"] = "every use of the IInstallationResetStoppedHostDataService is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellCatalogService.cs:progressObserver"] = "ISpellCatalogProgressObserver has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:stoppedHostPairReader"] = "every use of the IInstallationResetStoppedHostProcessToolsPairReader is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:labeledArtifactGuard"] = "owner is container-activated and ICovenantLabeledArtifactGuard is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:workspaceResolver"] = "every use of the IInstallationResetWorkspaceResolver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs:workspaceCheckRuntime"] = "IWorkspaceCheckRuntime has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellCatalogService.cs:SpellCatalogService:progressObserver"] = "every use of the ISpellCatalogProgressObserver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/InProcessMcpTransport.cs:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:LexiconService:labeledArtifactGuard"] = "every use of the ICovenantLabeledArtifactGuard is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpBridgeTool.cs:fallbackClient"] = "IMcpClient has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs:ArcanumInternalToolServer:workspaceCheckRuntime"] = "the null coalesces to a constructed default at the use site, so no host runs without a IWorkspaceCheckRuntime",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpBridgeTool.cs:fallbackLogger"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/InProcessMcpTransport.cs:InProcessMcpTransport:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/SdkMcpClientWrapper.cs:loggerFactory"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpBridgeTool.cs:McpBridgeTool:fallbackClient"] = "every use of the IMcpClient is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationReconciler.cs:scopeFactory"] = "IServiceScopeFactory has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpBridgeTool.cs:McpBridgeTool:fallbackLogger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRepository.cs:attachmentIndexQueue"] = "owner is constructed by hand in src; whether each site passes ISessionAttachmentIndexQueue is unverified - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/SdkMcpClientWrapper.cs:SdkMcpClientWrapper:loggerFactory"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Resilience/ProviderHealthProbe.cs:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationReconciler.cs:LongRunningOperationReconciler:scopeFactory"] = "every use of the IServiceScopeFactory is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Security/AttachmentSourceResolver.cs:workspaceRegistry"] = "owner is container-activated and IWorkspaceRegistry is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRepository.cs:SessionRepository:attachmentIndexQueue"] = "every use of the ISessionAttachmentIndexQueue is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Security/SanctumGuard.cs:dnsResolver"] = "IDnsResolver has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Resilience/ProviderHealthProbe.cs:ProviderHealthProbe:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs:purger"] = "owner is constructed by hand in src; whether each site passes ICovenantSensitiveArtifactPurger is unverified - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/AttachmentSourceResolver.cs:AttachmentSourceResolver:workspaceRegistry"] = "every use of the IWorkspaceRegistry is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Workspaces/CodingTools/WorkspaceCheckRuntime.cs:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/SanctumGuard.cs:SanctumGuard:dnsResolver"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDnsResolver",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Workspaces/CodingTools/WorkspaceSearchEngine.cs:progressObserver"] = "IWorkspaceSearchProgressObserver has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs:EmbeddingsResetService:purger"] = "every use of the ICovenantSensitiveArtifactPurger is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Workspaces/CodingTools/WorkspaceSearchEngine.cs:spillObserver"] = "IWorkspaceSearchLineSpillObserver has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Workspaces/CodingTools/WorkspaceCheckRuntime.cs:WorkspaceCheckRuntime:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Compendium.Ux/Services/FamiliarProbeClient.cs:httpClientFactory"] = "IHttpClientFactory has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Workspaces/CodingTools/WorkspaceSearchEngine.cs:WorkspaceSearchEngine:progressObserver"] = "every use of the IWorkspaceSearchProgressObserver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Compendium.Ux/ViewModels/ConfigurationViewModel.cs:presetService"] = "IConfigurationPresetService is registered, but the owner is neither container-activated nor constructed in src",
+        ["src/RetroDownfall.Arcanum.Infrastructure/Workspaces/CodingTools/WorkspaceSearchEngine.cs:WorkspaceSearchEngine:spillObserver"] = "every use of the IWorkspaceSearchLineSpillObserver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Compendium.Ux/ViewModels/ConfigurationViewModel.cs:probeClient"] = "IFamiliarProbeClient has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Compendium.Ux/Services/FamiliarProbeClient.cs:FamiliarProbeClient:httpClientFactory"] = "the null coalesces to a constructed default at the use site, so no host runs without a IHttpClientFactory",
 
-        ["src/RetroDownfall.Compendium.Ux/ViewModels/ProvidersSectionViewModel.cs:probeClient"] = "IFamiliarProbeClient has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Compendium.Ux/ViewModels/ConfigurationViewModel.cs:ConfigurationViewModel:presetService"] = "owner is container-activated and IConfigurationPresetService is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.TheForge.Ux/Markdown/MarkdigAstAvaloniaRenderer.cs:highlighter"] = "IMarkdownCodeHighlighter has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Compendium.Ux/ViewModels/ConfigurationViewModel.cs:ConfigurationViewModel:probeClient"] = "owner is container-activated and IFamiliarProbeClient is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.TheForge.Ux/Markdown/MarkdigAstAvaloniaRenderer.cs:images"] = "IMarkdownImageResolver has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Compendium.Ux/ViewModels/ProvidersSectionViewModel.cs:ProviderViewModel:probeClient"] = "every use of the IFamiliarProbeClient is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.TheForge.Ux/ViewModels/Docking/DockLayoutViewModel.cs:settingsStore"] = "ITheForgeSettingsStore has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.Compendium.Ux/ViewModels/ProvidersSectionViewModel.cs:ProvidersSectionViewModel:probeClient"] = "every use of the IFamiliarProbeClient is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/ComparisonWorkbenchViewModel.cs:traceStore"] = "IInferenceTraceStore has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.TheForge.Ux/Markdown/MarkdigAstAvaloniaRenderer.cs:MarkdigAstAvaloniaRenderer:highlighter"] = "the null coalesces to a constructed default at the use site, so no host runs without a IMarkdownCodeHighlighter",
 
-        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/InferenceTraceViewModel.cs:fileDialog"] = "IArtifactFileDialogService has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.TheForge.Ux/Markdown/MarkdigAstAvaloniaRenderer.cs:MarkdigAstAvaloniaRenderer:images"] = "the null coalesces to a constructed default at the use site, so no host runs without a IMarkdownImageResolver",
 
-        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/InferenceTraceViewModel.cs:store"] = "IInferenceTraceStore has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/Docking/DockLayoutViewModel.cs:DockLayoutViewModel:settingsStore"] = "every use of the ITheForgeSettingsStore is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/MarkdownDocumentViewModel.cs:contentStore"] = "IMarkdownDocumentContentStore has no registration in any composition; the default is what every host receives - same shape as V-1",
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/ComparisonWorkbenchViewModel.cs:ComparisonWorkbenchViewModel:traceStore"] = "IInferenceTraceStore is registered, but the owner is neither container-activated nor constructed in src",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/InferenceTraceViewModel.cs:InferenceTraceViewModel:fileDialog"] = "every use of the IArtifactFileDialogService is null-safe; absence disables an observation, not a refusal",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/InferenceTraceViewModel.cs:InferenceTraceViewModel:store"] = "every use of the IInferenceTraceStore is null-safe; absence disables an observation, not a refusal",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/MarkdownDocumentViewModel.cs:MarkdownDocumentViewModel:contentStore"] = "every use of the IMarkdownDocumentContentStore is null-safe; absence disables an observation, not a refusal",
     };
 
     private static readonly Regex NullableInterfaceDefault = new(
@@ -246,13 +259,13 @@ public sealed class NullableInterfaceConstructorDefaultTests
         foreach (ProductionSource source in ProductionSourceInventory.Sources())
         {
 
-            foreach (string parameterList in ConstructorParameterLists.Of(source.Text))
+            foreach (ConstructorParameters constructor in ConstructorParameterLists.Of(source.Text))
             {
 
-                foreach (Match match in NullableInterfaceDefault.Matches(parameterList))
+                foreach (Match match in NullableInterfaceDefault.Matches(constructor.ParameterList))
                 {
 
-                    string key = $"{source.RelativePath}:{match.Groups[2].Value}";
+                    string key = $"{source.RelativePath}:{constructor.DeclaringType}:{match.Groups[2].Value}";
 
                     if (!Allowed.ContainsKey(key))
                     {
@@ -267,7 +280,12 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         }
 
-        Assert.Empty(offenders);
+        // Named rather than counted. Assert.Empty truncates each entry at fifty characters and prints
+        // at most five of them, so a real regression arrived as a directory prefix and an ellipsis -
+        // and two offenders under the same directory were indistinguishable from each other.
+        Assert.True(
+            offenders.Count == 0,
+            string.Join("\n", offenders.Order(StringComparer.Ordinal)));
 
     }
 
@@ -314,18 +332,24 @@ public sealed class NullableInterfaceConstructorDefaultTests
 }
 
 /// <summary>
-/// The constructor parameter lists of one authored source file.
+/// One constructor declaration: the type that declares it, and its parenthesised parameter list.
+/// </summary>
+internal readonly record struct ConstructorParameters(string DeclaringType, string ParameterList);
+
+/// <summary>
+/// The constructor parameter lists of one authored source file, each with its declaring type.
 /// </summary>
 /// <remarks>
 /// The inventory's question is about constructors, so the text it matches has to be constructors. Run
 /// over whole-file text the same pattern also matches a local initialized to <c>null</c> and an
-/// optional method argument — twelve locals and two dozen method parameters in this tree — and an
+/// optional method argument - twelve locals and two dozen method parameters in this tree - and an
 /// inventory that reports those as constructor defaults makes a false statement in every line of its
 /// own failure message, which is how a guard rail stops being read.
 ///
-/// <para>Both declaration shapes are yielded: the primary constructor on the type declaration, which
-/// is how this repository composes services, and the ordinary constructor body, which is how the
-/// types with an internal composition declare theirs.</para>
+/// <para>The declaring type travels with the list because a file is not a type. One file here
+/// declares both <c>ModelCommands</c> and <c>ProviderCommands</c>, and a key built from the file name
+/// alone collapsed their two constructors into one entry - so removing either site left the other
+/// silently exempt from an inventory that still looked complete.</para>
 /// </remarks>
 internal static class ConstructorParameterLists
 {
@@ -336,19 +360,28 @@ internal static class ConstructorParameterLists
         TimeSpan.FromSeconds(5));
 
     private static readonly Regex PrimaryConstructor = new(
-        @"\b(?:class|record|struct)\s+\w+\s*(?:<[^>\n]*>)?\s*\(",
-        RegexOptions.Compiled,
-        TimeSpan.FromSeconds(5));
-
-    private static readonly Regex OrdinaryConstructor = new(
-        @"(?:^|\n)[ \t]*(?:public|internal|private|protected)(?:[ \t]+(?:sealed|partial|static|unsafe|abstract|override|extern))*[ \t]+(\w+)[ \t]*\(",
+        @"\b(?:class|record|struct)\s+(\w+)\s*(?:<[^>\n]*>)?\s*\(",
         RegexOptions.Compiled,
         TimeSpan.FromSeconds(5));
 
     /// <summary>
-    /// Yields the parenthesised parameter list of every constructor declared in the supplied source.
+    /// A constructor declaration, whose modifiers are all optional.
     /// </summary>
-    internal static IReadOnlyList<string> Of(string text)
+    /// <remarks>
+    /// Requiring a leading access modifier let <c>protected internal Foo(</c> and a modifier-less
+    /// constructor - which is legal C#, and private by default - past the inventory entirely. The
+    /// declared-type check below is what keeps the loosened pattern honest: an identifier followed by
+    /// an open parenthesis is only read as a constructor when it names a type this file declares.
+    /// </remarks>
+    private static readonly Regex OrdinaryConstructor = new(
+        @"(?:^|\n)[ \t]*(?:(?:public|internal|private|protected|static|unsafe|extern|partial|sealed|abstract)[ \t]+)*(\w+)[ \t]*\(",
+        RegexOptions.Compiled,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// Yields every constructor declared in the supplied source, with its declaring type.
+    /// </summary>
+    internal static IReadOnlyList<ConstructorParameters> Of(string text)
     {
 
         HashSet<string> declaredTypes = new(StringComparer.Ordinal);
@@ -360,40 +393,34 @@ internal static class ConstructorParameterLists
 
         }
 
-        List<int> openings = [];
+        List<ConstructorParameters> constructors = [];
 
         foreach (Match match in PrimaryConstructor.Matches(text))
         {
 
-            openings.Add(match.Index + match.Length - 1);
+            constructors.Add(new ConstructorParameters(
+                match.Groups[1].Value,
+                ParenthesisedRun(text, match.Index + match.Length - 1)));
 
         }
 
         foreach (Match match in OrdinaryConstructor.Matches(text))
         {
 
-            // A method named like a type is not a constructor, and a constructor is the only member
-            // whose name is its own type's. Anything else with this shape is a method declaration
-            // whose return type happens to precede it, and it is not what this inventory asks about.
+            // A method cannot share its enclosing type's name, so an identifier that does name a
+            // declared type and is immediately called is a constructor declaration.
             if (declaredTypes.Contains(match.Groups[1].Value))
             {
 
-                openings.Add(match.Index + match.Length - 1);
+                constructors.Add(new ConstructorParameters(
+                    match.Groups[1].Value,
+                    ParenthesisedRun(text, match.Index + match.Length - 1)));
 
             }
 
         }
 
-        List<string> parameterLists = [];
-
-        foreach (int opening in openings)
-        {
-
-            parameterLists.Add(ParenthesisedRun(text, opening));
-
-        }
-
-        return parameterLists;
+        return constructors;
 
     }
 
@@ -402,7 +429,7 @@ internal static class ConstructorParameterLists
     /// </summary>
     /// <remarks>
     /// Depth-counted rather than matched to the next <c>)</c>, because a parameter's default value can
-    /// itself be parenthesised and a scanner that stopped at the first close would cut the list short —
+    /// itself be parenthesised and a scanner that stopped at the first close would cut the list short -
     /// silently exempting every parameter after it.
     /// </remarks>
     private static string ParenthesisedRun(string text, int opening)

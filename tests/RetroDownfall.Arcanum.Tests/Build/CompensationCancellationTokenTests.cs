@@ -72,7 +72,12 @@ public sealed class CompensationCancellationTokenTests
 
         }
 
-        Assert.Empty(offenders);
+        // Named rather than counted, and de-duplicated: one file can hold many compensating handlers,
+        // and Assert.Empty would spend its five-entry budget printing the same truncated path over and
+        // over while the file that actually regressed sat below the ellipsis.
+        Assert.True(
+            offenders.Count == 0,
+            string.Join("\n", offenders.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)));
 
     }
 
