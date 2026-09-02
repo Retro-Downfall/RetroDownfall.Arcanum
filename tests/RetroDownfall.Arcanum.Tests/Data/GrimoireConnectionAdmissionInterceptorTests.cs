@@ -857,6 +857,75 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
     private const string ConnectionString = "Data Source=:memory:;Pooling=False";
 
+    /// <summary>
+    /// The synchronous open arm runs the real initializer, and the policy it applies survives.
+    /// </summary>
+    /// <remarks>
+    /// Every other test here injects a fake initializer, so the synchronous
+    /// <c>ConnectionOpened</c> arm - where the branch put SQLCipher and pragma policy after deleting
+    /// <c>SqlitePragmaConnectionInterceptor</c> from the serving options - never ran the real
+    /// five-statement sequence. That arm also carries a sync-over-async
+    /// <c>GetAwaiter().GetResult()</c>, and it has no production caller today, so nothing would have
+    /// caught a regression in it. This opens synchronously through the real initializer and reads
+    /// the policy back off the connection it applied it to.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Synchronous_open_applies_the_real_connection_policy()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.Connection.CloseAsync();
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        RecordingConnectionDrain drain = new();
+
+        SqliteConnection connection = new(database.Connection.ConnectionString);
+
+        await using ProbeDbContext context = CreateContext(
+            connection,
+            gate,
+            drain,
+            CovenantSqliteConnectionInitializer.Instance);
+
+        context.Database.OpenConnection();
+
+        try
+        {
+
+            Assert.Equal(ConnectionState.Open, connection.State);
+
+            Assert.Equal("wal", ReadScalar(connection, "PRAGMA journal_mode;"));
+
+            Assert.Equal("1", ReadScalar(connection, "PRAGMA foreign_keys;"));
+
+        }
+        finally
+        {
+
+            context.Database.CloseConnection();
+
+            SqliteConnection.ClearPool(connection);
+
+        }
+
+    }
+
+    private static string ReadScalar(SqliteConnection connection, string sql)
+    {
+
+        using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return command.ExecuteScalar()?.ToString() ?? string.Empty;
+
+    }
+
     private static string PooledConnectionString(string connectionString) =>
         new SqliteConnectionStringBuilder(connectionString)
         {
