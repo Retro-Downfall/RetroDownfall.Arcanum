@@ -67,13 +67,17 @@ public sealed class WardGate : IWard
 
         DateTimeOffset expiresAt = placedAt.Add(timeout);
 
-        var entryCts = new CancellationTokenSource();
-
         int maxActiveWards = ArcanumSettingClamps.MaxActiveWards(
             _runtimeSettings.MaxActiveWards);
 
         if (!_activeWards.TryEnter(maxActiveWards, out IDisposable? wardLease))
         {
+
+            // Denied before any resource beyond the capacity probe itself was allocated for
+            // this call: no CancellationTokenSource has been minted yet (it is allocated below,
+            // only once admission succeeds), and the caller's JsonDocument is released here
+            // rather than being silently dropped.
+            arguments?.Dispose();
 
             return new WardResolution(
                 false,
@@ -82,6 +86,8 @@ public sealed class WardGate : IWard
                 WardResolutionOrigin.AutoDenied);
 
         }
+
+        var entryCts = new CancellationTokenSource();
 
         var entry = new WardEntry(
             new TaskCompletionSource<WardResolution>(TaskCreationOptions.RunContinuationsAsynchronously),

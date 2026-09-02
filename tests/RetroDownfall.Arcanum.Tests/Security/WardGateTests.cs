@@ -734,10 +734,15 @@ public sealed class WardGateTests
                 CancellationToken.None))
             .ToArray();
 
+        // W7-6 follow-up: entryCts used to be minted before the capacity check, and this
+        // path returned without disposing it or the caller's JsonDocument arguments — the same
+        // leak shape W7-6 fixed on the duplicate-ward-id path, here on the capacity-denial path.
+        JsonDocument overflowArguments = JsonDocument.Parse("""{"path":"README.md"}""");
+
         WardResolution overflow = await gate.WardAsync(
             "ward-origin-capacity-overflow",
             "write_file",
-            arguments: null,
+            overflowArguments,
             sessionId: null,
             timeout: TimeSpan.FromMinutes(2),
             CancellationToken.None);
@@ -747,6 +752,8 @@ public sealed class WardGateTests
         Assert.Equal(CapacityReason, overflow.Reason);
 
         Assert.Equal(WardResolutionOrigin.AutoDenied, overflow.Origin);
+
+        Assert.Throws<ObjectDisposedException>(() => overflowArguments.RootElement.ValueKind);
 
         foreach (ActiveWard ward in gate.GetActiveWards())
         {
