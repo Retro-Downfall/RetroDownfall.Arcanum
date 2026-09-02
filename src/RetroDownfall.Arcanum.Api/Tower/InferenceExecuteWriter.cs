@@ -95,6 +95,20 @@ internal static class InferenceExecuteWriter
                     continue;
                 }
 
+                if (ev.Type == IntelligenceEventType.Error)
+                {
+                    // Fix round 1, item 1: a provider that yields IntelligenceEventType.Error as an
+                    // ordinary element of its own event stream — not by throwing — completes this
+                    // await foreach normally, same as a genuine success. Status stays 200 (headers
+                    // already sent) and the body is non-empty, so without this, PersistClaimAsync's
+                    // own buffered/aborted fallback would cache the failure as a permanently
+                    // replayable "success." Set eagerly, the moment the Error event is seen, rather
+                    // than deferred to after the loop: if the client disconnects or the enumerator
+                    // faults on a later MoveNextAsync, the decision is already made before whichever
+                    // exit path runs.
+                    TurnContextGuards.MarkIdempotencyNeverCache(httpContext);
+                }
+
                 eventBuffer.ResetWrittenCount();
 
                 jsonWriter.Reset();
@@ -148,6 +162,15 @@ internal static class InferenceExecuteWriter
                 return;
             }
 
+            // Fix round 1, item 1: not calling MarkIdempotencyTerminal here (W2-1) is not by itself
+            // enough — PersistClaimAsync's own buffered/aborted fallback treats any non-empty,
+            // non-aborted body as terminal independent of the marker, and a client that is still
+            // connected here (httpContext.RequestAborted is false in every branch that reaches this
+            // point; the three early returns above cover the cases where it is true) leaves that
+            // fallback free to cache this failure frame anyway. Set explicitly and unconditionally,
+            // before the write attempt, so it holds even if the write itself then fails.
+            TurnContextGuards.MarkIdempotencyNeverCache(httpContext);
+
             try
             {
                 IntelligenceEvent cancelEvent = new(
@@ -161,12 +184,6 @@ internal static class InferenceExecuteWriter
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None)
                     .ConfigureAwait(false);
                 await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-
-                // Not marked idempotency-terminal (W2-1): this is a failure frame, not a completed
-                // response, so nothing here should force PersistClaimAsync's Completed arm. The marker
-                // existed only to override an aborted-looking request in favor of persisting anyway; an
-                // ownership-loss or disconnect racing this write is now left to PersistClaimAsync's own
-                // aborted check, which correctly leaves it Abandoned rather than replayable.
             }
             catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
             {
@@ -199,6 +216,13 @@ internal static class InferenceExecuteWriter
                 IntelligenceEventType.Error,
                 PublicStreamFailureMessage);
 
+            // Fix round 1, item 1: see the matching comment in the OperationCanceledException arm
+            // above — a client still connected here (the common case for a provider-side fault)
+            // left PersistClaimAsync's own buffered/aborted fallback free to cache this failure
+            // frame regardless of whether the terminal marker was set, so this has to say so
+            // explicitly.
+            TurnContextGuards.MarkIdempotencyNeverCache(httpContext);
+
             eventBuffer.ResetWrittenCount();
 
             jsonWriter.Reset();
@@ -212,11 +236,6 @@ internal static class InferenceExecuteWriter
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, httpContext.RequestAborted).ConfigureAwait(false);
 
                 await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
-
-                // Not marked idempotency-terminal (W2-1): see the matching comment in the
-                // OperationCanceledException arm above — this is a failure frame, and forcing it
-                // terminal here is what let a mid-write ownership loss or disconnect still persist as
-                // a replayable claim.
             }
             catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
             {

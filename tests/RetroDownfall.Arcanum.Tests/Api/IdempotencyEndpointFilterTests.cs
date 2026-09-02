@@ -933,6 +933,144 @@ public sealed class IdempotencyEndpointFilterTests
 
     }
 
+    // Fix round 1, item 1 (spec fail on W2-1's streaming arm). A provider that yields
+    // IntelligenceEvent(Error, ...) as an ordinary element of its own async-enumerable stream — the
+    // reviewer's exact probe shape, and FakeIntelligenceProvider's own NextFailure path — completes
+    // InferenceExecuteWriter.WriteStreamAsync's await foreach normally, the same as a genuine
+    // success: no exception is thrown, so the two catch-block fixes from the first W2-1 round never
+    // ran. Status stays 200 (headers already sent), content type stays NDJSON, and the body is the
+    // non-empty error frame, so this reached the surviving unconditional MarkIdempotencyTerminal call
+    // and cached the failure as a permanently replayable "success" for the claim's whole TTL.
+    [SkippableFact]
+    public async Task PostPingStream_ProviderYieldsErrorEventFirstCall_SecondRequestReExecutesFreshInsteadOfReplayingTheErrorFrame()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Connection.Unreachable, "provider unreachable");
+
+        int before = _factory.FakeIntelligence.StreamPromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        PingRequest request = new(Prompt: "retry a stream after a reported provider error");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/intelligence/ping-stream")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        string firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("provider unreachable", firstBody, StringComparison.Ordinal);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.StreamPromptCallCount);
+
+        // The provider recovers before the retry; a re-execution must be observably different from
+        // the frozen error frame.
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "recovered-stream-response";
+
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/intelligence/ping-stream")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.NotEqual(firstBody, secondBody);
+
+        Assert.Contains("recovered-stream-response", secondBody, StringComparison.Ordinal);
+
+        // The retry must have re-executed the handler fresh, not replayed the cached error frame.
+        Assert.Equal(before + 2, _factory.FakeIntelligence.StreamPromptCallCount);
+
+    }
+
+    // The sibling gap: a provider whose enumerator THROWS (rather than yielding an Error event)
+    // reaches InferenceExecuteWriter's general catch (Exception ex) arm, which already omitted
+    // MarkIdempotencyTerminal after the first W2-1 round — but PersistClaimAsync's buffered/aborted
+    // fallback treats a non-empty, non-aborted body as terminal regardless, so omission alone was
+    // never sufficient here either. This is the same root cause and lever as the test above; kept
+    // separate because it exercises a structurally different path (an exception aborting the
+    // enumerator, not an event flowing through it) through the same fixed writer.
+    [SkippableFact]
+    public async Task PostPingStream_ProviderThrowsFirstCall_SecondRequestReExecutesFreshInsteadOfReplayingTheErrorFrame()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextStreamException = new InvalidOperationException("provider enumerator faulted");
+
+        int before = _factory.FakeIntelligence.StreamPromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        PingRequest request = new(Prompt: "retry a stream after a thrown provider exception");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/intelligence/ping-stream")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        string firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.StreamPromptCallCount);
+
+        _factory.FakeIntelligence.NextStreamException = null;
+
+        _factory.FakeIntelligence.NextText = "recovered-after-thrown-exception";
+
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/intelligence/ping-stream")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.NotEqual(firstBody, secondBody);
+
+        Assert.Contains("recovered-after-thrown-exception", secondBody, StringComparison.Ordinal);
+
+        Assert.Equal(before + 2, _factory.FakeIntelligence.StreamPromptCallCount);
+
+    }
+
     [SkippableFact]
     public async Task PostChatCompletions_LargeKeyedBody_DoesNotMaterializeWholeBodyInManagedMemory()
     {

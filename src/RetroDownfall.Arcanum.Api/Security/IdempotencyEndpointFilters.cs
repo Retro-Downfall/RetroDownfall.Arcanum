@@ -630,12 +630,22 @@ public static class IdempotencyEndpointFilters
             bool withinCap = teeStream.WithinCap;
             byte[] buffered = withinCap ? teeStream.GetBufferedBytes() : [];
             bool aborted = httpContext.RequestAborted.IsCancellationRequested;
+            bool neverCache = TurnContextGuards.IsIdempotencyNeverCache(httpContext);
             bool explicitlyTerminal = TurnContextGuards.IsIdempotencyTerminal(httpContext)
                 || httpContext.Response.StatusCode == StatusCodes.Status204NoContent;
             // Terminal when:
             // - a writer explicitly marked completion (including a zero-byte response),
             // - the endpoint explicitly returned 204 No Content, or
             // - the request was not aborted and we buffered a non-empty in-cap body (buffered IResult paths).
+            //
+            // That last clause is a fallback for writers that never call the explicit marker at all
+            // (buffered IResult paths just return a body), and it means "not marked terminal" is not
+            // by itself enough to keep something out of the cache: a non-empty, non-aborted body is
+            // still treated as terminal. A writer that already knows its own body is a failure frame
+            // — a stream that ended in a provider-reported Error event, or one a thrown exception
+            // aborted — has to say so explicitly via neverCache, checked first and unconditionally,
+            // rather than rely on omitting the terminal marker and hoping this fallback does not
+            // independently decide the buffered bytes look terminal anyway.
             //
             // Gated on the response's status class regardless of which of the above applies: a 5xx or
             // a retryable 4xx (429/408) is never cached as a replayable Completed claim, even when the
@@ -650,7 +660,8 @@ public static class IdempotencyEndpointFilters
             // NDJSON, or SSE — all guaranteed UTF-8 — so this cannot change behavior for a current
             // caller; it only stops a future non-text route from attaching the filter and getting a
             // silently corrupted replay. An empty body has nothing to corrupt, so it is exempt.
-            bool terminalStreamValid = withinCap
+            bool terminalStreamValid = !neverCache
+                && withinCap
                 && IsIdempotencyReplayableStatus(httpContext.Response.StatusCode)
                 && (buffered.Length == 0 || IsReplayableContentType(httpContext.Response.ContentType))
                 && (explicitlyTerminal || (buffered.Length > 0 && !aborted));
