@@ -693,6 +693,32 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Recover_refuses_an_absent_anchor_when_the_profile_journal_key_is_present()
+    {
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        GrimoireOfflineTransitionJournalKeyProvider keys = new(_credentials);
+
+        using (Value(keys.CreateOrOpen(_lock, _guarded, location.ProfileNamespace)))
+        {
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
+
+        Assert.Null(Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(location)));
+
+    }
+
+    [Fact]
     public async Task Recover_accepts_an_exact_anchor_file_match()
     {
 
