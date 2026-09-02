@@ -22,3 +22,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS "IX_Entries_SessionId_Sequence" ON "Entries" (
 CREATE INDEX IF NOT EXISTS "IX_Entries_Role" ON "Entries" ("Role");
 
 CREATE INDEX IF NOT EXISTS "IX_Entries_SessionId_IsPinned" ON "Entries" ("SessionId", "IsPinned");
+
+-- Retention compares this column normalized - lower(replace(SessionId, '-', '')) - because a stored
+-- identity once had two spellings and an exact equality would have missed one of them. SQLite cannot
+-- answer a function-wrapped column from IX_Entries_SessionId_CreatedAt or from any other index above,
+-- so every one of those comparisons was a full scan of this table, once per candidate Session in the
+-- planning pass and again per candidate in the apply pass. The expression here has to stay character
+-- for character the shape the predicate has, because that is how SQLite decides the index applies.
+CREATE INDEX IF NOT EXISTS "IX_Entries_SessionId_Norm"
+  ON "Entries" (lower(replace("SessionId", '-', '')));
