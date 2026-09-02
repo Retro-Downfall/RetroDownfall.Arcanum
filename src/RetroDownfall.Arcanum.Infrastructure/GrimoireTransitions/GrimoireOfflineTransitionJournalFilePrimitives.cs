@@ -32,19 +32,6 @@ internal enum GrimoireOfflineTransitionPreviousRetention : byte
 internal readonly record struct GrimoireOfflineTransitionExchangeResult(
     GrimoireOfflineTransitionPreviousRetention Retention);
 
-internal readonly record struct GrimoireOfflineTransitionWindowsReplaceFileArguments(
-    string ReplacedFileName,
-    string ReplacementFileName,
-    string BackupFileName);
-
-internal delegate bool GrimoireOfflineTransitionReplaceFile(
-    string replacedFileName,
-    string replacementFileName,
-    string backupFileName,
-    uint replaceFlags,
-    IntPtr exclude,
-    IntPtr reserved);
-
 internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
 {
 
@@ -197,6 +184,8 @@ internal interface IGrimoireOfflineTransitionJournalFilePrimitives : IDisposable
 
     Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
         IReadOnlyList<string> exactLeaves);
+
+    Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file);
 
     Result FlushParent();
 
@@ -590,19 +579,28 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             }
 
-            GrimoireOfflineTransitionWindowsReplaceFileArguments windowsArguments =
-                MapWindowsReplaceFileArguments(_parentPath, journalLeaf, workingLeaf, previousLeaf);
-
-            if (OperatingSystem.IsWindows()
-                && InvokeWindowsReplaceFile(windowsArguments, ReplaceFileWindows))
+            if (!OperatingSystem.IsWindows())
             {
 
-                return new GrimoireOfflineTransitionExchangeResult(
-                    GrimoireOfflineTransitionPreviousRetention.Previous);
+                return Unavailable<GrimoireOfflineTransitionExchangeResult>();
 
             }
 
-            return Unavailable<GrimoireOfflineTransitionExchangeResult>();
+            // Every other Windows mutation (OpenWindowsChild, RenameWindowsHandle, CompareUnlink's
+            // FileDispositionInfoEx) is anchored to the retained no-follow parent handle and cannot be
+            // redirected by an ancestor-directory reparse-point swap. ReplaceFileW is not: it re-resolves
+            // every operand from the path string captured at Open(), following reparse points along the
+            // way. Two handle-relative renames land the same publish -> journal, journal -> previous
+            // exchange ReplaceFileW's backup semantics produced, without ever leaving the retained handle.
+            bool movedJournalToPrevious = RenameWindowsHandle(journalLeaf, previousLeaf);
+
+            bool movedWorkingToJournal = movedJournalToPrevious
+                && RenameWindowsHandle(workingLeaf, journalLeaf);
+
+            return movedWorkingToJournal && ValidateParent()
+                ? new GrimoireOfflineTransitionExchangeResult(
+                    GrimoireOfflineTransitionPreviousRetention.Previous)
+                : Unavailable<GrimoireOfflineTransitionExchangeResult>();
 
         }
         catch (Exception exception) when (
@@ -615,47 +613,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             return Unavailable<GrimoireOfflineTransitionExchangeResult>();
 
         }
-
-    }
-
-    internal static GrimoireOfflineTransitionWindowsReplaceFileArguments
-        MapWindowsReplaceFileArguments(
-            string parentPath,
-            string journalLeaf,
-            string workingLeaf,
-            string previousLeaf)
-    {
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(parentPath);
-
-        if (!ValidLeaf(journalLeaf) || !ValidLeaf(workingLeaf) || !ValidLeaf(previousLeaf))
-        {
-
-            throw new ArgumentException("Windows replacement arguments require valid relative leaves.");
-
-        }
-
-        return new GrimoireOfflineTransitionWindowsReplaceFileArguments(
-            Path.Combine(parentPath, journalLeaf),
-            Path.Combine(parentPath, workingLeaf),
-            Path.Combine(parentPath, previousLeaf));
-
-    }
-
-    internal static bool InvokeWindowsReplaceFile(
-        GrimoireOfflineTransitionWindowsReplaceFileArguments arguments,
-        GrimoireOfflineTransitionReplaceFile replaceFile)
-    {
-
-        ArgumentNullException.ThrowIfNull(replaceFile);
-
-        return replaceFile(
-            arguments.ReplacedFileName,
-            arguments.ReplacementFileName,
-            arguments.BackupFileName,
-            replaceFlags: 0,
-            exclude: IntPtr.Zero,
-            reserved: IntPtr.Zero);
 
     }
 
@@ -1012,6 +969,30 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     }
 
+    public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file)
+    {
+
+        ArgumentNullException.ThrowIfNull(file);
+
+        try
+        {
+
+            file.GetStream(FileAccess.ReadWrite).Flush(flushToDisk: true);
+
+            return Result.Success();
+
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException)
+        {
+
+            return RecoveryRequired();
+
+        }
+
+    }
+
     public Result FlushParent() =>
         ValidateParent() && BackupRestoreJournalNativeMethods.TryFlushDirectory(ParentHandle)
             ? Result.Success()
@@ -1143,7 +1124,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     }
 
-    private SecureFileOpenStatus OpenChild(
+    internal SecureFileOpenStatus OpenChild(
         string leaf,
         bool createExclusive,
         bool writable,
@@ -1860,8 +1841,39 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int OpenUnix(string path, int flags);
 
+    /// <summary>
+    /// <c>openat</c> is declared <c>int openat(int, const char *, int, ...)</c>: <c>mode</c> is a
+    /// variadic argument. On Apple's arm64 ABI a variadic call passes every variadic argument on the
+    /// stack rather than in a register, even though a fixed-arity declaration with the same number of
+    /// named parameters would place the fourth argument in a register — so the four-parameter shape
+    /// below delivers unspecified register contents as the creation mode on osx-arm64. Dispatch to the
+    /// stack-shaped overload there and keep the register-shaped one for every other supported platform.
+    /// </summary>
+    private static int OpenAtUnix(int directory, string path, int flags, int mode) =>
+        OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+            ? OpenAtAppleArm64(directory, path, flags, 0, 0, 0, 0, 0, mode)
+            : OpenAtUnixFixedArity(directory, path, flags, mode);
+
     [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
-    private static partial int OpenAtUnix(int directory, string path, int flags, int mode);
+    private static partial int OpenAtUnixFixedArity(int directory, string path, int flags, int mode);
+
+    /// <summary>
+    /// Fills x0-x7 with the directory descriptor, the path pointer, the flags, and five zero filler
+    /// arguments so the ninth argument -- <paramref name="mode"/> -- spills to the first stack slot,
+    /// which is where Apple's arm64 ABI requires a variadic callee to read its first variadic argument
+    /// regardless of how many named parameters precede it.
+    /// </summary>
+    [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int OpenAtAppleArm64(
+        int directory,
+        string path,
+        int flags,
+        int registerFiller3,
+        int registerFiller4,
+        int registerFiller5,
+        int registerFiller6,
+        int registerFiller7,
+        int mode);
 
     [LibraryImport("libc", EntryPoint = "renameat2", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int RenameAt2(
@@ -1915,16 +1927,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         uint creationDisposition,
         uint flagsAndAttributes,
         IntPtr templateFile);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "ReplaceFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ReplaceFileWindows(
-        string replacedFileName,
-        string replacementFileName,
-        string backupFileName,
-        uint replaceFlags,
-        IntPtr exclude,
-        IntPtr reserved);
 
     [LibraryImport("kernel32.dll", EntryPoint = "SetFileInformationByHandle", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

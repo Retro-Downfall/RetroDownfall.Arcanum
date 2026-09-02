@@ -1,3 +1,11 @@
+using System.Runtime.InteropServices;
+
+using System.Runtime.Versioning;
+
+using System.Security.AccessControl;
+
+using System.Security.Principal;
+
 using System.Text;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -314,7 +322,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         events.Clear();
 
-        RecordingWindowsExchangeLayoutPrimitives? windowsLayout = null;
+        RetentionShapeRecordingPrimitives? retentionShape = null;
 
         GrimoireOfflineTransitionJournalFileStore updating = new(
             events.Add,
@@ -336,10 +344,10 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 }
 
-                windowsLayout = new RecordingWindowsExchangeLayoutPrimitives(opened.Value);
+                retentionShape = new RetentionShapeRecordingPrimitives(opened.Value);
 
                 return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(
-                    windowsLayout);
+                    retentionShape);
 
             });
 
@@ -350,13 +358,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             current.Metadata.Identity,
             CancellationToken.None)).IsSuccess);
 
-        Assert.NotNull(windowsLayout);
+        Assert.NotNull(retentionShape);
 
         Assert.Equal(
             (location.JournalLeaf, location.WorkingLeaf, location.PreviousLeaf),
-            windowsLayout.ExchangeArguments);
+            retentionShape.ExchangeArguments);
 
-        Assert.True(windowsLayout.PostCallIdentitiesMatched);
+        Assert.True(retentionShape.PostCallIdentitiesMatched);
 
         Assert.Equal(
             (string[])
@@ -684,7 +692,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             File.Delete(location.JournalPath);
 
         }
-
         else
         {
 
@@ -925,14 +932,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
-    public async Task Retiring_substitution_during_the_delegated_window_is_detected_and_never_reported_absent()
-    {
-
-        await Compare_unlink_detects_a_substitution_in_the_delegated_unlink_window();
-
-    }
-
-    [Fact]
     public async Task Publication_failure_before_exchange_preserves_current_and_removes_exact_working_file()
     {
 
@@ -1146,98 +1145,853 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     [Fact]
-    public void Production_windows_layout_uses_retained_handle_acl_and_synchronous_streams()
+    public async Task Cancellation_requested_after_first_publication_lands_does_not_convert_success_to_recovery_required()
     {
 
-        string parent = Path.Combine(_container, "windows-layout-parent");
+        using CancellationTokenSource cts = new();
 
-        GrimoireOfflineTransitionWindowsReplaceFileArguments layout =
-            GrimoireOfflineTransitionJournalFilePrimitives.MapWindowsReplaceFileArguments(
-                parent,
-                "journal",
-                "working",
-                "previous");
+        GrimoireOfflineTransitionJournalFileStore cancelling = new(
+            afterStep: step =>
+            {
 
-        Assert.Equal(Path.Combine(parent, "journal"), layout.ReplacedFileName);
+                if (step == "file:atomic-replace")
+                {
 
-        Assert.Equal(Path.Combine(parent, "working"), layout.ReplacementFileName);
+                    cts.Cancel();
 
-        Assert.Equal(Path.Combine(parent, "previous"), layout.BackupFileName);
+                }
 
-        Assert.False(GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildStreamsAreAsync);
+            });
 
-        string source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
+        GrimoireOfflineTransitionJournalLocation location = Location(cancelling);
 
-        Assert.Contains(
-            "MapWindowsReplaceFileArguments(_parentPath, journalLeaf, workingLeaf, previousLeaf)",
-            source,
-            StringComparison.Ordinal);
+        using ArcanumMaintenanceLock held = HeldLock();
 
-        Assert.Contains(
-            "VerifyWindowsOwnerOnlyHandle(expected.Handle)",
-            source,
-            StringComparison.Ordinal);
+        byte[] bytes = Bytes("cancel-after-first-publish").ToArray();
 
-        Assert.Contains("GetSecurityInfoWindows(", source, StringComparison.Ordinal);
+        Result result = await cancelling.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            cts.Token);
 
-        Assert.Contains(
-            "isAsync: WindowsChildStreamsAreAsync",
-            source,
-            StringComparison.Ordinal);
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
 
-        int permissionsStart = source.IndexOf(
-            "public Result ApplyOwnerOnlyAndVerify(",
-            StringComparison.Ordinal);
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await cancelling.InspectEvidenceAsync(location, CancellationToken.None));
 
-        int permissionsEnd = source.IndexOf(
-            "public Result CompareUnlink(",
-            permissionsStart,
-            StringComparison.Ordinal);
+        Assert.Equal(bytes, evidence.Canonical?.Bytes.ToArray());
 
-        string permissionsMethod = source[permissionsStart..permissionsEnd];
+        Assert.Null(evidence.Working);
 
-        Assert.DoesNotContain("ChildPath(", permissionsMethod, StringComparison.Ordinal);
+        Assert.Null(evidence.Previous);
 
-        Assert.Contains("OpenChild(", permissionsMethod, StringComparison.Ordinal);
+        Assert.Null(evidence.Retiring);
 
     }
 
     [Fact]
-    public void Production_windows_identity_acl_call_sites_dispose_the_current_identity()
+    public async Task Cancellation_requested_after_the_exchange_lands_does_not_convert_success_to_recovery_required()
     {
 
-        string source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
+        GrimoireOfflineTransitionJournalFileStore initial = new();
 
-        string verifier = SourceMethod(
-            source,
-            "private static bool VerifyWindowsOwnerOnlyHandle(",
-            "private static bool TryCreateOwnerOnlySecurityDescriptor(");
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
 
-        string descriptor = SourceMethod(
-            source,
-            "private static bool TryCreateOwnerOnlySecurityDescriptor(",
-            "private static bool ValidLeaf(");
+        using ArcanumMaintenanceLock held = HeldLock();
 
-        Assert.Contains(
-            "using WindowsIdentity current = WindowsIdentity.GetCurrent();",
-            verifier,
-            StringComparison.Ordinal);
+        byte[] firstBytes = Bytes("cancel-after-exchange-first").ToArray();
 
-        Assert.Contains(
-            "using WindowsIdentity current = WindowsIdentity.GetCurrent();",
-            descriptor,
-            StringComparison.Ordinal);
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            firstBytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
 
-        Assert.DoesNotContain("WindowsIdentity.GetCurrent().User", source, StringComparison.Ordinal);
+        FileHandleIdentity firstIdentity;
+
+        using (GrimoireOfflineTransitionJournalFileRead first = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            firstIdentity = first.Metadata.Identity;
+
+        }
+
+        using CancellationTokenSource cts = new();
+
+        GrimoireOfflineTransitionJournalFileStore cancelling = new(
+            afterStep: step =>
+            {
+
+                if (step == "file:atomic-replace")
+                {
+
+                    cts.Cancel();
+
+                }
+
+            });
+
+        byte[] secondBytes = Bytes("cancel-after-exchange-second").ToArray();
+
+        Result result = await cancelling.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            cts.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Equal(secondBytes, evidence.Canonical?.Bytes.ToArray());
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
 
     }
 
     [Fact]
-    public void Windows_access_masks_and_replace_invocation_are_exact()
+    public async Task Cancellation_requested_after_the_retirement_unlink_lands_does_not_convert_success_to_recovery_required()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("cancel-after-retirement-unlink").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleMetadata metadata;
+
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            metadata = current.Metadata;
+
+        }
+
+        using CancellationTokenSource cts = new();
+
+        GrimoireOfflineTransitionJournalFileStore cancelling = new(
+            afterStep: step =>
+            {
+
+                if (step == "file:delete-parent-flushed")
+                {
+
+                    cts.Cancel();
+
+                }
+
+            });
+
+        Result result = await cancelling.CompleteRetirementAsync(
+            held,
+            location,
+            GrimoireOfflineTransitionJournalRetirementSource.Canonical,
+            metadata,
+            bytes,
+            requireCanonicalAfter: false,
+            cts.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await cancelling.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Null(evidence.Canonical);
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
+
+    }
+
+    [Fact]
+    public async Task Resume_after_a_crash_before_permissions_verification_returns_recovery_required_rather_than_throwing()
+    {
+
+        (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
+                FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
+                FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
+            await ArrangeCanonicalBesideWorkingAsync();
+
+        using (held)
+        {
+
+            GrimoireOfflineTransitionJournalFileStore resuming = new(
+                failBeforeStep: step => step == "file:permissions-verified");
+
+            Result result = await resuming.ResumeWorkingPublicationAsync(
+                held,
+                location,
+                expectedCurrent,
+                expectedCurrentBytes,
+                expectedNext,
+                expectedNextBytes,
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Resume_reports_recovery_required_when_enumeration_fails_with_an_io_exception()
+    {
+
+        (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
+                FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
+                FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
+            await ArrangeCanonicalBesideWorkingAsync();
+
+        using (held)
+        {
+
+            GrimoireOfflineTransitionJournalFileStore resuming = new(
+                afterStep: null,
+                failBeforeStep: null,
+                beforeAtomicReplace: null,
+                openPrimitives: currentLocation =>
+                {
+
+                    Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                        GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                            Path.GetDirectoryName(currentLocation.JournalPath)!,
+                            currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                    if (opened.IsFailure)
+                    {
+
+                        return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                            opened.Error);
+
+                    }
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(
+                        new ThrowingEnumerationPrimitives(opened.Value));
+
+                });
+
+            Result result = await resuming.ResumeWorkingPublicationAsync(
+                held,
+                location,
+                expectedCurrent,
+                expectedCurrentBytes,
+                expectedNext,
+                expectedNextBytes,
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Normalize_working_predecessor_with_a_pre_cancelled_token_returns_recovery_required_rather_than_throwing()
+    {
+
+        (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
+                FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
+                FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
+            await ArrangeCanonicalBesideWorkingAsync();
+
+        using (held)
+        {
+
+            using CancellationTokenSource cancelled = new();
+
+            cancelled.Cancel();
+
+            GrimoireOfflineTransitionJournalFileStore normalizing = new();
+
+            Result result = await normalizing.NormalizeWorkingPredecessorAsync(
+                held,
+                location,
+                expectedCurrent,
+                expectedCurrentBytes,
+                expectedNext,
+                expectedNextBytes,
+                cancelled.Token);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Publishes a genesis revision, then crashes a second publication through the production
+    /// <c>afterStep</c> seam right after the working file is written and flushed but before the
+    /// atomic exchange, with an exception the store's own catch clause does not filter. That leaves
+    /// an authentic canonical and an authentic working file side by side on disk — the exact
+    /// precondition <c>ResumeWorkingPublicationAsync</c> and <c>NormalizeWorkingPredecessorAsync</c>
+    /// both require — without hand-building either file.
+    /// </summary>
+    private async Task<(
+        ArcanumMaintenanceLock Held,
+        GrimoireOfflineTransitionJournalLocation Location,
+        FileHandleMetadata Canonical,
+        byte[] CanonicalBytes,
+        FileHandleMetadata Working,
+        byte[] WorkingBytes)> ArrangeCanonicalBesideWorkingAsync()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] currentBytes = Bytes("resume-current-" + Guid.NewGuid().ToString("N")).ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            currentBytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleIdentity currentIdentity;
+
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            currentIdentity = current.Metadata.Identity;
+
+        }
+
+        GrimoireOfflineTransitionJournalFileStore crashing = new(
+            afterStep: step =>
+            {
+
+                if (step == "file:temporary-flushed")
+                {
+
+                    throw new InvalidOperationException(
+                        "synthetic hard crash leaving working beside canonical");
+
+                }
+
+            });
+
+        byte[] nextBytes = Bytes("resume-next-" + Guid.NewGuid().ToString("N")).ToArray();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => crashing.ReplaceDurablyAsync(held, location, nextBytes, currentIdentity, CancellationToken.None));
+
+        using GrimoireOfflineTransitionJournalEvidence crashed = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.NotNull(crashed.Canonical);
+
+        Assert.NotNull(crashed.Working);
+
+        Assert.Null(crashed.Previous);
+
+        Assert.Null(crashed.Retiring);
+
+        return (
+            held,
+            location,
+            crashed.Canonical.Metadata,
+            crashed.Canonical.Bytes.ToArray(),
+            crashed.Working.Metadata,
+            crashed.Working.Bytes.ToArray());
+
+    }
+
+    /// <summary>
+    /// Exercises <c>OpenChild</c> directly (below <c>CreateWorkingExclusive</c>'s <c>fchmod</c> repair)
+    /// so the mode the kernel actually assigned at creation time is observable. Apple's arm64 ABI
+    /// passes every variadic argument of a variadic call on the stack rather than in a register, so a
+    /// fixed-arity P/Invoke declaration of <c>openat</c> that places the creation mode in a register can
+    /// deliver unrelated register contents to the kernel instead.
+    /// </summary>
+    [SkippableFact]
+    public void Working_file_creation_delivers_owner_only_mode_before_the_fchmod_repair()
+    {
+
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Unix-only: exercises the openat exclusive-create path fchmod repairs afterwards.");
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = Value(
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest));
+
+        int previousUmask = UmaskUnix(0);
+
+        try
+        {
+
+            SecureFileOpenStatus status = primitives.OpenChild(
+                "openat-mode-probe",
+                createExclusive: true,
+                writable: true,
+                out var handle);
+
+            using (handle)
+            {
+
+                Assert.Equal(SecureFileOpenStatus.Success, status);
+
+                Assert.NotNull(handle);
+
+                UnixFileMode observed = File.GetUnixFileMode(handle);
+
+                Assert.True(
+                    observed == (UnixFileMode.UserRead | UnixFileMode.UserWrite),
+                    "observed pre-fchmod mode: " + observed);
+
+            }
+
+        }
+        finally
+        {
+
+            UmaskUnix(previousUmask);
+
+        }
+
+    }
+
+    [DllImport("libc", EntryPoint = "umask")]
+    private static extern int UmaskUnix(int mask);
+
+    /// <summary>
+    /// Pins the durability barriers through the primitives interface the store actually calls, rather
+    /// than the step names it announces: <see cref="RecordingJournalFilePrimitives.BarrierCalls"/> is
+    /// appended to only from inside the real <c>FlushWorking</c>, <c>ExchangeRetainingPrevious</c> or
+    /// <c>PublishFirstNoReplace</c>, and <c>FlushParent</c> implementations, so this is evidence the
+    /// calls actually happened, in this order, not that the store merely claims they did.
+    /// </summary>
+    [Fact]
+    public async Task Publication_invokes_the_working_flush_before_the_atomic_replace_and_the_parent_flush_after()
+    {
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore store = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value);
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("durability-order-genesis").ToArray();
+
+        Result result = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+        Assert.NotNull(recording);
+
+        Assert.Equal((string[])["working", "replace", "parent"], recording.BarrierCalls);
+
+    }
+
+    [Fact]
+    public async Task Publication_fails_closed_when_the_working_flush_barrier_reports_failure()
+    {
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore store = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value)
+                {
+                    FlushWorkingOverride = () => new Error(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "synthetic working-flush barrier failure"),
+                };
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("durability-working-failure").ToArray();
+
+        Result result = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.False(File.Exists(location.WorkingPath));
+
+        Assert.False(File.Exists(location.JournalPath));
+
+    }
+
+    [Fact]
+    public async Task Publication_fails_closed_when_the_parent_flush_barrier_reports_failure()
+    {
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore store = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value)
+                {
+                    FlushParentOverride = () => new Error(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "synthetic parent-flush barrier failure"),
+                };
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("durability-parent-failure").ToArray();
+
+        Result result = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+    }
+
+    /// <summary>
+    /// A revision publication issues six evidence inspections through the primitives layer (the
+    /// initial precondition check, the pre-replace validation, the post-exchange landed check, the
+    /// permissions reread, the predecessor retirement, and the residue-absence proof). Each inspection
+    /// performs one broad EnumerateExactChildren call across the four slot names, then one further
+    /// targeted EnumerateExactChildren call per file slot it found present, to reread and reverify
+    /// that file -- so an inspection touching two slots costs three enumerations, not one, and the
+    /// observed total for one revision is 14, not six. This bounds the total rather than pinning it
+    /// exactly, so an implementation that legitimately trades one inspection for another does not have
+    /// to touch this test, but a pattern that starts re-scanning per file (rather than per inspection)
+    /// will still trip it.
+    /// </summary>
+    [Fact]
+    public async Task Publication_bounds_the_number_of_directory_enumerations_per_revision()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] firstBytes = Bytes("enumeration-bound-first").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            firstBytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleIdentity firstIdentity;
+
+        using (GrimoireOfflineTransitionJournalFileRead first = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            firstIdentity = first.Metadata.Identity;
+
+        }
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore revising = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value);
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        byte[] secondBytes = Bytes("enumeration-bound-second").ToArray();
+
+        Assert.True((await revising.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.NotNull(recording);
+
+        Assert.True(
+            recording.EnumerateExactChildrenCallCount <= 16,
+            $"observed {recording.EnumerateExactChildrenCallCount} EnumerateExactChildren calls for one revision");
+
+    }
+
+    /// <summary>
+    /// DeleteDurably called ProveAllAbsentAsync twice back to back with nothing between the two calls
+    /// that could change the filesystem state, unlike ProveAbsentDurably's sibling pair which
+    /// interleaves a FlushParent. Pins the exact count of directory enumerations DeleteDurably performs
+    /// so a reintroduced duplicate call reddens this immediately rather than only showing up as slower
+    /// deletes.
+    /// </summary>
+    [Fact]
+    public async Task Deletion_does_not_repeat_the_absence_proof_without_an_intervening_state_change()
+    {
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("dedup-absence-proof").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleMetadata metadata;
+
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            metadata = current.Metadata;
+
+        }
+
+        RecordingJournalFilePrimitives? recording = null;
+
+        GrimoireOfflineTransitionJournalFileStore deleting = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                if (opened.IsFailure)
+                {
+
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
+
+                }
+
+                recording = new RecordingJournalFilePrimitives(opened.Value);
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
+
+            });
+
+        Assert.True(deleting.DeleteDurably(held, location, metadata, bytes).IsSuccess);
+
+        Assert.NotNull(recording);
+
+        Assert.Equal(5, recording.EnumerateExactChildrenCallCount);
+
+    }
+
+    /// <summary>
+    /// CompareUnlink's post-condition requires the retained handle's HardLinkCount to reach zero after
+    /// the POSIX-semantics delete on Windows, re-read through the still-open handle that is keeping the
+    /// deleted file object alive. Whether NTFS reports zero before the last handle closes cannot be
+    /// settled by reading Microsoft's documentation or by running anything on this host; only an actual
+    /// Windows run of DeleteDurably answers it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_delete_durably_succeeds_after_publication()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: settles whether NTFS reports the retained handle's link count as zero "
+                + "after a POSIX-semantics delete on a still-open handle.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalFileStore store = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("windows-delete-durably").ToArray();
+
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleMetadata metadata;
+
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await store.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            metadata = current.Metadata;
+
+        }
+
+        Result result = store.DeleteDurably(held, location, metadata, bytes);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
+
+    }
+
+    [Fact]
+    public void Windows_desired_access_and_share_mode_constants_are_exact()
     {
 
         const uint fileShareDelete = 0x00000004;
@@ -1283,139 +2037,226 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildWritableDesiredAccess
                 & (writeDac | writeOwner));
 
-        GrimoireOfflineTransitionWindowsReplaceFileArguments mapping = new(
-            "literal-J",
-            "literal-W",
-            "literal-P");
+        Assert.False(GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildStreamsAreAsync);
 
-        (string Replaced, string Replacement, string Backup)? observed = null;
+    }
 
-        bool invoked = GrimoireOfflineTransitionJournalFilePrimitives.InvokeWindowsReplaceFile(
-            mapping,
-            (replaced, replacement, backup, flags, exclude, reserved) =>
+    /// <summary>
+    /// Runs a real second publication end to end on an actual Windows host: no double stands in for
+    /// <c>ExchangeRetainingPrevious</c>, so this is the Windows exchange mechanism itself, not a
+    /// retention-shape recording of whatever the current host implements. The recording decorator
+    /// observes the retention shape through re-enumeration after the real call returns, the same
+    /// technique <see cref="Publication_orders_create_write_file_fsync_rename_permissions_parent_fsync"/>
+    /// uses on every platform, so a passing run is genuine evidence for the exchange this host actually
+    /// executed rather than an injected outcome.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: exercises the Windows atomic-exchange mechanism against the real kernel.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] firstBytes = Bytes("windows-real-exchange-first").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            firstBytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        FileHandleIdentity firstIdentity;
+
+        using (GrimoireOfflineTransitionJournalFileRead first = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
+
+            firstIdentity = first.Metadata.Identity;
+
+        }
+
+        RetentionShapeRecordingPrimitives? recorded = null;
+
+        GrimoireOfflineTransitionJournalFileStore exchanging = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
             {
 
-                observed = (replaced, replacement, backup);
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
 
-                Assert.Equal(0U, flags);
+                if (opened.IsFailure)
+                {
 
-                Assert.Equal(IntPtr.Zero, exclude);
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
+                        opened.Error);
 
-                Assert.Equal(IntPtr.Zero, reserved);
+                }
 
-                return true;
+                recorded = new RetentionShapeRecordingPrimitives(opened.Value);
+
+                return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recorded);
 
             });
 
-        Assert.True(invoked);
+        byte[] secondBytes = Bytes("windows-real-exchange-second").ToArray();
+
+        Assert.True((await exchanging.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.NotNull(recorded);
 
         Assert.Equal(
-            ("literal-J", "literal-W", "literal-P"),
-            observed);
+            (location.JournalLeaf, location.WorkingLeaf, location.PreviousLeaf),
+            recorded.ExchangeArguments);
 
-        string source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
+        Assert.True(recorded.PostCallIdentitiesMatched);
 
-        string parentOpen = SourceMethod(
-            source,
-            "private static SafeFileHandle? OpenParentNoFollow(",
-            "private SecureFileOpenStatus OpenChild(");
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
 
-        Assert.Contains("WindowsParentDesiredAccess", parentOpen, StringComparison.Ordinal);
+        Assert.Equal(secondBytes, evidence.Canonical?.Bytes.ToArray());
 
-        Assert.Contains("WindowsParentShareMode", parentOpen, StringComparison.Ordinal);
+        Assert.Null(evidence.Working);
 
-        string childOpen = SourceMethod(
-            source,
-            "private unsafe SecureFileOpenStatus OpenWindowsChild(",
-            "private List<string>? EnumerateNames(");
+        Assert.Null(evidence.Previous);
 
-        Assert.Contains("WindowsChildReadDesiredAccess", childOpen, StringComparison.Ordinal);
+        Assert.Null(evidence.Retiring);
 
-        Assert.Contains("WindowsChildWritableDesiredAccess", childOpen, StringComparison.Ordinal);
+    }
 
-        Assert.Contains("WindowsChildShareMode", childOpen, StringComparison.Ordinal);
+    /// <summary>
+    /// D6-6's own RED case: weakening a published file's ACL is untested on the platform the owner-only
+    /// posture is named after. Granting a second SID read access, rather than gutting a method, is the
+    /// change an actual attacker or misconfiguration would produce.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_read_fails_closed_when_the_published_file_acl_is_weakened()
+    {
 
-        string exchange = SourceMethod(
-            source,
-            "public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(",
-            "internal static GrimoireOfflineTransitionWindowsReplaceFileArguments");
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: exercises VerifyWindowsOwnerOnlyHandle's DACL refusal against a real ACL.");
 
-        Assert.Contains("InvokeWindowsReplaceFile(", exchange, StringComparison.Ordinal);
+        if (!OperatingSystem.IsWindows())
+        {
 
-        Assert.DoesNotContain("ReplaceFileWindows(", exchange, StringComparison.Ordinal);
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalFileStore store = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] bytes = Bytes("windows-acl-weakened").ToArray();
+
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await store.ReadIfPresentAsync(location, CancellationToken.None)).IsSuccess);
+
+        GrantWindowsWorldRead(location.JournalPath);
+
+        Result<GrimoireOfflineTransitionJournalFileRead?> read =
+            await store.ReadIfPresentAsync(location, CancellationToken.None);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, read.Error.Code);
+
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void GrantWindowsWorldRead(string path)
+    {
+
+        FileInfo file = new(path);
+
+        FileSecurity security = file.GetAccessControl();
+
+        security.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.WorldSid, domainSid: null),
+            FileSystemRights.Read,
+            AccessControlType.Allow));
+
+        file.SetAccessControl(security);
 
     }
 
     [Fact]
-    public void Production_evidence_read_uses_handle_posture_without_path_owner_verification()
+    public async Task Deletion_and_retirement_never_leave_a_generic_cleanup_quarantine_artifact()
     {
 
-        string root = FindRepositoryRoot();
+        GrimoireOfflineTransitionJournalFileStore store = new();
 
-        string store = File.ReadAllText(Path.Combine(
-            root,
-            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs"));
+        GrimoireOfflineTransitionJournalLocation location = Location(store);
 
-        string primitives = File.ReadAllText(Path.Combine(
-            root,
-            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
+        using ArcanumMaintenanceLock held = HeldLock();
 
-        string readMethod = SourceMethod(
-            store,
-            "private static async Task<Result<GrimoireOfflineTransitionJournalFileRead>> ReadAsync(",
-            "private async Task<bool> ProveResidueAbsentAsync(");
+        byte[] bytes = Bytes("no-generic-cleanup-quarantine").ToArray();
 
-        Assert.Contains("requireOwnerControlled: false", readMethod, StringComparison.Ordinal);
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
 
-        Assert.DoesNotContain("requireOwnerControlled: true", readMethod, StringComparison.Ordinal);
+        FileHandleMetadata metadata;
 
-        Assert.Equal(
-            2,
-            CountOccurrences(
-                readMethod,
-                "VerifyOwnerControlledOpenedFileHandle(child)"));
+        using (GrimoireOfflineTransitionJournalFileRead current = Assert.IsType<
+                   GrimoireOfflineTransitionJournalFileRead>(
+                   Value(await store.ReadIfPresentAsync(location, CancellationToken.None))))
+        {
 
-        Assert.Contains(
-            "primitives.EnumerateExactChildren([relativeLeaf])",
-            readMethod,
-            StringComparison.Ordinal);
+            metadata = current.Metadata;
 
-        Assert.DoesNotContain("ChildPath(", readMethod, StringComparison.Ordinal);
+        }
 
-        string handleVerifier = SourceMethod(
-            primitives,
-            "internal static bool VerifyOwnerControlledOpenedFileHandle(",
-            "private static bool HasStrictOwnerOnlyParentHandlePosture(");
+        Assert.True(store.DeleteDurably(held, location, metadata, bytes).IsSuccess);
 
-        Assert.Contains("VerifyWindowsOwnerOnlyHandle", handleVerifier, StringComparison.Ordinal);
+        string parent = Path.GetDirectoryName(location.JournalPath)!;
 
-        Assert.DoesNotContain("ChildPath(", handleVerifier, StringComparison.Ordinal);
+        foreach (string entry in Directory.EnumerateFileSystemEntries(parent, "*", SearchOption.AllDirectories))
+        {
 
-    }
+            Assert.DoesNotContain(
+                "arcanum-cleanup",
+                Path.GetFileName(entry),
+                StringComparison.OrdinalIgnoreCase);
 
-    [Fact]
-    public void Production_never_creates_a_generic_arcanum_cleanup_quarantine()
-    {
-
-        string root = FindRepositoryRoot();
-
-        string store = File.ReadAllText(Path.Combine(
-            root,
-            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs"));
-
-        string primitives = File.ReadAllText(Path.Combine(
-            root,
-            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs"));
-
-        Assert.DoesNotContain("IdentityOwnedFileSystemCleanup", store, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("IdentityOwnedFileSystemCleanup", primitives, StringComparison.Ordinal);
-
-        Assert.DoesNotContain(".arcanum-cleanup-", store, StringComparison.Ordinal);
-
-        Assert.DoesNotContain(".arcanum-cleanup-", primitives, StringComparison.Ordinal);
+        }
 
     }
 
@@ -1496,65 +2337,16 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     private static T Value<T>(Result<T> result) =>
         result.IsSuccess ? result.Value : throw new Xunit.Sdk.XunitException(result.Error.Message);
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? cursor = new(AppContext.BaseDirectory);
-
-        while (cursor is not null)
-        {
-
-            if (File.Exists(Path.Combine(cursor.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return cursor.FullName;
-
-            }
-
-            cursor = cursor.Parent;
-
-        }
-
-        throw new Xunit.Sdk.XunitException("The repository root could not be located.");
-
-    }
-
-    private static string SourceMethod(string source, string startMarker, string endMarker)
-    {
-
-        int start = source.IndexOf(startMarker, StringComparison.Ordinal);
-
-        Assert.True(start >= 0, "The production start marker was not found: " + startMarker);
-
-        int end = source.IndexOf(endMarker, start, StringComparison.Ordinal);
-
-        Assert.True(end > start, "The production end marker was not found: " + endMarker);
-
-        return source[start..end];
-
-    }
-
-    private static int CountOccurrences(string source, string value)
-    {
-
-        int count = 0;
-
-        int offset = 0;
-
-        while ((offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
-        {
-
-            count++;
-
-            offset += value.Length;
-
-        }
-
-        return count;
-
-    }
-
-    private sealed class RecordingWindowsExchangeLayoutPrimitives(
+    /// <summary>
+    /// Delegates every operation to the real primitives it wraps and records the retention shape the
+    /// exchange produced. On whatever platform runs it, <see cref="ExchangeRetainingPrevious"/> calls
+    /// the host's real exchange (RENAME_EXCHANGE on Linux, <c>renameatx_np</c> on macOS, the
+    /// handle-relative rename pair on Windows) and, when the host reports <c>Working</c> retention,
+    /// performs the same follow-up move production does; it names the shape it observed, not "Windows",
+    /// because the shape is real on every platform this runs on and the exchange mechanism underneath
+    /// is real only on whichever platform the test executes on.
+    /// </summary>
+    private sealed class RetentionShapeRecordingPrimitives(
         IGrimoireOfflineTransitionJournalFilePrimitives inner)
         : IGrimoireOfflineTransitionJournalFilePrimitives
     {
@@ -1680,6 +2472,140 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
             IReadOnlyList<string> exactLeaves) => inner.EnumerateExactChildren(exactLeaves);
+
+        public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>
+            inner.FlushWorking(file);
+
+        public Result FlushParent() => inner.FlushParent();
+
+        public void Dispose() => inner.Dispose();
+
+    }
+
+    /// <summary>
+    /// Wraps the real primitives capability and records what the store actually invoked, rather than
+    /// what it announced through <c>afterStep</c>. <see cref="BarrierCalls"/> is appended to only from
+    /// inside <see cref="FlushWorking"/>, <see cref="ExchangeRetainingPrevious"/>,
+    /// <see cref="PublishFirstNoReplace"/>, and <see cref="FlushParent"/>, so a call that never happens
+    /// never appears, and the override delegates let a test make either durability barrier report
+    /// failure without touching the filesystem.
+    /// </summary>
+    private sealed class RecordingJournalFilePrimitives(IGrimoireOfflineTransitionJournalFilePrimitives inner)
+        : IGrimoireOfflineTransitionJournalFilePrimitives
+    {
+
+        internal List<string> BarrierCalls { get; } = [];
+
+        internal int EnumerateExactChildrenCallCount { get; private set; }
+
+        internal Func<Result>? FlushWorkingOverride { get; set; }
+
+        internal Func<Result>? FlushParentOverride { get; set; }
+
+        public FileHandleMetadata ParentMetadata => inner.ParentMetadata;
+
+        public Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(
+            string workingLeaf) => inner.CreateWorkingExclusive(workingLeaf);
+
+        public Result PublishFirstNoReplace(string journalLeaf, string workingLeaf)
+        {
+
+            BarrierCalls.Add("replace");
+
+            return inner.PublishFirstNoReplace(journalLeaf, workingLeaf);
+
+        }
+
+        public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(
+            string journalLeaf,
+            string workingLeaf,
+            string previousLeaf)
+        {
+
+            BarrierCalls.Add("replace");
+
+            return inner.ExchangeRetainingPrevious(journalLeaf, workingLeaf, previousLeaf);
+
+        }
+
+        public Result MoveNoReplace(string sourceLeaf, string destinationLeaf) =>
+            inner.MoveNoReplace(sourceLeaf, destinationLeaf);
+
+        public Result ApplyOwnerOnlyAndVerify(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.ApplyOwnerOnlyAndVerify(expected, relativeLeaf);
+
+        public Result CompareUnlink(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
+
+        public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
+            IReadOnlyList<string> exactLeaves)
+        {
+
+            EnumerateExactChildrenCallCount++;
+
+            return inner.EnumerateExactChildren(exactLeaves);
+
+        }
+
+        public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file)
+        {
+
+            BarrierCalls.Add("working");
+
+            return FlushWorkingOverride?.Invoke() ?? inner.FlushWorking(file);
+
+        }
+
+        public Result FlushParent()
+        {
+
+            BarrierCalls.Add("parent");
+
+            return FlushParentOverride?.Invoke() ?? inner.FlushParent();
+
+        }
+
+        public void Dispose() => inner.Dispose();
+
+    }
+
+    private sealed class ThrowingEnumerationPrimitives(IGrimoireOfflineTransitionJournalFilePrimitives inner)
+        : IGrimoireOfflineTransitionJournalFilePrimitives
+    {
+
+        public FileHandleMetadata ParentMetadata => inner.ParentMetadata;
+
+        public Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(
+            string workingLeaf) => inner.CreateWorkingExclusive(workingLeaf);
+
+        public Result PublishFirstNoReplace(string journalLeaf, string workingLeaf) =>
+            inner.PublishFirstNoReplace(journalLeaf, workingLeaf);
+
+        public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(
+            string journalLeaf,
+            string workingLeaf,
+            string previousLeaf) =>
+            inner.ExchangeRetainingPrevious(journalLeaf, workingLeaf, previousLeaf);
+
+        public Result MoveNoReplace(string sourceLeaf, string destinationLeaf) =>
+            inner.MoveNoReplace(sourceLeaf, destinationLeaf);
+
+        public Result ApplyOwnerOnlyAndVerify(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.ApplyOwnerOnlyAndVerify(expected, relativeLeaf);
+
+        public Result CompareUnlink(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
+
+        public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
+            IReadOnlyList<string> exactLeaves) =>
+            throw new IOException("synthetic enumeration failure for catch-breadth pinning");
+
+        public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>
+            inner.FlushWorking(file);
 
         public Result FlushParent() => inner.FlushParent();
 
