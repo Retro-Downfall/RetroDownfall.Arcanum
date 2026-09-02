@@ -448,4 +448,68 @@ public sealed class ApiBootstrapperRateLimitTests : IDisposable
 
     }
 
+    // The test above only proves the middleware is wired in and honors the
+    // header from a null-peer connection (see its own comment) — it never exercises the actual
+    // KnownProxies/KnownIPNetworks membership check, because a null Connection.RemoteIpAddress has
+    // no address to test against those lists in the first place. A reviewer mutation confirmed this:
+    // clearing both lists to empty left the whole class green, including that test. This test drives
+    // a genuine non-loopback peer address (one the default loopback-only lists cannot match) through
+    // app.Use before UseArcanumRateLimiter registers the middleware, and asserts the forwarded header
+    // from that untrusted hop is discarded — Connection.RemoteIpAddress downstream stays the injected
+    // peer address, never the caller-supplied X-Forwarded-For value.
+    [Fact]
+    public async Task UseArcanumRateLimiter_NonLoopbackPeer_DiscardsForwardedForFromTheUntrustedHop()
+    {
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", "true");
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        builder.Services.AddRateLimiter(static options =>
+            options.AddPolicy("probe", static _ => RateLimitPartition.GetNoLimiter("probe")));
+
+        await using WebApplication app = builder.Build();
+
+        app.Use(async (ctx, next) =>
+        {
+
+            ctx.Connection.RemoteIpAddress = IPAddress.Parse("198.51.100.50");
+
+            await next(ctx);
+
+        });
+
+        app.UseArcanumRateLimiter();
+
+        app.MapGet("/probe", (HttpContext ctx) => ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+
+        await app.StartAsync();
+
+        try
+        {
+
+            HttpClient client = app.GetTestClient();
+
+            HttpRequestMessage request = new(HttpMethod.Get, "/probe");
+
+            request.Headers.Add("X-Forwarded-For", "203.0.113.10");
+
+            string observedIp = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+            Assert.Equal("198.51.100.50", observedIp);
+
+            Assert.NotEqual("203.0.113.10", observedIp);
+
+        }
+        finally
+        {
+
+            await app.StopAsync();
+
+        }
+
+    }
+
 }
