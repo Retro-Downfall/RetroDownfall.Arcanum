@@ -3747,10 +3747,23 @@ public sealed partial class WizardIntelligenceProvider(
                                 // processTask above. A disconnected client must not orphan this
                                 // tool call, so wait for it here, bounded so a hung/uncancelled
                                 // tool cannot block the unwind forever.
-                                await Task.WhenAny(
-                                        pendingToolTask,
-                                        Task.Delay(ToolTaskAbandonmentGrace, CancellationToken.None))
-                                    .ConfigureAwait(false);
+                                using CancellationTokenSource graceCts = new();
+
+                                try
+                                {
+                                    await Task.WhenAny(
+                                            pendingToolTask,
+                                            Task.Delay(ToolTaskAbandonmentGrace, graceCts.Token))
+                                        .ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    // Stop the grace timer the instant the race is decided. An
+                                    // uncancelled Task.Delay keeps its timer alive for the full grace
+                                    // period even after WhenAny already returned because
+                                    // pendingToolTask won — this cancels it out from under that case.
+                                    await graceCts.CancelAsync().ConfigureAwait(false);
+                                }
 
                                 if (!pendingToolTask.IsCompleted)
                                 {
