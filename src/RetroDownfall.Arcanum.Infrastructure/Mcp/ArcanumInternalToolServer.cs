@@ -146,14 +146,31 @@ internal sealed partial class ArcanumInternalToolServer
 
     /// <summary>
     /// Tombstones a <c>notifications/cancelled</c> that names a request id not yet in
-    /// <see cref="_inFlightToolCalls"/>, so the tools/call that is about to register under that id
-    /// can consult it instead of the cancellation being silently lost to the ordering race described
-    /// on <see cref="HandleCancelledNotification(JsonElement)"/>. The short TTL bounds how long a
-    /// tombstone can outlive the call it was actually meant for, so a late notification for an id that
-    /// already finished cannot poison that id's next reuse on this connection (request ids repeat over
-    /// a long-lived connection, per §10.14).
+    /// <see cref="_inFlightToolCalls"/> and was never seen completing either (see
+    /// <see cref="_recentlyCompletedToolCalls"/>), so the tools/call that is about to register under
+    /// that id can consult it instead of the cancellation being silently lost to the ordering race
+    /// described on <see cref="HandleCancelledNotification(JsonElement)"/>. The short TTL bounds how
+    /// long a tombstone can outlive the call it was actually meant for, so a genuinely early
+    /// notification whose call never registers at all (dropped request, client-side error) does not
+    /// poison that id's next reuse on this connection indefinitely (request ids repeat over a
+    /// long-lived connection, per §10.14).
     /// </summary>
     private readonly ExpiringRequestBindingStore<bool> _earlyCancelTombstones = new(
+        EarlyCancelTombstoneTtl.Ticks,
+        EarlyCancelTombstoneSweepInterval.Ticks,
+        static () => DateTime.UtcNow.Ticks);
+
+    /// <summary>
+    /// Marks a <c>tools/call</c> request id as having just finished (success, error, or cancellation)
+    /// and been removed from <see cref="_inFlightToolCalls"/>, for the same short window
+    /// <see cref="_earlyCancelTombstones"/> uses. A <c>notifications/cancelled</c> that names an id not
+    /// in <see cref="_inFlightToolCalls"/> is ambiguous on its own: it can mean the matching call has
+    /// not registered yet (genuinely early -- tombstone it) or that the call already ran to completion
+    /// and this notification arrived late (do not tombstone; the id is free for reuse and this
+    /// notification has nothing to do with whatever reuses it next). This store disambiguates the two:
+    /// only a miss against both stores counts as genuinely early.
+    /// </summary>
+    private readonly ExpiringRequestBindingStore<bool> _recentlyCompletedToolCalls = new(
         EarlyCancelTombstoneTtl.Ticks,
         EarlyCancelTombstoneSweepInterval.Ticks,
         static () => DateTime.UtcNow.Ticks);
@@ -742,7 +759,10 @@ internal sealed partial class ArcanumInternalToolServer
     /// on its own <c>Task.Run</c> (no ordering guarantee across worker threads), so this notification's
     /// task can reach here before the matching tools/call's task has reached its own registration. That
     /// case tombstones the id instead of dropping the notification, so the call about to register can
-    /// consult it (<see cref="BuildToolsCallResponseAsync"/>) rather than running to completion uncancelled.
+    /// consult it (<see cref="BuildToolsCallResponseAsync"/>) rather than running to completion uncancelled
+    /// -- unless <see cref="_recentlyCompletedToolCalls"/> shows this same miss is explained by the id's
+    /// *previous* use having already finished, in which case this notification arrived late for that
+    /// call and tombstoning it would instead wrongly refuse whatever reuses the id next.
     /// </summary>
     private void HandleCancelledNotification(JsonElement root)
     {
@@ -757,7 +777,10 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (!_inFlightToolCalls.TryGetValue(requestKey, out CancellationTokenSource? cts))
         {
-            _earlyCancelTombstones.Bind(_ambientConnectionKey, requestKey, true);
+            if (!_recentlyCompletedToolCalls.TryResolve(_ambientConnectionKey, requestKey, out _))
+            {
+                _earlyCancelTombstones.Bind(_ambientConnectionKey, requestKey, true);
+            }
 
             return;
         }
@@ -1165,6 +1188,8 @@ internal sealed partial class ArcanumInternalToolServer
 
             _inFlightToolCalls.TryRemove(requestKey, out _);
 
+            _recentlyCompletedToolCalls.Bind(_ambientConnectionKey, requestKey, true);
+
             return BuildToolsCallResponse(rpcId, ToolError("Tool call was cancelled."));
         }
 
@@ -1279,6 +1304,8 @@ internal sealed partial class ArcanumInternalToolServer
                 requestKey);
 
             _inFlightToolCalls.TryRemove(requestKey, out _);
+
+            _recentlyCompletedToolCalls.Bind(_ambientConnectionKey, requestKey, true);
         }
     }
 

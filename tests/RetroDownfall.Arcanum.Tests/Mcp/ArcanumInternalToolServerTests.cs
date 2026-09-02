@@ -1957,6 +1957,82 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // The mirror image of the test above: a notifications/cancelled miss against _inFlightToolCalls can
+    // also mean the id's *previous* use already ran to completion and was removed, not that this id has
+    // never registered yet. Before the fix, HandleCancelledNotification tombstoned every miss
+    // unconditionally, so a late cancellation for an already-finished call poisoned that same id's next
+    // reuse -- refusing a brand new, unrelated tools/call within the tombstone's 5-second TTL without
+    // ever running it. Request ids repeat over a long-lived connection (§10.14), so this is not
+    // hypothetical.
+    [Fact]
+    public async Task NotificationsCancelled_arriving_after_completion_does_not_block_the_ids_next_reuse()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        const int reusedId = 9393;
+
+        // First use of the id: a fast tool that runs to completion normally, so by the time its
+        // response comes back the id has already been removed from _inFlightToolCalls.
+        JsonElement listArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams { RelativePath = "." },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        JsonElement firstCallParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "list_directory", Arguments = listArguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        await session.WriteRequestWithFixedIdAsync(reusedId, "tools/call", firstCallParams);
+
+        JsonRpcResponse firstResponse = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(firstResponse.Error);
+
+        // A cancel notification for that same id arrives only now -- late, well after the call it
+        // actually named is already done and gone from _inFlightToolCalls.
+        await session.SendCancelNotificationAsync(reusedId);
+
+        // Lets the notification's own dispatched line handling fully complete before the id is reused,
+        // the same handshake the early-arrival test above uses.
+        await Task.Delay(300);
+
+        string sentinelPath = Path.Combine(_workspace.Root, "late-cancel-reuse-sentinel.txt");
+
+        (string command, string[] argumentList) = ResolveQuickWriteCommand(sentinelPath);
+
+        JsonElement execArguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        JsonElement secondCallParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "execute_command", Arguments = execArguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        // Reuses the exact same request id for a brand new, unrelated call.
+        await session.WriteRequestWithFixedIdAsync(reusedId, "tools/call", secondCallParams);
+
+        JsonRpcResponse secondResponse = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(secondResponse.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            secondResponse.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.False(
+            result.IsError,
+            "The reused id's call was refused instead of running: " +
+            (result.Content.Length > 0 ? result.Content[0].Text : "<no content>"));
+
+        Assert.True(
+            File.Exists(sentinelPath),
+            "execute_command never ran: a stale tombstone from a late cancel notification for the id's " +
+            "prior use blocked its reuse.");
+
+    }
+
     [Fact]
     public async Task Duplicate_in_flight_request_id_is_rejected_with_json_rpc_error()
     {
@@ -4245,6 +4321,20 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         }
 
         return ("/bin/sh", ["-c", $"sleep 5 && echo done > '{sentinelPath}'"]);
+
+    }
+
+    private static (string Command, string[] ArgumentList) ResolveQuickWriteCommand(string sentinelPath)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return ("powershell.exe", ["-NoProfile", "-Command", $"Set-Content -Path '{sentinelPath}' -Value done"]);
+
+        }
+
+        return ("/bin/sh", ["-c", $"echo done > '{sentinelPath}'"]);
 
     }
 
