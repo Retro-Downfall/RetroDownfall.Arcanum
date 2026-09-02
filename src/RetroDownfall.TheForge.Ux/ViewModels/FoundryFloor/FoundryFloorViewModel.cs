@@ -192,6 +192,15 @@ public sealed partial class FoundryFloorViewModel : ViewModelBase, IDisposable
 
             }
 
+            if (!cancellationToken.IsCancellationRequested)
+            {
+
+                // The stream ended on its own — a host restart or a completed response body, not a
+                // visibility toggle — so the panel must say so instead of quietly going stale.
+                AppendLine("Log stream ended.");
+
+            }
+
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
