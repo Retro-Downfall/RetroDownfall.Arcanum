@@ -416,19 +416,14 @@ public sealed class SanctumGuard(
         string campaignId,
         CancellationToken ct)
     {
-        // A blank id means no campaign context was supplied at all, which DenyIfInvalidCampaignId
-        // also lets through, so this returns NotSupplied and the caller grants full permission -
-        // there is no config to enforce. The malformed-but-non-blank case below is the one that gate
-        // already denies; it is repeated here, returning Unresolvable, so this loader stays
-        // fail-closed on its own even if a future caller skips the gate.
-        if (string.IsNullOrWhiteSpace(campaignId))
-        {
-            return (CampaignLoadOutcome.NotSupplied, null, null);
-        }
+        // Classified before the repository is touched, by the same rule the synchronous gate every
+        // public method runs first uses, so this loader stays fail-closed on its own even if a future
+        // caller skips that gate.
+        CampaignLoadOutcome supplied = ClassifyCampaignId(campaignId, out Guid id);
 
-        if (!Guid.TryParse(campaignId, out Guid id))
+        if (supplied is not CampaignLoadOutcome.Resolved)
         {
-            return (CampaignLoadOutcome.Unresolvable, null, null);
+            return (supplied, null, null);
         }
 
         Campaign? campaign = await campaignRepository.GetByIdAsync(id, ct).ConfigureAwait(false);
@@ -477,19 +472,34 @@ public sealed class SanctumGuard(
         return false;
     }
 
-    private SanctumResult? DenyIfInvalidCampaignId(string campaignId, string toolName, string breachType)
+    private SanctumResult? DenyIfInvalidCampaignId(string campaignId, string toolName, string breachType) =>
+        ClassifyCampaignId(campaignId, out _) is CampaignLoadOutcome.Unresolvable
+            ? DenyWithLogOnlyBreach(campaignId, toolName, breachType, "Invalid campaign identifier.")
+            : null;
+
+    /// <summary>
+    /// What a supplied campaign id can be, before any row is read: no context at all, an id that can
+    /// never name one, or a candidate to look up.
+    /// </summary>
+    /// <remarks>
+    /// One rule, read by both the synchronous gate <see cref="DenyIfInvalidCampaignId"/> runs ahead of
+    /// every public method and by <see cref="TryLoadCampaignAndConfigAsync"/> itself. Written out
+    /// twice, the loader's own copy could never run - every caller had already denied a malformed id
+    /// - so the independence it existed to provide was never once exercised. Shared, every malformed
+    /// id any caller supplies exercises it, and the loader keeps the same answer it always gave.
+    /// </remarks>
+    private static CampaignLoadOutcome ClassifyCampaignId(string campaignId, out Guid id)
     {
+        id = Guid.Empty;
+
         if (string.IsNullOrWhiteSpace(campaignId))
         {
-            return null;
+            return CampaignLoadOutcome.NotSupplied;
         }
 
-        if (Guid.TryParse(campaignId, out _))
-        {
-            return null;
-        }
-
-        return DenyWithLogOnlyBreach(campaignId, toolName, breachType, "Invalid campaign identifier.");
+        return Guid.TryParse(campaignId, out id)
+            ? CampaignLoadOutcome.Resolved
+            : CampaignLoadOutcome.Unresolvable;
     }
 
     /// <summary>
