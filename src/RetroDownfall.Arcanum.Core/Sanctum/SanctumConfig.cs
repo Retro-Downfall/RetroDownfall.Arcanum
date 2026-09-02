@@ -166,7 +166,7 @@ public enum NetworkPolicy
 /// <param name="MaxProcessMemoryMb">Maximum per-process memory in megabytes.</param>
 /// <param name="MaxProcessCount">Maximum concurrent child processes.</param>
 /// <param name="MaxFileWriteMb">Maximum single file-write size in megabytes.</param>
-/// <param name="ProcessTimeoutSeconds">Maximum wall-clock seconds per child process. 0 = unlimited.</param>
+/// <param name="ProcessTimeoutSeconds">Maximum wall-clock seconds per child process. Clamped to 10-3600 by <c>ArcanumSettingClamps.SanctumProcessTimeoutSeconds</c>, so 0 is not "unlimited" - it becomes the 10-second floor.</param>
 /// <param name="MaxCpuSeconds">Maximum CPU time in seconds per tool invocation, enforced at the OS level. 0 = unlimited.</param>
 /// <param name="MaxMemoryMb">Maximum resident memory in megabytes per tool invocation, enforced at the OS level. 0 = unlimited.</param>
 /// <param name="MaxFileDescriptors">Maximum open file descriptors per tool invocation, enforced at the OS level. 0 = unlimited.</param>
