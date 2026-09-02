@@ -837,6 +837,36 @@ public sealed class ContinuousIntegrationWorkflowTests
     }
 
     /// <summary>
+    /// Dependabot watches for updates per package-ecosystem entry in .github/dependabot.yml.
+    /// github-actions was the only ecosystem ever declared there, so NuGet packages got no
+    /// automated update PRs at all; Api.csproj's hand-pinned Microsoft.OpenApi
+    /// (GHSA-v5pm-xwqc-g5wc) is the transitive advisory that already had to be found without one.
+    /// </summary>
+    [Theory]
+
+    [InlineData("github-actions")]
+
+    [InlineData("nuget")]
+
+    public void Dependabot_watches_every_ecosystem_the_repository_uses(string ecosystem)
+    {
+
+        string repositoryRoot = FindRepositoryRoot();
+
+        string dependabotPath = Path.Combine(repositoryRoot, ".github", "dependabot.yml");
+
+        Assert.True(File.Exists(dependabotPath), "No .github/dependabot.yml found.");
+
+        string text = File.ReadAllText(dependabotPath);
+
+        Assert.True(
+            text.Contains($"package-ecosystem: {ecosystem}", StringComparison.Ordinal),
+            $".github/dependabot.yml declares no \"{ecosystem}\" package-ecosystem entry, so that "
+            + "ecosystem gets no automated update PRs.");
+
+    }
+
+    /// <summary>
     /// The keys directly under <c>on:</c>. Two spaces of indent and a trailing colon, which is the
     /// shape every trigger in this file uses; a comment line or a nested key is deeper and a
     /// top-level section such as <c>jobs:</c> has no leading space at all.
