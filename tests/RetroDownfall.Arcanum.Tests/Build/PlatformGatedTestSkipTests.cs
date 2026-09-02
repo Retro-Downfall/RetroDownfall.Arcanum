@@ -113,13 +113,21 @@ internal static class PlatformGatedEarlyReturnScan
         RegexOptions.Compiled,
         TimeSpan.FromSeconds(5));
 
+    // Up to two levels of paren nesting: a bare call (`OperatingSystem.IsMacOS()`) is one level, and
+    // a negated compound guard (`!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable())`) is
+    // two - the outer `(...)` around the compound, the inner `()` on each call inside it. One level
+    // reads that shape's `if` as never opening (the inner `(` has no matching `)` before the next
+    // `(`), so the guard is invisible to the scan rather than evaluated and exempted or flagged.
+    private const string NestedParens =
+        @"(?:[^()]|\((?:[^()]|\([^()]*\))*\))*";
+
     private static readonly Regex SkipCall = new(
-        @"\bSkip\.(If|IfNot)\s*\(\s*((?:[^()]|\([^()]*\))*)\s*,",
+        @"\bSkip\.(If|IfNot)\s*\(\s*(" + NestedParens + @")\s*,",
         RegexOptions.Compiled,
         TimeSpan.FromSeconds(5));
 
     private static readonly Regex EarlyReturnGuard = new(
-        @"if\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:\{\s*return\s*;\s*\}|return\s*;)",
+        @"if\s*\((" + NestedParens + @")\)\s*(?:\{\s*return\s*;\s*\}|return\s*;)",
         RegexOptions.Compiled,
         TimeSpan.FromSeconds(5));
 
