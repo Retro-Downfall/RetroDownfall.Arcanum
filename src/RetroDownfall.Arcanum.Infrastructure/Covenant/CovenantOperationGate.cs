@@ -523,11 +523,21 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         }
 
-        return state.Value == CovenantCampaignScopeState.Live
-            ? Result.Success()
-            : new Error(
+        // Deleted and Unknown refuse the same acquisition but are not the same diagnosis: a
+        // Campaign the deletion journal has an event for was really deleted, and one that was never
+        // registered may be a typo or a stale client (CovenantCampaignScopeProbe's own contract).
+        // Collapsing them into one error and message here would make that distinction unobservable
+        // to every caller no matter how faithfully the probe answers.
+        return state.Value switch
+        {
+            CovenantCampaignScopeState.Live => Result.Success(),
+            CovenantCampaignScopeState.Deleted => new Error(
+                ErrorCodes.Covenant.LifecycleConflict,
+                "The Campaign this exclusive operation names has been deleted."),
+            _ => new Error(
                 ErrorCodes.Covenant.NotFound,
-                "The Campaign this exclusive operation names is not live on this installation.");
+                "The Campaign this exclusive operation names is not live on this installation."),
+        };
 
     }
 

@@ -112,7 +112,12 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
 
         AddParameter(command, "$kind", CampaignOwnerKindCode);
 
-        AddParameter(command, "$owner", campaignId.ToString("D"));
+        // owner_deletion_events.OwnerId is copied verbatim from EF-written Campaigns."Id" by the
+        // Campaigns_owner_deletion_event trigger, and Campaigns_Id_guard_identity_insert forces that
+        // column uppercase on every insert. A bare ToString("D") here binds lowercase and the SELECT
+        // never matches under SQLite's BINARY collation - recurring-root-cause, see
+        // DivinationService.cs and CovenantSchemaRepairJournal.Format for the same fix.
+        AddParameter(command, "$owner", campaignId.ToString("D").ToUpperInvariant());
 
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
