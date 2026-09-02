@@ -85,6 +85,18 @@ expect_eq \
   "1" \
   "$(violations_for "$FIRST_PARTY_PLAIN")"
 
+# The ordering bug this pins: il_warning_is_allowed used to run before il_warning_is_first_party,
+# so a genuine first-party warning whose *message* happens to name an ALLOWED third-party
+# component (here, a first-party call into an EF Core API annotated RequiresUnreferencedCode) was
+# silently dropped -- the same bug class FIRST_PARTY_SERILOG_PATH above pins for the file *path*,
+# moved to the message instead.
+FIRST_PARTY_MESSAGE_NAMES_ALLOWED_COMPONENT='/repo/src/RetroDownfall.Arcanum.Infrastructure/Grimoire/X.cs(10,5): warning IL2026: Using member '"'"'Microsoft.EntityFrameworkCore.Query.QueryCompiler.Execute<TResult>(Expression)'"'"' which has '"'"'RequiresUnreferencedCodeAttribute'"'"' [/repo/src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj]'
+
+expect_eq \
+  "a first-party IL warning is counted even when its message names an EF Core member" \
+  "1" \
+  "$(violations_for "$FIRST_PARTY_MESSAGE_NAMES_ALLOWED_COMPONENT")"
+
 THIRD_PARTY_ILC='ILC : warning IL2026: Microsoft.EntityFrameworkCore.Query.QueryCompiler.Execute<TResult>(Expression): Using member which has '"'"'RequiresUnreferencedCodeAttribute'"'"' [/repo/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj]'
 
 expect_eq \
