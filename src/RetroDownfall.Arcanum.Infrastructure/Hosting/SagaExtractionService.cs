@@ -260,6 +260,13 @@ public sealed class SagaExtractionService(
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
 
+                    // Host shutdown mid-attempt: release the dedup key and retry ladder here too
+                    // (review round 1), the same way the disabled-skip branch above does, rather than
+                    // leaving them held by a session nothing will ever read from _pending again.
+                    _ = _pending.TryRemove(sessionId, out _);
+
+                    _ = _retryAttempts.TryRemove(sessionId, out _);
+
                     return;
 
                 }

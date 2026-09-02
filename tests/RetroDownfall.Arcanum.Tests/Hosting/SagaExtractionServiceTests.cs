@@ -1051,6 +1051,55 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W8-12 residual (review round 1): the dedup key survives dequeue now (peeked, not removed), but
+    /// the shutdown-cancellation return path did not release it, unlike the disabled-skip branch a few
+    /// lines above it - a session mid-attempt when the host stops would stay in <c>_pending</c> forever
+    /// with no channel entry left to ever read it back out.
+    /// </summary>
+    [SkippableFact]
+    public async Task StopAsync_duringAnInFlightAttempt_releasesTheDedupKey()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content worth extracting");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            Entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+            Gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance);
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        service.EnqueueExtraction(sessionId);
+
+        await intelligence.Entered!.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The attempt is now blocked mid-flight, awaiting Gate on the service's own stoppingToken.
+        // StopAsync cancels that token immediately, so the gated call throws OperationCanceledException
+        // instead of ever completing - exercising ExecuteAsync's shutdown-cancellation return path
+        // while the dedup key is still held.
+        await hosted.StopAsync(CancellationToken.None);
+
+        Assert.Empty(service.PendingRequestsForTests);
+
+    }
+
     [SkippableFact]
     public async Task EnqueueExtraction_BeyondFormerQueueCapacity_EventuallyProcessesEverySession()
     {
@@ -1513,7 +1562,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             if (Gate is { } gate)
             {
 
-                await gate.Task.ConfigureAwait(false);
+                // Honors the caller's token: a test can hold a call open and prove that cancelling
+                // stoppingToken (e.g. via StopAsync) unblocks it with OperationCanceledException,
+                // rather than needing to release Gate itself.
+                await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             }
 
