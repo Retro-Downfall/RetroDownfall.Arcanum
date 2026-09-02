@@ -119,6 +119,21 @@ public static class SessionAttachmentPathSanitizer
 
             candidate = candidate[..Utf8Truncation.SafeCharSliceLength(candidate, MaxLength)];
 
+            // The cut itself can expose a new trailing '.' or ' ' (or, in principle, empty the
+            // candidate) at the character it lands on, so trim and recheck again here for the
+            // same reason the first trim runs above: a name Windows would normalize can never
+            // differ from its normalized form, including when this method did the cutting.
+            candidate = candidate.TrimEnd('.', ' ');
+
+            if (candidate.Length == 0)
+            {
+
+                error = "Name is empty after sanitization.";
+
+                return false;
+
+            }
+
         }
 
         if (IsReserved(candidate))

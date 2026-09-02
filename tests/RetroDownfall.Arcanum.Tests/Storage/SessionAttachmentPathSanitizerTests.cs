@@ -155,6 +155,37 @@ public sealed class SessionAttachmentPathSanitizerTests
     }
 
     [Fact]
+    public void TrySanitize_trims_a_trailing_dot_exposed_by_truncation()
+    {
+
+        // 121 chars; truncating to the 120-char cap drops the trailing 'b' and would leave a
+        // trailing '.' if nothing re-trimmed after the cut.
+        string aDotB = new string('a', 119) + ".b";
+
+        string aOnly = new string('a', 119);
+
+        bool longOk = SessionAttachmentPathSanitizer.TrySanitize(aDotB, out string longSanitized, out _);
+
+        bool shortOk = SessionAttachmentPathSanitizer.TrySanitize(aOnly, out string shortSanitized, out _);
+
+        if (longOk && shortOk)
+        {
+
+            Assert.Equal(shortSanitized, longSanitized);
+
+        }
+        else
+        {
+
+            Assert.False(longOk);
+
+            Assert.False(shortOk);
+
+        }
+
+    }
+
+    [Fact]
     public void TrySanitize_strips_control_characters()
     {
 
