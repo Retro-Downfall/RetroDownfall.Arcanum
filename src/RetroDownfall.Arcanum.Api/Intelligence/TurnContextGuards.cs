@@ -112,14 +112,27 @@ internal static class TurnContextGuards
         Func<IReadOnlyList<MeAiChatMessage>, int> countTokens,
         int maxTokens)
     {
-        if (countTokens(messages) <= maxTokens)
+        int currentTokens = countTokens(messages);
+
+        if (currentTokens <= maxTokens)
         {
             return true;
         }
 
         int guard = messages.Count;
 
-        while (countTokens(messages) > maxTokens && guard-- > 0)
+        // W1-5: track the running total and subtract each removed run's own marginal
+        // contribution instead of re-estimating the whole, still-largely-untrimmed transcript on
+        // every iteration — an N-pair trim then costs N small estimates rather than N
+        // full-transcript ones, so it no longer scales with the size of the conversation being
+        // trimmed. countTokens(slice) also carries the estimator's per-call fixed overhead
+        // (reserved answer/reasoning tokens, the tool schema, provider framing) — the same
+        // overhead already counted once in currentTokens above — so that fixed amount is measured
+        // once against an empty message list and subtracted back out of every slice estimate
+        // before it is applied to the running total.
+        int fixedOverhead = countTokens([]);
+
+        while (currentTokens > maxTokens && guard-- > 0)
         {
             int removeAt = -1;
 
@@ -160,10 +173,12 @@ internal static class TurnContextGuards
                 removeCount++;
             }
 
+            currentTokens -= countTokens(messages.GetRange(removeAt, removeCount)) - fixedOverhead;
+
             messages.RemoveRange(removeAt, removeCount);
         }
 
-        return countTokens(messages) <= maxTokens;
+        return currentTokens <= maxTokens;
     }
 
     public static Result CheckContextBudget(

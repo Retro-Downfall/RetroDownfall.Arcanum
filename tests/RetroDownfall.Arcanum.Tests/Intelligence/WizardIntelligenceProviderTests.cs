@@ -1269,6 +1269,84 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// W1-5: EnsureContextBudgetWithMaterializations' trim loop re-estimated the entire (shrinking)
+    /// transcript on every removed pair, so an over-budget round paid one full-transcript
+    /// EstimateContext call per pair removed rather than one small, removed-slice-sized call. A
+    /// round with many parallel tool calls that blow the budget exercises many removals in a
+    /// single trim, making the difference observable through a counting estimator double.
+    /// </summary>
+    [Fact]
+    public async Task StreamingToolLoop_ManyPairsNeedTrimming_EstimatesRemovedSlicesNotWholeTranscript()
+    {
+
+        const string progressToolName = "record_progress";
+
+        const int parallelToolCalls = 20;
+
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateProgressMcpTool(progressToolName));
+
+        List<AIContent> manyCalls = [];
+
+        for (int i = 0; i < parallelToolCalls; i++)
+        {
+
+            manyCalls.Add(
+                new FunctionCallContent(
+                    $"call-{i}",
+                    progressToolName,
+                    new Dictionary<string, object?> { ["evidence"] = i }));
+
+        }
+
+        chat.EnqueueStreamUpdates(new ChatResponseUpdate(ChatRole.Assistant, manyCalls));
+
+        chat.EnqueueStreamTokens("done");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { ContextWindowLimit = 2_400 }],
+        };
+
+        InferenceTokenizerResolver resolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
+
+        CountingModelTokenEstimator counting = new(new ModelTokenEstimator(resolver));
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            mcp: mcp,
+            modelTokenEstimator: counting);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "trim me", SkipSpellRouting = true });
+
+        // A trim loop that exits early because it mistook the estimator's fixed per-call overhead
+        // (reserved tokens, tool schema) for a removed run's own contribution still satisfies a
+        // call-count assertion — it just leaves the transcript over budget, and the turn fails
+        // instead of completing. Pinning the successful outcome first makes the call-count
+        // assertion below mean what it claims.
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        // Only the initial over-budget check and the post-trim authoritative breakdown should ever
+        // see a large share of the transcript; a trim that removed most of parallelToolCalls pairs
+        // without inflating this count proves each removal re-estimated its own small slice rather
+        // than the shrinking whole list.
+        int wholeTranscriptCalls = counting.EstimateContextMessageCounts.Count(static c => c > 6);
+
+        Assert.True(
+            wholeTranscriptCalls <= 3,
+            "expected only a handful of whole-transcript estimates, saw "
+                + $"{wholeTranscriptCalls} of {counting.EstimateContextCalls} total calls: "
+                + $"[{string.Join(", ", counting.EstimateContextMessageCounts)}]");
+
+    }
+
     [Fact]
     public async Task Scenario20_AttachedFilesBeyondFormerCountCeiling_AreAccepted()
     {
@@ -8533,7 +8611,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ILogger<ToolExecutionPipeline>? toolLogger = null,
         ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
         ISessionAttachmentStore? sessionAttachmentStore = null,
-        FixtureOrdinaryConnectionFactory? ordinaryConnections = null)
+        FixtureOrdinaryConnectionFactory? ordinaryConnections = null,
+        IModelTokenEstimator? modelTokenEstimator = null)
     {
         settings ??= DefaultSettings();
 
@@ -8639,7 +8718,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             budgetReservationService: budgetReservationService,
             webResearchProviderCatalog: new WebResearchProviderCatalog([]),
             sessionAttachmentRetrieval: sessionAttachmentRetrieval,
-            serviceProvider: ordinaryProvider);
+            serviceProvider: ordinaryProvider,
+            modelTokenEstimator: modelTokenEstimator);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
@@ -10147,6 +10227,48 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             DateTimeOffset utcNow,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+    }
+
+    /// <summary>
+    /// Delegates every call to a real estimator while recording how many messages
+    /// <see cref="EstimateContext"/> was asked to estimate each time it ran — W1-5's counting
+    /// double, distinguishing an O(removed) trim (a few small calls) from an O(messages) one (every
+    /// call sized to the current, still-largely-untrimmed transcript).
+    /// </summary>
+    private sealed class CountingModelTokenEstimator(IModelTokenEstimator inner) : IModelTokenEstimator
+    {
+        private int _estimateContextCalls;
+
+        public int EstimateContextCalls => _estimateContextCalls;
+
+        public List<int> EstimateContextMessageCounts { get; } = [];
+
+        public ResolvedModelTokenizationProfile ResolveProfile(
+            ProviderSettings provider,
+            string canonicalModel) =>
+            inner.ResolveProfile(provider, canonicalModel);
+
+        public ResolvedModelTokenizationProfile ResolveEffectiveProfile(
+            ProviderSettings provider,
+            string canonicalModel) =>
+            inner.ResolveEffectiveProfile(provider, canonicalModel);
+
+        public TokenEstimate EstimateText(
+            ProviderSettings provider,
+            string canonicalModel,
+            string? text) =>
+            inner.EstimateText(provider, canonicalModel, text);
+
+        public ContextTokenBreakdown EstimateContext(ModelTokenizationRequest request)
+        {
+
+            _ = Interlocked.Increment(ref _estimateContextCalls);
+
+            EstimateContextMessageCounts.Add(request.Messages.Count);
+
+            return inner.EstimateContext(request);
+
+        }
     }
 
     private sealed class ConfigurableSanctumGuard : ISanctumGuard
