@@ -24,6 +24,17 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
+    /// <summary>
+    /// Test-only fault injection for the realpath resolution below. On every platform this repo has
+    /// measured, any symlink construction that makes the real <see cref="File.ResolveLinkTarget"/> or
+    /// <see cref="Directory.ResolveLinkTarget"/> call throw (a genuine cycle, or a chain past the
+    /// platform's own hop limit) already makes <see cref="FindScriptMatches"/>'s earlier
+    /// <c>File.Exists</c> gate fail first, so the failure this exists to test cannot be reached through
+    /// an ordinary filesystem shape. Bind an action that throws to exercise the fail-closed catch below
+    /// deterministically; leave unset (the default) for the real resolution to run.
+    /// </summary>
+    internal static Action<string>? ResolveLinkTargetFaultForTests { get; set; }
+
     private static readonly JsonDocument SchemaDocument = JsonDocument.Parse(
         """
 
@@ -239,6 +250,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         try
         {
 
+            ResolveLinkTargetFaultForTests?.Invoke(candidate);
+
             string? resolvedScript = File.ResolveLinkTarget(candidate, returnFinalTarget: true)?.FullName;
 
             if (!string.IsNullOrEmpty(resolvedScript))
@@ -263,8 +276,21 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             }
 
         }
-        catch (Exception)
+        // Matches the exception set WorkspacePathPolicy.TryResolveFinalSymlinkTarget already treats as a
+        // fail-closed resolution failure one call earlier (a genuine ELOOP cycle, a permission failure,
+        // or a malformed resolved target). Silently continuing here used to launch the child on the
+        // pre-resolution candidate with no realpath rewrite and no record that resolution failed at all;
+        // refusing instead matches how every other resolution failure on this path is already handled.
+        catch (Exception ex)
+            when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
         {
+
+            _logger?.LogWarning(
+                ex,
+                "run_spell_script: could not resolve the real path for {ScriptName}.",
+                scriptName);
+
+            return "run_spell_script: could not resolve the script's real path; request rejected.";
 
         }
 
