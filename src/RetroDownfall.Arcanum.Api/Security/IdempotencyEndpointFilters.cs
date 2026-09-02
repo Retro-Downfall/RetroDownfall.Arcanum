@@ -601,7 +601,15 @@ public static class IdempotencyEndpointFilters
             // - a writer explicitly marked completion (including a zero-byte response),
             // - the endpoint explicitly returned 204 No Content, or
             // - the request was not aborted and we buffered a non-empty in-cap body (buffered IResult paths).
+            //
+            // Gated on the response's status class regardless of which of the above applies: a 5xx or
+            // a retryable 4xx (429/408) is never cached as a replayable Completed claim, even when the
+            // writer buffered a full body or marked itself terminal, because DESIGN's "retry with the
+            // same key" contract means a fresh execution, not the frozen failure. A deterministic 4xx
+            // (validation refusal) still caches, since resending the same request would fail the same
+            // way for the same reason.
             bool terminalStreamValid = withinCap
+                && IsIdempotencyReplayableStatus(httpContext.Response.StatusCode)
                 && (explicitlyTerminal || (buffered.Length > 0 && !aborted));
 
             if (!terminalStreamValid)
@@ -671,6 +679,19 @@ public static class IdempotencyEndpointFilters
     private static bool IsLive(IdempotencyClaim claim, DateTimeOffset now) =>
         claim.State is IdempotencyClaimState.Running or IdempotencyClaimState.Claimed
         && claim.LeaseExpiresAt > now;
+
+    /// <summary>
+    /// Whether a response with this status code is safe to cache as a replayable Completed claim.
+    /// A 5xx is always the installation's own fault, not the caller's request, and 429/408 are the
+    /// two 4xx codes that explicitly mean "the same request would succeed later" rather than "this
+    /// request is invalid" — none of the three should freeze a caller out of retrying with the same
+    /// key for the rest of the claim's TTL. Every other 4xx (validation refusals, 409 conflicts, and
+    /// so on) is deterministic for the same fingerprint and stays cacheable.
+    /// </summary>
+    internal static bool IsIdempotencyReplayableStatus(int statusCode) =>
+        statusCode < StatusCodes.Status500InternalServerError
+        && statusCode != StatusCodes.Status429TooManyRequests
+        && statusCode != StatusCodes.Status408RequestTimeout;
 
     internal static string CreateOwnerId() =>
         string.Concat(ProcessInstanceId, ":", Guid.NewGuid().ToString("N"));

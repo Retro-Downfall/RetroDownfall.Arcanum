@@ -210,7 +210,12 @@ internal static class InferenceExecuteWriter
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None)
                     .ConfigureAwait(false);
                 await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
+
+                // Not marked idempotency-terminal (W2-1): this is a failure frame, not a completed
+                // response, so nothing here should force PersistClaimAsync's Completed arm. The marker
+                // existed only to override an aborted-looking request in favor of persisting anyway; an
+                // ownership-loss or disconnect racing this write is now left to PersistClaimAsync's own
+                // aborted check, which correctly leaves it Abandoned rather than replayable.
             }
             catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
             {
@@ -257,7 +262,10 @@ internal static class InferenceExecuteWriter
 
                 await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
 
-                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
+                // Not marked idempotency-terminal (W2-1): see the matching comment in the
+                // OperationCanceledException arm above — this is a failure frame, and forcing it
+                // terminal here is what let a mid-write ownership loss or disconnect still persist as
+                // a replayable claim.
             }
             catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
             {

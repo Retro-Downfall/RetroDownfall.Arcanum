@@ -876,6 +876,63 @@ public sealed class IdempotencyEndpointFilterTests
 
     }
 
+    [SkippableFact]
+    public async Task PostPing_ProviderUnreachableFirstCall_SecondRequestReExecutesFreshInsteadOfReplaying503()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Connection.Unreachable, "provider unreachable");
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        PingRequest request = new(Prompt: "retry after transient failure");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/intelligence/ping")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, firstResponse.StatusCode);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+        // The provider recovers before the retry; a re-execution must be observably different from
+        // the frozen 503.
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "recovered-response";
+
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/intelligence/ping")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("recovered-response", secondBody, StringComparison.Ordinal);
+
+        // The retry must have re-executed the handler fresh, not replayed the cached 503.
+        Assert.Equal(before + 2, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
 }
 
 public sealed class IdempotencyEndpointFilterOwnershipTests
@@ -2672,6 +2729,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         dueAt = dueAt.Add(Period);
 
                     }
+
                     while (dueAt <= now);
 
                     DueAt = dueAt;
