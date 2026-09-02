@@ -149,7 +149,8 @@ internal sealed record GrimoireOfflineTransitionReconciliationEvidence(
 internal sealed record GrimoireOfflineTransitionBlocker(
     string ErrorCode,
     GrimoireOfflineTransitionState ResumeState,
-    CovenantDigest ResolutionBindingDigest);
+    CovenantDigest ResolutionBindingDigest,
+    CovenantDigest ExpectedStateDigest);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 internal sealed record CovenantResetBlockerResolutionEvidence(

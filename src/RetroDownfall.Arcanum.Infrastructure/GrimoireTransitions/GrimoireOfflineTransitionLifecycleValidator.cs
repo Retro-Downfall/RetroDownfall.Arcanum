@@ -38,11 +38,13 @@ internal sealed partial class CovenantResetOfflineTransitionHandlerV1
             && current.Lifecycle.Blocker is { } blocker
             && next.BlockerResolutionEvidence is { } proof
             && proof.ResolutionBindingDigest == blocker.ResolutionBindingDigest
-            && proof.CanonicalStateDigest == blocker.ResolutionBindingDigest;
+            && proof.CanonicalStateDigest == blocker.ExpectedStateDigest;
 
         bool evidencePreserved = current.BlockerResolutionEvidence
                 == next.BlockerResolutionEvidence
-            || proved && current.BlockerResolutionEvidence is null;
+            || proved && current.BlockerResolutionEvidence is null
+            || next.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+                && next.BlockerResolutionEvidence is null;
 
         return GrimoireOfflineTransitionLifecycleValidator.ValidateAdvance(
             current,
@@ -71,7 +73,7 @@ internal sealed partial class HealthyCatalogFactoryErasureOfflineTransitionHandl
             && current.Lifecycle.Blocker is { } blocker
             && next.BlockerResolutionEvidence is { } proof
             && proof.ResolutionBindingDigest == blocker.ResolutionBindingDigest
-            && proof.HealthyCatalogStateDigest == blocker.ResolutionBindingDigest;
+            && proof.HealthyCatalogStateDigest == blocker.ExpectedStateDigest;
 
         bool continuationPreserved = current.OrdinaryFactoryContinuationCompleted
             == next.OrdinaryFactoryContinuationCompleted;
@@ -87,7 +89,9 @@ internal sealed partial class HealthyCatalogFactoryErasureOfflineTransitionHandl
 
         bool evidencePreserved = continuationPreserved
             && (current.BlockerResolutionEvidence == next.BlockerResolutionEvidence
-                || proved && current.BlockerResolutionEvidence is null);
+                || proved && current.BlockerResolutionEvidence is null
+                || next.Lifecycle.State is GrimoireOfflineTransitionState.KeepClosed
+                    && next.BlockerResolutionEvidence is null);
 
         return GrimoireOfflineTransitionLifecycleValidator.ValidateAdvance(
             current,
@@ -457,7 +461,8 @@ internal static class GrimoireOfflineTransitionLifecycleValidator
                 || blocker.ResumeState is GrimoireOfflineTransitionState.Prepared
                     or GrimoireOfflineTransitionState.KeepClosed
                     or GrimoireOfflineTransitionState.RetirementPending
-                || !blocker.ResolutionBindingDigest.IsValid))
+                || !blocker.ResolutionBindingDigest.IsValid
+                || !blocker.ExpectedStateDigest.IsValid))
         {
 
             return false;

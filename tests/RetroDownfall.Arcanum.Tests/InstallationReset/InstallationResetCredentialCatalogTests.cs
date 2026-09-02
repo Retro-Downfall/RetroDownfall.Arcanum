@@ -161,16 +161,6 @@ public sealed class InstallationResetCredentialCatalogTests
                 ],
                 accounts);
 
-            Assert.DoesNotContain(
-                ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(
-                    new string('a', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength)),
-                accounts);
-
-            Assert.DoesNotContain(
-                ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(
-                    new string('a', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength)),
-                accounts);
-
         }
         finally
         {

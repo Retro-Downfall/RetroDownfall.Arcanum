@@ -141,6 +141,96 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Keep_closed_can_be_parked_recovered_and_resumed_through_the_store()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        GrimoireOfflineTransitionTypedPublication current = await BeginApplyingAsync(lifecycle);
+
+        Assert.Equal(4UL, current.Raw.Envelope.Revision);
+
+        CovenantResetOfflineTransitionPayloadV1 applying =
+            Assert.IsType<CovenantResetOfflineTransitionPayloadV1>(current.Payload);
+
+        GrimoireOfflineTransitionBlocker blocker = new(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            GrimoireOfflineTransitionState.Applying,
+            Digest(0x71),
+            Digest(0x71));
+
+        CovenantResetOfflineTransitionPayloadV1 kept = applying with
+        {
+            Lifecycle = applying.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.KeepClosed,
+                Blocker = blocker,
+            },
+        };
+
+        current = Value(await lifecycle.AdvanceAsync(
+            _lock,
+            current,
+            kept,
+            CancellationToken.None));
+
+        Assert.Equal(5UL, current.Raw.Envelope.Revision);
+
+        Assert.Equal(kept, current.Payload);
+
+        GrimoireOfflineTransitionJournalPublication rawAfterPark = Value(
+            await RawStore().RecoverAsync(
+                _lock,
+                _guarded,
+                CancellationToken.None)).Publication!;
+
+        Assert.Equal(5UL, rawAfterPark.Envelope.Revision);
+
+        GrimoireOfflineTransitionLifecycleStore recovering = LifecycleStore();
+
+        GrimoireOfflineTransitionTypedRecoveryState recovered = Value(
+            await recovering.RecoverAsync(_lock, _guarded, CancellationToken.None));
+
+        Assert.Equal(
+            GrimoireOfflineTransitionTypedRecoveryOutcome.Authenticated,
+            recovered.Outcome);
+
+        Assert.Equal(5UL, recovered.Publication!.Raw.Envelope.Revision);
+
+        Assert.Equal(kept, recovered.Publication.Payload);
+
+        // The blocker's ResolutionBindingDigest and ExpectedStateDigest are both Digest(0x71)
+        // in this fixture, so the resume evidence's CanonicalStateDigest legitimately matches
+        // ExpectedStateDigest (D5-2's real acceptance check) even though it is written as the
+        // same literal as the binding digest below - the two fields are equal here by fixture
+        // choice, not because the comparison still accepts either one.
+        CovenantResetOfflineTransitionPayloadV1 resumed = applying with
+        {
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
+        };
+
+        GrimoireOfflineTransitionTypedPublication afterResume = Value(
+            await recovering.AdvanceAsync(
+                _lock,
+                recovered.Publication,
+                resumed,
+                CancellationToken.None));
+
+        Assert.Equal(6UL, afterResume.Raw.Envelope.Revision);
+
+        Assert.Equal(resumed, afterResume.Payload);
+
+        GrimoireOfflineTransitionJournalPublication rawAfterResume = Value(
+            await RawStore().RecoverAsync(
+                _lock,
+                _guarded,
+                CancellationToken.None)).Publication!;
+
+        Assert.Equal(6UL, rawAfterResume.Envelope.Revision);
+
+    }
+
+    [Fact]
     public async Task Illegal_typed_edge_is_refused_before_raw_revision_publication()
     {
 
@@ -200,6 +290,47 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         Assert.True(recovered.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public void Encoding_and_decoding_a_resumed_payload_round_trips_resolution_evidence_byte_exact()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 prepared = PreparedPayload();
+
+        CovenantResetOfflineTransitionPayloadV1 resumedReset = prepared with
+        {
+            Lifecycle = prepared.Lifecycle with
+            {
+                State = GrimoireOfflineTransitionState.Applying,
+                ClosingEvidence = new(
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    prepared.Binding.SourceDatasetGeneration),
+            },
+            BlockerResolutionEvidence = new(Digest(0x71), Digest(0x71)),
+        };
+
+        AssertByteExactRoundTrip(resumedReset);
+
+        HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 resumedFactory = new(
+            prepared.Binding with
+            {
+                Kind = GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            },
+            resumedReset.Lifecycle,
+            prepared.LastCompletedPhase,
+            InFlightPhase: null,
+            InFlightBeforeState: null,
+            ReplacementEvidence: null,
+            OrdinaryFactoryContinuationCompleted: false,
+            BlockerResolutionEvidence: new(Digest(0x71), Digest(0x71)));
+
+        AssertByteExactRoundTrip(resumedFactory);
 
     }
 
@@ -266,6 +397,35 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
             _lock,
             _guarded,
             CancellationToken.None)).Publication!.Envelope.Revision);
+
+    }
+
+    [Fact]
+    public async Task Begin_with_a_null_lifecycle_is_refused_without_throwing()
+    {
+
+        CovenantResetOfflineTransitionPayloadV1 malformed = PreparedPayload() with
+        {
+            Lifecycle = null!,
+        };
+
+        Result<GrimoireOfflineTransitionTypedPublication> begun = await LifecycleStore().BeginAsync(
+            _lock,
+            _guarded,
+            Installation,
+            malformed,
+            CancellationToken.None);
+
+        Assert.True(begun.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, begun.Error.Code);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+            Value(await RawStore().RecoverAsync(
+                _lock,
+                _guarded,
+                CancellationToken.None)).Outcome);
 
     }
 
@@ -992,6 +1152,28 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
         Assert.True(result.IsSuccess, result.Error.Code + ":" + result.Error.Message);
 
         return result.Value;
+
+    }
+
+    private static void AssertByteExactRoundTrip<TPayload>(TPayload payload)
+        where TPayload : class, IGrimoireOfflineTransitionPayload
+    {
+
+        byte[] encoded = Value(GrimoireOfflineTransitionHandlerRegistry.Production.Encode(payload));
+
+        GrimoireOfflineTransitionDecodedPayload decoded = Value(
+            GrimoireOfflineTransitionHandlerRegistry.Production.DecodeAuthenticated(
+                payload.Binding.Kind,
+                payload.Binding.PayloadVersion,
+                encoded,
+                payload.Binding.OperationId,
+                payload.Binding.SlotEpoch));
+
+        Assert.Equal(payload, decoded.Payload);
+
+        byte[] reEncoded = Value(GrimoireOfflineTransitionHandlerRegistry.Production.Encode(decoded.Payload));
+
+        Assert.Equal(encoded, reEncoded);
 
     }
 

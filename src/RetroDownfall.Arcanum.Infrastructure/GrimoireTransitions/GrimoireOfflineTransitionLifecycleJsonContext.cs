@@ -16,6 +16,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 [JsonSerializable(typeof(GrimoireOfflineTransitionVerificationEvidence))]
 [JsonSerializable(typeof(GrimoireOfflineTransitionReconciliationEvidence))]
 [JsonSerializable(typeof(GrimoireOfflineTransitionBlocker))]
+[JsonSerializable(typeof(CovenantResetBlockerResolutionEvidence))]
+[JsonSerializable(typeof(HealthyCatalogFactoryErasureBlockerResolutionEvidence))]
 [JsonSerializable(typeof(GrimoireOfflineTransitionBeforeStateEvidence))]
 [JsonSerializable(typeof(GrimoireOfflineTransitionReplacementEvidence))]
 [JsonSerializable(typeof(GrimoireOfflineTransitionEpochTuple))]

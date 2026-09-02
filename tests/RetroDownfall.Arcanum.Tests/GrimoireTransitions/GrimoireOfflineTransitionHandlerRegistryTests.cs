@@ -318,6 +318,7 @@ public sealed class GrimoireOfflineTransitionHandlerRegistryTests
                     Blocker = new(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
                         GrimoireOfflineTransitionState.Applying,
+                        Digest(0x71),
                         Digest(0x71)),
                 },
                 InFlightPhase = CovenantResetPhase.ManagedArtifactsProcessed,

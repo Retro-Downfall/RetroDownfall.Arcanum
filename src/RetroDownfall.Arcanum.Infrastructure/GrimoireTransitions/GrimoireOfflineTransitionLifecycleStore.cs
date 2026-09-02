@@ -44,6 +44,7 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
     {
 
         if (payload is null
+            || !GrimoireOfflineTransitionLifecycleValidator.ValidPayload(payload)
             || payload.Lifecycle.State is not GrimoireOfflineTransitionState.Prepared
             || payload.Lifecycle.TerminalIntent
                 is not GrimoireOfflineTransitionTerminalIntent.Undecided
