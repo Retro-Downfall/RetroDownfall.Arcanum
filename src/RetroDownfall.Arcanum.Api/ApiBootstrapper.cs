@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
@@ -542,6 +543,20 @@ public static class ApiBootstrapper
     {
         if (IsRateLimitEnabled(app.Configuration))
         {
+            // W2-10: the limiter's partition key is Connection.RemoteIpAddress
+            // (ResolveRateLimitPartitionKey below), and ListenAny — the only bind that turns this
+            // limiter on — is documented above as the "behind a reverse proxy that terminates TLS"
+            // topology. Without this, every caller behind that proxy collapses into the proxy's own
+            // address: one partition, one noisy client 429s everyone else. Framework defaults (no
+            // explicit KnownProxies/KnownIPNetworks override) trust only a loopback-adjacent proxy —
+            // the same-host case — which is the improvement this can make without a new configuration
+            // surface or risking IP-spoofing from an untrusted hop; a proxy on a different host still
+            // needs its address added explicitly, which is not yet exposed as an Arcanum setting.
+            app.UseForwardedHeaders(new ForwardedHeadersOptions
+            {
+                ForwardedHeaders = ForwardedHeaders.XForwardedFor,
+            });
+
             app.UseRateLimiter();
         }
     }

@@ -4,8 +4,10 @@ using System.Reflection;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using System.Runtime.ExceptionServices;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -364,6 +366,72 @@ public sealed class ApiBootstrapperRateLimitTests : IDisposable
         object? result = method.Invoke(null, [configuration]);
 
         return Assert.IsType<bool>(result);
+
+    }
+
+    // W2-10: UseArcanumRateLimiter's partition key is Connection.RemoteIpAddress
+    // (ResolveRateLimitPartitionKey above), read straight off the connection with no
+    // forwarded-headers processing in front of it. Behind the reverse proxy ListenAny's own remarks
+    // name as the expected topology, that collapses every caller into the proxy's one address. This
+    // builds a minimal host (WebApplication.CreateSlimBuilder + UseTestServer, the same pattern
+    // ApiDomainSplitContractTests.RouteGraph uses) around the real UseArcanumRateLimiter extension
+    // method — the production entry point named by the finding — and asserts that two requests
+    // carrying different X-Forwarded-For values, from what UseTestServer reports as a loopback peer,
+    // are seen downstream as their own distinct addresses rather than the one peer address.
+    [Fact]
+    public async Task UseArcanumRateLimiter_LoopbackPeer_HonorsForwardedForFromTheDefaultTrustedProxy()
+    {
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", "true");
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        // UseArcanumRateLimiter only requires that AddRateLimiter has been called somewhere; it does
+        // not read or depend on which policy exists, so a no-op probe policy is enough to let
+        // UseRateLimiter() activate without pulling in the full production policy.
+        builder.Services.AddRateLimiter(static options =>
+            options.AddPolicy("probe", static _ => RateLimitPartition.GetNoLimiter("probe")));
+
+        await using WebApplication app = builder.Build();
+
+        app.UseArcanumRateLimiter();
+
+        app.MapGet("/probe", (HttpContext ctx) => ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+
+        await app.StartAsync();
+
+        try
+        {
+
+            HttpClient client = app.GetTestClient();
+
+            HttpRequestMessage first = new(HttpMethod.Get, "/probe");
+
+            first.Headers.Add("X-Forwarded-For", "203.0.113.10");
+
+            string firstIp = await (await client.SendAsync(first)).Content.ReadAsStringAsync();
+
+            HttpRequestMessage second = new(HttpMethod.Get, "/probe");
+
+            second.Headers.Add("X-Forwarded-For", "198.51.100.20");
+
+            string secondIp = await (await client.SendAsync(second)).Content.ReadAsStringAsync();
+
+            Assert.Equal("203.0.113.10", firstIp);
+
+            Assert.Equal("198.51.100.20", secondIp);
+
+            Assert.NotEqual(firstIp, secondIp);
+
+        }
+        finally
+        {
+
+            await app.StopAsync();
+
+        }
 
     }
 
