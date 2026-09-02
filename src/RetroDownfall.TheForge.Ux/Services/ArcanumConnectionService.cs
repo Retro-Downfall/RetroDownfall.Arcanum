@@ -183,8 +183,8 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
         }
 
-        // the-forge.json also stores LayoutState, Theme, LastCampaignId, and may strip ApiKey after
-        // keychain migration. Reloading those must not call Connect().
+        // the-forge.json also stores LayoutState, Theme, and LastCampaignId. Reloading those must
+        // not call Connect().
         if (ConnectionSettingsUnchanged(previous, settings))
         {
 
@@ -208,8 +208,10 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
     }
 
     /// <summary>
-    /// True when BaseUrl and AutoConnect are unchanged. ApiKey is ignored: legacy plaintext keys
-    /// are stripped from the-forge.json into the keychain without needing a reconnect.
+    /// True when BaseUrl and AutoConnect are unchanged. ApiKey is ignored: this service never reads
+    /// it, so a changed key is not cached against any connection state here and does not need a
+    /// reconnect — ArcanumApiClient resolves the auth header fresh, per request, through
+    /// ITheForgeApiKeyProvider.
     /// </summary>
     internal static bool ConnectionSettingsUnchanged(TheForgeSettings previous, TheForgeSettings next) =>
         previous.AutoConnect == next.AutoConnect
