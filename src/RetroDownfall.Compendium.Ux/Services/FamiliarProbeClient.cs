@@ -39,7 +39,7 @@ public interface IFamiliarProbeClient
 public sealed class FamiliarProbeClient(
     IArcanumConfigurationStore store,
     ISecretStore secretStore,
-    IHttpClientFactory? httpClientFactory = null) : IFamiliarProbeClient
+    IHttpClientFactory httpClientFactory) : IFamiliarProbeClient
 {
 
     /// <summary>
@@ -211,7 +211,7 @@ public sealed class FamiliarProbeClient(
     private HttpClient CreateClient(ArcanumSettings settings)
     {
 
-        HttpClient client = httpClientFactory?.CreateClient(nameof(FamiliarProbeClient)) ?? new HttpClient();
+        HttpClient client = httpClientFactory.CreateClient(nameof(FamiliarProbeClient));
 
         client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(settings.Host));
 
