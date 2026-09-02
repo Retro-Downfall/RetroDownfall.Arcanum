@@ -69,6 +69,24 @@ public sealed class RecoveryHandlerCoverageTests
         ];
     }
 
+    /// <summary>
+    /// Every registered <see cref="ILongRunningOperationRecoveryHandler"/> descriptor beyond one per
+    /// expected kind, closed-generic or factory alike (W5-8). A factory registration's
+    /// <see cref="ServiceDescriptor.ImplementationType"/> is null, so grouping by that property — the
+    /// way <see cref="RegisteredHandlerTypes"/> projects it — silently drops a factory-registered
+    /// duplicate from the inventory; counting descriptors for the service type instead is what keeps
+    /// one visible regardless of how it was registered.
+    /// </summary>
+    private static string[] DuplicateHandlerRegistrations(IServiceCollection services)
+    {
+        int registeredDescriptors = services.Count(
+            static descriptor => descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler));
+
+        return registeredDescriptors > ExpectedHandlers.Count
+            ? [$"{registeredDescriptors} handler descriptors are registered for {ExpectedHandlers.Count} expected kinds."]
+            : [];
+    }
+
     [Fact]
     public void Every_registered_kind_has_a_named_owning_handler()
     {
@@ -101,15 +119,33 @@ public sealed class RecoveryHandlerCoverageTests
     [Fact]
     public void No_recovery_handler_is_registered_more_than_once()
     {
-        IReadOnlyList<Type> registered = RegisteredHandlerTypes();
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+        ServiceCollection services = [];
+        _ = services.AddArcanumApiServices(configuration);
 
-        Type[] duplicates =
-        [
-            .. registered.GroupBy(static handler => handler)
-                .Where(static group => group.Count() > 1)
-                .Select(static group => group.Key),
-        ];
+        Assert.Empty(DuplicateHandlerRegistrations(services));
+    }
 
-        Assert.Empty(duplicates);
+    /// <summary>
+    /// W5-8: <see cref="ServiceDescriptor.ImplementationType"/> is null for a factory registration, so
+    /// grouping by that property — as a naive duplicate guard would — drops it from the inventory
+    /// entirely: a handler that already has a closed-generic registration and gains a second,
+    /// factory-based one looks like a single registration. <see cref="DuplicateHandlerRegistrations"/>
+    /// counts descriptors instead, so it still catches this one.
+    /// </summary>
+    [Fact]
+    public void A_factory_registered_duplicate_of_an_existing_handler_is_flagged()
+    {
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+        ServiceCollection services = [];
+        _ = services.AddArcanumApiServices(configuration);
+
+        // Stands in for an existing handler (e.g. BatchOperationRecoveryHandler, already registered by
+        // closed generic above) gaining a second registration through an implementation factory; the
+        // probe never builds a provider, so the factory delegate itself is never invoked.
+        services.AddScoped<ILongRunningOperationRecoveryHandler>(
+            static _ => throw new NotSupportedException("This probe registration is never resolved."));
+
+        Assert.NotEmpty(DuplicateHandlerRegistrations(services));
     }
 }
