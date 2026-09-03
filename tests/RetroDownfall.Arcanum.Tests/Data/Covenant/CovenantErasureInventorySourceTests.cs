@@ -492,6 +492,105 @@ public sealed class CovenantErasureInventorySourceTests
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
 
+    /// <summary>
+    /// The offline-transition source read returns all four members of the tuple a launch binds to.
+    /// </summary>
+    /// <remarks>
+    /// The generation alone was enough while phase authority lived in the database, because a resumed
+    /// erasure could ask the row it was resuming from what it had already done. A journal-driven
+    /// transition has no such row, so the only way to tell its own canonical commit from an unrelated
+    /// one is to have committed to the exact epoch tuple beforehand — and a reader that returned three
+    /// of the four would leave the fourth to be inferred at the one moment inference is fatal.
+    /// </remarks>
+    [Fact]
+    public async Task Offline_transition_source_read_returns_the_generation_and_all_three_epochs()
+    {
+
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SetCanonicalEpochsAsync(accelerator: 7L, keyReclamation: 11L, envelopeKey: 13L);
+
+        Guid expected = await fixture.ReadDatasetGenerationAsync();
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        Result<CovenantOfflineTransitionSourceState> read = await source
+            .ReadOfflineTransitionSourceStateAsync(CancellationToken.None);
+
+        Assert.True(read.IsSuccess, read.IsFailure ? read.Error.Message : null);
+
+        Assert.Equal(expected, read.Value.DatasetGeneration);
+
+        Assert.Equal(7UL, read.Value.AcceleratorEpoch);
+
+        Assert.Equal(11UL, read.Value.KeyReclamationEpoch);
+
+        Assert.Equal(13UL, read.Value.EnvelopeKeyEpoch);
+
+    }
+
+    /// <summary>
+    /// An epoch that cannot be advanced is refused here, before admission has closed.
+    /// </summary>
+    /// <remarks>
+    /// The persisted columns refuse a decrease and refuse any change at all once saturated, so a
+    /// target preselected from a ceiling source would be rejected by the database after the transition
+    /// had already stopped ordinary access — the one moment there is no safe answer left. Refusing at
+    /// the read costs an operator a message; refusing at the write costs them a closed Grimoire.
+    ///
+    /// <para>Saturation is the arm a well-formed database can actually reach. The reader refuses a
+    /// zero epoch too, but the column's own check constraint and the trigger's refusal to move one
+    /// backward mean no schema-respecting write can produce one, so that arm stays defensive rather
+    /// than exercised — a test that dropped the trigger to reach it would be proving something about
+    /// a database this product cannot produce.</para>
+    /// </remarks>
+    [Theory]
+    [InlineData(long.MaxValue, 4L, 5L)]
+    [InlineData(4L, long.MaxValue, 5L)]
+    [InlineData(4L, 5L, long.MaxValue)]
+    public async Task Offline_transition_source_read_refuses_an_epoch_it_cannot_preselect_a_successor_for(
+        long accelerator,
+        long keyReclamation,
+        long envelopeKey)
+    {
+
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SetCanonicalEpochsAsync(accelerator, keyReclamation, envelopeKey);
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        Result<CovenantOfflineTransitionSourceState> read = await source
+            .ReadOfflineTransitionSourceStateAsync(CancellationToken.None);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
+
+    }
+
+    /// <summary>
+    /// A canonical singleton that is not there is a refusal rather than a default tuple.
+    /// </summary>
+    [Fact]
+    public async Task Offline_transition_source_read_refuses_an_absent_canonical_singleton()
+    {
+
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.DeleteCanonicalSingletonAsync();
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        Result<CovenantOfflineTransitionSourceState> read = await source
+            .ReadOfflineTransitionSourceStateAsync(CancellationToken.None);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
+
+    }
+
     internal sealed class InventoryFixture : IAsyncDisposable
     {
 
@@ -787,6 +886,46 @@ public sealed class CovenantErasureInventorySourceTests
             object? value = await command.ExecuteScalarAsync(CancellationToken.None);
 
             return new Guid(Assert.IsType<byte[]>(value));
+
+        }
+
+        internal async Task SetCanonicalEpochsAsync(
+            long accelerator,
+            long keyReclamation,
+            long envelopeKey)
+        {
+
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = """
+                UPDATE covenant_state
+                SET AcceleratorEpoch = $accelerator,
+                    KeyReclamationEpoch = $keyReclamation,
+                    EnvelopeKeyEpoch = $envelopeKey,
+                    UpdatedAtUtc = $now
+                WHERE StateKey = 1;
+                """;
+
+            command.Parameters.AddWithValue("$accelerator", accelerator);
+
+            command.Parameters.AddWithValue("$keyReclamation", keyReclamation);
+
+            command.Parameters.AddWithValue("$envelopeKey", envelopeKey);
+
+            command.Parameters.AddWithValue("$now", Now);
+
+            Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
+
+        }
+
+        internal async Task DeleteCanonicalSingletonAsync()
+        {
+
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = "DELETE FROM covenant_state WHERE StateKey = 1;";
+
+            _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
 
         }
 

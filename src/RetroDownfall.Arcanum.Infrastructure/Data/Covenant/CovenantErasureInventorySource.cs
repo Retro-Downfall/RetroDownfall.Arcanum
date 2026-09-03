@@ -9,6 +9,21 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
+/// The exact canonical state an offline transition binds its launch to.
+/// </summary>
+/// <remarks>
+/// Read as one tuple rather than four reads because the four move together: the canonical transaction
+/// stamps a generation and advances all three epochs in the same statement, so a reader that took them
+/// separately could observe a generation from before a commit beside epochs from after one and hand a
+/// launch a source state that never existed.
+/// </remarks>
+internal readonly record struct CovenantOfflineTransitionSourceState(
+    Guid DatasetGeneration,
+    ulong AcceleratorEpoch,
+    ulong KeyReclamationEpoch,
+    ulong EnvelopeKeyEpoch);
+
+/// <summary>
 /// Builds the complete effect-free Covenant erasure proof and replays its two executor arms through
 /// bounded keyset pages, owning and releasing one maintenance snapshot per call.
 /// </summary>
@@ -25,6 +40,10 @@ internal sealed class CovenantErasureInventorySource(
         ErrorCodes.Covenant.IntegrityFailure,
         "The Covenant erasure inventory could not be proved from one bounded storage snapshot.");
 
+    private static readonly Error UnadvanceableCanonicalState = new(
+        ErrorCodes.Covenant.IntegrityFailure,
+        "The Covenant canonical state is not one an offline transition can preselect a target against.");
+
     private static readonly Error ManualManagedErasure = new(
         ErrorCodes.Covenant.ManualArtifactErasureRequired,
         "A managed artifact does not have one exact adopted ownership record and requires manual erasure.");
@@ -40,6 +59,20 @@ internal sealed class CovenantErasureInventorySource(
 
     private readonly CovenantDisclosureExposureReader _disclosures =
         disclosures ?? throw new ArgumentNullException(nameof(disclosures));
+
+    /// <summary>
+    /// Reads the exact source generation and epoch tuple a launch preselects its target against.
+    /// </summary>
+    /// <remarks>
+    /// This runs before the launch row commits and therefore before admission closes, which is the
+    /// only place the refusals below are cheap. An epoch already at the ceiling its update trigger
+    /// refuses to move past cannot have a successor preselected for it, and a launch that preselected
+    /// one anyway would be refused by the database after the transition had already stopped ordinary
+    /// access — with no phase left that can safely go either forward or back.
+    /// </remarks>
+    internal Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+        CancellationToken cancellationToken) =>
+        WithOwnedSnapshotAsync(ReadOfflineTransitionSourceStateAsync, cancellationToken);
 
     public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
         CovenantExclusiveOperation operation,
@@ -452,6 +485,94 @@ internal sealed class CovenantErasureInventorySource(
             label,
             label.ArtifactContentDigest,
             label.ArtifactRevision);
+
+    private static async Task<Result<CovenantOfflineTransitionSourceState>>
+        ReadOfflineTransitionSourceStateAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT DatasetGeneration, AcceleratorEpoch, KeyReclamationEpoch, EnvelopeKeyEpoch
+            FROM covenant_state
+            WHERE StateKey = 1
+              AND typeof(DatasetGeneration) = 'blob'
+              AND length(DatasetGeneration) = 16;
+            """;
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(CommandBehavior.SingleRow, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            return Result<CovenantOfflineTransitionSourceState>.Failure(UnadvanceableCanonicalState);
+
+        }
+
+        Guid generation = new(reader.GetFieldValue<byte[]>(0));
+
+        if (generation == Guid.Empty
+            || !TryReadAdvanceableEpoch(reader, 1, out ulong accelerator)
+            || !TryReadAdvanceableEpoch(reader, 2, out ulong keyReclamation)
+            || !TryReadAdvanceableEpoch(reader, 3, out ulong envelopeKey))
+        {
+
+            return Result<CovenantOfflineTransitionSourceState>.Failure(UnadvanceableCanonicalState);
+
+        }
+
+        return Result<CovenantOfflineTransitionSourceState>.Success(
+            new CovenantOfflineTransitionSourceState(
+                generation,
+                accelerator,
+                keyReclamation,
+                envelopeKey));
+
+    }
+
+    /// <summary>
+    /// One epoch, when it is one a successor can still be preselected for.
+    /// </summary>
+    /// <remarks>
+    /// The column is a signed integer whose check constraint already refuses zero and whose update
+    /// trigger already refuses a decrease, so both bounds below describe a row this product does not
+    /// write. They are checked anyway because the cost of being wrong is asymmetric: a refused read
+    /// is a message, and an accepted one is a launch committed to a target the database will reject
+    /// once there is no ordinary access left to fall back to.
+    /// </remarks>
+    private static bool TryReadAdvanceableEpoch(SqliteDataReader reader, int ordinal, out ulong epoch)
+    {
+
+        epoch = 0;
+
+        if (reader.IsDBNull(ordinal))
+        {
+
+            return false;
+
+        }
+
+        long value = reader.GetInt64(ordinal);
+
+        if (value is <= 0 or long.MaxValue)
+        {
+
+            return false;
+
+        }
+
+        epoch = (ulong)value;
+
+        return true;
+
+    }
 
     private static async Task<Result<Guid>> ReadDatasetGenerationAsync(
         SqliteConnection connection,
