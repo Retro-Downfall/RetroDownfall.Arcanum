@@ -501,20 +501,40 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         }
 
-        // Zero rows has two causes and they are not the same answer. A singleton that is present but
-        // carries different values is a database this plan was not made against, and running the
-        // deletion against it would erase a family under a generation nobody committed to replacing.
-        // A singleton that is absent is schema damage, which a reset may not answer by inventing an
-        // identity nothing else in the installation agrees with.
+        // Zero rows has three causes and they are three different answers.
+        //
+        // A singleton carrying the exact target tuple is this operation's own commit, replayed.
+        // Nothing else in the installation could have chosen that generation - it was drawn at random
+        // and written down before the effect - so the transition has already happened and converging
+        // on it is the only correct outcome. Refusing here instead would park an erasure whose
+        // database is already in exactly the state the plan asked for.
+        //
+        // A singleton carrying anything else is a database this plan was not made against, and
+        // running the deletion would erase a family under a generation nobody committed to replacing.
+        //
+        // No singleton at all is schema damage, which no offline transition can have been launched
+        // against, because a launch records a source epoch above zero for all three counters.
         if (await CountAsync(connection, transaction, "covenant_state", cancellationToken)
                 .ConfigureAwait(false) == 1)
         {
 
-            return Result<Guid>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "The Covenant canonical source state is not the one this transition was launched "
-                        + "against."));
+            Result<Guid> observed = await ReadStampedGenerationAsync(
+                connection,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
+
+            return observed.IsSuccess && await CarriesExactTargetAsync(
+                    connection,
+                    transaction,
+                    dataset,
+                    observed.Value,
+                    cancellationToken).ConfigureAwait(false)
+                ? observed
+                : Result<Guid>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "The Covenant canonical source state is not the one this transition was "
+                            + "launched against."));
 
         }
 
@@ -537,6 +557,59 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The Covenant canonical singleton is absent, so no offline transition can have been "
                     + "launched against it."));
+
+    }
+
+    /// <summary>
+    /// Whether the singleton carries this transition's exact preselected target, in full.
+    /// </summary>
+    /// <remarks>
+    /// Both halves have to match together. A target generation beside a source epoch, or a generation
+    /// with one epoch advanced, is the shape a partly committed transaction would leave - and calling
+    /// either of those applied would accept a database this transition never produced. The generation
+    /// alone is not enough either: it is the epochs that a second, unnoticed advance would move.
+    /// </remarks>
+    private static async Task<bool> CarriesExactTargetAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CovenantCanonicalDatasetTransition dataset,
+        Guid observedGeneration,
+        CancellationToken cancellationToken)
+    {
+
+        if (observedGeneration != dataset.TargetDatasetGeneration)
+        {
+
+            return false;
+
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM covenant_state
+            WHERE StateKey = 1
+              AND AcceleratorEpoch = $accelerator
+              AND KeyReclamationEpoch = $keyReclamation
+              AND EnvelopeKeyEpoch = $envelopeKey;
+            """;
+
+        _ = command.Parameters.AddWithValue(
+            "$accelerator",
+            checked((long)dataset.TargetEpochs.AcceleratorEpoch));
+
+        _ = command.Parameters.AddWithValue(
+            "$keyReclamation",
+            checked((long)dataset.TargetEpochs.KeyReclamationEpoch));
+
+        _ = command.Parameters.AddWithValue(
+            "$envelopeKey",
+            checked((long)dataset.TargetEpochs.EnvelopeKeyEpoch));
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L;
 
     }
 

@@ -192,6 +192,70 @@ public sealed class CovenantCanonicalErasureTransactionTests
     }
 
     /// <summary>
+    /// Replaying the exact transition this database already carries is success, not a refusal.
+    /// </summary>
+    /// <remarks>
+    /// The canonical transaction is the one step in an erasure that is not blindly repeatable: it
+    /// stamps a generation and advances three epochs, so a second attempt cannot simply run again.
+    /// Preselecting the target is what makes the question decidable — a database carrying the exact
+    /// target tuple carries the commit this operation itself made, because nothing else in the
+    /// installation could have chosen that generation.
+    ///
+    /// <para>Without this the source guard is correct but useless to a resumed run: it refuses, the
+    /// erasure parks, and an operator is asked to reconcile a database that is already in exactly the
+    /// state the plan asked for. The refusal has to distinguish "somebody else moved this" from "I
+    /// moved this", and the preselected target is the only thing that can tell them apart.</para>
+    /// </remarks>
+    [Theory]
+    [InlineData(CovenantExclusiveOperation.CovenantReset)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)]
+    public async Task Replaying_the_exact_committed_transition_converges(
+        CovenantExclusiveOperation operation)
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> first = await CreateService(fixture).ApplyAsync(
+            operation,
+            preselected,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            Token);
+
+        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+
+        Result<Guid> replayed = await CreateService(fixture).ApplyAsync(
+            operation,
+            preselected,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            Token);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? replayed.Error.Message : null);
+
+        Assert.Equal(preselected.TargetDatasetGeneration, replayed.Value);
+
+        await fixture.ReopenAsync(Token);
+
+        // The epochs moved once, not twice. A replay that advanced them again would hand a turn
+        // holding an epoch captured after the first commit a value that no longer validates.
+        Assert.Equal(
+            (long)preselected.TargetEpochs.AcceleratorEpoch,
+            await fixture.ScalarLongAsync("SELECT AcceleratorEpoch FROM covenant_state;", Token));
+
+        Assert.Equal(
+            (long)preselected.TargetEpochs.KeyReclamationEpoch,
+            await fixture.ScalarLongAsync("SELECT KeyReclamationEpoch FROM covenant_state;", Token));
+
+        Assert.Equal(
+            (long)preselected.TargetEpochs.EnvelopeKeyEpoch,
+            await fixture.ScalarLongAsync("SELECT EnvelopeKeyEpoch FROM covenant_state;", Token));
+
+    }
+
+    /// <summary>
     /// A database that is not the one the plan was made against is refused, and nothing is deleted.
     /// </summary>
     /// <remarks>

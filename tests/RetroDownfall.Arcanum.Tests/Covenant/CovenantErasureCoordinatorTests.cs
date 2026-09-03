@@ -39,18 +39,20 @@ public sealed class CovenantErasureCoordinatorTests
     private static readonly Guid OperationId = new("55555555-5555-4555-8555-555555555555");
 
     /// <summary>
-    /// The source and target pair a launch would have committed to, fixed so every case is comparable.
+    /// The source and target pair the seeded launch row commits to.
     /// </summary>
     /// <remarks>
-    /// A coordinator suite never runs the real canonical transaction, so the values themselves are
-    /// arbitrary — what has to hold is that the pair is coherent, because an incoherent one is refused
-    /// before the transaction opens anything and every case here would then fail for the wrong reason.
+    /// Built from the same four values <c>Operation()</c> encodes into the row rather than from
+    /// literals of its own. The coordinator rereads that row to decide whether the checkpoint it was
+    /// handed still describes the operation it is about to disposition, so a pair that differed here
+    /// would make every recoverability case fail as a checkpoint mismatch — which is a real refusal,
+    /// and would look exactly like the defect these tests exist to catch.
     /// </remarks>
-    private static readonly CovenantCanonicalDatasetTransition PreselectedDataset = new(
-        new Guid("66666666-6666-4666-8666-666666666666"),
-        new CovenantOfflineTransitionEpochsV1(4, 9, 16),
-        new Guid("77777777-7777-4777-8777-777777777777"),
-        new CovenantOfflineTransitionEpochsV1(5, 10, 17));
+    private static CovenantCanonicalDatasetTransition PreselectedDataset => new(
+        CovenantOperationGateFixture.DatasetGeneration,
+        SourceEpochs,
+        CandidateGeneration,
+        TargetEpochs);
 
     private static readonly Guid CandidateGeneration = new("99999999-9999-4999-8999-999999999999");
 
@@ -132,7 +134,7 @@ public sealed class CovenantErasureCoordinatorTests
     }
 
     [Fact]
-    public async Task Factory_continuation_failure_keeps_admission_closed_at_ManagedArtifactsProcessed()
+    public async Task Factory_continuation_failure_keeps_admission_closed_and_the_launch_intact()
     {
 
         CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
@@ -157,12 +159,20 @@ public sealed class CovenantErasureCoordinatorTests
 
         LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
 
-        Assert.Equal(
-            CovenantResetPhase.ManagedArtifactsProcessed,
-            CovenantRecoveryCheckpointCodec
-                .DecodeDataRetentionFactoryReset(durable.CheckpointPayload!)
-                .Value
-                .Phase);
+        // The row still carries the launch exactly as it was committed. Where the run stopped is
+        // reported by the disposition and the blocking code above; the row's job is to say what was
+        // launched, and a failed continuation changes nothing about that.
+        Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, durable.CheckpointVersion);
+
+        DataRetentionFactoryTransitionLaunchV2 launch = CovenantRecoveryCheckpointCodec
+            .DecodeDataRetentionFactoryTransitionLaunch(durable.CheckpointPayload!)
+            .Value;
+
+        Assert.Equal(OperationId, launch.OperationId);
+
+        Assert.Equal(CovenantOperationGateFixture.DatasetGeneration, launch.SourceDatasetGeneration);
+
+        Assert.Equal(CandidateGeneration, launch.TargetDatasetGeneration);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
 
