@@ -1067,10 +1067,11 @@ internal sealed class CovenantErasureCoordinator(
         try
         {
 
-            // ReopenedVerified records that a proof succeeded, not the proof object itself. A fresh
-            // pass checkpoints only after obtaining the value it will publish. A resumed pass has no
-            // value to recover from its checkpoint, so it repeats the immutable verification without
-            // rewriting a phase that was already durable.
+            // ReopenedVerified records that a proof succeeded, not the proof object itself, and a
+            // resumed pass has no value to recover from it either way — so it repeats the immutable
+            // verification rather than trusting a recorded phase. The ordering is still checked,
+            // because a run that reached this point out of order is a run whose earlier phases did
+            // not happen.
             if (state.Phase < CovenantResetPhase.ReopenedVerified)
             {
 
@@ -1085,17 +1086,7 @@ internal sealed class CovenantErasureCoordinator(
 
                 }
 
-                CovenantErasureCheckpointState advanced = state with
-                {
-
-                    Phase = CovenantResetPhase.ReopenedVerified,
-
-                };
-
-                await CheckpointAsync(operation, advanced, ownerId, publicationAndWriter.Token)
-                    .ConfigureAwait(false);
-
-                state = advanced;
+                state = state with { Phase = CovenantResetPhase.ReopenedVerified };
 
             }
 
@@ -1557,80 +1548,10 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        CovenantErasureCheckpointState advanced = checkpoint with { Phase = phase };
-
-        await CheckpointAsync(operation, advanced, ownerId, cancellationToken).ConfigureAwait(false);
-
-        return advanced;
+        return checkpoint with { Phase = phase };
 
     }
 
-    private async Task CheckpointAsync(
-        LongRunningOperation operation,
-        CovenantErasureCheckpointState checkpoint,
-        string ownerId,
-        CancellationToken cancellationToken)
-    {
-
-        LongRunningOperation? current = await _store
-            .GetAsync(operation.Id, cancellationToken)
-            .ConfigureAwait(false);
-
-        (int version, byte[] payload) = Encode(checkpoint);
-
-        bool saved = await _operations.CheckpointAsync(
-            operation.Id,
-            ownerId,
-            current?.CheckpointVersion ?? operation.CheckpointVersion,
-            version,
-            payload,
-            CovenantResetCheckpointInitiator.CheckpointReference(operation.Kind, operation.Id),
-            operation.PublicSummary ?? ResetSummary,
-            cancellationToken).ConfigureAwait(false);
-
-        if (!saved)
-        {
-
-            throw new CovenantErasureStepFailedException(
-                new Error(
-                    ErrorCodes.Covenant.RevisionConflict,
-                    "The Covenant erasure checkpoint was written by another owner."));
-
-        }
-
-    }
-
-    /// <summary>
-    /// Writes the phase back into whichever durable shape this operation started under.
-    /// </summary>
-    /// <remarks>
-    /// A reset resumes from the retention mutation journal and a factory erasure from its own, so the
-    /// shape is selected by the operation code the checkpoint already carries rather than by anything
-    /// this pass decides. Writing the other shape would produce a payload the matching recovery
-    /// handler cannot decode.
-    /// </remarks>
-    private static (int Version, byte[] Payload) Encode(CovenantErasureCheckpointState checkpoint) =>
-        checkpoint.Operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
-            ? (DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                CovenantRecoveryCheckpointCodec.Encode(
-                    new DataRetentionFactoryResetCheckpointV1(
-                        DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                        checkpoint.OperationId,
-                        CovenantRecoveryCheckpointCodec.EncodeEffectDigest(checkpoint.EffectDigest),
-                        checkpoint.Operation,
-                        checkpoint.Phase)))
-            : (DataRetentionMutationCheckpointV3.CurrentVersion,
-                CovenantRecoveryCheckpointCodec.Encode(
-                    new DataRetentionMutationCheckpointV3(
-                        DataRetentionMutationCheckpointV3.CurrentVersion,
-                        Subtype: "reset-memory",
-                        Target: ((int)MemoryResetScope.Covenant).ToString(
-                            System.Globalization.CultureInfo.InvariantCulture),
-                        new CovenantResetEffectArmV1(
-                            checkpoint.OperationId,
-                            CovenantRecoveryCheckpointCodec.EncodeEffectDigest(checkpoint.EffectDigest),
-                            checkpoint.Operation,
-                            checkpoint.Phase))));
 
     /// <summary>
     /// Refuses a checkpoint this build cannot resume, before any scope is closed.
@@ -1925,7 +1846,12 @@ internal sealed class CovenantErasureCoordinator(
 
         };
 
-        return durable.IsSuccess && durable.Value == checkpoint;
+        // The phase is deliberately excluded. A launch row records what was committed to and nothing
+        // about how far the run got, so a decoded launch always projects the first phase while the
+        // caller is holding whatever phase this attempt reached. Comparing the two would ask the row
+        // a question it stopped being able to answer the moment offline phases stopped rewriting it.
+        return durable.IsSuccess
+            && durable.Value == checkpoint with { Phase = CovenantResetPhaseMachine.First };
 
     }
 
