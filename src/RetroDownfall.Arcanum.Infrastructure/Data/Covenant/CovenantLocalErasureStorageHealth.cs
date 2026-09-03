@@ -140,7 +140,8 @@ internal sealed record CovenantCandidateDatasetState(
     CovenantFtsRebuildState RebuildState,
     long EnvelopeMasterKeyVersion,
     byte[] EnvelopeMasterKeyFingerprint,
-    long EnvelopeKeyEpoch);
+    long EnvelopeKeyEpoch,
+    ulong KeyReclamationEpoch);
 
 /// <summary>The installation authority the candidate dataset has to agree with.</summary>
 internal sealed record CovenantCandidateAuthorityState(
@@ -1216,7 +1217,11 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                    state.RebuildTargetSequence,
                    state.RebuildCursor,
                    authority.TaintTimeMasterVersion,
-                   authority.TaintFingerprint
+                   authority.TaintFingerprint,
+                   -- Appended rather than filed beside the other two epochs on purpose: every ordinal
+                   -- below is read positionally, and moving one to keep the list tidy would silently
+                   -- repoint fourteen reads at their neighbours.
+                   state.KeyReclamationEpoch
             FROM covenant_state AS state
             CROSS JOIN covenant_authority_state AS authority
             INNER JOIN capability_cleanup_state AS capability
@@ -1285,6 +1290,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             || fingerprint.Length != 32
             || !TryReadLong(reader, 11, out long envelopeKeyEpoch)
             || envelopeKeyEpoch <= 0
+            || !TryReadLong(reader, 26, out long keyReclamationEpoch)
+            || keyReclamationEpoch <= 0
             || reader.GetValue(12) is not string installationIdentity
             || string.IsNullOrWhiteSpace(installationIdentity)
             || installationIdentity.Length > 128
@@ -1378,7 +1385,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             rebuildState,
             envelopeMasterKeyVersion,
             [.. fingerprint],
-            envelopeKeyEpoch);
+            envelopeKeyEpoch,
+            checked((ulong)keyReclamationEpoch));
 
         CovenantCandidateAuthorityState authority = new(
             installationIdentity,

@@ -22,7 +22,12 @@ public sealed class CovenantErasureTransitionTests
     {
 
         Assert.Equal(
-            [typeof(CovenantExclusiveOperation), typeof(CovenantV3MaintenanceCapability), typeof(CancellationToken)],
+            [
+                typeof(CovenantExclusiveOperation),
+                typeof(CovenantCanonicalDatasetTransition),
+                typeof(CovenantV3MaintenanceCapability),
+                typeof(CancellationToken),
+            ],
             typeof(ICovenantErasureTransition).GetMethod(nameof(ICovenantErasureTransition.ApplyCanonicalErasureAsync))!
                 .GetParameters()
                 .Select(static parameter => parameter.ParameterType));
@@ -49,6 +54,11 @@ public sealed class CovenantErasureTransitionTests
 
         Assert.True((await harness.Subject.ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation.CovenantReset,
+            new CovenantCanonicalDatasetTransition(
+                Guid.NewGuid(),
+                new CovenantOfflineTransitionEpochsV1(1, 1, 1),
+                Guid.NewGuid(),
+                new CovenantOfflineTransitionEpochsV1(2, 2, 2)),
             harness.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             CancellationToken.None)).IsSuccess);
 
@@ -555,7 +565,8 @@ public sealed class CovenantErasureTransitionTests
                     CovenantFtsRebuildState.Rebuilding,
                     EnvelopeMasterKeyVersion: 7,
                     Enumerable.Repeat((byte)0xC1, 32).ToArray(),
-                    EnvelopeKeyEpoch: 31),
+                    EnvelopeKeyEpoch: 31,
+                    KeyReclamationEpoch: 37),
                 new CovenantCandidateAuthorityState(
                     InstallationIdentity: "verified-installation",
                     AuthorityEpoch: 23,
@@ -607,6 +618,7 @@ public sealed class CovenantErasureTransitionTests
 
         public Task<Result<Guid>> ApplyAsync(
             CovenantExclusiveOperation operation,
+            CovenantCanonicalDatasetTransition dataset,
             CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken)
         {

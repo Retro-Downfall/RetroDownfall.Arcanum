@@ -2638,9 +2638,10 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantCanonicalDatasetTransition dataset,
             CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
-            inner.ApplyCanonicalErasureAsync(operation, capability, cancellationToken);
+            inner.ApplyCanonicalErasureAsync(operation, dataset, capability, cancellationToken);
 
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken)
         {
@@ -2789,6 +2790,7 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantCanonicalDatasetTransition dataset,
             CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(
@@ -2831,6 +2833,7 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantCanonicalDatasetTransition dataset,
             CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<Guid>.Success(Guid.Parse("99999999-9999-4999-8999-999999999999")));
@@ -2872,6 +2875,7 @@ public sealed class CovenantErasureSameProcessTests
                             CovenantFtsRebuildState.FullRebuildRequired,
                             1,
                             new byte[32],
+                            1,
                             1),
                         new CovenantCandidateAuthorityState(
                             "direct-route-cancellation-test",

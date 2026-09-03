@@ -948,6 +948,7 @@ public sealed partial class DataRetentionServiceTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantCanonicalDatasetTransition dataset,
             CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken) =>
             Task.FromResult(
@@ -998,6 +999,7 @@ public sealed partial class DataRetentionServiceTests
                     CovenantFtsRebuildState.FullRebuildRequired,
                     1,
                     new byte[32],
+                    1,
                     1),
                 new CovenantCandidateAuthorityState(
                     "retention-recovery-test",

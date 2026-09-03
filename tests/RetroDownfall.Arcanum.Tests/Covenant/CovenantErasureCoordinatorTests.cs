@@ -38,6 +38,20 @@ public sealed class CovenantErasureCoordinatorTests
 
     private static readonly Guid OperationId = new("55555555-5555-4555-8555-555555555555");
 
+    /// <summary>
+    /// The source and target pair a launch would have committed to, fixed so every case is comparable.
+    /// </summary>
+    /// <remarks>
+    /// A coordinator suite never runs the real canonical transaction, so the values themselves are
+    /// arbitrary — what has to hold is that the pair is coherent, because an incoherent one is refused
+    /// before the transaction opens anything and every case here would then fail for the wrong reason.
+    /// </remarks>
+    private static readonly CovenantCanonicalDatasetTransition PreselectedDataset = new(
+        new Guid("66666666-6666-4666-8666-666666666666"),
+        new CovenantOfflineTransitionEpochsV1(4, 9, 16),
+        new Guid("77777777-7777-4777-8777-777777777777"),
+        new CovenantOfflineTransitionEpochsV1(5, 10, 17));
+
     private static readonly Guid CandidateGeneration = new("99999999-9999-4999-8999-999999999999");
 
     /// <summary>
@@ -1361,7 +1375,8 @@ public sealed class CovenantErasureCoordinatorTests
                 checkpointOperationId ?? OperationId,
                 _operation,
                 CovenantOperationGateFixture.Digest(7),
-                phase);
+                phase,
+                PreselectedDataset);
 
             if (_operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
             {
@@ -1409,7 +1424,8 @@ public sealed class CovenantErasureCoordinatorTests
                     OperationId,
                     _operation,
                     CovenantOperationGateFixture.Digest(7),
-                    phase),
+                    phase,
+                    PreselectedDataset),
                 "owner",
                 Token);
 
@@ -1758,6 +1774,7 @@ public sealed class CovenantErasureCoordinatorTests
 
         public async Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
+            CovenantCanonicalDatasetTransition dataset,
             CovenantV3MaintenanceCapability capability,
             CancellationToken cancellationToken)
         {
@@ -1843,7 +1860,8 @@ public sealed class CovenantErasureCoordinatorTests
                     CovenantFtsRebuildState.FullRebuildRequired,
                     EnvelopeMasterKeyVersion: 1,
                     new byte[32],
-                    EnvelopeKeyEpoch: 1),
+                    EnvelopeKeyEpoch: 1,
+                    KeyReclamationEpoch: 1),
                 new CovenantCandidateAuthorityState(
                     InstallationIdentity: "coordinator-test",
                     AuthorityEpoch: 1,

@@ -470,6 +470,7 @@ public sealed class CovenantDisclosureWriterTests
 
         Result<Guid> applied = await erasure.ApplyAsync(
             CovenantExclusiveOperation.CovenantReset,
+            await harness.Fixture.PreselectAsync(Token),
             CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             Token);
 

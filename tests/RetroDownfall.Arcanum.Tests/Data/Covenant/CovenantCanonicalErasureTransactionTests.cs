@@ -67,7 +67,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         // MATCH that found something first proves the later zero meant anything.
         Assert.Equal(1, await fixture.ScalarLongAsync(IndexedTokenQuery, Token));
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -97,7 +97,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         Guid? before = await fixture.ReadDatasetGenerationAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -139,6 +139,195 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
+    /// <summary>
+    /// The stamped dataset is the one the launch preselected, not one this transaction chose.
+    /// </summary>
+    /// <remarks>
+    /// A transaction that minted its own generation could not be asked afterwards whether it had
+    /// committed: a replaced family looks identical whether this operation replaced it or something
+    /// else did, so a recovery pass would have to guess — and the guess it would be forced into is
+    /// "run the destructive statement again". Committing to the target first is what turns that into
+    /// a comparison.
+    /// </remarks>
+    [Fact]
+    public async Task A_reset_stamps_the_preselected_target_rather_than_a_generation_of_its_own()
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        await fixture.ExecuteAsync(
+            """
+            UPDATE covenant_state
+            SET AcceleratorEpoch = 7, KeyReclamationEpoch = 11, EnvelopeKeyEpoch = 13
+            WHERE StateKey = 1;
+            """,
+            Token);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(
+            CovenantExclusiveOperation.CovenantReset,
+            preselected,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        await fixture.ReopenAsync(Token);
+
+        Assert.Equal(preselected.TargetDatasetGeneration, await fixture.ReadDatasetGenerationAsync(Token));
+
+        // Read back rather than returned from memory: the value the caller gets has to be the one the
+        // committed row carries, or it is a claim about the transaction rather than about the database.
+        Assert.Equal(preselected.TargetDatasetGeneration, applied.Value);
+
+        Assert.Equal(8, await fixture.ScalarLongAsync("SELECT AcceleratorEpoch FROM covenant_state;", Token));
+
+        Assert.Equal(12, await fixture.ScalarLongAsync("SELECT KeyReclamationEpoch FROM covenant_state;", Token));
+
+        Assert.Equal(14, await fixture.ScalarLongAsync("SELECT EnvelopeKeyEpoch FROM covenant_state;", Token));
+
+    }
+
+    /// <summary>
+    /// A database that is not the one the plan was made against is refused, and nothing is deleted.
+    /// </summary>
+    /// <remarks>
+    /// The refusal is a zero-row update rather than a read-then-compare, because a comparison made
+    /// before the statement leaves a window the statement itself does not close. Deleting the family
+    /// and then discovering the singleton had moved would already have destroyed the evidence that
+    /// said so.
+    /// </remarks>
+    [Theory]
+    [InlineData("generation")]
+    [InlineData("accelerator")]
+    [InlineData("keyReclamation")]
+    [InlineData("envelopeKey")]
+    public async Task A_canonical_erasure_refuses_a_source_this_database_does_not_carry(string moved)
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        CovenantCanonicalDatasetTransition stale = moved switch
+        {
+
+            "generation" => preselected with { SourceDatasetGeneration = Guid.NewGuid() },
+
+            "accelerator" => preselected with
+            {
+                SourceEpochs = preselected.SourceEpochs with
+                {
+                    AcceleratorEpoch = preselected.SourceEpochs.AcceleratorEpoch + 5,
+                },
+                TargetEpochs = preselected.TargetEpochs with
+                {
+                    AcceleratorEpoch = preselected.SourceEpochs.AcceleratorEpoch + 6,
+                },
+            },
+
+            "keyReclamation" => preselected with
+            {
+                SourceEpochs = preselected.SourceEpochs with
+                {
+                    KeyReclamationEpoch = preselected.SourceEpochs.KeyReclamationEpoch + 5,
+                },
+                TargetEpochs = preselected.TargetEpochs with
+                {
+                    KeyReclamationEpoch = preselected.SourceEpochs.KeyReclamationEpoch + 6,
+                },
+            },
+
+            _ => preselected with
+            {
+                SourceEpochs = preselected.SourceEpochs with
+                {
+                    EnvelopeKeyEpoch = preselected.SourceEpochs.EnvelopeKeyEpoch + 5,
+                },
+                TargetEpochs = preselected.TargetEpochs with
+                {
+                    EnvelopeKeyEpoch = preselected.SourceEpochs.EnvelopeKeyEpoch + 6,
+                },
+            },
+
+        };
+
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(
+            CovenantExclusiveOperation.CovenantReset,
+            stale,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            Token);
+
+        Assert.True(applied.IsFailure, moved);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, applied.Error.Code);
+
+        await fixture.ReopenAsync(Token);
+
+        // The whole statement is one transaction, so a refused stamp takes every deletion with it.
+        Assert.Equal(
+            preselected.SourceDatasetGeneration,
+            await fixture.ReadDatasetGenerationAsync(Token));
+
+    }
+
+    /// <summary>
+    /// A pair no launch could have committed to is refused before anything is opened or drained.
+    /// </summary>
+    /// <remarks>
+    /// Transposed target epochs are the case worth naming. Compared as a set they look correct — every
+    /// target is one more than some source — and a family replaced under them would then be verified
+    /// against a counter it does not belong to.
+    /// </remarks>
+    [Fact]
+    public async Task A_canonical_erasure_refuses_a_transition_whose_targets_are_transposed()
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        await fixture.ExecuteAsync(
+            """
+            UPDATE covenant_state
+            SET AcceleratorEpoch = 7, KeyReclamationEpoch = 11, EnvelopeKeyEpoch = 13
+            WHERE StateKey = 1;
+            """,
+            Token);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        CovenantCanonicalDatasetTransition transposed = preselected with
+        {
+            TargetEpochs = new CovenantOfflineTransitionEpochsV1(
+                preselected.TargetEpochs.EnvelopeKeyEpoch,
+                preselected.TargetEpochs.KeyReclamationEpoch,
+                preselected.TargetEpochs.AcceleratorEpoch),
+        };
+
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(
+            CovenantExclusiveOperation.CovenantReset,
+            transposed,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            Token);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, applied.Error.Code);
+
+        // The refusal lands before the drain, so the fixture's own handle is still open and the
+        // singleton it can still read is the untouched source.
+        Assert.Equal(
+            preselected.SourceDatasetGeneration,
+            await fixture.ReadDatasetGenerationAsync(Token));
+
+    }
+
     [Fact]
     public async Task A_reset_advances_the_accelerator_and_envelope_epochs_rather_than_restarting_them()
     {
@@ -157,7 +346,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             """,
             Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -186,7 +375,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -232,7 +421,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -274,7 +463,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         CovenantRetainedEvidenceSnapshot before = await fixture.CaptureRetainedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -295,7 +484,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         CovenantRetainedEvidenceSnapshot before = await fixture.CaptureRetainedAsync(Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -321,7 +510,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.SeedAsync(Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -346,8 +535,19 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
+    /// <summary>
+    /// An absent canonical singleton is refused rather than reseeded, on both arms.
+    /// </summary>
+    /// <remarks>
+    /// The factory arm used to mint a singleton when it found none, which was right while the erasure
+    /// discovered its own state: a catalog whose optional tier had been reinstalled underneath it
+    /// still had to be resettable. An offline transition cannot be in that position. Its launch
+    /// records a source epoch above zero for all three counters, so a launch structurally cannot
+    /// describe a database with no singleton — and an arm that reseeded anyway would stamp epochs no
+    /// launch committed to, against a catalog whose damage the operator would never be told about.
+    /// </remarks>
     [Fact]
-    public async Task A_healthy_catalog_factory_erasure_reseeds_a_canonical_singleton_that_is_absent()
+    public async Task A_healthy_catalog_factory_erasure_refuses_a_canonical_singleton_that_is_absent()
     {
 
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
@@ -356,25 +556,29 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.ExecuteAsync("DELETE FROM covenant_search_documents;", Token);
 
+        // Preselected while the singleton is still there, so the pair handed to the transaction is a
+        // coherent one and the refusal below is attributable to the missing row rather than to it.
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
         await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+            .ApplyAsync(
+                CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                preselected,
+                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+                Token);
 
-        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, applied.Error.Code);
 
         await fixture.ReopenAsync(Token);
 
-        Assert.Equal(1, await fixture.CountAsync("covenant_state", Token));
+        // Nothing was reseeded, and nothing was erased on the way to deciding not to.
+        Assert.Equal(0, await fixture.CountAsync("covenant_state", Token));
 
-        Assert.Equal(applied.Value, await fixture.ReadDatasetGenerationAsync(Token));
-
-        // A reseeded singleton starts where a fresh installation starts.
-        Assert.Equal(1, await fixture.ScalarLongAsync("SELECT AcceleratorEpoch FROM covenant_state;", Token));
-
-        Assert.Equal(
-            4,
-            await fixture.ScalarLongAsync("SELECT AppliedCampaignDeletionSequence FROM covenant_state;", Token));
+        Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
 
     }
 
@@ -465,8 +669,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         // which would otherwise run inline on this thread and only return control here after the
         // whole throttled busy wait had already elapsed - starving the Task.Delay below of any chance
         // to race it at all.
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
         Task<Result<Guid>> applying = Task.Run(() => service.ApplyAsync(
             CovenantExclusiveOperation.CovenantReset,
+            preselected,
             CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             Token));
 
@@ -501,7 +708,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         // A reset reseeds nothing. Minting a singleton for a catalog that lost one would answer schema
         // damage by inventing a dataset identity nothing else in the installation agrees with.
@@ -528,7 +735,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             Token);
 
         Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -554,7 +761,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(operation, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(
+            operation,
+            await fixture.PreselectAsync(Token),
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            Token);
 
         Assert.True(applied.IsFailure);
 
@@ -578,7 +789,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             fixture.Drain,
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -612,7 +823,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             new RecordingConnectionDrain(fixture.Drain, steps),
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -639,7 +850,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
             new FailingConnectionDrain(),
             TimeProvider.System);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, await fixture.PreselectAsync(Token), CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
 
         Assert.True(applied.IsFailure);
 
@@ -657,18 +868,25 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        // A saturated accelerator epoch is refused by the singleton's own update trigger, which fires
-        // after every delete in the same transaction has already run. Nothing else in this suite can
-        // prove the deletes and the state write are one transaction rather than nine.
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        // The source guard is a zero-row update, which is evaluated after every delete in the same
+        // transaction has already run. Nothing else in this suite can prove the deletes and the state
+        // write are one transaction rather than nine — and a source that moved between the plan and
+        // the effect is the exact condition the guard exists for, so the two facts are proved together.
         await fixture.ExecuteAsync(
-            "UPDATE covenant_state SET AcceleratorEpoch = 9223372036854775807 WHERE StateKey = 1;",
+            "UPDATE covenant_state SET AcceleratorEpoch = AcceleratorEpoch + 3 WHERE StateKey = 1;",
             Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await CreateService(fixture).ApplyAsync(
+            CovenantExclusiveOperation.CovenantReset,
+            preselected,
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            Token);
 
         Assert.True(applied.IsFailure);
 
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, applied.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, applied.Error.Code);
 
         await fixture.ReopenAsync(Token);
 

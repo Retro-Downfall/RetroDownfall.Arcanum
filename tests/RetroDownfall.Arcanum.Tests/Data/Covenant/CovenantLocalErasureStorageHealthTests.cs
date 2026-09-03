@@ -1447,6 +1447,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
                 Result<Guid> applied = await transaction.ApplyAsync(
                     CovenantExclusiveOperation.CovenantReset,
+                    await fixture.PreselectAsync(cancellationToken),
                     CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
                     cancellationToken);
 

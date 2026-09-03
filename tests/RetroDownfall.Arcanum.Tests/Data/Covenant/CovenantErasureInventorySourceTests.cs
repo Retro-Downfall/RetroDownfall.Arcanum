@@ -176,6 +176,8 @@ public sealed class CovenantErasureInventorySourceTests
 
         Assert.Equal(0, fixture.OrdinaryConnections.LiveLeaseCount);
 
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(CancellationToken.None);
+
         await fixture.ClosePrimaryConnectionAsync();
 
         CovenantCanonicalErasureTransaction canonical = new(
@@ -188,6 +190,7 @@ public sealed class CovenantErasureInventorySourceTests
 
         Result<Guid> applied = await canonical.ApplyAsync(
             CovenantExclusiveOperation.CovenantReset,
+            preselected,
             CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             CancellationToken.None);
 
@@ -926,6 +929,38 @@ public sealed class CovenantErasureInventorySourceTests
             command.CommandText = "DELETE FROM covenant_state WHERE StateKey = 1;";
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        internal async Task<CovenantCanonicalDatasetTransition> PreselectAsync(
+            CancellationToken cancellationToken)
+        {
+
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = """
+                SELECT DatasetGeneration, AcceleratorEpoch, KeyReclamationEpoch, EnvelopeKeyEpoch
+                FROM covenant_state
+                WHERE StateKey = 1;
+                """;
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            Assert.True(await reader.ReadAsync(cancellationToken));
+
+            CovenantOfflineTransitionEpochsV1 source = new(
+                (ulong)reader.GetInt64(1),
+                (ulong)reader.GetInt64(2),
+                (ulong)reader.GetInt64(3));
+
+            return new CovenantCanonicalDatasetTransition(
+                new Guid(reader.GetFieldValue<byte[]>(0)),
+                source,
+                Guid.NewGuid(),
+                new CovenantOfflineTransitionEpochsV1(
+                    source.AcceleratorEpoch + 1,
+                    source.KeyReclamationEpoch + 1,
+                    source.EnvelopeKeyEpoch + 1));
 
         }
 

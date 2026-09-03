@@ -357,6 +357,55 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
     }
 
+    /// <summary>
+    /// Reads the live canonical state and preselects the target a launch would have committed to.
+    /// </summary>
+    /// <remarks>
+    /// The production preselection lives in the checkpoint initiator, which a transaction-level suite
+    /// has no business standing up. What matters here is that the pair handed to the transaction is
+    /// the pair a real launch would produce: the exact source on disk, and a target whose generation
+    /// is fresh and whose three epochs are each the successor of their own source.
+    /// </remarks>
+    internal async Task<CovenantCanonicalDatasetTransition> PreselectAsync(
+        CancellationToken cancellationToken)
+    {
+
+        CovenantOfflineTransitionEpochsV1 source = await ReadEpochsAsync(cancellationToken);
+
+        return new CovenantCanonicalDatasetTransition(
+            await ReadDatasetGenerationAsync(cancellationToken) ?? Guid.Empty,
+            source,
+            Guid.NewGuid(),
+            new CovenantOfflineTransitionEpochsV1(
+                source.AcceleratorEpoch + 1,
+                source.KeyReclamationEpoch + 1,
+                source.EnvelopeKeyEpoch + 1));
+
+    }
+
+    internal async Task<CovenantOfflineTransitionEpochsV1> ReadEpochsAsync(
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT AcceleratorEpoch, KeyReclamationEpoch, EnvelopeKeyEpoch
+            FROM covenant_state
+            WHERE StateKey = 1;
+            """;
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        return await reader.ReadAsync(cancellationToken)
+            ? new CovenantOfflineTransitionEpochsV1(
+                (ulong)reader.GetInt64(0),
+                (ulong)reader.GetInt64(1),
+                (ulong)reader.GetInt64(2))
+            : new CovenantOfflineTransitionEpochsV1(1, 1, 1);
+
+    }
+
     internal Task<CovenantRetainedEvidenceSnapshot> CaptureRetainedAsync(CancellationToken cancellationToken) =>
         CovenantRetainedEvidence.CaptureAsync(Connection, Credentials, cancellationToken);
 

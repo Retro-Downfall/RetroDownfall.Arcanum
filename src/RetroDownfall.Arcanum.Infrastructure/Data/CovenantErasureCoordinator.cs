@@ -44,6 +44,7 @@ internal interface ICovenantErasureTransition
     /// </remarks>
     Task<Result<Guid>> ApplyCanonicalErasureAsync(
         CovenantExclusiveOperation operation,
+        CovenantCanonicalDatasetTransition dataset,
         CovenantV3MaintenanceCapability capability,
         CancellationToken cancellationToken);
 
@@ -298,7 +299,8 @@ internal sealed record CovenantErasureCheckpointState(
     Guid OperationId,
     CovenantExclusiveOperation Operation,
     CovenantDigest EffectDigest,
-    CovenantResetPhase Phase)
+    CovenantResetPhase Phase,
+    CovenantCanonicalDatasetTransition Dataset)
 {
 
     /// <summary>
@@ -349,7 +351,10 @@ internal sealed record CovenantErasureCheckpointState(
 
         return decoded.IsFailure
             ? Result<CovenantErasureCheckpointState>.Failure(decoded.Error)
-            : Owned(operationId, CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value));
+            : Owned(
+                operationId,
+                CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value),
+                DatasetTransition(decoded.Value.SourceDatasetGeneration, decoded.Value.SourceEpochs, decoded.Value.TargetDatasetGeneration, decoded.Value.TargetEpochs));
 
     }
 
@@ -380,24 +385,43 @@ internal sealed record CovenantErasureCheckpointState(
 
         return decoded.IsFailure
             ? Result<CovenantErasureCheckpointState>.Failure(decoded.Error)
-            : Owned(operationId, CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value));
+            : Owned(
+                operationId,
+                CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value),
+                DatasetTransition(decoded.Value.SourceDatasetGeneration, decoded.Value.SourceEpochs, decoded.Value.TargetDatasetGeneration, decoded.Value.TargetEpochs));
 
     }
 
+    private static CovenantCanonicalDatasetTransition DatasetTransition(
+        Guid sourceGeneration,
+        CovenantOfflineTransitionEpochsV1 sourceEpochs,
+        Guid targetGeneration,
+        CovenantOfflineTransitionEpochsV1 targetEpochs) =>
+        new(sourceGeneration, sourceEpochs, targetGeneration, targetEpochs);
+
     private static Result<CovenantErasureCheckpointState> Owned(
         Guid operationId,
-        Result<CovenantExclusiveRecoveryOwner> owner) =>
+        Result<CovenantExclusiveRecoveryOwner> owner,
+        CovenantCanonicalDatasetTransition dataset) =>
         owner.IsFailure
             ? Unresumable()
-            : Project(operationId, owner.Value, CovenantResetPhaseMachine.First);
+            : Project(operationId, owner.Value, CovenantResetPhaseMachine.First, dataset);
 
     private static Result<CovenantErasureCheckpointState> Project(
         Guid operationId,
         CovenantExclusiveRecoveryOwner owner,
-        CovenantResetPhase phase) =>
-        owner.OperationId == operationId && CovenantResetPhaseMachine.IsDeclared(phase)
+        CovenantResetPhase phase,
+        CovenantCanonicalDatasetTransition dataset) =>
+        owner.OperationId == operationId
+        && CovenantResetPhaseMachine.IsDeclared(phase)
+        && dataset.IsCoherent
             ? Result<CovenantErasureCheckpointState>.Success(
-                new CovenantErasureCheckpointState(owner.OperationId, owner.Operation, owner.EffectDigest, phase))
+                new CovenantErasureCheckpointState(
+                    owner.OperationId,
+                    owner.Operation,
+                    owner.EffectDigest,
+                    phase,
+                    dataset))
             : Unresumable();
 
     private static Result<CovenantErasureCheckpointState> Unresumable() =>
@@ -799,7 +823,7 @@ internal sealed class CovenantErasureCoordinator(
                     progress.EffectAttempted = true;
 
                     Result<Guid> applied = await _transition
-                        .ApplyCanonicalErasureAsync(state.Operation, capability, token)
+                        .ApplyCanonicalErasureAsync(state.Operation, state.Dataset, capability, token)
                         .ConfigureAwait(false);
 
                     return applied.IsFailure ? Result.Failure(applied.Error) : Result.Success();
