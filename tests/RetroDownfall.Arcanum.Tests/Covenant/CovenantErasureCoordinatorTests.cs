@@ -1787,7 +1787,11 @@ public sealed class CovenantErasureCoordinatorTests
 
         }
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) => Step("close-handles");
+        public Task<Result> CloseHandlesAsync(
+
+            CovenantV3MaintenanceCapability capability,
+
+            CancellationToken cancellationToken) => Step("close-handles");
 
         public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) => Step("truncate-wal");
 

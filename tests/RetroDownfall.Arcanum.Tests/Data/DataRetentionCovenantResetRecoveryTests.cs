@@ -959,7 +959,11 @@ public sealed partial class DataRetentionServiceTests
                             "The recovery transition was refused."))
                     : Result<Guid>.Success(Guid.Parse("99999999-9999-4999-8999-999999999999")));
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CloseHandlesAsync(
+
+            CovenantV3MaintenanceCapability capability,
+
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>

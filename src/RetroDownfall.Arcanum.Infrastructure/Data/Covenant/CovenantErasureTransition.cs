@@ -52,8 +52,10 @@ internal sealed class CovenantErasureTransition(
         CancellationToken cancellationToken) =>
         _canonical.ApplyAsync(operation, dataset, capability, cancellationToken);
 
-    public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
-        _storage.CloseHandlesAsync(cancellationToken);
+    public Task<Result> CloseHandlesAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken) =>
+        _storage.CloseHandlesAsync(capability, cancellationToken);
 
     public Task<Result> TruncateWalAsync(
         CovenantV3MaintenanceCapability capability,

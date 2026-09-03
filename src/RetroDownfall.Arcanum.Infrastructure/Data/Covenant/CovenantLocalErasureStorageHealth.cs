@@ -186,7 +186,9 @@ internal interface ICovenantLocalErasureStorageHealth
 {
 
     /// <summary>Clears every pool, drains direct handles, and proves no live sidecar survived.</summary>
-    Task<Result> CloseHandlesAsync(CancellationToken cancellationToken);
+    Task<Result> CloseHandlesAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken);
 
     /// <summary>Runs a checked <c>wal_checkpoint(TRUNCATE)</c>, refusing on busy or a leftover frame.</summary>
     Task<Result> TruncateWalAsync(
@@ -313,17 +315,74 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// </summary>
     internal Action<SqliteConnection>? BeforeAcceleratorInitializationForTesting { get; set; }
 
-    public async Task<Result> CloseHandlesAsync(CancellationToken cancellationToken)
+    public async Task<Result> CloseHandlesAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken)
     {
 
         Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
 
-        return drained.IsFailure
-            ? drained
+        if (drained.IsFailure)
+        {
+
+            return drained;
+
+        }
+
+        // Closing every handle and causing the last close are not the same statement. SQLite removes
+        // a write-ahead log when the last connection to the database closes, and a read-only
+        // connection has no authority to remove one - so an installation whose last reader was
+        // read-only keeps both sidecars with nothing holding it open at all. That is the opposite
+        // condition to the one this step exists to catch, and the drain cannot tell them apart: it
+        // closes what it was shown, and here it was shown nothing because there is nothing left.
+        //
+        // An erasure reads its own inventory through a read-only connection, so this is its ordinary
+        // trailing state rather than an exotic one. The owner therefore performs the close SQLite is
+        // waiting for, once, and only a survivor of that is a handle somebody else is still holding.
+        if (RequireAbsent(CovenantResidualArtifacts.LiveHandleClasses).IsSuccess)
+        {
+
+            return Result.Success();
+
+        }
+
+        Result settled = await SettleSidecarsAsync(capability, cancellationToken).ConfigureAwait(false);
+
+        return settled.IsFailure
+            ? settled
             : await ProveAbsentAsync(CovenantResidualArtifacts.LiveHandleClasses, cancellationToken)
                 .ConfigureAwait(false);
 
     }
+
+    /// <summary>
+    /// Performs the last connection close SQLite is waiting for, and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// A checkpoint rather than a bare open, because a connection that never touches the database
+    /// never takes the lock its close would clean up under - opening and closing without a statement
+    /// leaves both files exactly where they were. The outcome is deliberately not required to report
+    /// a truncated log: this step is not the write-ahead truncation phase and has no claim to make
+    /// about the log's contents, only about whether anything still holds the database. The proof
+    /// that follows is what answers that, and it answers it from the filesystem.
+    /// </remarks>
+    private Task<Result> SettleSidecarsAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken) =>
+        WithMaintenanceConnectionAsync(
+            "close the handles a Covenant erasure is about to prove absent",
+            capability,
+            (proof, token) => _connections.OpenV3WalTruncationAsync(proof, token),
+            async (connection, token) =>
+            {
+
+                Result<CovenantWalCheckpointOutcome> outcome =
+                    await CheckpointAsync(connection, token).ConfigureAwait(false);
+
+                return outcome.IsFailure ? Result.Failure(outcome.Error) : Result.Success();
+
+            },
+            cancellationToken);
 
     public async Task<Result> TruncateWalAsync(
         CovenantV3MaintenanceCapability capability,

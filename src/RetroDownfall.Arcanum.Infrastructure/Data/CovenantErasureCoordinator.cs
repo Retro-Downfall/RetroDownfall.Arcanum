@@ -49,7 +49,9 @@ internal interface ICovenantErasureTransition
         CancellationToken cancellationToken);
 
     /// <summary>Clears every pool and drains direct handles through the central connection owner.</summary>
-    Task<Result> CloseHandlesAsync(CancellationToken cancellationToken);
+    Task<Result> CloseHandlesAsync(
+        CovenantV3MaintenanceCapability capability,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Runs a checked <c>wal_checkpoint(TRUNCATE)</c>, refusing on a busy flag or a remaining frame.
@@ -865,7 +867,11 @@ internal sealed class CovenantErasureCoordinator(
                 state,
                 ownerId,
                 CovenantResetPhase.HandlesClosed,
-                (_, token) => _transition.CloseHandlesAsync(token),
+                async (_, token) => await RunWithV3CapabilityAsync(
+                    lease,
+                    CovenantV3MaintenancePurpose.WalTruncation,
+                    _transition.CloseHandlesAsync,
+                    token).ConfigureAwait(false),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 

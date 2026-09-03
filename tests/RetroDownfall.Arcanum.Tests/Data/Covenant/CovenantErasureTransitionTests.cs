@@ -62,7 +62,9 @@ public sealed class CovenantErasureTransitionTests
             harness.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
             CancellationToken.None)).IsSuccess);
 
-        Assert.True((await harness.Subject.CloseHandlesAsync(CancellationToken.None)).IsSuccess);
+        Assert.True((await harness.Subject.CloseHandlesAsync(
+            harness.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            CancellationToken.None)).IsSuccess);
 
         Assert.True((await harness.Subject.TruncateWalAsync(
             harness.Mint(CovenantV3MaintenancePurpose.WalTruncation),
@@ -647,7 +649,11 @@ public sealed class CovenantErasureTransitionTests
 
         internal int ReopenCalls { get; private set; }
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CloseHandlesAsync(
+
+            CovenantV3MaintenanceCapability capability,
+
+            CancellationToken cancellationToken) =>
             Record(() => CloseCalls++);
 
         public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>

@@ -262,7 +262,9 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         _ = await Scalar(survivor, "SELECT COUNT(*) FROM covenant_state;", Token);
 
-        Result closed = await erased.Health.CloseHandlesAsync(Token);
+        Result closed = await erased.Health.CloseHandlesAsync(
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            Token);
 
         Assert.True(closed.IsFailure);
 
@@ -307,13 +309,52 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
     }
 
+    /// <summary>
+    /// Sidecars nobody is holding are cleaned up rather than reported as a handle that never closed.
+    /// </summary>
+    /// <remarks>
+    /// SQLite removes a write-ahead log when the last connection to the database closes, and a
+    /// read-only connection has no authority to remove one — so a database whose last reader was
+    /// read-only keeps both sidecars with nothing at all holding it open. That is the opposite
+    /// condition to the one this proof exists to catch, and the drain cannot tell them apart: it
+    /// closes what it was shown, and here it was shown nothing because there is nothing left.
+    ///
+    /// <para>An erasure reads its own inventory through a read-only connection, so this is its own
+    /// ordinary trailing state rather than an exotic one. Before the phase authority moved out of the
+    /// database the erasure happened to write a checkpoint between the two steps, and that write's
+    /// close did the cleanup by accident; nothing does now, which is why the owner has to.</para>
+    /// </remarks>
+    [Fact]
+    public async Task Sidecars_left_by_a_read_only_last_close_are_settled_rather_than_refused()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.LeaveOrphanedSidecarsAsync(Token);
+
+        Assert.True(File.Exists(erased.DatabasePath + "-wal"));
+
+        Result closed = await erased.Health.CloseHandlesAsync(
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            Token);
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        Assert.False(File.Exists(erased.DatabasePath + "-wal"));
+
+        Assert.False(File.Exists(erased.DatabasePath + "-shm"));
+
+    }
+
     [Fact]
     public async Task A_drained_installation_passes_the_close()
     {
 
         await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
 
-        Result closed = await erased.Health.CloseHandlesAsync(Token);
+        Result closed = await erased.Health.CloseHandlesAsync(
+            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            Token);
 
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
@@ -1483,7 +1524,11 @@ public sealed class CovenantLocalErasureStorageHealthTests
             // Through the seam the coordinator holds, in the order its frozen phase machine calls it.
             ICovenantLocalErasureStorageHealth seam = Health;
 
-            Result closed = await Record("close-handles", seam.CloseHandlesAsync(cancellationToken));
+            Result closed = await Record(
+                "close-handles",
+                seam.CloseHandlesAsync(
+                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+                    cancellationToken));
 
             if (closed.IsFailure)
             {
@@ -1562,6 +1607,41 @@ public sealed class CovenantLocalErasureStorageHealthTests
         }
 
         /// <summary>Opens a handle nothing enrolled in the drain, and makes it hold the log open.</summary>
+        /// <summary>
+        /// Leaves a write-ahead log and wal-index behind with nothing holding the database open.
+        /// </summary>
+        /// <remarks>
+        /// Built by hand rather than by driving the erasure, because the point is the trailing state
+        /// itself: a read-write connection creates the log, a read-only one outlives it, and the
+        /// read-only close cannot remove what it has no write lock for.
+        /// </remarks>
+        internal async Task LeaveOrphanedSidecarsAsync(CancellationToken cancellationToken)
+        {
+
+            SqliteConnection writer = await _fixture.Connections().OpenAsync(cancellationToken);
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                writer,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken);
+
+            _ = await Scalar(writer, "SELECT COUNT(*) FROM covenant_state;", cancellationToken);
+
+            SqliteConnection reader = await _fixture.Connections().OpenReadOnlyAsync(cancellationToken);
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                reader,
+                CovenantSqliteConnectionMode.ReadOnly,
+                cancellationToken);
+
+            _ = await Scalar(reader, "SELECT COUNT(*) FROM covenant_state;", cancellationToken);
+
+            await writer.DisposeAsync();
+
+            await reader.DisposeAsync();
+
+        }
+
         internal async Task<SqliteConnection> OpenUnenrolledReaderAsync(CancellationToken cancellationToken)
         {
 

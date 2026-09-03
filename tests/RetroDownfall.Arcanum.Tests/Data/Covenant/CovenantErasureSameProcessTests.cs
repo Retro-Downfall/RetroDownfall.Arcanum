@@ -2643,12 +2643,16 @@ public sealed class CovenantErasureSameProcessTests
             CancellationToken cancellationToken) =>
             inner.ApplyCanonicalErasureAsync(operation, dataset, capability, cancellationToken);
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken)
+        public Task<Result> CloseHandlesAsync(
+
+            CovenantV3MaintenanceCapability capability,
+
+            CancellationToken cancellationToken)
         {
 
             observer.StateAtHandleProof = database.Database.GetDbConnection().State;
 
-            return inner.CloseHandlesAsync(cancellationToken);
+            return inner.CloseHandlesAsync(capability, cancellationToken);
 
         }
 
@@ -2799,7 +2803,11 @@ public sealed class CovenantErasureSameProcessTests
                         ErrorCodes.Covenant.ErasureIncomplete,
                         "The direct reset transition was refused.")));
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CloseHandlesAsync(
+
+            CovenantV3MaintenanceCapability capability,
+
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
@@ -2838,7 +2846,11 @@ public sealed class CovenantErasureSameProcessTests
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<Guid>.Success(Guid.Parse("99999999-9999-4999-8999-999999999999")));
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CloseHandlesAsync(
+
+            CovenantV3MaintenanceCapability capability,
+
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
