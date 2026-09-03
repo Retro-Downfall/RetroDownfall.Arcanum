@@ -70,7 +70,7 @@ internal sealed class CovenantErasureInventorySource(
     /// one anyway would be refused by the database after the transition had already stopped ordinary
     /// access — with no phase left that can safely go either forward or back.
     /// </remarks>
-    internal Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+    public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
         CancellationToken cancellationToken) =>
         WithOwnedSnapshotAsync(ReadOfflineTransitionSourceStateAsync, cancellationToken);
 

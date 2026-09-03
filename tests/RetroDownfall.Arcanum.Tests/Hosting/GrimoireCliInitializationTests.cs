@@ -790,6 +790,17 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             ArcanumPaths.GrimoireDirectory,
             new ClearClientMutationEvidenceProbe());
 
+    /// <summary>
+    /// Writes the one durable row a standalone CLI is expected to adopt: an interrupted Covenant
+    /// reset, recorded as the launch it committed to.
+    /// </summary>
+    /// <remarks>
+    /// Seeded as a full launch rather than as the fields the adopter happens to read, because the
+    /// adopter reconstructs the exclusive owner from the payload alone. A row assembled from
+    /// whatever the current reader looked at would keep passing after the codec started refusing the
+    /// payload for a field nobody here thought about — and the CLI would then be proven to adopt an
+    /// erasure that the real recovery path would have refused to resume.
+    /// </remarks>
     private static async Task<CovenantExclusiveRecoveryOwner> SeedCurrentErasureAsync(
         IGrimoireDbPassphraseSource passphraseSource)
     {
@@ -798,22 +809,29 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         CovenantDigest digest = CovenantOperationGateFixture.Digest(17);
 
-        CovenantExclusiveRecoveryOwner owner = new(
-            operationId,
-            CovenantExclusiveOperation.CovenantReset,
-            digest);
+        Guid sourceGeneration = Guid.NewGuid();
 
-        byte[] payload = CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionMutationCheckpointV3(
-                DataRetentionMutationCheckpointV3.CurrentVersion,
-                "reset-memory",
-                ((int)MemoryResetScope.Covenant).ToString(
-                    System.Globalization.CultureInfo.InvariantCulture),
-                new CovenantResetEffectArmV1(
-                    operationId,
-                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(digest),
-                    owner.Operation,
-                    CovenantResetPhase.InventoryPrepared)));
+        Guid targetGeneration = Guid.NewGuid();
+
+        CovenantOfflineTransitionLaunchV4 launch = new(
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
+            operationId,
+            LongRunningOperationKinds.DataRetentionMutation,
+            nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+            CovenantExclusiveOperation.CovenantReset,
+            CovenantRecoveryCheckpointCodec.EncodeEffectDigest(digest),
+            sourceGeneration,
+            targetGeneration,
+            new CovenantOfflineTransitionEpochsV1(11, 22, 33),
+            new CovenantOfflineTransitionEpochsV1(12, 23, 34),
+            StartingRevision: 0);
+
+        Result<CovenantExclusiveRecoveryOwner> owner =
+            CovenantRecoveryCheckpointCodec.RecoveryOwner(launch);
+
+        Assert.True(owner.IsSuccess, owner.Error.Message);
+
+        byte[] payload = CovenantRecoveryCheckpointCodec.Encode(launch);
 
         string connectionString = new SqliteConnectionStringBuilder
         {
@@ -854,7 +872,7 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         _ = command.Parameters.AddWithValue(
             "@version",
-            DataRetentionMutationCheckpointV3.CurrentVersion);
+            CovenantOfflineTransitionLaunchV4.CurrentVersion);
 
         _ = command.Parameters.AddWithValue("@payload", payload);
 
@@ -866,7 +884,7 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         _ = await command.ExecuteNonQueryAsync();
 
-        return owner;
+        return owner.Value;
 
     }
 

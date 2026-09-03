@@ -24,8 +24,6 @@ public sealed class CovenantErasureDurableStateTests
     public static TheoryData<Type> DurableShapes =>
     [
         typeof(CovenantResetEffectArmV1),
-        typeof(DataRetentionMutationCheckpointV3),
-        typeof(DataRetentionFactoryResetCheckpointV1),
         typeof(CovenantOfflineTransitionEpochsV1),
         typeof(CovenantOfflineTransitionLaunchV4),
         typeof(DataRetentionFactoryTransitionLaunchV2),

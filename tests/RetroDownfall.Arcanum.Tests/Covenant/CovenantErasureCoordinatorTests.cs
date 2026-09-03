@@ -41,6 +41,20 @@ public sealed class CovenantErasureCoordinatorTests
     private static readonly Guid CandidateGeneration = new("99999999-9999-4999-8999-999999999999");
 
     /// <summary>
+    /// The epoch tuple every launch in this suite was planned against, and the successor tuple it
+    /// preselected.
+    /// </summary>
+    /// <remarks>
+    /// Each target epoch is its own source plus one, which is the only relation the codec accepts. A
+    /// harness that committed a launch the decoder refuses would prove nothing at all about resuming
+    /// one: every resume assertion below would pass through the same "unresumable" arm no matter what
+    /// the coordinator did with it.
+    /// </remarks>
+    private static CovenantOfflineTransitionEpochsV1 SourceEpochs => new(1, 1, 1);
+
+    private static CovenantOfflineTransitionEpochsV1 TargetEpochs => new(2, 2, 2);
+
+    /// <summary>
     /// The full ordered step log of a clean erasure, and the only place the whole sequence is written
     /// down in one literal.
     /// </summary>
@@ -1327,7 +1341,7 @@ public sealed class CovenantErasureCoordinatorTests
             Guid? checkpointOperationId = null)
         {
 
-            LongRunningOperation operation = Operation(phase);
+            LongRunningOperation operation = Operation();
 
             Store.Add(operation);
 
@@ -1373,7 +1387,7 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantResetPhase phase)
         {
 
-            LongRunningOperation operation = Operation(phase);
+            LongRunningOperation operation = Operation();
 
             Store.Add(operation);
 
@@ -1420,43 +1434,58 @@ public sealed class CovenantErasureCoordinatorTests
         private CovenantExclusiveRecoveryOwner Owner =>
             new(OperationId, _operation, CovenantOperationGateFixture.Digest(7));
 
-        private LongRunningOperation Operation(CovenantResetPhase phase)
+        /// <summary>
+        /// The durable row an erasure resumes from: one committed launch, and nothing about progress.
+        /// </summary>
+        /// <remarks>
+        /// The phase a run re-enters at is handed to the coordinator rather than encoded here, because
+        /// a launch records only what was committed to. A row that also carried the phase would be a
+        /// second authority for a fact the authenticated journal now owns, and the coordinator would
+        /// have two answers to choose between on the first occasion they disagreed.
+        ///
+        /// <para>The preselected target is the very generation the faked transition goes on to stamp,
+        /// so the row and the run describe one plan rather than two that happen to run together.</para>
+        /// </remarks>
+        private LongRunningOperation Operation()
         {
 
-            CovenantErasureCheckpointState checkpoint = new(
-                OperationId,
-                _operation,
-                CovenantOperationGateFixture.Digest(7),
-                phase);
+            string effectDigest = CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
+                CovenantOperationGateFixture.Digest(7));
 
             (int version, byte[] payload, string kind, LongRunningOperationRecoveryPolicy policy) =
                 _operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
                     ? (
-                        DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+                        DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
                         CovenantRecoveryCheckpointCodec.Encode(
-                            new DataRetentionFactoryResetCheckpointV1(
-                                DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                                checkpoint.OperationId,
-                                CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
-                                    checkpoint.EffectDigest),
-                                checkpoint.Operation,
-                                checkpoint.Phase)),
+                            new DataRetentionFactoryTransitionLaunchV2(
+                                DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                                OperationId,
+                                LongRunningOperationKinds.DataRetentionFactoryReset,
+                                nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
+                                _operation,
+                                effectDigest,
+                                CovenantOperationGateFixture.DatasetGeneration,
+                                CandidateGeneration,
+                                SourceEpochs,
+                                TargetEpochs,
+                                StartingRevision: 0)),
                         LongRunningOperationKinds.DataRetentionFactoryReset,
                         LongRunningOperationRecoveryPolicy.RestartIdempotently)
                     : (
-                        DataRetentionMutationCheckpointV3.CurrentVersion,
+                        CovenantOfflineTransitionLaunchV4.CurrentVersion,
                         CovenantRecoveryCheckpointCodec.Encode(
-                            new DataRetentionMutationCheckpointV3(
-                                DataRetentionMutationCheckpointV3.CurrentVersion,
-                                "reset-memory",
-                                ((int)MemoryResetScope.Covenant).ToString(
-                                    System.Globalization.CultureInfo.InvariantCulture),
-                                new CovenantResetEffectArmV1(
-                                    checkpoint.OperationId,
-                                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
-                                        checkpoint.EffectDigest),
-                                    checkpoint.Operation,
-                                    checkpoint.Phase))),
+                            new CovenantOfflineTransitionLaunchV4(
+                                CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                                OperationId,
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+                                _operation,
+                                effectDigest,
+                                CovenantOperationGateFixture.DatasetGeneration,
+                                CandidateGeneration,
+                                SourceEpochs,
+                                TargetEpochs,
+                                StartingRevision: 0)),
                         LongRunningOperationKinds.DataRetentionMutation,
                         LongRunningOperationRecoveryPolicy.ReconcileAndComplete);
 
@@ -2075,6 +2104,26 @@ public sealed class CovenantErasureCoordinatorTests
             return Task.FromResult(Result<CovenantDisclosureExposure>.Success(CurrentExposure()));
 
         }
+
+        /// <summary>
+        /// The canonical source tuple a launch binds to, answered as the one this harness's durable
+        /// launch already names.
+        /// </summary>
+        /// <remarks>
+        /// A double that invented a fresh generation per call would describe an installation whose
+        /// canonical state moved between the plan and the row it was written into — the one condition
+        /// an offline transition may never be resumed across — and every test here would then be
+        /// exercising a launch no live installation could have produced.
+        /// </remarks>
+        public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<CovenantOfflineTransitionSourceState>.Success(
+                    new CovenantOfflineTransitionSourceState(
+                        CovenantOperationGateFixture.DatasetGeneration,
+                        SourceEpochs.AcceleratorEpoch,
+                        SourceEpochs.KeyReclamationEpoch,
+                        SourceEpochs.EnvelopeKeyEpoch)));
 
         private CovenantDisclosureExposure CurrentExposure() =>
             ExternalDisclosuresNotRevocable

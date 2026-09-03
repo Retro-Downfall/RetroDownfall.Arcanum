@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Security.Cryptography;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -31,6 +30,7 @@ internal sealed class CovenantResetCheckpointInitiator(
     ICovenantErasureEffectDigestCalculator effectDigests,
     CovenantHealthyCatalogErasureGuard healthyCatalog,
     ICovenantOperationGate operationGate,
+    ICovenantErasureInventorySource inventory,
     TimeProvider timeProvider)
 {
 
@@ -107,6 +107,27 @@ internal sealed class CovenantResetCheckpointInitiator(
 
     }
 
+    /// <summary>The preselected half of a launch: the one target this transition may stamp.</summary>
+    private readonly record struct CovenantOfflineTransitionTarget(
+        Guid DatasetGeneration,
+        CovenantOfflineTransitionEpochsV1 Epochs);
+
+    /// <summary>Everything a launch shape needs, gathered once so the two arms differ only in shape.</summary>
+    private readonly record struct CovenantOfflineTransitionLaunchInputs(
+        Guid OperationId,
+        CovenantDigest EffectDigest,
+        LongRunningOperationRecoveryPolicy RecoveryPolicy,
+        CovenantOfflineTransitionSourceState Source,
+        CovenantOfflineTransitionTarget Target,
+        long StartingRevision)
+    {
+
+        internal Guid TargetDatasetGeneration => Target.DatasetGeneration;
+
+        internal CovenantOfflineTransitionEpochsV1 TargetEpochs => Target.Epochs;
+
+    }
+
     /// <summary>
     /// Commits the <c>InventoryPrepared</c> checkpoint of a Covenant memory reset.
     /// </summary>
@@ -125,17 +146,22 @@ internal sealed class CovenantResetCheckpointInitiator(
                 requestedOperationId,
                 CovenantExclusiveOperation.CovenantReset,
                 LongRunningOperationKinds.DataRetentionMutation,
-                DataRetentionMutationCheckpointV3.CurrentVersion,
-                (operationId, digest) => CovenantRecoveryCheckpointCodec.Encode(
-                    new DataRetentionMutationCheckpointV3(
-                        DataRetentionMutationCheckpointV3.CurrentVersion,
-                        Subtype: "reset-memory",
-                        Target: ((int)memoryScope).ToString(CultureInfo.InvariantCulture),
-                        new CovenantResetEffectArmV1(
-                            operationId,
-                            CovenantRecoveryCheckpointCodec.EncodeEffectDigest(digest),
-                            CovenantExclusiveOperation.CovenantReset,
-                            CovenantResetPhaseMachine.First))),
+                CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                static launch => Launchable(
+                    new CovenantOfflineTransitionLaunchV4(
+                        CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                        launch.OperationId,
+                        LongRunningOperationKinds.DataRetentionMutation,
+                        launch.RecoveryPolicy.ToString(),
+                        CovenantExclusiveOperation.CovenantReset,
+                        CovenantRecoveryCheckpointCodec.EncodeEffectDigest(launch.EffectDigest),
+                        launch.Source.DatasetGeneration,
+                        launch.TargetDatasetGeneration,
+                        Epochs(launch.Source),
+                        launch.TargetEpochs,
+                        launch.StartingRevision),
+                    CovenantRecoveryCheckpointCodec.IsLaunchable,
+                    CovenantRecoveryCheckpointCodec.Encode),
                 cancellationToken)
             : Task.FromResult(
                 Result<GateAdmission>.Failure(
@@ -261,14 +287,22 @@ internal sealed class CovenantResetCheckpointInitiator(
             requestedOperationId,
             CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
             LongRunningOperationKinds.DataRetentionFactoryReset,
-            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-            static (operationId, digest) => CovenantRecoveryCheckpointCodec.Encode(
-                new DataRetentionFactoryResetCheckpointV1(
-                    DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                    operationId,
-                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(digest),
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+            static launch => Launchable(
+                new DataRetentionFactoryTransitionLaunchV2(
+                    DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                    launch.OperationId,
+                    LongRunningOperationKinds.DataRetentionFactoryReset,
+                    launch.RecoveryPolicy.ToString(),
                     CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                    CovenantResetPhaseMachine.First)),
+                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(launch.EffectDigest),
+                    launch.Source.DatasetGeneration,
+                    launch.TargetDatasetGeneration,
+                    Epochs(launch.Source),
+                    launch.TargetEpochs,
+                    launch.StartingRevision),
+                CovenantRecoveryCheckpointCodec.IsLaunchable,
+                CovenantRecoveryCheckpointCodec.Encode),
             cancellationToken).ConfigureAwait(false);
 
     }
@@ -281,7 +315,7 @@ internal sealed class CovenantResetCheckpointInitiator(
         CovenantExclusiveOperation exclusiveOperation,
         string kind,
         int checkpointVersion,
-        Func<Guid, CovenantDigest, byte[]> encode,
+        Func<CovenantOfflineTransitionLaunchInputs, Result<byte[]>> encode,
         CancellationToken cancellationToken)
     {
 
@@ -334,6 +368,65 @@ internal sealed class CovenantResetCheckpointInitiator(
 
         }
 
+        // Read under the caller's still-live planning lease, so the tuple cannot move between the
+        // read and the commit: a competing exclusive acquisition has to close admission and wait for
+        // that lease before it can touch the canonical singleton.
+        Result<CovenantOfflineTransitionSourceState> read = await inventory
+            .ReadOfflineTransitionSourceStateAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (read.IsFailure)
+        {
+
+            return Result<GateAdmission>.Failure(read.Error);
+
+        }
+
+        // The source tuple and the effect digest describe the same plan or they describe two, and a
+        // launch that bound one generation while its digest was computed over another would verify a
+        // replaced family against a plan nobody made.
+        if (read.Value.DatasetGeneration != effect.DatasetGeneration)
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "This erasure plan and the canonical source state it would launch against name "
+                    + "different datasets.");
+
+        }
+
+        // Read immediately before the commit rather than trusting the instance the caller passed in:
+        // a lease renewal advances the revision, and a launch that recorded a stale one would name a
+        // revision the journal could never be bound past.
+        LongRunningOperation? current = await operations
+            .GetAsync(operation.Id, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (current is null || !string.Equals(current.LeaseOwner, ownerId, StringComparison.Ordinal))
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "This erasure no longer holds the durable operation it was asked to prepare.");
+
+        }
+
+        Result<byte[]> payload = encode(
+            new CovenantOfflineTransitionLaunchInputs(
+                operation.Id,
+                derived.Value,
+                current.RecoveryPolicy,
+                read.Value,
+                Preselect(read.Value),
+                current.Revision));
+
+        if (payload.IsFailure)
+        {
+
+            return Result<GateAdmission>.Failure(payload.Error);
+
+        }
+
         return await GateAdmission.CommitInventoryAsync(
             operations,
             operation,
@@ -341,11 +434,55 @@ internal sealed class CovenantResetCheckpointInitiator(
             new CovenantExclusiveRecoveryOwner(operation.Id, exclusiveOperation, derived.Value),
             kind,
             checkpointVersion,
-            encode(operation.Id, derived.Value),
+            payload.Value,
             timeProvider.GetUtcNow(),
             cancellationToken).ConfigureAwait(false);
 
     }
+
+    /// <summary>
+    /// The one target this transition will ever stamp, chosen before it can close anything.
+    /// </summary>
+    /// <remarks>
+    /// Preselected rather than generated inside the canonical transaction because that transaction
+    /// stamps a generation and advances all three epochs in one statement: a recovery pass that found
+    /// the family already replaced could not otherwise tell its own commit from an unrelated one.
+    ///
+    /// <para>The generation is cryptographically random for the same reason the canonical installer's
+    /// is — it is compared by equality across processes and snapshots, and a value predictable from
+    /// the last one would let a stale reader guess its way past that comparison. Each epoch is the
+    /// successor of its own source rather than of some source, so a transposed pair cannot satisfy a
+    /// rule that only asked whether every target was one more than something.</para>
+    /// </remarks>
+    private static CovenantOfflineTransitionTarget Preselect(CovenantOfflineTransitionSourceState source) =>
+        new(
+            new Guid(RandomNumberGenerator.GetBytes(16)),
+            new CovenantOfflineTransitionEpochsV1(
+                source.AcceleratorEpoch + 1,
+                source.KeyReclamationEpoch + 1,
+                source.EnvelopeKeyEpoch + 1));
+
+    private static CovenantOfflineTransitionEpochsV1 Epochs(CovenantOfflineTransitionSourceState source) =>
+        new(source.AcceleratorEpoch, source.KeyReclamationEpoch, source.EnvelopeKeyEpoch);
+
+    /// <summary>
+    /// Encodes a launch only if it is one the decoder would accept back.
+    /// </summary>
+    /// <remarks>
+    /// The predicate the codec already uses is the predicate applied here, rather than a second list
+    /// of the same rules. Two rules about what a launch is would agree on the day they were written
+    /// and diverge on the first change, and the half that disagreed would be the half that committed
+    /// a destructive plan the other half could not read back.
+    /// </remarks>
+    private static Result<byte[]> Launchable<TLaunch>(
+        TLaunch launch,
+        Func<TLaunch, bool> isLaunchable,
+        Func<TLaunch, byte[]> encode) =>
+        isLaunchable(launch)
+            ? Result<byte[]>.Success(encode(launch))
+            : new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "The preselected offline-transition launch is not one this build would read back.");
 
     /// <summary>
     /// The requested arm's digest has to equal the normalized identity row's.

@@ -280,14 +280,17 @@ internal interface ICovenantErasureInventorySource
     Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
         CancellationToken cancellationToken);
 
+    Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>
 /// The immutable facts a durable erasure checkpoint carries, whichever shape recorded them.
 /// </summary>
 /// <remarks>
-/// A Covenant reset writes <c>DataRetentionMutationCheckpointV3</c> and a healthy-catalog factory
-/// erasure writes <c>DataRetentionFactoryResetCheckpointV1</c>. The two shapes differ because their
+/// A Covenant reset commits <c>CovenantOfflineTransitionLaunchV4</c> and a healthy-catalog factory
+/// erasure commits <c>DataRetentionFactoryTransitionLaunchV2</c>. The two shapes differ because their
 /// journal headers do, but the four facts an erasure resumes from are identical, and one projection
 /// is what lets a single coordinator own both without a second phase machine (§10.20.4).
 /// </remarks>
@@ -304,7 +307,7 @@ internal sealed record CovenantErasureCheckpointState(
     public CovenantExclusiveRecoveryOwner Owner => new(OperationId, Operation, EffectDigest);
 
     /// <summary>
-    /// Projects the Covenant arm of a version-3 retention mutation journal.
+    /// Projects the launch a retention-mutation row commits when that mutation is a Covenant reset.
     /// </summary>
     /// <remarks>
     /// <paramref name="operationId"/> is the durable server operation the row belongs to, and the
@@ -314,77 +317,79 @@ internal sealed record CovenantErasureCheckpointState(
     /// holds at one.
     ///
     /// <para><paramref name="describesCovenantErasure"/> separates the two failures that must not be
-    /// reported as one. A version-3 row carrying no Covenant arm is an ordinary retention mutation
-    /// that closed nothing, and its remedy is ordinary reconciliation; a row that carries an arm this
-    /// build cannot resume has admission closed behind it, and its remedy is an operator. Collapsing
-    /// them would tell somebody to leave a stuck ordinary mutation alone forever.</para>
+    /// reported as one. An ordinary retention mutation closed nothing, and its remedy is ordinary
+    /// reconciliation; a launch this build cannot resume has admission closed behind it, and its
+    /// remedy is an operator. Collapsing them would tell somebody to leave a stuck ordinary mutation
+    /// alone forever.</para>
+    ///
+    /// <para>The row's own version decides which of those two it is, rather than whether the payload
+    /// happens to decode. An ordinary mutation's journal is a different shape under a different
+    /// version, so reading a decode failure as "erasure" would park every ordinary mutation whose
+    /// payload this build could not read for any reason at all.</para>
     /// </remarks>
     public static Result<CovenantErasureCheckpointState> FromMutationCheckpoint(
         Guid operationId,
+        int checkpointVersion,
         ReadOnlySpan<byte> payload,
         out bool describesCovenantErasure)
     {
 
-        // Fail closed: unknown counts as an erasure. A payload that would not decode cannot say
-        // whether it closed admission, and treating it as an ordinary mutation would reconcile a row
-        // that may have a half-erased family and a shut gate behind it.
-        describesCovenantErasure = true;
+        describesCovenantErasure =
+            checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion;
 
-        Result<DataRetentionMutationCheckpointV3> decoded =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionMutation(payload);
-
-        if (decoded.IsFailure)
+        if (!describesCovenantErasure)
         {
-
-            return Result<CovenantErasureCheckpointState>.Failure(decoded.Error);
-
-        }
-
-        // A version-3 row with no arm describes a mutation that closed nothing. There is no exclusive
-        // scope to adopt, and inventing one would close a scope this operation never opened.
-        if (decoded.Value.Covenant is not { } arm)
-        {
-
-            describesCovenantErasure = false;
 
             return Unresumable();
 
         }
 
-        Result<CovenantExclusiveRecoveryOwner> owner = CovenantRecoveryCheckpointCodec.RecoveryOwner(arm);
+        Result<CovenantOfflineTransitionLaunchV4> decoded =
+            CovenantRecoveryCheckpointCodec.DecodeCovenantOfflineTransitionLaunch(payload);
 
-        return owner.IsFailure
-            ? Unresumable()
-            : Project(operationId, owner.Value, arm.Phase);
+        return decoded.IsFailure
+            ? Result<CovenantErasureCheckpointState>.Failure(decoded.Error)
+            : Owned(operationId, CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value));
 
     }
 
     /// <summary>
-    /// Projects a version-1 healthy-catalog factory erasure journal.
+    /// Projects the launch a healthy-catalog factory erasure commits.
     /// </summary>
+    /// <remarks>
+    /// The phase is always the first one. A launch records what was committed to, and an offline
+    /// transition's progress past that point lives in the authenticated journal rather than in this
+    /// row — so a projection that read a phase out of the row would be reporting a step the row is no
+    /// longer the authority for.
+    /// </remarks>
     public static Result<CovenantErasureCheckpointState> FromFactoryResetCheckpoint(
         Guid operationId,
+        int checkpointVersion,
         ReadOnlySpan<byte> payload)
     {
 
-        Result<DataRetentionFactoryResetCheckpointV1> decoded =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset(payload);
-
-        if (decoded.IsFailure)
+        if (checkpointVersion != DataRetentionFactoryTransitionLaunchV2.CurrentVersion)
         {
 
-            return Result<CovenantErasureCheckpointState>.Failure(decoded.Error);
+            return Unresumable();
 
         }
 
-        Result<CovenantExclusiveRecoveryOwner> owner =
-            CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value);
+        Result<DataRetentionFactoryTransitionLaunchV2> decoded =
+            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(payload);
 
-        return owner.IsFailure
-            ? Unresumable()
-            : Project(operationId, owner.Value, decoded.Value.Phase);
+        return decoded.IsFailure
+            ? Result<CovenantErasureCheckpointState>.Failure(decoded.Error)
+            : Owned(operationId, CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value));
 
     }
+
+    private static Result<CovenantErasureCheckpointState> Owned(
+        Guid operationId,
+        Result<CovenantExclusiveRecoveryOwner> owner) =>
+        owner.IsFailure
+            ? Unresumable()
+            : Project(operationId, owner.Value, CovenantResetPhaseMachine.First);
 
     private static Result<CovenantErasureCheckpointState> Project(
         Guid operationId,
@@ -1877,16 +1882,20 @@ internal sealed class CovenantErasureCoordinator(
 
             LongRunningOperationKinds.DataRetentionMutation
                 when operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.ReconcileAndComplete
-                    && operation.CheckpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion =>
+                    && operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion =>
                 CovenantErasureCheckpointState.FromMutationCheckpoint(
                     operation.Id,
+                    operation.CheckpointVersion,
                     payload,
                     out _),
 
             LongRunningOperationKinds.DataRetentionFactoryReset
                 when operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.RestartIdempotently
-                    && operation.CheckpointVersion == DataRetentionFactoryResetCheckpointV1.CurrentVersion =>
-                CovenantErasureCheckpointState.FromFactoryResetCheckpoint(operation.Id, payload),
+                    && operation.CheckpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion =>
+                CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
+                    operation.Id,
+                    operation.CheckpointVersion,
+                    payload),
 
             _ => Result<CovenantErasureCheckpointState>.Failure(MaintenanceFailure()),
 

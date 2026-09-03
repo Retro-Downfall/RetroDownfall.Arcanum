@@ -568,11 +568,11 @@ internal sealed partial class DataRetentionService
         }
 
         // Version 0 is the documented legacy arm: no payload, nothing to resume from, restarted
-        // idempotently from durable quarantine state below. Version 1 is a healthy-catalog Covenant
-        // erasure, which cannot be restarted — a factory erasure that already applied its canonical
-        // deletion cannot prove that by inspecting the result, so it is resumed from the exact phase
-        // its checkpoint recorded (§10.20.3).
-        if (operation.CheckpointVersion == DataRetentionFactoryResetCheckpointV1.CurrentVersion)
+        // idempotently from durable quarantine state below. Version 2 is a healthy-catalog Covenant
+        // erasure launch, which cannot be restarted — a factory erasure that already applied its
+        // canonical deletion cannot prove that by inspecting the result, only by comparing it against
+        // the target the launch committed to before it began (§10.20.3).
+        if (operation.CheckpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion)
         {
 
             return await RecoverCovenantFactoryErasureAsync(
@@ -716,6 +716,7 @@ internal sealed partial class DataRetentionService
         Result<CovenantErasureCheckpointState> state =
             CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload);
 
         if (state.IsFailure)

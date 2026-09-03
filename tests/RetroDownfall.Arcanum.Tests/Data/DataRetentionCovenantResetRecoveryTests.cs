@@ -33,34 +33,34 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// Three arms, and each one has a different right answer. A version-0 row never reached its durable
 /// journal and must close, because a parked retention row blocks every later retention operation. A
 /// version-2 row is an ordinary mutation and reconciles exactly as it always did — this build
-/// changed its priority, not its payload. A version-3 row carrying a Covenant arm is an interrupted
-/// erasure: its owner is rebuilt from the checkpoint alone and it parks, because resuming it needs
-/// the exclusive erasure coordinator this build does not have, and restarting it would run a second
-/// dataset replacement over a family whose canonical arm may already be gone (§10.20.3).
+/// changed its priority, not its payload. A version-4 row is an offline-transition launch, and so an
+/// interrupted erasure: its owner is rebuilt from the launch alone and it parks, because resuming it
+/// needs the exclusive erasure coordinator this build does not have, and restarting it would run a
+/// second dataset replacement over a family whose canonical arm may already be gone (§10.20.3).
+///
+/// <para>Every version other than those three is an ordinary mutation as far as this handler is
+/// concerned. The row's own version decides that, rather than whether its payload happens to decode,
+/// so a payload this build cannot read never turns an ordinary mutation into a Covenant
+/// escalation.</para>
 /// </remarks>
 public sealed partial class DataRetentionServiceTests
 {
 
     private static readonly string CovenantResetEffect = new('a', 64);
 
-    private static readonly string CovenantScopeCode =
-        ((int)MemoryResetScope.Covenant).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    /// <summary>
+    /// The generation the launches below bind to, and the one they preselect as their target.
+    /// </summary>
+    /// <remarks>
+    /// Fixed rather than freshly minted per call, because a launch is only launchable when the two
+    /// differ, and a helper that generated both would let a future edit produce a pair that happened
+    /// to satisfy the decoder for a reason no test states.
+    /// </remarks>
+    private static readonly Guid CovenantResetSourceGeneration =
+        Guid.Parse("11111111-1111-4111-8111-111111111111");
 
-    public static TheoryData<CovenantResetPhase> EveryResetPhase()
-    {
-
-        TheoryData<CovenantResetPhase> data = [];
-
-        foreach (CovenantResetPhase phase in CovenantResetPhaseMachine.Ordered)
-        {
-
-            data.Add(phase);
-
-        }
-
-        return data;
-
-    }
+    private static readonly Guid CovenantResetTargetGeneration =
+        Guid.Parse("22222222-2222-4222-8222-222222222222");
 
     [SkippableTheory]
     [InlineData(false)]
@@ -85,7 +85,6 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
             operations,
             factoryReset,
-            CovenantResetPhase.InventoryPrepared,
             startedAt: clock.GetUtcNow().Subtract(TimeSpan.FromMinutes(5)),
             leaseDuration: TimeSpan.FromMinutes(1));
 
@@ -215,8 +214,7 @@ public sealed partial class DataRetentionServiceTests
 
         LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
             operations,
-            factoryReset,
-            CovenantResetPhase.InventoryPrepared);
+            factoryReset);
 
         RecoveryPause pause = new();
 
@@ -307,11 +305,20 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
-    [SkippableTheory]
-
-    [MemberData(nameof(EveryResetPhase))]
-    public async Task RecoverMutationAsync_FromEveryV3Phase_RunsTheCoordinatorAndCompletes(
-        CovenantResetPhase phase)
+    /// <summary>
+    /// A committed launch is resumed by running the coordinator, and the row still holds that exact
+    /// launch when the run is over.
+    /// </summary>
+    /// <remarks>
+    /// The launch is the one thing the row is still the authority for. It states which target this
+    /// operation bound itself to before it closed anything, and a resumed run that rewrote the row
+    /// would destroy the only durable record of which generation a half-replaced family is supposed
+    /// to arrive at — which is exactly the question a later pass has to answer to tell its own
+    /// canonical commit from somebody else's. Progress past the launch lives in the authenticated
+    /// journal, so there is no phase left in the row for a resumed run to advance.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RecoverMutationAsync_FromACovenantLaunch_RunsTheCoordinatorAndCompletes()
     {
 
         RequireSqlCipher();
@@ -320,11 +327,14 @@ public sealed partial class DataRetentionServiceTests
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
 
-        LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations, phase);
+        LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations);
 
         DataRetentionService service = CreateService(
             operationStore: operations,
-            erasureCoordinator: RecoveryCoordinator(operations, operation, phase));
+            erasureCoordinator: RecoveryCoordinator(
+                operations,
+                operation,
+                CovenantResetPhaseMachine.First));
 
         LongRunningOperationRecoveryResult result = await service.RecoverMutationAsync(
             (await operations.GetAsync(operation.Id))!,
@@ -336,35 +346,33 @@ public sealed partial class DataRetentionServiceTests
 
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
-        // The coordinator durably advances every completed storage step. The recovery handler only
-        // reports Completed; the outer reconciler owns the row's terminal transition.
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, after.CheckpointVersion);
+        // The recovery handler only reports Completed; the outer reconciler owns the row's terminal
+        // transition, and the launch it committed to outlives the run either way.
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, after.CheckpointVersion);
 
         Assert.Equal(
-            CovenantResetPhase.ReopenedVerified,
+            CovenantResetTargetGeneration,
             CovenantRecoveryCheckpointCodec
-                .DecodeDataRetentionMutation(after.CheckpointPayload!)
+                .DecodeCovenantOfflineTransitionLaunch(after.CheckpointPayload!)
                 .Value
-                .Covenant!
-                .Phase);
+                .TargetDatasetGeneration);
 
     }
 
     /// <summary>
-    /// The handler rebuilds the owner itself, from the payload it decoded, and reports the exact
-    /// phase it found.
+    /// The handler rebuilds the owner itself, from the launch it decoded, and reports the phase that
+    /// launch projects.
     /// </summary>
     /// <remarks>
     /// Asserted through the log rather than the result code, because every failure of a Covenant
-    /// erasure deliberately carries the same single code. The recorded phase is the one thing that
-    /// distinguishes a decoded, adopted checkpoint from a refused one, and without this the whole
-    /// method could be replaced by a constant return.
+    /// erasure deliberately carries the same single code. The reported phase is the one thing that
+    /// distinguishes a decoded, adopted launch from a refused one, and without this the whole method
+    /// could be replaced by a constant return. A launch always projects the first phase — it records
+    /// what was committed to, not how far the transition got — so the constant this pins is the phase
+    /// machine's own, never a literal repeated here.
     /// </remarks>
-    [SkippableTheory]
-
-    [MemberData(nameof(EveryResetPhase))]
-    public async Task RecoverMutationAsync_FromEveryV3Phase_AdoptsTheCheckpointAndReportsItsPhase(
-        CovenantResetPhase phase)
+    [SkippableFact]
+    public async Task RecoverMutationAsync_FromACovenantLaunch_AdoptsTheLaunchAndReportsItsPhase()
     {
 
         RequireSqlCipher();
@@ -373,14 +381,17 @@ public sealed partial class DataRetentionServiceTests
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
 
-        LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations, phase);
+        LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations);
 
         RecordingLogger<DataRetentionService> log = new();
 
         LongRunningOperationRecoveryResult result = await CreateService(
             operationStore: operations,
             logger: log,
-            erasureCoordinator: RecoveryCoordinator(operations, operation, phase)).RecoverMutationAsync(
+            erasureCoordinator: RecoveryCoordinator(
+                operations,
+                operation,
+                CovenantResetPhaseMachine.First)).RecoverMutationAsync(
                 (await operations.GetAsync(operation.Id))!,
                 CancellationToken.None);
 
@@ -390,18 +401,21 @@ public sealed partial class DataRetentionServiceTests
             log.Messages,
             message => message.Contains("Covenant reset was interrupted", StringComparison.Ordinal));
 
-        Assert.Contains(phase.ToString(), adopted, StringComparison.Ordinal);
+        Assert.Contains(
+            CovenantResetPhaseMachine.First.ToString(),
+            adopted,
+            StringComparison.Ordinal);
 
         Assert.Contains(operation.Id.ToString(), adopted, StringComparison.Ordinal);
 
     }
 
     /// <summary>
-    /// A V3 arm naming another operation is refused rather than adopted. Adopting it would hand a
+    /// A launch naming another operation is refused rather than adopted. Adopting it would hand a
     /// closed scope to an operation that never closed it.
     /// </summary>
     [SkippableFact]
-    public async Task RecoverMutationAsync_WithV3ArmNamingAnotherOperation_RefusesWithoutAdopting()
+    public async Task RecoverMutationAsync_WithALaunchNamingAnotherOperation_RefusesWithoutAdopting()
     {
 
         RequireSqlCipher();
@@ -412,97 +426,92 @@ public sealed partial class DataRetentionServiceTests
 
         LongRunningOperation operation = await SeedCheckpointAsync(
             operations,
-            DataRetentionMutationCheckpointV3.CurrentVersion,
-            payload: null,
-            checkpointFactory: _ => CovenantRecoveryCheckpointCodec.Encode(
-                new DataRetentionMutationCheckpointV3(
-                    DataRetentionMutationCheckpointV3.CurrentVersion,
-                    Subtype: "reset-memory",
-                    Target: CovenantScopeCode,
-                    new CovenantResetEffectArmV1(
-                        Guid.Parse("deadbeef-dead-4eef-8eef-deadbeefdead"),
-                        CovenantResetEffect,
-                        CovenantExclusiveOperation.CovenantReset,
-                        CovenantResetPhase.CanonicalApplied))));
-
-        RecordingLogger<DataRetentionService> log = new();
-
-        LongRunningOperationRecoveryResult result =
-            await CreateService(operationStore: operations, logger: log).RecoverMutationAsync(
-                (await operations.GetAsync(operation.Id))!,
-                CancellationToken.None);
-
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
-
-        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
-
-        Assert.DoesNotContain(
-            log.Messages,
-            message => message.Contains("Covenant reset was interrupted", StringComparison.Ordinal));
-
-    }
-
-    /// <summary>
-    /// A V3 row whose payload this build cannot read parks rather than being abandoned. Abandoning
-    /// would discard the only durable record that a family is half erased.
-    /// </summary>
-    [SkippableFact]
-    public async Task RecoverMutationAsync_WithUnreadableV3Payload_ParksWithoutAdopting()
-    {
-
-        RequireSqlCipher();
-
-        LongRunningOperationStore operations = new(
-            _db!,
-            TestOrdinaryConnectionFactory.For(_db!));
-
-        LongRunningOperation operation = await SeedCheckpointAsync(
-            operations,
-            DataRetentionMutationCheckpointV3.CurrentVersion,
-            "not a checkpoint"u8.ToArray());
-
-        RecordingLogger<DataRetentionService> log = new();
-
-        LongRunningOperationRecoveryResult result =
-            await CreateService(operationStore: operations, logger: log).RecoverMutationAsync(
-                (await operations.GetAsync(operation.Id))!,
-                CancellationToken.None);
-
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
-
-        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
-
-        Assert.DoesNotContain(
-            log.Messages,
-            message => message.Contains("Covenant reset was interrupted", StringComparison.Ordinal));
-
-    }
-
-    /// <summary>
-    /// A V3 row with no Covenant arm closed no admission, so it has no exclusive scope to adopt and
-    /// no erasure to attribute to it. It is an ordinary reconciliation failure rather than a
-    /// Covenant escalation, and the two codes must stay distinguishable.
-    /// </summary>
-    [SkippableFact]
-    public async Task RecoverMutationAsync_WithV3ArmAbsent_IsAnOrdinaryReconciliationFailure()
-    {
-
-        RequireSqlCipher();
-
-        LongRunningOperationStore operations = new(
-            _db!,
-            TestOrdinaryConnectionFactory.For(_db!));
-
-        LongRunningOperation operation = await SeedCheckpointAsync(
-            operations,
-            DataRetentionMutationCheckpointV3.CurrentVersion,
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
             payload: null,
             checkpointFactory: static _ => CovenantRecoveryCheckpointCodec.Encode(
-                new DataRetentionMutationCheckpointV3(
-                    DataRetentionMutationCheckpointV3.CurrentVersion,
-                    Subtype: "delete-session",
-                    Target: "f0f0f0f0f0f04f0f8f0f0f0f0f0f0f0f",
-                    Covenant: null)));
+                CovenantResetLaunch(Guid.Parse("deadbeef-dead-4eef-8eef-deadbeefdead"))));
+
+        RecordingLogger<DataRetentionService> log = new();
+
+        LongRunningOperationRecoveryResult result =
+            await CreateService(operationStore: operations, logger: log).RecoverMutationAsync(
+                (await operations.GetAsync(operation.Id))!,
+                CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
+
+        Assert.DoesNotContain(
+            log.Messages,
+            message => message.Contains("Covenant reset was interrupted", StringComparison.Ordinal));
+
+    }
+
+    /// <summary>
+    /// A launch row whose payload this build cannot read parks rather than being abandoned.
+    /// Abandoning would discard the only durable record that a family is half erased.
+    /// </summary>
+    [SkippableFact]
+    public async Task RecoverMutationAsync_WithAnUnreadableLaunchPayload_ParksWithoutAdopting()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation operation = await SeedCheckpointAsync(
+            operations,
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
+            "not a launch"u8.ToArray());
+
+        RecordingLogger<DataRetentionService> log = new();
+
+        LongRunningOperationRecoveryResult result =
+            await CreateService(operationStore: operations, logger: log).RecoverMutationAsync(
+                (await operations.GetAsync(operation.Id))!,
+                CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
+
+        Assert.DoesNotContain(
+            log.Messages,
+            message => message.Contains("Covenant reset was interrupted", StringComparison.Ordinal));
+
+    }
+
+    /// <summary>
+    /// A retention-mutation row that is not a launch closed no admission, so it has no exclusive
+    /// scope to adopt and no erasure to attribute to it. It is an ordinary reconciliation failure
+    /// rather than a Covenant escalation, and the two codes must stay distinguishable.
+    /// </summary>
+    /// <remarks>
+    /// The row's own version answers this, rather than whether its payload happens to decode. An
+    /// ordinary mutation's journal is a different shape under a different version, so a build that
+    /// read "cannot decode" as "erasure" would park every ordinary mutation whose payload it could
+    /// not read for any reason at all — and a parked retention row blocks every later retention
+    /// operation forever, which is the one outcome an ordinary mutation must never cause.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RecoverMutationAsync_WithANonLaunchCheckpointVersion_IsAnOrdinaryReconciliationFailure()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
+
+        // The retired Covenant-arm version, which this build neither writes nor reads back as a
+        // launch. Its bytes are never parsed, so the payload only has to be something.
+        LongRunningOperation operation = await SeedCheckpointAsync(
+            operations,
+            checkpointVersion: 3,
+            "not a launch"u8.ToArray());
 
         LongRunningOperationRecoveryResult result =
             await CreateService(operationStore: operations).RecoverMutationAsync(
@@ -517,8 +526,8 @@ public sealed partial class DataRetentionServiceTests
 
     /// <summary>
     /// The V2 arm is untouched by this slice. An ordinary reset-memory journal written before the
-    /// V3 shape existed still decodes, still reconciles against the database that is the commit
-    /// authority, and still completes — it never falls through the new V3 branch and never runs a
+    /// launch shape existed still decodes, still reconciles against the database that is the commit
+    /// authority, and still completes — it never falls through the launch branch and never runs a
     /// second dataset replacement.
     /// </summary>
     [SkippableFact]
@@ -551,7 +560,7 @@ public sealed partial class DataRetentionServiceTests
     }
 
     /// <summary>
-    /// A version-0 row still closes. The V3 branch must not capture the window between the
+    /// A version-0 row still closes. The launch branch must not capture the window between the
     /// single-flight insert and the first journal, because parking it would wedge retention.
     /// </summary>
     [SkippableFact]
@@ -585,11 +594,18 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
-    [SkippableTheory]
-
-    [MemberData(nameof(EveryResetPhase))]
-    public async Task RecoverFactoryResetAsync_FromEveryV1Phase_RunsTheCoordinatorAndCompletes(
-        CovenantResetPhase phase)
+    /// <summary>
+    /// A committed factory launch is resumed on the same terms, and its ordinary continuation still
+    /// runs.
+    /// </summary>
+    /// <remarks>
+    /// The surviving ordinary session is the observable half of that continuation: a factory erasure
+    /// resumed from its launch has not yet reached the point where handles close, so the deletion the
+    /// continuation owns is still ahead of it and must happen. A resumed run that skipped it would
+    /// present a half-erased state root as a working installation.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RecoverFactoryResetAsync_FromAFactoryLaunch_RunsTheCoordinatorAndCompletes()
     {
 
         RequireSqlCipher();
@@ -600,23 +616,14 @@ public sealed partial class DataRetentionServiceTests
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
 
-        LongRunningOperation operation = await SeedCheckpointAsync(
-            operations,
-            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-            payload: null,
-            LongRunningOperationKinds.DataRetentionFactoryReset,
-            LongRunningOperationRecoveryPolicy.RestartIdempotently,
-            checkpointFactory: id => CovenantRecoveryCheckpointCodec.Encode(
-                new DataRetentionFactoryResetCheckpointV1(
-                    DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                    id,
-                    CovenantResetEffect,
-                    CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                    phase)));
+        LongRunningOperation operation = await SeedFactoryTransitionCheckpointAsync(operations);
 
         DataRetentionService service = CreateService(
             operationStore: operations,
-            erasureCoordinator: RecoveryCoordinator(operations, operation, phase));
+            erasureCoordinator: RecoveryCoordinator(
+                operations,
+                operation,
+                CovenantResetPhaseMachine.First));
 
         LongRunningOperationRecoveryResult result = await service.RecoverFactoryResetAsync(
             (await operations.GetAsync(operation.Id))!,
@@ -627,17 +634,15 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
         Assert.Equal(
-            CovenantResetPhase.ReopenedVerified,
+            CovenantResetTargetGeneration,
             CovenantRecoveryCheckpointCodec
-                .DecodeDataRetentionFactoryReset(after.CheckpointPayload!)
+                .DecodeDataRetentionFactoryTransitionLaunch(after.CheckpointPayload!)
                 .Value
-                .Phase);
+                .TargetDatasetGeneration);
 
         long ordinarySessions = await _db!.Sessions.LongCountAsync();
 
-        Assert.Equal(
-            phase < CovenantResetPhase.HandlesClosed ? 0 : 1,
-            ordinarySessions);
+        Assert.Equal(0, ordinarySessions);
 
     }
 
@@ -654,19 +659,7 @@ public sealed partial class DataRetentionServiceTests
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
 
-        LongRunningOperation operation = await SeedCheckpointAsync(
-            operations,
-            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-            payload: null,
-            LongRunningOperationKinds.DataRetentionFactoryReset,
-            LongRunningOperationRecoveryPolicy.RestartIdempotently,
-            checkpointFactory: id => CovenantRecoveryCheckpointCodec.Encode(
-                new DataRetentionFactoryResetCheckpointV1(
-                    DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                    id,
-                    CovenantResetEffect,
-                    CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                    CovenantResetPhase.ManagedArtifactsProcessed)));
+        LongRunningOperation operation = await SeedFactoryTransitionCheckpointAsync(operations);
 
         _ = await operations.CreateAsync(
             new LongRunningOperationCreateRequest(
@@ -680,7 +673,7 @@ public sealed partial class DataRetentionServiceTests
             erasureCoordinator: RecoveryCoordinator(
                 operations,
                 operation,
-                CovenantResetPhase.ManagedArtifactsProcessed));
+                CovenantResetPhaseMachine.First));
 
         LongRunningOperationRecoveryResult result = await service.RecoverFactoryResetAsync(
             (await operations.GetAsync(operation.Id))!,
@@ -694,12 +687,14 @@ public sealed partial class DataRetentionServiceTests
 
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
+        // Admission stays closed with the launch intact: the row is still the authority for which
+        // target this erasure bound itself to, and a refused continuation may not spend that.
         Assert.Equal(
-            CovenantResetPhase.ManagedArtifactsProcessed,
+            CovenantResetTargetGeneration,
             CovenantRecoveryCheckpointCodec
-                .DecodeDataRetentionFactoryReset(after.CheckpointPayload!)
+                .DecodeDataRetentionFactoryTransitionLaunch(after.CheckpointPayload!)
                 .Value
-                .Phase);
+                .TargetDatasetGeneration);
 
     }
 
@@ -726,16 +721,14 @@ public sealed partial class DataRetentionServiceTests
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
 
-        LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(
-            operations,
-            CovenantResetPhase.InventoryPrepared);
+        LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations);
 
         LongRunningOperationRecoveryResult result = await CreateService(
             operationStore: operations,
             erasureCoordinator: RecoveryCoordinator(
                 operations,
                 operation,
-                CovenantResetPhase.InventoryPrepared,
+                CovenantResetPhaseMachine.First,
                 disposition)).RecoverMutationAsync(
                     (await operations.GetAsync(operation.Id))!,
                     CancellationToken.None);
@@ -756,19 +749,7 @@ public sealed partial class DataRetentionServiceTests
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
 
-        LongRunningOperation operation = await SeedCheckpointAsync(
-            operations,
-            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-            payload: null,
-            LongRunningOperationKinds.DataRetentionFactoryReset,
-            LongRunningOperationRecoveryPolicy.RestartIdempotently,
-            checkpointFactory: id => CovenantRecoveryCheckpointCodec.Encode(
-                new DataRetentionFactoryResetCheckpointV1(
-                    DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                    id,
-                    CovenantResetEffect,
-                    CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                    CovenantResetPhase.InventoryPrepared)));
+        LongRunningOperation operation = await SeedFactoryTransitionCheckpointAsync(operations);
 
         LongRunningOperation unowned = (await operations.GetAsync(operation.Id))! with
         {
@@ -782,7 +763,7 @@ public sealed partial class DataRetentionServiceTests
             erasureCoordinator: RecoveryCoordinator(
                 operations,
                 operation,
-                CovenantResetPhase.InventoryPrepared)).RecoverFactoryResetAsync(
+                CovenantResetPhaseMachine.First)).RecoverFactoryResetAsync(
                     unowned,
                     CancellationToken.None);
 
@@ -816,9 +797,11 @@ public sealed partial class DataRetentionServiceTests
             == LongRunningOperationKinds.DataRetentionFactoryReset
             ? CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!)
             : CovenantErasureCheckpointState.FromMutationCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!,
                 out _);
 
@@ -854,6 +837,20 @@ public sealed partial class DataRetentionServiceTests
         RecoveryPause? pause = null)
         : ICovenantErasureInventorySource
     {
+
+        /// <summary>
+        /// The same source tuple the seeded launches bind to, so the fake and the durable rows this
+        /// file writes cannot disagree about which dataset is being erased.
+        /// </summary>
+        public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<CovenantOfflineTransitionSourceState>.Success(
+                    new CovenantOfflineTransitionSourceState(
+                        CovenantResetSourceGeneration,
+                        1,
+                        1,
+                        1)));
 
         public async Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
@@ -1017,30 +1014,11 @@ public sealed partial class DataRetentionServiceTests
     private async Task<LongRunningOperation> SeedRecoveryCheckpointAsync(
         LongRunningOperationStore operations,
         bool factoryReset,
-        CovenantResetPhase phase,
         DateTimeOffset? startedAt = null,
         TimeSpan? leaseDuration = null) =>
         factoryReset
-            ? await SeedCheckpointAsync(
-                operations,
-                DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                payload: null,
-                kind: LongRunningOperationKinds.DataRetentionFactoryReset,
-                policy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
-                checkpointFactory: id => CovenantRecoveryCheckpointCodec.Encode(
-                    new DataRetentionFactoryResetCheckpointV1(
-                        DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                        id,
-                        CovenantResetEffect,
-                        CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                        phase)),
-                startedAt: startedAt,
-                leaseDuration: leaseDuration)
-            : await SeedCovenantResetCheckpointAsync(
-                operations,
-                phase,
-                startedAt,
-                leaseDuration);
+            ? await SeedFactoryTransitionCheckpointAsync(operations, startedAt, leaseDuration)
+            : await SeedCovenantResetCheckpointAsync(operations, startedAt, leaseDuration);
 
     private sealed class RecoveryPause
     {
@@ -1351,25 +1329,70 @@ public sealed partial class DataRetentionServiceTests
 
     private async Task<LongRunningOperation> SeedCovenantResetCheckpointAsync(
         LongRunningOperationStore operations,
-        CovenantResetPhase phase,
         DateTimeOffset? startedAt = null,
         TimeSpan? leaseDuration = null) =>
         await SeedCheckpointAsync(
             operations,
-            DataRetentionMutationCheckpointV3.CurrentVersion,
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
             payload: null,
-            checkpointFactory: id => CovenantRecoveryCheckpointCodec.Encode(
-                new DataRetentionMutationCheckpointV3(
-                    DataRetentionMutationCheckpointV3.CurrentVersion,
-                    Subtype: "reset-memory",
-                    Target: CovenantScopeCode,
-                    new CovenantResetEffectArmV1(
-                        id,
-                        CovenantResetEffect,
-                        CovenantExclusiveOperation.CovenantReset,
-                        phase))),
+            checkpointFactory: static id => CovenantRecoveryCheckpointCodec.Encode(
+                CovenantResetLaunch(id)),
             startedAt: startedAt,
             leaseDuration: leaseDuration);
+
+    private async Task<LongRunningOperation> SeedFactoryTransitionCheckpointAsync(
+        LongRunningOperationStore operations,
+        DateTimeOffset? startedAt = null,
+        TimeSpan? leaseDuration = null) =>
+        await SeedCheckpointAsync(
+            operations,
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+            payload: null,
+            kind: LongRunningOperationKinds.DataRetentionFactoryReset,
+            policy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            checkpointFactory: static id => CovenantRecoveryCheckpointCodec.Encode(
+                FactoryTransitionLaunch(id)),
+            startedAt: startedAt,
+            leaseDuration: leaseDuration);
+
+    /// <summary>
+    /// The launch a Covenant reset commits, built exactly as the initiator builds it.
+    /// </summary>
+    /// <remarks>
+    /// Spelled out member by member rather than borrowed from production, because every one of these
+    /// members is a rule the decoder enforces: the ledger kind, the policy's declared name rather
+    /// than its wire code, a canonical lowercase digest, two generations that differ, and three
+    /// target epochs that are each the successor of their own source. A helper that copied whatever
+    /// production produced would pass on the day a rule was dropped.
+    /// </remarks>
+    private static CovenantOfflineTransitionLaunchV4 CovenantResetLaunch(Guid operationId) =>
+        new(
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
+            operationId,
+            LongRunningOperationKinds.DataRetentionMutation,
+            nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+            CovenantExclusiveOperation.CovenantReset,
+            CovenantResetEffect,
+            CovenantResetSourceGeneration,
+            CovenantResetTargetGeneration,
+            new CovenantOfflineTransitionEpochsV1(1, 1, 1),
+            new CovenantOfflineTransitionEpochsV1(2, 2, 2),
+            StartingRevision: 1);
+
+    /// <summary>The launch a healthy-catalog factory erasure commits, on the same terms.</summary>
+    private static DataRetentionFactoryTransitionLaunchV2 FactoryTransitionLaunch(Guid operationId) =>
+        new(
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+            operationId,
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+            nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
+            CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+            CovenantResetEffect,
+            CovenantResetSourceGeneration,
+            CovenantResetTargetGeneration,
+            new CovenantOfflineTransitionEpochsV1(1, 1, 1),
+            new CovenantOfflineTransitionEpochsV1(2, 2, 2),
+            StartingRevision: 1);
 
     /// <summary>
     /// Leaves the row in the exact state a dead process leaves behind: the checkpoint it managed to

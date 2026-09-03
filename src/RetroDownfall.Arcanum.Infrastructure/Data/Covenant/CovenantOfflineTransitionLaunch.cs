@@ -141,6 +141,35 @@ public static partial class CovenantRecoveryCheckpointCodec
             static launch => IsLaunchable(launch));
 
     /// <summary>
+    /// The exclusive owner a launch names, rebuilt from the launch and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// The same rule the legacy arms carried: recovery may never consult a live plan, a request body,
+    /// or the request-identity row to fill a field in, because a retry with a changed plan would then
+    /// rebuild an owner matching the closed scope it had no right to adopt.
+    /// </remarks>
+    public static Result<CovenantExclusiveRecoveryOwner> RecoveryOwner(
+        CovenantOfflineTransitionLaunchV4 launch) =>
+        IsLaunchable(launch)
+            ? Result<CovenantExclusiveRecoveryOwner>.Success(
+                new CovenantExclusiveRecoveryOwner(
+                    launch.OperationId,
+                    launch.Operation,
+                    new CovenantDigest(Convert.FromHexString(launch.EffectDigest))))
+            : Unrecoverable<CovenantExclusiveRecoveryOwner>();
+
+    /// <summary>The exclusive owner a factory launch names, on the same terms.</summary>
+    public static Result<CovenantExclusiveRecoveryOwner> RecoveryOwner(
+        DataRetentionFactoryTransitionLaunchV2 launch) =>
+        IsLaunchable(launch)
+            ? Result<CovenantExclusiveRecoveryOwner>.Success(
+                new CovenantExclusiveRecoveryOwner(
+                    launch.OperationId,
+                    launch.Operation,
+                    new CovenantDigest(Convert.FromHexString(launch.EffectDigest))))
+            : Unrecoverable<CovenantExclusiveRecoveryOwner>();
+
+    /// <summary>
     /// Whether this Covenant launch is one the codec would accept from durable storage.
     /// </summary>
     /// <remarks>

@@ -9,7 +9,7 @@ internal sealed class DataRetentionMutationRecoveryHandler(
 
     public string Kind => LongRunningOperationKinds.DataRetentionMutation;
 
-    public int SupportedCheckpointVersion => DataRetentionMutationCheckpointV3.CurrentVersion;
+    public int SupportedCheckpointVersion => CovenantOfflineTransitionLaunchV4.CurrentVersion;
 
     public Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,

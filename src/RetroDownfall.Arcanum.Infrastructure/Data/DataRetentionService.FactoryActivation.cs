@@ -384,7 +384,10 @@ internal sealed partial class DataRetentionService
             }
 
             Result<CovenantErasureCheckpointState> checkpoint =
-                CovenantErasureCheckpointState.FromFactoryResetCheckpoint(committed.Id, payload);
+                CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
+                    committed.Id,
+                    committed.CheckpointVersion,
+                    payload);
 
             if (checkpoint.IsFailure || checkpoint.Value.Owner != prepared.Value.Owner)
             {

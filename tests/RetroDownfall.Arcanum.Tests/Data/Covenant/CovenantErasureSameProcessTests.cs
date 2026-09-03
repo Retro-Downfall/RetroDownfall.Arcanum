@@ -87,6 +87,7 @@ public sealed class CovenantErasureSameProcessTests
         Result<CovenantErasureCheckpointState> checkpoint =
             CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!);
 
         Assert.True(
@@ -322,7 +323,7 @@ public sealed class CovenantErasureSameProcessTests
 
         LongRunningOperation operation = await harness.ReadFactoryOperationAsync();
 
-        Assert.Equal(DataRetentionFactoryResetCheckpointV1.CurrentVersion, operation.CheckpointVersion);
+        Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, operation.CheckpointVersion);
 
         Assert.Equal(LongRunningOperationState.Completed, operation.State);
 
@@ -984,11 +985,12 @@ public sealed class CovenantErasureSameProcessTests
 
             LongRunningOperation active = await harness.ReadResetOperationAsync();
 
-            Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, active.CheckpointVersion);
+            Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, active.CheckpointVersion);
 
             Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
                 .FromMutationCheckpoint(
                     active.Id,
+                    active.CheckpointVersion,
                     active.CheckpointPayload!,
                     out bool describesCovenantErasure);
 
@@ -1071,7 +1073,7 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, operation.TerminalErrorCode);
 
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, operation.CheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
 
         await before.ReadLease.DisposeAsync();
 
@@ -1114,11 +1116,12 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(expectedError, operation.TerminalErrorCode);
 
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, operation.CheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
 
         Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
             .FromMutationCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!,
                 out bool describesCovenantErasure);
 
@@ -1276,7 +1279,7 @@ public sealed class CovenantErasureSameProcessTests
     [InlineData(
         RouteStoreFault.ThrowAfterCheckpoint,
         LongRunningOperationState.ReconciliationRequired,
-        DataRetentionMutationCheckpointV3.CurrentVersion)]
+        CovenantOfflineTransitionLaunchV4.CurrentVersion)]
     public async Task Direct_retention_reset_normalizes_unexpected_exceptions_by_durable_effect_boundary(
         RouteStoreFault fault,
         LongRunningOperationState expectedState,
@@ -1330,7 +1333,7 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
 
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, operation.CheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
 
     }
 
@@ -1385,6 +1388,7 @@ public sealed class CovenantErasureSameProcessTests
         Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
             .FromMutationCheckpoint(
                 parked.Id,
+                parked.CheckpointVersion,
                 parked.CheckpointPayload!,
                 out bool describesCovenantErasure);
 
@@ -1392,7 +1396,10 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.True(checkpoint.IsSuccess, checkpoint.Error.Message);
 
-        Assert.Equal(CovenantResetPhase.ReopenedVerified, checkpoint.Value.Phase);
+        // The row is a launch rather than a progress record, so it projects the first phase however
+        // far the run got: what the finalizer failed after is the journal's to say, and asserting a
+        // later phase here would be asserting that the row still answers a question it no longer owns.
+        Assert.Equal(CovenantResetPhase.InventoryPrepared, checkpoint.Value.Phase);
 
         LongRunningOperationRecoveryResult recovered = await harness.AdoptAndRecoverResetAsync();
 
@@ -1701,7 +1708,9 @@ public sealed class CovenantErasureSameProcessTests
                         provider => new PausingRouteInventory(
                             coordinatorPause,
                             routeFailure is RouteFailure.Rollback
-                                ? new RouteFailureInventory(routeFailure)
+                                ? new RouteFailureInventory(
+                                    routeFailure,
+                                    provider.GetRequiredService<CovenantErasureInventorySource>())
                                 : provider.GetRequiredService<CovenantErasureInventorySource>()));
 
                 }
@@ -1715,7 +1724,9 @@ public sealed class CovenantErasureSameProcessTests
                     services.RemoveAll<ICovenantErasureInventorySource>();
 
                     services.AddScoped<ICovenantErasureInventorySource>(
-                        _ => new RouteFailureInventory(routeFailure));
+                        provider => new RouteFailureInventory(
+                            routeFailure,
+                            provider.GetRequiredService<CovenantErasureInventorySource>()));
 
                 }
 
@@ -2210,6 +2221,7 @@ public sealed class CovenantErasureSameProcessTests
             Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
                 .FromMutationCheckpoint(
                     operation.Id,
+                    operation.CheckpointVersion,
                     operation.CheckpointPayload!,
                     out bool describesCovenantErasure);
 
@@ -2669,6 +2681,10 @@ public sealed class CovenantErasureSameProcessTests
         ICovenantErasureInventorySource inner) : ICovenantErasureInventorySource
     {
 
+        public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+            CancellationToken cancellationToken) =>
+            inner.ReadOfflineTransitionSourceStateAsync(cancellationToken);
+
         public async Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
@@ -2704,8 +2720,24 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    private sealed class RouteFailureInventory(RouteFailure failure) : ICovenantErasureInventorySource
+    /// <summary>
+    /// An inventory that refuses or empties the erasure itself while the launch stays real.
+    /// </summary>
+    /// <remarks>
+    /// The canonical source tuple is read through the real source rather than invented here, because
+    /// the initiator refuses a plan whose source generation differs from the one its effect digest
+    /// was computed over. A double that answered with a generation of its own would fail every one of
+    /// these runs at <c>Covenant.IntegrityFailure</c> before the disposition under test was reached,
+    /// and each would then be passing its own refusal off as the refusal it meant to prove.
+    /// </remarks>
+    private sealed class RouteFailureInventory(
+        RouteFailure failure,
+        ICovenantErasureInventorySource inner) : ICovenantErasureInventorySource
     {
+
+        public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+            CancellationToken cancellationToken) =>
+            inner.ReadOfflineTransitionSourceStateAsync(cancellationToken);
 
         public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
@@ -3300,7 +3332,7 @@ public sealed class CovenantErasureSameProcessTests
         {
 
             if (expectedCheckpointVersion == 0
-                && checkpointVersion == DataRetentionFactoryResetCheckpointV1.CurrentVersion
+                && checkpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion
                 && faults.FactoryCheckpointPause is { } factoryCheckpointPause)
             {
 
@@ -3309,7 +3341,7 @@ public sealed class CovenantErasureSameProcessTests
             }
 
             if (expectedCheckpointVersion == 0
-                && checkpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion)
+                && checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
             {
 
                 if (faults.Fault is RouteStoreFault.ThrowBeforeCheckpoint)
@@ -3362,7 +3394,7 @@ public sealed class CovenantErasureSameProcessTests
 
             if (saved
                 && expectedCheckpointVersion == 0
-                && checkpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion
+                && checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion
                 && faults.Fault is RouteStoreFault.ThrowAfterCheckpoint)
             {
 

@@ -1387,6 +1387,7 @@ internal sealed partial class DataRetentionService(
             Result<CovenantErasureCheckpointState> checkpoint =
                 CovenantErasureCheckpointState.FromMutationCheckpoint(
                     committed.Id,
+                    committed.CheckpointVersion,
                     payload,
                     out bool describesCovenantErasure);
 
@@ -6842,12 +6843,11 @@ internal sealed partial class DataRetentionService(
 
         }
 
-        // A version-3 row is the only one that can carry a Covenant arm, and it is decoded by its own
-        // source-generated codec rather than by the version-2 text journal. Version 2 is untouched:
-        // an ordinary retention mutation still writes and resumes exactly the payload it always did,
-        // so a checkpoint written before this build reconciles without a second dataset replacement
-        // (§10.20.3).
-        if (operation.CheckpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion)
+        // A version-4 row is an offline-transition launch, decoded by its own source-generated codec
+        // rather than by the version-2 text journal. Version 2 is untouched: an ordinary retention
+        // mutation still writes and resumes exactly the payload it always did, so an ordinary
+        // checkpoint reconciles without a second dataset replacement (§10.20.3).
+        if (operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
         {
 
             return await RecoverCovenantResetMutationAsync(
@@ -7000,6 +7000,7 @@ internal sealed partial class DataRetentionService(
         Result<CovenantErasureCheckpointState> state =
             CovenantErasureCheckpointState.FromMutationCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!,
                 out bool describesCovenantErasure);
 
