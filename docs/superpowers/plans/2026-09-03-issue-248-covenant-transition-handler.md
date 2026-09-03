@@ -45,20 +45,20 @@ path-and-mode-bound capabilities.
 **Files:** `CovenantErasureInventorySource.cs`, `CovenantResetCheckpointInitiator.cs`,
 `DataRetentionService.cs`, `DataRetentionService.FactoryActivation.cs`, plus their tests.
 
-- [ ] RED: a test asserting `CovenantErasureInventorySource` can read the complete source tuple, and
+- [x] RED: a test asserting `CovenantErasureInventorySource` can read the complete source tuple, and
       refuses a zero epoch, a ceiling epoch, an absent singleton, and a malformed generation.
-- [ ] GREEN: add `ReadOfflineTransitionSourceStateAsync` through the existing owned-snapshot helper so
+- [x] GREEN: add `ReadOfflineTransitionSourceStateAsync` through the existing owned-snapshot helper so
       no new acquisition construct appears.
-- [ ] RED: a test asserting preselection produces successor epochs member by member and refuses a
+- [x] RED: a test asserting preselection produces successor epochs member by member and refuses a
       target generation equal to the source.
-- [ ] GREEN: add the preselection helper to the initiator.
-- [ ] RED: tests asserting a direct reset commits `CovenantOfflineTransitionLaunchV4` and a factory
+- [x] GREEN: add the preselection helper to the initiator.
+- [x] RED: tests asserting a direct reset commits `CovenantOfflineTransitionLaunchV4` and a factory
       apply commits `DataRetentionFactoryTransitionLaunchV2`, each at `InventoryPrepared`, each
       carrying the tuple and the pre-commit revision.
-- [ ] GREEN: change `PrepareAsync`'s encoder delegate to carry the launch inputs; read
+- [x] GREEN: change `PrepareAsync`'s encoder delegate to carry the launch inputs; read
       `StartingRevision` from a fresh row read; replace both encoder bodies.
-- [ ] GREEN: the factory arm reads the tuple under the still-live read lease.
-- [ ] Update the reread projections in both service call sites to decode the launch.
+- [x] GREEN: the factory arm reads the tuple under the still-live read lease.
+- [x] Update the reread projections in both service call sites to decode the launch.
 
 ### Task 2: Remove the V3 and V1 checkpoint shapes and open the window
 
@@ -66,14 +66,14 @@ path-and-mode-bound capabilities.
 handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoordinator.cs`,
 `CovenantPublicContractInventory.cs`, `DataRetentionService.cs`, `DataRetentionService.FactoryReset.cs`.
 
-- [ ] RED: a test asserting a row at the removed versions is refused content-free rather than throwing.
+- [x] RED: a test asserting a row at the removed versions is refused content-free rather than throwing.
 - [ ] GREEN: delete `DataRetentionMutationCheckpointV3` and `DataRetentionFactoryResetCheckpointV1`,
       their encode and decode arms, and their serialization registrations. Keep the ordinary
       non-Covenant arms and `MinCheckpointVersion: 0`.
 - [ ] GREEN: remove their declarations from the public contract inventory and the durable-shape list.
-- [ ] GREEN: window to 4 and 2; both handlers' supported version to match; the adopter recognizes the
+- [x] GREEN: window to 4 and 2; both handlers' supported version to match; the adopter recognizes the
       new versions; the coordinator's exact-checkpoint check moves with them.
-- [ ] Update the four pinned window assertions and the adopter's seeded rows.
+- [x] Update the four pinned window assertions and the adopter's seeded rows.
 
 ### Task 3: Effect-handler registry and the journal-driven coordinator skeleton
 
@@ -119,13 +119,13 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 **Files:** `CovenantCanonicalErasureTransaction.cs`, `CovenantErasureTransition.cs`,
 `CovenantErasureCoordinator.cs`, `CovenantLocalErasureStorageHealth.cs`, tests.
 
-- [ ] RED: a test asserting the transaction stamps the journaled target rather than minting one.
-- [ ] RED: a test asserting a source mismatch affects zero rows and refuses.
-- [ ] GREEN: accept the target, parameterize the epochs, extend the `WHERE` clause with the full source
+- [x] RED: a test asserting the transaction stamps the journaled target rather than minting one.
+- [x] RED: a test asserting a source mismatch affects zero rows and refuses.
+- [x] GREEN: accept the target, parameterize the epochs, extend the `WHERE` clause with the full source
       tuple, read the generation back inside the transaction, refuse on zero rows.
-- [ ] RED: a test asserting the reseed arm refuses under an offline transition.
-- [ ] GREEN: refuse it.
-- [ ] GREEN: add the missing epoch to the verified candidate state, its SELECT, and its shape validation.
+- [x] RED: a test asserting the reseed arm refuses under an offline transition.
+- [x] GREEN: refuse it.
+- [x] GREEN: add the missing epoch to the verified candidate state, its SELECT, and its shape validation.
 - [ ] RED/GREEN: the three-answer classifier drives the recovery arm — retry, accept, or park.
 
 ### Task 7: Two-revision phase publication and the closed-period write removal
