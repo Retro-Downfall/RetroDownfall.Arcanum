@@ -36,12 +36,90 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
 
     private readonly ArcanumMaintenanceLock _heldInstallationLock;
 
+    /// <summary>
+    /// The proof that one authenticated publication belongs to one committed launch.
+    /// </summary>
+    /// <remarks>
+    /// A private constructor reachable only through <see cref="ForVerifiedPublication"/>, for the same
+    /// reason the admission an initiator issues has one: an ordering nobody can reach around is worth
+    /// more than an ordering everybody has to remember. The admission proves no exclusive scope is
+    /// closed without a committed launch behind it; this proves no phase is published without a
+    /// journal bound to that exact launch. Together they cover both halves of the authority order,
+    /// and neither can be assembled from the other.
+    ///
+    /// <para>It is minted inside the closed period rather than carried in from the initiator, because
+    /// the publication it names does not exist until then: the journal follows the exclusive lease,
+    /// and the lease follows the launch commit. A token minted at the commit could only ever carry a
+    /// promise about a publication, which is not a proof of one.</para>
+    ///
+    /// <para>Deliberately not gated on lifecycle state. A resumed transition legitimately arrives
+    /// already applying, verifying, parked, or reconciling; what has to be true of it is that it is
+    /// this launch's journal, which is what the four checks below ask and all they ask.</para>
+    /// </remarks>
+    internal sealed class ClosingOwner
+    {
+
+        private ClosingOwner(
+            GrimoireOfflineTransitionLaunchBinding launch,
+            GrimoireOfflineTransitionTypedPublication publication)
+        {
+
+            Launch = launch;
+
+            Publication = publication;
+
+        }
+
+        /// <summary>The committed launch this publication is bound to.</summary>
+        internal GrimoireOfflineTransitionLaunchBinding Launch { get; }
+
+        /// <summary>The authenticated publication the launch admits.</summary>
+        internal GrimoireOfflineTransitionTypedPublication Publication { get; }
+
+        /// <summary>
+        /// Admits a publication that is provably this launch's own, and nothing else.
+        /// </summary>
+        /// <remarks>
+        /// The digest is the decisive check: it covers every one of the launch's eleven fields, so a
+        /// journal describing a transposed source and target cannot reproduce it. The operation and
+        /// kind are compared as well rather than left to the digest, because a mismatch in either is
+        /// a different question with a different remedy and reading it out of a digest comparison
+        /// would tell an operator only that something did not match.
+        ///
+        /// <para>The expected revision has to be past the one the launch recorded. Committing the
+        /// launch checkpoint advances the row, so a journal bound at or below that value names a row
+        /// state from before the checkpoint existed — which cannot be the row this launch produced.</para>
+        /// </remarks>
+        internal static Result<ClosingOwner> ForVerifiedPublication(
+            GrimoireOfflineTransitionLaunchBinding launch,
+            GrimoireOfflineTransitionTypedPublication publication)
+        {
+
+            if (launch is null
+                || publication?.Payload?.Binding is not { } binding
+                || binding.OperationId != launch.OperationId
+                || binding.Kind != launch.Kind
+                || binding.DatabaseOperationLaunchBindingDigest != launch.Digest
+                || launch.StartingRevision < 0
+                || binding.ExpectedDatabaseOperationRevision <= (ulong)launch.StartingRevision)
+            {
+
+                return Unresumable<ClosingOwner>();
+
+            }
+
+            return Result<ClosingOwner>.Success(new ClosingOwner(launch, publication));
+
+        }
+
+    }
+
     private GrimoireOfflineTransitionTypedPublication _current;
 
     internal GrimoireOfflineTransitionPhaseSession(
         GrimoireOfflineTransitionLifecycleStore lifecycle,
         ArcanumMaintenanceLock heldInstallationLock,
-        GrimoireOfflineTransitionTypedPublication current)
+        ClosingOwner admitted)
     {
 
         _lifecycle = lifecycle ?? throw new ArgumentNullException(nameof(lifecycle));
@@ -49,9 +127,16 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
         _heldInstallationLock = heldInstallationLock
             ?? throw new ArgumentNullException(nameof(heldInstallationLock));
 
-        _current = current ?? throw new ArgumentNullException(nameof(current));
+        ArgumentNullException.ThrowIfNull(admitted);
+
+        Launch = admitted.Launch;
+
+        _current = admitted.Publication;
 
     }
+
+    /// <summary>The committed launch every publication this session makes is bound to.</summary>
+    internal GrimoireOfflineTransitionLaunchBinding Launch { get; }
 
     /// <summary>The publication a caller resumes from, and the only one it may reason about.</summary>
     internal GrimoireOfflineTransitionTypedPublication Current => _current;

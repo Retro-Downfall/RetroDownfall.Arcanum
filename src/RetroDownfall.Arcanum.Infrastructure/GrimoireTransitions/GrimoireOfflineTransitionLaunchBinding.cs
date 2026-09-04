@@ -83,6 +83,56 @@ internal static class GrimoireOfflineTransitionLaunch
 
     private const string LaunchBindingDomain = "arcanum.grimoire.offline-transition.launch-binding.v1";
 
+    /// <summary>
+    /// Projects the launch a committed checkpoint row carries, or refuses the row.
+    /// </summary>
+    /// <remarks>
+    /// One reader rather than a copy at each call site. Two of them could only ever differ in the
+    /// case that decides authority — which versions carry a launch — and the version window, the
+    /// journal's resume check, and the admission an initiator issues all have to agree about that
+    /// exactly. Refusal is content-free and decided by the version before a payload is projected, so
+    /// a retired shape is refused for being retired rather than for how it happens to be spelled.
+    /// </remarks>
+    internal static Result<GrimoireOfflineTransitionLaunchBinding> FromCommittedCheckpoint(
+        int checkpointVersion,
+        ReadOnlySpan<byte> payload)
+    {
+
+        if (payload.Length == 0)
+        {
+
+            return Unlaunchable();
+
+        }
+
+        if (checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
+        {
+
+            Result<CovenantOfflineTransitionLaunchV4> reset =
+                CovenantRecoveryCheckpointCodec.DecodeCovenantOfflineTransitionLaunch(payload);
+
+            return reset.IsFailure
+                ? Result<GrimoireOfflineTransitionLaunchBinding>.Failure(reset.Error)
+                : FromLaunch(reset.Value);
+
+        }
+
+        if (checkpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion)
+        {
+
+            Result<DataRetentionFactoryTransitionLaunchV2> factory =
+                CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(payload);
+
+            return factory.IsFailure
+                ? Result<GrimoireOfflineTransitionLaunchBinding>.Failure(factory.Error)
+                : FromLaunch(factory.Value);
+
+        }
+
+        return Unlaunchable();
+
+    }
+
     /// <summary>Projects a version-4 Covenant offline-transition launch.</summary>
     internal static Result<GrimoireOfflineTransitionLaunchBinding> FromLaunch(
         CovenantOfflineTransitionLaunchV4 launch) =>

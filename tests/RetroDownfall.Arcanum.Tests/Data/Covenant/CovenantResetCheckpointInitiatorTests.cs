@@ -15,6 +15,8 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Operations;
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -276,6 +278,57 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         Assert.Equal(
             CovenantRecoveryCheckpointCodec.RecoveryOwner(launch).Value,
+            admitted.Value.Owner);
+
+    }
+
+    /// <summary>
+    /// The admission carries the row's own reading of the launch, not a second assembly of it.
+    /// </summary>
+    /// <remarks>
+    /// The owner is three of a launch's eleven fields, so an admission carrying only the owner cannot
+    /// say which dataset generation and epoch tuple this erasure was admitted to replace. Every field
+    /// is asserted against the committed bytes rather than against the values the test supplied,
+    /// because a token assembled beside the payload rather than from it could agree with the test and
+    /// still disagree with the row an operator would go and read.
+    /// </remarks>
+    [Fact]
+    public async Task The_admitted_launch_is_the_launch_the_committed_row_carries()
+    {
+
+        (FakeLongRunningOperationStore store, LongRunningOperation operation) =
+            await RunningMutationAsync();
+
+        Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await Initiator(store)
+            .PrepareCovenantResetInventoryAsync(
+                operation,
+                "owner-118",
+                Effect(),
+                requestedOperationId: null,
+                MemoryResetScope.Covenant,
+                CancellationToken.None);
+
+        Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
+
+        LongRunningOperation stored = (await store.GetAsync(operation.Id))!;
+
+        GrimoireOfflineTransitionLaunchBinding projected =
+            GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                stored.CheckpointVersion,
+                stored.CheckpointPayload!).Value;
+
+        Assert.Equal(projected, admitted.Value.Launch);
+
+        Assert.Equal(projected.Digest, admitted.Value.Launch.Digest);
+
+        // The owner stays exactly what it was, because it is now derived from the launch rather than
+        // stored beside it: two copies of the same three fields could disagree, and the one that
+        // decides which closed scope is adopted has to be the one the launch records.
+        Assert.Equal(
+            CovenantRecoveryCheckpointCodec.RecoveryOwner(
+                CovenantRecoveryCheckpointCodec
+                    .DecodeCovenantOfflineTransitionLaunch(stored.CheckpointPayload!)
+                    .Value).Value,
             admitted.Value.Owner);
 
     }

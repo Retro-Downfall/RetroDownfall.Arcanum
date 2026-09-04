@@ -128,13 +128,9 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
         ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionLaunchBinding launch,
         GrimoireOfflineTransitionTypedRecoveryState recovered) =>
-        recovered.Publication is { } publication
-        && publication.Payload.Binding.OperationId == launch.OperationId
-        && publication.Payload.Binding.Kind == launch.Kind
-        && publication.Payload.Binding.DatabaseOperationLaunchBindingDigest == launch.Digest
-            ? Result<GrimoireOfflineTransitionPhaseSession>.Success(
-                new GrimoireOfflineTransitionPhaseSession(_lifecycle, heldInstallationLock, publication))
-            : Unresumable();
+        recovered.Publication is not { } publication
+            ? Unresumable()
+            : Admit(heldInstallationLock, launch, publication);
 
     /// <summary>
     /// Publishes the opening journal revision for a launch that has none yet.
@@ -206,11 +202,37 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
 
         return opened.IsFailure
             ? Result<GrimoireOfflineTransitionPhaseSession>.Failure(opened.Error)
+            : Admit(heldInstallationLock, launch, opened.Value);
+
+    }
+
+    /// <summary>
+    /// Builds the one session, through the token that will not exist without both halves.
+    /// </summary>
+    /// <remarks>
+    /// Fresh entry and resumption go through the same admission on purpose. A journal this build has
+    /// just published and one it has just recovered are the same kind of authority over the same
+    /// destructive effects, and the case where the two paths differ is exactly the case where a
+    /// recovered journal belongs to somebody else's launch.
+    /// </remarks>
+    private Result<GrimoireOfflineTransitionPhaseSession> Admit(
+        ArcanumMaintenanceLock heldInstallationLock,
+        GrimoireOfflineTransitionLaunchBinding launch,
+        GrimoireOfflineTransitionTypedPublication publication)
+    {
+
+        Result<GrimoireOfflineTransitionPhaseSession.ClosingOwner> admitted =
+            GrimoireOfflineTransitionPhaseSession.ClosingOwner.ForVerifiedPublication(
+                launch,
+                publication);
+
+        return admitted.IsFailure
+            ? Result<GrimoireOfflineTransitionPhaseSession>.Failure(admitted.Error)
             : Result<GrimoireOfflineTransitionPhaseSession>.Success(
                 new GrimoireOfflineTransitionPhaseSession(
                     _lifecycle,
                     heldInstallationLock,
-                    opened.Value));
+                    admitted.Value));
 
     }
 
@@ -287,46 +309,11 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
 
     }
 
-    /// <summary>
-    /// Projects the row's committed launch, admitting exactly what the codec admits.
-    /// </summary>
-    private static Result<GrimoireOfflineTransitionLaunchBinding> LaunchOf(LongRunningOperation operation)
-    {
-
-        if (operation.CheckpointPayload is not { Length: > 0 } payload)
-        {
-
-            return Unresumable<GrimoireOfflineTransitionLaunchBinding>();
-
-        }
-
-        if (operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
-        {
-
-            Result<CovenantOfflineTransitionLaunchV4> reset =
-                CovenantRecoveryCheckpointCodec.DecodeCovenantOfflineTransitionLaunch(payload);
-
-            return reset.IsFailure
-                ? Result<GrimoireOfflineTransitionLaunchBinding>.Failure(reset.Error)
-                : GrimoireOfflineTransitionLaunch.FromLaunch(reset.Value);
-
-        }
-
-        if (operation.CheckpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion)
-        {
-
-            Result<DataRetentionFactoryTransitionLaunchV2> factory =
-                CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(payload);
-
-            return factory.IsFailure
-                ? Result<GrimoireOfflineTransitionLaunchBinding>.Failure(factory.Error)
-                : GrimoireOfflineTransitionLaunch.FromLaunch(factory.Value);
-
-        }
-
-        return Unresumable<GrimoireOfflineTransitionLaunchBinding>();
-
-    }
+    /// <summary>Projects the row's committed launch through the one reader that decides what a launch is.</summary>
+    private static Result<GrimoireOfflineTransitionLaunchBinding> LaunchOf(LongRunningOperation operation) =>
+        GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+            operation.CheckpointVersion,
+            operation.CheckpointPayload ?? []);
 
     private const byte PayloadVersion = 1;
 

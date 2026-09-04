@@ -43,6 +43,8 @@ using RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
@@ -1391,9 +1393,19 @@ internal sealed partial class DataRetentionService(
                     payload,
                     out bool describesCovenantErasure);
 
+            // The reread row is compared as a whole launch rather than as the three fields an owner
+            // is made of. The owner is a projection of the launch, so a row that preserved the owner
+            // while its target generation or an epoch moved would pass an owner comparison and still
+            // be a different destructive plan from the one that was admitted.
+            Result<GrimoireOfflineTransitionLaunchBinding> relaunched =
+                GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                    committed.CheckpointVersion,
+                    payload);
+
             if (!describesCovenantErasure
                 || checkpoint.IsFailure
-                || checkpoint.Value.Owner != prepared.Value.Owner)
+                || relaunched.IsFailure
+                || relaunched.Value.Digest != prepared.Value.Launch.Digest)
             {
 
                 Error invalid = checkpoint.IsFailure

@@ -5,6 +5,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
@@ -52,15 +54,32 @@ internal sealed class CovenantResetCheckpointInitiator(
     internal sealed class GateAdmission
     {
 
-        private GateAdmission(CovenantExclusiveRecoveryOwner owner)
+        private GateAdmission(GrimoireOfflineTransitionLaunchBinding launch)
         {
 
-            Owner = owner;
+            Launch = launch;
 
         }
 
+        /// <summary>
+        /// The launch this admission was issued against, projected from the exact bytes that won.
+        /// </summary>
+        /// <remarks>
+        /// The binding rather than the owner, because the owner is only three of its eleven fields.
+        /// What the admission now asserts is not merely that a checkpoint row was written but that a
+        /// launch this build can bind a journal to was written — which is the strongest statement
+        /// available at this point in the authority order, and the one the closed period later has to
+        /// be able to check its journal against.
+        /// </remarks>
+        internal GrimoireOfflineTransitionLaunchBinding Launch { get; }
+
         /// <summary>The exact owner the exclusive gate must be acquired with.</summary>
-        internal CovenantExclusiveRecoveryOwner Owner { get; }
+        /// <remarks>
+        /// Derived rather than stored. Two copies of the same three fields could disagree, and the
+        /// one that decides which closed scope is adopted must be the one the launch records.
+        /// </remarks>
+        internal CovenantExclusiveRecoveryOwner Owner =>
+            new(Launch.OperationId, Launch.Operation, Launch.EffectDigest);
 
         /// <summary>The phase the committed checkpoint records.</summary>
         internal CovenantResetPhase Phase => CovenantResetPhaseMachine.First;
@@ -77,7 +96,7 @@ internal sealed class CovenantResetCheckpointInitiator(
             ILongRunningOperationStore operations,
             LongRunningOperation operation,
             string ownerId,
-            CovenantExclusiveRecoveryOwner owner,
+            GrimoireOfflineTransitionLaunchBinding launch,
             string kind,
             int checkpointVersion,
             byte[] payload,
@@ -97,7 +116,7 @@ internal sealed class CovenantResetCheckpointInitiator(
                 cancellationToken).ConfigureAwait(false);
 
             return committed
-                ? Result<GateAdmission>.Success(new GateAdmission(owner))
+                ? Result<GateAdmission>.Success(new GateAdmission(launch))
                 : new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "The Covenant erasure inventory checkpoint could not be committed, so no "
@@ -427,11 +446,34 @@ internal sealed class CovenantResetCheckpointInitiator(
 
         }
 
+        // Projected from the exact bytes about to be committed rather than assembled beside them. A
+        // hand-built owner and a decoded launch could disagree about the same row, and the admission
+        // is what later proves a journal belongs to this launch - so it has to be the row's own
+        // reading of itself, refused here if this build cannot make one.
+        Result<GrimoireOfflineTransitionLaunchBinding> launch =
+            GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(checkpointVersion, payload.Value);
+
+        if (launch.IsFailure)
+        {
+
+            return Result<GateAdmission>.Failure(launch.Error);
+
+        }
+
+        if (launch.Value.Operation != exclusiveOperation)
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "The encoded launch does not describe the exclusive operation it was prepared for.");
+
+        }
+
         return await GateAdmission.CommitInventoryAsync(
             operations,
             operation,
             ownerId,
-            new CovenantExclusiveRecoveryOwner(operation.Id, exclusiveOperation, derived.Value),
+            launch.Value,
             kind,
             checkpointVersion,
             payload.Value,

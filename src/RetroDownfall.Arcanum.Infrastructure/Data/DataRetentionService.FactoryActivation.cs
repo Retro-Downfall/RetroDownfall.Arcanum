@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class DataRetentionService
@@ -389,7 +391,17 @@ internal sealed partial class DataRetentionService
                     committed.CheckpointVersion,
                     payload);
 
-            if (checkpoint.IsFailure || checkpoint.Value.Owner != prepared.Value.Owner)
+            // Compared as a whole launch rather than as an owner, for the reason the reset arm gives:
+            // an owner is three of a launch's eleven fields, and the eight it leaves out are the ones
+            // that say which dataset this erasure was admitted to replace.
+            Result<GrimoireOfflineTransitionLaunchBinding> relaunched =
+                GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                    committed.CheckpointVersion,
+                    payload);
+
+            if (checkpoint.IsFailure
+                || relaunched.IsFailure
+                || relaunched.Value.Digest != prepared.Value.Launch.Digest)
             {
 
                 Error invalid = checkpoint.IsFailure

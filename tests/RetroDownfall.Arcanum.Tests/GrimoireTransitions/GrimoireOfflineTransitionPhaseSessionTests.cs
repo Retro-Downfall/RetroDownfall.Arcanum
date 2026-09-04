@@ -494,9 +494,54 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             slotEpoch => Result<IGrimoireOfflineTransitionPayload>.Success(Prepared(kind, slotEpoch)),
             CancellationToken.None));
 
-        return new GrimoireOfflineTransitionPhaseSession(lifecycle, _lock, opened);
+        return new GrimoireOfflineTransitionPhaseSession(
+            lifecycle,
+            _lock,
+            Value(
+                GrimoireOfflineTransitionPhaseSession.ClosingOwner.ForVerifiedPublication(
+                    Launch(kind),
+                    opened)));
 
     }
+
+    /// <summary>
+    /// The real launch each kind's fixture journal is bound to.
+    /// </summary>
+    /// <remarks>
+    /// Projected through the production reader rather than hand-assembled, because the binding digest
+    /// is what admits a publication and a fixture that invented one would prove only that the fixture
+    /// agrees with itself. The factory arm needs its own launch shape: a reset launch projects the
+    /// reset kind, and a session whose journal declares the factory kind cannot be admitted by it.
+    /// </remarks>
+    private static GrimoireOfflineTransitionLaunchBinding Launch(GrimoireOfflineTransitionKind kind) =>
+        Value(
+            kind is GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure
+                ? GrimoireOfflineTransitionLaunch.FromLaunch(
+                    new DataRetentionFactoryTransitionLaunchV2(
+                        DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                        Operation,
+                        LongRunningOperationKinds.DataRetentionFactoryReset,
+                        nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
+                        CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                        CovenantRecoveryCheckpointCodec.EncodeEffectDigest(Digest(0x11)),
+                        Source,
+                        Target,
+                        new CovenantOfflineTransitionEpochsV1(1, 2, 3),
+                        new CovenantOfflineTransitionEpochsV1(2, 3, 4),
+                        StartingRevision: 3))
+                : GrimoireOfflineTransitionLaunch.FromLaunch(
+                    new CovenantOfflineTransitionLaunchV4(
+                        CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                        Operation,
+                        LongRunningOperationKinds.DataRetentionMutation,
+                        nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+                        CovenantExclusiveOperation.CovenantReset,
+                        CovenantRecoveryCheckpointCodec.EncodeEffectDigest(Digest(0x11)),
+                        Source,
+                        Target,
+                        new CovenantOfflineTransitionEpochsV1(1, 2, 3),
+                        new CovenantOfflineTransitionEpochsV1(2, 3, 4),
+                        StartingRevision: 3)));
 
     private static async Task EnterApplyingAsync(GrimoireOfflineTransitionPhaseSession session)
     {
@@ -612,6 +657,104 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A publication belongs to a launch or it admits nothing, and each way of not belonging is
+    /// asked separately.
+    /// </summary>
+    /// <remarks>
+    /// This is the second half of the structural argument the initiator's admission starts. That one
+    /// says no exclusive scope is closed without a committed launch behind it; this one says no phase
+    /// is published without a journal bound to that exact launch. The two cannot be assembled from
+    /// each other, and a session has no other constructor.
+    ///
+    /// <para>The publication is a real one, opened through the real lifecycle store, and it is the
+    /// launch that is disturbed — one field at a time, each otherwise well formed, so nothing is
+    /// refused for being malformed. Four cases rather than one because they fail closed identically:
+    /// a check covering only the digest would be indistinguishable from one covering all four.</para>
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("effect")]
+    [InlineData("operation")]
+    [InlineData("kind")]
+    [InlineData("revision")]
+    public async Task A_publication_that_is_not_this_launch_admits_no_closing_owner(string disturbed)
+    {
+
+        GrimoireOfflineTransitionTypedPublication published = await PublishAsync();
+
+        Result<GrimoireOfflineTransitionPhaseSession.ClosingOwner> admitted =
+            GrimoireOfflineTransitionPhaseSession.ClosingOwner.ForVerifiedPublication(
+                Disturbed(disturbed),
+                published);
+
+        Assert.True(admitted.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, admitted.Error.Code);
+
+    }
+
+    /// <summary>The undisturbed launch is admitted, so the theory above refuses on its subject.</summary>
+    [SkippableFact]
+    public async Task The_launch_s_own_publication_admits_a_closing_owner()
+    {
+
+        GrimoireOfflineTransitionTypedPublication published = await PublishAsync();
+
+        Result<GrimoireOfflineTransitionPhaseSession.ClosingOwner> admitted =
+            GrimoireOfflineTransitionPhaseSession.ClosingOwner.ForVerifiedPublication(
+                Launch(GrimoireOfflineTransitionKind.CovenantReset),
+                published);
+
+        Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
+
+        Assert.Equal(published, admitted.Value.Publication);
+
+    }
+
+    private async Task<GrimoireOfflineTransitionTypedPublication> PublishAsync()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = new(
+            new GrimoireOfflineTransitionJournalStore(_credentials),
+            GrimoireOfflineTransitionHandlerRegistry.Production);
+
+        return Value(await lifecycle.BeginBoundAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            payloadVersion: 1,
+            slotEpoch => Result<IGrimoireOfflineTransitionPayload>.Success(
+                Prepared(GrimoireOfflineTransitionKind.CovenantReset, slotEpoch)),
+            CancellationToken.None));
+
+    }
+
+    /// <summary>The same launch with exactly one field moved, projected the production way.</summary>
+    private static GrimoireOfflineTransitionLaunchBinding Disturbed(string field) =>
+        field is "kind"
+            ? Launch(GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure)
+            : Value(
+                GrimoireOfflineTransitionLaunch.FromLaunch(
+                    new CovenantOfflineTransitionLaunchV4(
+                        CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                        field is "operation"
+                            ? Guid.Parse("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+                            : Operation,
+                        LongRunningOperationKinds.DataRetentionMutation,
+                        nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+                        CovenantExclusiveOperation.CovenantReset,
+                        CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
+                            field is "effect" ? Digest(0x77) : Digest(0x11)),
+                        Source,
+                        Target,
+                        new CovenantOfflineTransitionEpochsV1(1, 2, 3),
+                        new CovenantOfflineTransitionEpochsV1(2, 3, 4),
+                        // At or past the journal's own expected revision, which names a row state the
+                        // launch commit cannot have left behind.
+                        StartingRevision: field is "revision" ? 4 : 3)));
+
     private static IGrimoireOfflineTransitionPayload Prepared(
         GrimoireOfflineTransitionKind kind,
         ulong slotEpoch)
@@ -627,7 +770,7 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             Target,
             new GrimoireOfflineTransitionEpochTuple(1, 2, 3),
             new GrimoireOfflineTransitionEpochTuple(2, 3, 4),
-            Digest(0x12),
+            Launch(kind).Digest,
             ExpectedDatabaseOperationRevision: 4,
             ParentReceiptBindingDigest: null);
 
