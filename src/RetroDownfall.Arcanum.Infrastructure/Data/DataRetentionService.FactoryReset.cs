@@ -404,6 +404,7 @@ internal sealed partial class DataRetentionService
                 transaction,
                 operationId,
                 leaseOwner,
+                timeProvider.GetUtcNow(),
                 cancellationToken).ConfigureAwait(false);
 
             if (!owned)
@@ -1019,12 +1020,18 @@ internal sealed partial class DataRetentionService
     /// check and the rows it authorizes. It reads rather than renews: the revision this row carries
     /// is the one the authenticated journal bound itself to, and advancing it here would make the
     /// terminal compare-exchange refuse the row it is trying to terminalize.
+    ///
+    /// <para>It still asks whether the lease is live, not only who holds it. A lease that has expired
+    /// is one another owner may adopt at any moment, and deleting an installation's files on the
+    /// strength of a name nobody is defending is exactly the race the original renewal was there to
+    /// lose safely.</para>
     /// </remarks>
     private static async Task<bool> FactoryLaunchRowSurvivesAsync(
         DbConnection connection,
         DbTransaction transaction,
         Guid operationId,
         string leaseOwner,
+        DateTimeOffset now,
         CancellationToken cancellationToken)
     {
 
@@ -1038,6 +1045,7 @@ internal sealed partial class DataRetentionService
             WHERE lower(replace(Id, '-', '')) = @currentId
               AND State = @running
               AND LeaseOwner = @leaseOwner
+              AND LeaseExpiresAt > @now
             """;
 
         Add(command, "@currentId", operationId.ToString("N"));
@@ -1045,6 +1053,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@leaseOwner", leaseOwner);
 
         Add(command, "@running", (int)LongRunningOperationState.Running);
+
+        Add(command, "@now", now.ToString("o", CultureInfo.InvariantCulture));
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L;
 
