@@ -461,6 +461,48 @@ internal sealed record CovenantErasureCompletion(
 }
 
 /// <summary>
+/// The points inside one phase a crash may fall between.
+/// </summary>
+/// <remarks>
+/// Named rather than counted, because what makes each one interesting is what the durable record
+/// says at that instant, and the names are what a failing case has to report. Between the in-flight
+/// publication and the effect the journal says an effect may have begun; between the effect and the
+/// completion it says the same thing while the effect has in fact happened. That asymmetry is the
+/// whole reason the pair cannot be collapsed into one write, so it is the pair a matrix has to
+/// interrupt.
+/// </remarks>
+internal enum CovenantErasureFaultBoundary : byte
+{
+
+    /// <summary>Nothing of this phase has been published or performed.</summary>
+    BeforePhaseBegin = 1,
+
+    /// <summary>The in-flight publication landed; the effect has not run.</summary>
+    AfterPhaseBegin = 2,
+
+    /// <summary>The effect ran; nothing durable yet says it completed.</summary>
+    AfterPhaseEffect = 3,
+
+    /// <summary>The completion landed; the next phase has not begun.</summary>
+    AfterPhaseComplete = 4,
+
+}
+
+/// <summary>
+/// The seam a crash matrix interrupts an erasure at, and a production no-op everywhere else.
+/// </summary>
+/// <remarks>
+/// A constructor-supplied delegate rather than a virtual method or an injected policy, because it has
+/// exactly one production implementation and that implementation does nothing. What it buys is the
+/// only honest way to test a resumption: stop a real erasure at a real boundary, leave the durable
+/// state exactly as the crash left it, and let a second coordinator find it.
+/// </remarks>
+internal delegate Task<Result> CovenantErasureFaultSeam(
+    CovenantErasureFaultBoundary boundary,
+    CovenantResetPhase phase,
+    CancellationToken cancellationToken);
+
+/// <summary>
 /// The single coordinator for Covenant reset and healthy-catalog factory erasure.
 /// </summary>
 /// <remarks>
@@ -495,7 +537,8 @@ internal sealed class CovenantErasureCoordinator(
     GrimoireOfflineTransitionDatabaseReconciler reconciler,
     LongRunningOperationOwnership ownership,
     TimeProvider timeProvider,
-    ILogger<CovenantErasureCoordinator> logger)
+    ILogger<CovenantErasureCoordinator> logger,
+    CovenantErasureFaultSeam? faultSeam = null)
 {
 
     /// <summary>
@@ -555,6 +598,14 @@ internal sealed class CovenantErasureCoordinator(
 
     private readonly ILogger<CovenantErasureCoordinator> _logger =
         logger ?? throw new ArgumentNullException(nameof(logger));
+
+    private readonly CovenantErasureFaultSeam _faultSeam = faultSeam ?? NoFault;
+
+    private static Task<Result> NoFault(
+        CovenantErasureFaultBoundary boundary,
+        CovenantResetPhase phase,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(Result.Success());
 
     /// <summary>
     /// Runs, or resumes, one erasure and reports how it left admission.
@@ -740,7 +791,7 @@ internal sealed class CovenantErasureCoordinator(
 
         CovenantVerifiedCandidateState candidate;
 
-        bool resumedAtCanonical = checkpoint.Phase == CovenantResetPhase.CanonicalApplied;
+        bool resumedAtCanonical = false;
 
         try
         {
@@ -781,6 +832,11 @@ internal sealed class CovenantErasureCoordinator(
 
                     progress = new ErasureProgress(state.Phase);
 
+                    // Read from the journal rather than the row. The row records the launch and stops
+                    // there, so it always says the first phase - and a flag derived from it would be
+                    // false on exactly the runs it exists to be true on.
+                    resumedAtCanonical = state.Phase == CovenantResetPhase.CanonicalApplied;
+
                     quiesced = await RecordClosedAsync(phases, cancellationToken)
                         .ConfigureAwait(false);
 
@@ -808,7 +864,14 @@ internal sealed class CovenantErasureCoordinator(
 
             }
 
-            if (state.Phase == CovenantResetPhase.InventoryPrepared)
+            // The pre-canonical preflight asks a question about the family this transition is about
+            // to replace. Once the replacement may have happened - which is exactly what an in-flight
+            // canonical publication says - that family is gone, and asking anyway would refuse a
+            // resumed run for having already done the thing it was resuming to finish. So a journal
+            // that names the canonical phase in flight takes the resumed path instead, where the
+            // exposure is read on its own and the replacement is replayed to converge.
+            if (state.Phase == CovenantResetPhase.InventoryPrepared
+                && phases?.InFlightPhase is not CovenantResetPhase.CanonicalApplied)
             {
 
                 Result<CovenantErasureInventorySummary> inventory = await _inventory
@@ -848,7 +911,7 @@ internal sealed class CovenantErasureCoordinator(
 
                 progress.Exposure = exposure.Value;
 
-                if (resumedAtCanonical)
+                if (resumedAtCanonical || phases?.InFlightPhase is CovenantResetPhase.CanonicalApplied)
                 {
 
                     Result managedPreflight = await _inventory
@@ -1682,7 +1745,7 @@ internal sealed class CovenantErasureCoordinator(
 
     }
 
-    private static async Task<CovenantErasureCheckpointState> AdvanceAsync(
+    private async Task<CovenantErasureCheckpointState> AdvanceAsync(
         GrimoireOfflineTransitionPhaseSession phases,
         CovenantErasureCheckpointState checkpoint,
         CovenantResetPhase phase,
@@ -1724,17 +1787,56 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        // Published before the effect and again after it. A crash before the first means the effect
-        // may not have begun; a crash after it never permits assuming it did, which is the whole
-        // reason the pair cannot be one write.
-        Result begun = await phases.BeginPhaseAsync(phase, cancellationToken).ConfigureAwait(false);
+        await FaultAsync(
+            CovenantErasureFaultBoundary.BeforePhaseBegin,
+            phase,
+            cancellationToken).ConfigureAwait(false);
 
-        if (begun.IsFailure)
+        // A journal that already names this phase in flight is a crash between the two publications.
+        // The record it left is exactly the record this run was about to write, and writing it again
+        // is an edge the graph refuses - rightly, since it would be claiming to have started
+        // something that had already started. So the publication is skipped and the effect is run
+        // again, which is safe for every phase by construction: each one is either idempotent in
+        // itself, or - for the canonical replacement - matched on the exact source tuple it was
+        // planned against, so a replay finds the row already moved and converges instead of moving it
+        // twice. That is what the in-flight record is for: it says the effect may have happened, and
+        // running it again is how a resumed run finds out without having to be told.
+        if (phases.InFlightPhase is { } inFlight)
         {
 
-            throw new CovenantErasureStepFailedException(begun.Error);
+            if (inFlight != phase)
+            {
+
+                throw new CovenantErasureStepFailedException(
+                    new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "The offline transition journal names a different phase in flight."));
+
+            }
 
         }
+        else
+        {
+
+            // Published before the effect and again after it. A crash before the first means the
+            // effect may not have begun; a crash after it never permits assuming it did, which is the
+            // whole reason the pair cannot be one write.
+            Result begun = await phases.BeginPhaseAsync(phase, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (begun.IsFailure)
+            {
+
+                throw new CovenantErasureStepFailedException(begun.Error);
+
+            }
+
+        }
+
+        await FaultAsync(
+            CovenantErasureFaultBoundary.AfterPhaseBegin,
+            phase,
+            cancellationToken).ConfigureAwait(false);
 
         Result performed = await step(checkpoint, cancellationToken).ConfigureAwait(false);
 
@@ -1744,6 +1846,11 @@ internal sealed class CovenantErasureCoordinator(
             throw new CovenantErasureStepFailedException(performed.Error);
 
         }
+
+        await FaultAsync(
+            CovenantErasureFaultBoundary.AfterPhaseEffect,
+            phase,
+            cancellationToken).ConfigureAwait(false);
 
         if (phase == CovenantResetPhase.CanonicalApplied)
         {
@@ -1764,10 +1871,39 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
+        await FaultAsync(
+            CovenantErasureFaultBoundary.AfterPhaseComplete,
+            phase,
+            cancellationToken).ConfigureAwait(false);
+
         return checkpoint with { Phase = phase };
 
     }
 
+    /// <summary>
+    /// Raises the injected fault for one boundary, as the step failure a real crash would look like.
+    /// </summary>
+    /// <remarks>
+    /// Thrown rather than returned, so an injected stop takes exactly the path a genuine step failure
+    /// takes and cannot be handled by a branch that only exists because the fault was injected. In
+    /// production the delegate is a no-op and this is one already-completed task per boundary.
+    /// </remarks>
+    private async Task FaultAsync(
+        CovenantErasureFaultBoundary boundary,
+        CovenantResetPhase phase,
+        CancellationToken cancellationToken)
+    {
+
+        Result injected = await _faultSeam(boundary, phase, cancellationToken).ConfigureAwait(false);
+
+        if (injected.IsFailure)
+        {
+
+            throw new CovenantErasureStepFailedException(injected.Error);
+
+        }
+
+    }
 
     /// <summary>
     /// Refuses a checkpoint this build cannot resume, before any scope is closed.

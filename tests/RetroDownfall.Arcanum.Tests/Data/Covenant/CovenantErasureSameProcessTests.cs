@@ -31,6 +31,8 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -1506,6 +1508,142 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    /// <summary>
+    /// Every point inside every phase a crash can fall between, resumed to the same one ending.
+    /// </summary>
+    /// <remarks>
+    /// The matrix exists because "idempotent" is a claim about the boundaries, not about the steps.
+    /// A phase publishes in flight, performs its effect, and publishes complete, and each of the four
+    /// gaps between and around those leaves a different durable record: nothing said yet, an effect
+    /// that may have begun, an effect that certainly happened but is unrecorded, and a phase that is
+    /// finished. Only the third is subtle, and only interrupting the real thing at the real boundary
+    /// proves it.
+    ///
+    /// <para>The fault fires once. That is what a crash is: the process that stopped is gone, and the
+    /// one that comes back has no fault in it. Recovery adopts the row exactly as a startup pass
+    /// would, and has to reach the same ending the uninterrupted erasure reaches - the same one, not
+    /// merely a successful-looking one, which is why the emptied route is asserted rather than the
+    /// operation state alone.</para>
+    ///
+    /// <para>The boundary and phase are the assertion message on purpose. A matrix that failed
+    /// without naming its case would send a reader back to count theory rows. The boundary travels as
+    /// its name because the enum is internal to the build under test and a public theory signature
+    /// cannot carry it - which also makes the case names in a test list readable.</para>
+    /// </remarks>
+    [SkippableTheory]
+    [MemberData(nameof(PhaseCrashBoundaries))]
+    public async Task Every_phase_boundary_a_crash_can_fall_between_resumes_to_the_same_ending(
+        CovenantResetPhase phase,
+        string boundaryName)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CovenantErasureFaultBoundary boundary =
+            Enum.Parse<CovenantErasureFaultBoundary>(boundaryName);
+
+        OneShotPhaseFault fault = new(phase, boundary);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            faultSeam: fault.RaiseAsync);
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        string at = $"{phase} / {boundary}";
+
+        DataRetentionPlan confirmed = await harness.PlanResetAsync();
+
+        Result<DataRetentionApplyResult> interrupted = await harness
+            .ApplyResetAsync(confirmed.PlanId)
+            .WaitAsync(TimeSpan.FromSeconds(45));
+
+        Assert.True(interrupted.IsFailure, at);
+
+        Assert.True(fault.Fired, at);
+
+        LongRunningOperationRecoveryResult recovered = await harness.AdoptAndRecoverResetAsync();
+
+        Assert.True(
+            recovered.State == LongRunningOperationState.Completed,
+            $"{at}: {recovered.ErrorCode}{harness.CoordinatorDiagnostics()}");
+
+        LongRunningOperation settled = await harness.ReadResetOperationAsync();
+
+        Assert.True(settled.State == LongRunningOperationState.Completed, at);
+
+        Assert.Equal(ErasedRoute, await harness.CaptureRouteStateAsync());
+
+    }
+
+    public static TheoryData<CovenantResetPhase, string> PhaseCrashBoundaries
+    {
+        get
+        {
+
+            TheoryData<CovenantResetPhase, string> cases = [];
+
+            foreach (CovenantResetPhase phase in Enum.GetValues<CovenantResetPhase>())
+            {
+
+                // The launch phase is committed by the initiator before this coordinator runs, and
+                // the reopen verification happens after the ladder; neither passes through the phase
+                // publication protocol these boundaries live in.
+                if (phase is CovenantResetPhase.InventoryPrepared
+                    or CovenantResetPhase.ReopenedVerified)
+                {
+
+                    continue;
+
+                }
+
+                foreach (CovenantErasureFaultBoundary boundary
+                    in Enum.GetValues<CovenantErasureFaultBoundary>())
+                {
+
+                    cases.Add(phase, boundary.ToString());
+
+                }
+
+            }
+
+            return cases;
+
+        }
+    }
+
+    /// <summary>A fault that fires exactly once, at one boundary of one phase.</summary>
+    /// <remarks>
+    /// Once, because the process that crashed does not come back. A fault that fired again in the
+    /// recovering coordinator would be testing a second crash, and would never let the matrix prove
+    /// the first one was survivable.
+    /// </remarks>
+    private sealed class OneShotPhaseFault(
+        CovenantResetPhase phase,
+        CovenantErasureFaultBoundary boundary)
+    {
+
+        private int _fired;
+
+        internal bool Fired => Volatile.Read(ref _fired) != 0;
+
+        internal Task<Result> RaiseAsync(
+            CovenantErasureFaultBoundary raised,
+            CovenantResetPhase raisedPhase,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                raised == boundary
+                && raisedPhase == phase
+                && Interlocked.Exchange(ref _fired, 1) == 0
+                    ? Result.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.MaintenanceFailed,
+                            $"Injected crash at {boundary} of {phase}."))
+                    : Result.Success());
+
+    }
+
     [SkippableFact]
     public async Task Successful_erasure_reopens_status_crud_inference_and_disclosure_on_the_fresh_dataset()
     {
@@ -1551,6 +1689,8 @@ public sealed class CovenantErasureSameProcessTests
             reset.IsFailure
                 ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
                 : null);
+
+        Assert.Equal(ErasedRoute, await harness.CaptureRouteStateAsync());
 
         Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, reset.Value.Disposition);
 
@@ -1659,6 +1799,7 @@ public sealed class CovenantErasureSameProcessTests
             ConnectionStateObserver? connectionObserver = null,
             bool fastLeaseHeartbeat = false,
             RouteStoreFaults? storeFaults = null,
+            CovenantErasureFaultSeam? faultSeam = null,
             Action<IServiceCollection>? serviceOverrides = null)
         {
 
@@ -1693,6 +1834,33 @@ public sealed class CovenantErasureSameProcessTests
                 services.RemoveAll<IOsCredentialStore>();
 
                 services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+                if (faultSeam is not null)
+                {
+
+                    // The whole coordinator is re-registered rather than a seam being injected into
+                    // the composed one, because the seam is a constructor argument: production has no
+                    // way to set one after the fact, and a test that invented one would be exercising
+                    // a path production does not have.
+                    services.AddScoped(
+                        provider => new CovenantErasureCoordinator(
+                            provider.GetRequiredService<ILongRunningOperationCoordinator>(),
+                            provider.GetRequiredService<ILongRunningOperationStore>(),
+                            provider.GetRequiredService<ICovenantOperationGate>(),
+                            provider.GetRequiredService<ICovenantProtectedArtifactErasureKernel>(),
+                            provider.GetRequiredService<ICovenantManagedFileErasureKernel>(),
+                            provider.GetRequiredService<ICovenantErasureInventorySource>(),
+                            provider.GetRequiredService<ICovenantErasureTransition>(),
+                            provider.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
+                            provider.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                            provider.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
+                            provider.GetRequiredService<LongRunningOperationOwnership>(),
+                            provider.GetRequiredService<TimeProvider>(),
+                            provider.GetRequiredService<
+                                TestCapturingLogger<CovenantErasureCoordinator>>(),
+                            faultSeam));
+
+                }
 
                 if (storeFaults is not null)
                 {
@@ -2597,6 +2765,22 @@ public sealed class CovenantErasureSameProcessTests
         }
 
     }
+
+    /// <summary>
+    /// What the route holds once an erasure has finished, however many times it was interrupted.
+    /// </summary>
+    /// <remarks>
+    /// The surviving protected artifact is the point of the value rather than an untidiness in it:
+    /// one seeded artifact is outside the Covenant family and a reset must not touch it. So this is
+    /// both halves of the claim at once - everything the erasure owns is gone, and everything it does
+    /// not own is still there - which is what makes it worth asserting after a resumed run rather
+    /// than only asserting that the operation reported success.
+    ///
+    /// <para>The uninterrupted erasure asserts the same value, so the two cannot drift apart: a
+    /// change to what a reset leaves behind has to be made here once, deliberately, rather than
+    /// showing up as a crash-matrix failure nobody can place.</para>
+    /// </remarks>
+    private static readonly CovenantRouteState ErasedRoute = new(0, 1, 0);
 
     private sealed record CovenantRouteState(
         long CovenantRows,
