@@ -1081,19 +1081,31 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    /// <remarks>
+    /// The caller's code and the row's code are asked separately because they stopped being the same
+    /// answer. A rollback is provably pre-effect, so the transition terminalizes its own row from the
+    /// journal and writes the code that says so - which is what a later reader needs, since it is the
+    /// difference between an operation that is safe to simply run again and one that is not. The
+    /// specific reason the erasure refused still reaches the caller. A disposition the journal cannot
+    /// prove pre-effect is not terminalized there at all, so that arm still carries its Covenant code
+    /// on the row.
+    /// </remarks>
     [SkippableTheory]
     [InlineData(
         RouteFailure.Rollback,
         LongRunningOperationState.Failed,
-        ErrorCodes.Covenant.IntegrityFailure)]
+        ErrorCodes.Covenant.IntegrityFailure,
+        "grimoire.offline_transition_not_applied")]
     [InlineData(
         RouteFailure.KeepClosed,
         LongRunningOperationState.ReconciliationRequired,
+        ErrorCodes.Covenant.ErasureIncomplete,
         ErrorCodes.Covenant.ErasureIncomplete)]
     public async Task Direct_retention_reset_maps_noncommit_dispositions_to_typed_failure_and_durable_state(
         RouteFailure failure,
         LongRunningOperationState expectedState,
-        string expectedError)
+        string expectedError,
+        string expectedDurableError)
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -1116,7 +1128,7 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(expectedState, operation.State);
 
-        Assert.Equal(expectedError, operation.TerminalErrorCode);
+        Assert.Equal(expectedDurableError, operation.TerminalErrorCode);
 
         Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
 
@@ -1412,9 +1424,20 @@ public sealed class CovenantErasureSameProcessTests
         // later phase here would be asserting that the row still answers a question it no longer owns.
         Assert.Equal(CovenantResetPhase.InventoryPrepared, checkpoint.Value.Phase);
 
+        // The refusal is lifted before recovery runs. A row the store will never terminalize is a
+        // transition that is genuinely not over, and recovery reporting completion for one would be
+        // announcing an answer nothing durable carries. What this test is about is the pass after the
+        // finalizer failed: the gate it finds is already reopened, and it has to adopt that rather
+        // than treat it as somebody else's scope.
+        faults.DisarmCompletedTransitionFailures();
+
         LongRunningOperationRecoveryResult recovered = await harness.AdoptAndRecoverResetAsync();
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+
+        LongRunningOperation finished = await harness.ReadResetOperationAsync();
+
+        Assert.Equal(LongRunningOperationState.Completed, finished.State);
 
     }
 
@@ -3169,6 +3192,8 @@ public sealed class CovenantErasureSameProcessTests
 
         private int _throwNextGet;
 
+        private int _completedTransitionsDisarmed;
+
         private readonly TaskCompletionSource _renewalStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -3202,6 +3227,13 @@ public sealed class CovenantErasureSameProcessTests
         internal bool TakeThrowNextGet() => Interlocked.Exchange(ref _throwNextGet, 0) != 0;
 
         internal void ArmThrowNextGet() => _ = Interlocked.Exchange(ref _throwNextGet, 1);
+
+        internal bool CompletedTransitionsDisarmed =>
+            Volatile.Read(ref _completedTransitionsDisarmed) != 0;
+
+        /// <summary>Stops refusing terminal writes, so a later pass can finish what this one could not.</summary>
+        internal void DisarmCompletedTransitionFailures() =>
+            _ = Interlocked.Exchange(ref _completedTransitionsDisarmed, 1);
 
         internal int RecordCompletedTransitionAttempt() =>
             Interlocked.Increment(ref _completedTransitionAttempts);
@@ -3452,6 +3484,7 @@ public sealed class CovenantErasureSameProcessTests
         {
 
             if (state is LongRunningOperationState.Completed
+                && !faults.CompletedTransitionsDisarmed
                 && (faults.Fault is RouteStoreFault.FailAllCompletedTransitions
                     || faults.Fault is RouteStoreFault.FailFirstCompletedTransition
                         && faults.RecordCompletedTransitionAttempt() == 1))

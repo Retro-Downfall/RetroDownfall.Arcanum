@@ -1594,8 +1594,14 @@ internal sealed partial class DataRetentionService(
                 error.Code,
                 CancellationToken.None).ConfigureAwait(false);
 
+            // A row that already carries the state this was going to write needs nothing written. The
+            // offline transition terminalizes its own row from the journal now, under the launch it
+            // bound itself to, and it does so before the journal retires - so by the time a
+            // disposition comes back here the answer can already be durable. Insisting on making the
+            // write ourselves would report a maintenance failure for a reset that ended exactly as
+            // intended, and would replace the specific reason with a generic one.
             return Result<DataRetentionApplyResult>.Failure(
-                transitioned
+                transitioned || await AlreadyRecordedAsync(operation.Id, state).ConfigureAwait(false)
                     ? error
                     : CovenantMaintenanceFailure());
 
@@ -1611,6 +1617,25 @@ internal sealed partial class DataRetentionService(
             return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
 
         }
+
+    }
+
+    /// <summary>
+    /// Whether the operation row already stands in the terminal state a failure was about to write.
+    /// </summary>
+    /// <remarks>
+    /// Read after the compare-exchange rather than before it, so the ordinary path costs nothing and
+    /// the question is only asked when the answer changes what is reported. A row that moved for some
+    /// other reason answers no, which keeps a genuine lost race a maintenance failure.
+    /// </remarks>
+    private async Task<bool> AlreadyRecordedAsync(Guid operationId, LongRunningOperationState state)
+    {
+
+        LongRunningOperation? current = await operations
+            .GetAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        return current is not null && current.State == state;
 
     }
 

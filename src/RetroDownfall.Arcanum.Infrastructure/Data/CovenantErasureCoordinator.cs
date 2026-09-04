@@ -1649,6 +1649,24 @@ internal sealed class CovenantErasureCoordinator(
         CancellationToken cancellationToken)
     {
 
+        // A park is where the last attempt stopped, not where this transition ends. Lifting it first
+        // puts the journal back at the state it was parked from, which is the state the rest of this
+        // run is written against; leaving it parked would make every step below refuse an edge that
+        // is only illegal because nobody ever came back for it.
+        if (phases.State is GrimoireOfflineTransitionState.KeepClosed)
+        {
+
+            Result resumed = await phases.ResumeFromParkAsync(cancellationToken).ConfigureAwait(false);
+
+            if (resumed.IsFailure)
+            {
+
+                return resumed;
+
+            }
+
+        }
+
         if (phases.State is not GrimoireOfflineTransitionState.Prepared)
         {
 
@@ -1930,72 +1948,115 @@ internal sealed class CovenantErasureCoordinator(
         CancellationToken cancellationToken)
     {
 
-        Result prepared = await PrepareForReconciliationAsync(phases, disposition, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (prepared.IsFailure)
+        // The suffix is resumable, so every step below is entered only if the journal does not already
+        // record it. A park lifted at the start of this run puts the transition back exactly where it
+        // stopped, which is routinely inside this sequence - and replaying a step from there would ask
+        // the graph for an edge it has already spent.
+        if (phases.State is GrimoireOfflineTransitionState.RetirementPending)
         {
 
-            // A transition that cannot reach a terminal intent has neither answer available, which is
-            // the correct outcome for a run that stopped in the middle rather than a failure of this
-            // step. It parks, and the caller must not then retire what it just parked.
-            return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+            return Result<ReconciliationSuffix>.Success(ReconciliationSuffix.Retirable);
 
         }
 
-        Result opened = await phases.BeginReconciliationAsync(cancellationToken).ConfigureAwait(false);
-
-        if (opened.IsFailure)
+        if (phases.State is not GrimoireOfflineTransitionState.DatabaseReconciliationPending)
         {
 
-            return Result<ReconciliationSuffix>.Failure(opened.Error);
+            Result prepared = await PrepareForReconciliationAsync(phases, disposition, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (prepared.IsFailure)
+            {
+
+                // A transition that cannot reach a terminal intent has neither answer available, which
+                // is the correct outcome for a run that stopped in the middle rather than a failure of
+                // this step. It parks, and the caller must not then retire what it just parked.
+                return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+
+            }
+
+            Result opened = await phases.BeginReconciliationAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (opened.IsFailure)
+            {
+
+                return Result<ReconciliationSuffix>.Failure(opened.Error);
+
+            }
 
         }
 
-        GrimoireOfflineTransitionDatabaseReconciliation reconciled = await _reconciler
-            .ReconcileAsync(
-                phases.Current.Payload,
-                disposition is CovenantExclusiveLeaseDisposition.CommitAndReopen
-                    ? GrimoireOfflineTransitionTerminalDisposition.Completed
-                    : GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect,
-                cancellationToken)
-            .ConfigureAwait(false);
+        GrimoireOfflineTransitionReconciliationStep step = phases.ReconciliationStep
+            ?? GrimoireOfflineTransitionReconciliationStep.CandidateVerified;
 
-        if (reconciled.TerminalWinnerDigest is not { IsValid: true } winner)
+        if (step < GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner)
         {
 
-            // A reconciliation that cannot name the exact terminal winner has no answer this
-            // transition may act on. The row is missing, or belongs to another launch, or moved, or
-            // somebody else terminalized it - four different facts, none of them one to overwrite.
-            return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+            GrimoireOfflineTransitionDatabaseReconciliation reconciled = await _reconciler
+                .ReconcileAsync(
+                    phases.Current.Payload,
+                    disposition is CovenantExclusiveLeaseDisposition.CommitAndReopen
+                        ? GrimoireOfflineTransitionTerminalDisposition.Completed
+                        : GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (reconciled.TerminalWinnerDigest is not { IsValid: true } winner)
+            {
+
+                // A reconciliation that cannot name the exact terminal winner has no answer this
+                // transition may act on. The row is missing, or belongs to another launch, or moved,
+                // or somebody else terminalized it - four different facts, none to overwrite.
+                return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+
+            }
+
+            Result recorded = await phases.RecordTerminalWinnerAsync(winner, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (recorded.IsFailure)
+            {
+
+                return Result<ReconciliationSuffix>.Failure(recorded.Error);
+
+            }
 
         }
 
-        Result recorded = await phases.RecordTerminalWinnerAsync(winner, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (recorded.IsFailure)
+        if (step < GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied)
         {
 
-            return Result<ReconciliationSuffix>.Failure(recorded.Error);
+            Result receipt = await phases.RecordParentReceiptAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (receipt.IsFailure)
+            {
+
+                return Result<ReconciliationSuffix>.Failure(receipt.Error);
+
+            }
 
         }
 
-        Result receipt = await phases.RecordParentReceiptAsync(cancellationToken).ConfigureAwait(false);
-
-        if (receipt.IsFailure)
+        if (step < GrimoireOfflineTransitionReconciliationStep.LaneClosed)
         {
 
-            return Result<ReconciliationSuffix>.Failure(receipt.Error);
+            Result lane = await phases.RecordLaneClosedAsync(cancellationToken).ConfigureAwait(false);
+
+            if (lane.IsFailure)
+            {
+
+                return Result<ReconciliationSuffix>.Failure(lane.Error);
+
+            }
 
         }
 
-        Result lane = await phases.RecordLaneClosedAsync(cancellationToken).ConfigureAwait(false);
-
-        if (lane.IsFailure)
+        if (step >= GrimoireOfflineTransitionReconciliationStep.CovenantDispositionInFlight)
         {
 
-            return Result<ReconciliationSuffix>.Failure(lane.Error);
+            return Result<ReconciliationSuffix>.Success(ReconciliationSuffix.Retirable);
 
         }
 
@@ -2074,21 +2135,41 @@ internal sealed class CovenantErasureCoordinator(
         CancellationToken cancellationToken)
     {
 
-        Result verified = await phases.CompleteCovenantDispositionAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (verified.IsFailure)
+        // Both publications are skipped when the journal already carries them, for the same reason the
+        // suffix above is: a run resuming from a crash between them would otherwise fail on an edge it
+        // had already taken, and retirement is exactly the point where that would strand the journal.
+        if (phases.ReconciliationStep
+            < GrimoireOfflineTransitionReconciliationStep.CovenantDispositionVerified)
         {
 
-            return verified;
+            Result verified = await phases.CompleteCovenantDispositionAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (verified.IsFailure)
+            {
+
+                return verified;
+
+            }
 
         }
 
-        Result pending = await phases.PrepareRetirementAsync(cancellationToken).ConfigureAwait(false);
+        if (phases.State is not GrimoireOfflineTransitionState.RetirementPending)
+        {
 
-        return pending.IsFailure
-            ? pending
-            : await phases.RetireAsync(cancellationToken).ConfigureAwait(false);
+            Result pending = await phases.PrepareRetirementAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (pending.IsFailure)
+            {
+
+                return pending;
+
+            }
+
+        }
+
+        return await phases.RetireAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

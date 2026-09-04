@@ -56,6 +56,17 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     /// <summary>The publication a caller resumes from, and the only one it may reason about.</summary>
     internal GrimoireOfflineTransitionTypedPublication Current => _current;
 
+    /// <summary>
+    /// How far the reconciliation suffix has been published, or null before it opens.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so a resumed run can rejoin the suffix where it stopped rather than replaying it. The
+    /// steps are strictly ordered and each is one revision, so the recorded value is the whole answer
+    /// to what still has to happen.
+    /// </remarks>
+    internal GrimoireOfflineTransitionReconciliationStep? ReconciliationStep =>
+        _current.Payload.Lifecycle.ReconciliationEvidence?.Step;
+
     /// <summary>The last phase this transition proved complete.</summary>
     internal CovenantResetPhase LastCompletedPhase => _current.Payload.LastCompletedPhase;
 
@@ -310,8 +321,12 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
             _current.Payload.Binding,
             phase);
 
+        // Any earlier resolution is dropped with the same revision that records the new park. A park
+        // is a question waiting to be answered, and a proof left lying in it would be the answer to a
+        // park that has already been lifted - which the lifecycle refuses to hold, and rightly: the
+        // next resume has to produce its own proof rather than inherit one.
         return AdvanceAsync(
-            payload => WithLifecycle(
+            payload => WithClearedBlockerResolution(
                 payload,
                 payload.Lifecycle with
                 {
@@ -322,6 +337,65 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
                         resolutionBindingDigest,
                         expectedStateDigest),
                 }),
+            cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Lifts a park, returning the transition to the state it was parked from.
+    /// </summary>
+    /// <remarks>
+    /// Parking is what a transition does when it cannot finish and must not guess; it is not an
+    /// ending. Without a way back out the journal would keep an installation closed for a reason that
+    /// may have already gone away — a store that refused one write, a lock somebody else was holding
+    /// — and the only remedy left would be to discard the journal, which is the one record of what
+    /// this erasure did.
+    ///
+    /// <para>The proof is recomputed rather than remembered. Both blocker digests are functions of
+    /// the binding and the phase the park recorded, so a process that comes back with the same
+    /// journal derives the same pair, and one holding a different journal cannot. That is the whole
+    /// check: it says this is the transition that parked and it is resuming at the point it parked
+    /// from, and it deliberately says nothing about whether the underlying obstacle has cleared,
+    /// because the resumed work re-establishes that for itself before it does anything.</para>
+    /// </remarks>
+    internal Task<Result> ResumeFromParkAsync(CancellationToken cancellationToken)
+    {
+
+        if (_current.Payload.Lifecycle is not
+            {
+                State: GrimoireOfflineTransitionState.KeepClosed,
+                Blocker: { } blocker,
+            })
+        {
+
+            return Task.FromResult(
+                Result.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.LifecycleConflict,
+                        "Only a parked offline transition can be resumed from a park.")));
+
+        }
+
+        CovenantDigest resolutionBindingDigest = PhaseDigest(
+            BlockerResolutionDomain,
+            _current.Payload.Binding,
+            _current.Payload.LastCompletedPhase);
+
+        CovenantDigest expectedStateDigest = PhaseDigest(
+            BlockerExpectedStateDomain,
+            _current.Payload.Binding,
+            _current.Payload.LastCompletedPhase);
+
+        return AdvanceAsync(
+            payload => WithResolvedBlocker(
+                payload,
+                payload.Lifecycle with
+                {
+                    State = blocker.ResumeState,
+                    Blocker = null,
+                },
+                resolutionBindingDigest,
+                expectedStateDigest),
             cancellationToken);
 
     }
@@ -444,6 +518,67 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
 
             HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory =>
                 Result<IGrimoireOfflineTransitionPayload>.Success(factory with { Lifecycle = lifecycle }),
+
+            _ => Unresumable<IGrimoireOfflineTransitionPayload>(),
+
+        };
+
+    /// <summary>
+    /// Publishes a resumed lifecycle together with the proof that admits the resumption.
+    /// </summary>
+    /// <remarks>
+    /// One rewrite rather than two, because the validator reads the state change and the proof in the
+    /// same revision: a payload that moved out of a park without carrying the evidence is refused,
+    /// and one that carried the evidence without moving would be recording a resolution for a park it
+    /// is still sitting in.
+    /// </remarks>
+    private static Result<IGrimoireOfflineTransitionPayload> WithResolvedBlocker(
+        IGrimoireOfflineTransitionPayload payload,
+        GrimoireOfflineTransitionLifecycle lifecycle,
+        CovenantDigest resolutionBindingDigest,
+        CovenantDigest expectedStateDigest) =>
+        payload switch
+        {
+
+            CovenantResetOfflineTransitionPayloadV1 reset =>
+                Result<IGrimoireOfflineTransitionPayload>.Success(
+                    reset with
+                    {
+                        Lifecycle = lifecycle,
+                        BlockerResolutionEvidence = new CovenantResetBlockerResolutionEvidence(
+                            resolutionBindingDigest,
+                            expectedStateDigest),
+                    }),
+
+            HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory =>
+                Result<IGrimoireOfflineTransitionPayload>.Success(
+                    factory with
+                    {
+                        Lifecycle = lifecycle,
+                        BlockerResolutionEvidence =
+                            new HealthyCatalogFactoryErasureBlockerResolutionEvidence(
+                                resolutionBindingDigest,
+                                expectedStateDigest),
+                    }),
+
+            _ => Unresumable<IGrimoireOfflineTransitionPayload>(),
+
+        };
+
+    /// <summary>Publishes a parked lifecycle, dropping any resolution the previous park was given.</summary>
+    private static Result<IGrimoireOfflineTransitionPayload> WithClearedBlockerResolution(
+        IGrimoireOfflineTransitionPayload payload,
+        GrimoireOfflineTransitionLifecycle lifecycle) =>
+        payload switch
+        {
+
+            CovenantResetOfflineTransitionPayloadV1 reset =>
+                Result<IGrimoireOfflineTransitionPayload>.Success(
+                    reset with { Lifecycle = lifecycle, BlockerResolutionEvidence = null }),
+
+            HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory =>
+                Result<IGrimoireOfflineTransitionPayload>.Success(
+                    factory with { Lifecycle = lifecycle, BlockerResolutionEvidence = null }),
 
             _ => Unresumable<IGrimoireOfflineTransitionPayload>(),
 

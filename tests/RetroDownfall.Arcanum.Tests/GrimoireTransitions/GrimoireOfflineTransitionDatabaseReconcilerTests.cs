@@ -173,11 +173,14 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
 
     }
 
+    /// <summary>
+    /// A row standing behind the revision the launch produced is not the row that launch created.
+    /// </summary>
     [Fact]
-    public async Task A_row_that_moved_since_the_journal_bound_it_is_never_overwritten()
+    public async Task A_row_behind_the_launch_revision_is_never_overwritten()
     {
 
-        FakeLongRunningOperationStore store = Store("revision");
+        FakeLongRunningOperationStore store = Store("revision-behind");
 
         LongRunningOperation before = Assert.Single(store.Operations);
 
@@ -188,6 +191,35 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
         Assert.False(reconciled.PermitsRetirement);
 
         Assert.Equal(before, Assert.Single(store.Operations));
+
+    }
+
+    /// <summary>
+    /// A row that moved forward is ordinary, and terminalizing it is the whole point.
+    /// </summary>
+    /// <remarks>
+    /// Recovery adopts the operation's lease before it resumes a transition, and that adoption is a
+    /// revision of its own. If the journal insisted on the exact revision its launch recorded, the
+    /// first legitimate recovery would lock the journal out of the one row it exists to terminalize -
+    /// permanently, because the binding is authenticated and cannot be rewritten to catch up. The
+    /// identity checks that equality was standing in for are made directly: this row still decodes to
+    /// the same launch, and it is still not terminal.
+    /// </remarks>
+    [Fact]
+    public async Task A_row_that_moved_forward_since_the_journal_bound_it_is_still_terminalized()
+    {
+
+        FakeLongRunningOperationStore store = Store("revision-ahead");
+
+        GrimoireOfflineTransitionDatabaseReconciliation reconciled = await Reconcile(store);
+
+        Assert.Equal(GrimoireOfflineTransitionDatabaseOutcome.Terminalized, reconciled.Outcome);
+
+        Assert.True(reconciled.PermitsRetirement);
+
+        Assert.Equal(
+            LongRunningOperationState.Completed,
+            Assert.Single(store.Operations).State);
 
     }
 
@@ -668,7 +700,12 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
                         operationId),
                 PublicSummary: "Covenant memory reset",
                 TerminalErrorCode: null,
-                Revision: disturbed is "revision" ? ExpectedRevision + 1 : ExpectedRevision));
+                Revision: disturbed switch
+                {
+                    "revision-behind" => ExpectedRevision - 1,
+                    "revision-ahead" => ExpectedRevision + 1,
+                    _ => ExpectedRevision,
+                }));
 
         return store;
 

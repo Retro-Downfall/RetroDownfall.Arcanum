@@ -193,13 +193,21 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
 
         }
 
+        // The refusal is passed through rather than replaced. A handler that refuses an edge and a
+        // payload this build cannot encode are different failures with different remedies, and
+        // flattening them to one made every illegal transition report itself as an unreadable journal.
         Result valid = decodedCurrent.Value.Handler.ValidateAdvance(
             decodedCurrent.Value.Payload,
             next);
 
-        Result<byte[]> encoded = valid.IsSuccess
-            ? _registry.Encode(next)
-            : Result<byte[]>.Failure(valid.Error);
+        if (valid.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionTypedPublication>.Failure(valid.Error);
+
+        }
+
+        Result<byte[]> encoded = _registry.Encode(next);
 
         if (encoded.IsFailure)
         {

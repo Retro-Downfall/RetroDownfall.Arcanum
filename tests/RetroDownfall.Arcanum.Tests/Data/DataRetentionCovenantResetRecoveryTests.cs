@@ -158,10 +158,26 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    /// <summary>
+    /// A lease adopted elsewhere mid-run does not create a second answer, and does not stop the first.
+    /// </summary>
+    /// <remarks>
+    /// Nothing renews a durable lease across a closed period, so a long erasure looks abandoned to
+    /// anything deciding by the lease alone, and another owner adopting the row is a thing that now
+    /// happens. It changes nothing about who may do the work: the erasure holds the installation
+    /// maintenance lock and the journal's one active slot, so the adopting owner cannot open the
+    /// journal and cannot run a second recovery beside this one. What it holds is a claim on a row
+    /// whose transition is still running - and the transition is the thing that knows the answer.
+    ///
+    /// <para>So the row is terminalized exactly once, by the journal that earned the right to. The
+    /// adopted lease is left on it untouched, because the terminal compare-exchange names no owner:
+    /// an owner is precisely the thing that stopped being meaningful when renewal stopped.</para>
+    /// </remarks>
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Recovery_owner_loss_leaves_the_new_owners_row_exactly_as_it_found_it(bool factoryReset)
+    public async Task Recovery_terminalizes_its_row_once_even_after_the_lease_is_adopted_elsewhere(
+        bool factoryReset)
     {
 
         RequireSqlCipher();
@@ -230,20 +246,43 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperationRecoveryResult result = await recovering.WaitAsync(
             TimeSpan.FromSeconds(30));
 
-        // The row is what matters, and it is untouched. A transition whose row moved under it cannot
-        // name the terminal winner its journal requires, so it parks with the journal retained rather
-        // than writing over an answer another owner is now responsible for.
-        Assert.NotEqual(LongRunningOperationState.Completed, result.State);
-
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
-        Assert.Equal(replacement.LeaseOwner, after.LeaseOwner);
+        // The two kinds answer differently, and the difference is the design rather than an accident.
+        // A reset's effects are all inside the database, and its journal is what says they happened,
+        // so the journal terminalizes the row it is bound to. A factory erasure deletes files outside
+        // the database, and the transaction that deletes them asks who holds the row first - a
+        // takeover changes that name, so the deletion refuses and the erasure has nothing to record.
+        if (factoryReset)
+        {
 
-        Assert.Equal(replacement.Revision, after.Revision);
+            Assert.NotEqual(LongRunningOperationState.Completed, result.State);
 
-        Assert.Equal(replacement.LeaseExpiresAt, after.LeaseExpiresAt);
+            Assert.Equal(replacement.State, after.State);
 
-        Assert.Equal(replacement.State, after.State);
+            Assert.Equal(replacement.Revision, after.Revision);
+
+            Assert.Equal(replacement.LeaseOwner, after.LeaseOwner);
+
+            Assert.Equal(replacement.LeaseExpiresAt, after.LeaseExpiresAt);
+
+            return;
+
+        }
+
+        Assert.Equal(LongRunningOperationState.Completed, result.State);
+
+        Assert.Equal(LongRunningOperationState.Completed, after.State);
+
+        // Exactly one write, and only what a terminal is: the status, and the lease that reaching one
+        // releases. The launch every reader identifies this row by is untouched.
+        Assert.Equal(replacement.Revision + 1, after.Revision);
+
+        Assert.Null(after.LeaseOwner);
+
+        Assert.Equal(replacement.CheckpointPayload, after.CheckpointPayload);
+
+        Assert.Equal(replacement.CheckpointVersion, after.CheckpointVersion);
 
     }
 
