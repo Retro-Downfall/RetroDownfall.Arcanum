@@ -596,8 +596,6 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
                 Result attached = await authority.AttachExportStagingAsync(
                     opened.Value,
-                    _paths.ExportStagingDatabasePath,
-                    _passphrase.Passphrase,
                     cancellationToken).ConfigureAwait(false);
 
                 if (attached.IsFailure)

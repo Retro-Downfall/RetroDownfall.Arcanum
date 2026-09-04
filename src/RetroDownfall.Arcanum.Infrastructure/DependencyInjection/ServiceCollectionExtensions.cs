@@ -2077,6 +2077,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                 sp.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),

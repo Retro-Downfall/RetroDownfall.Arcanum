@@ -1690,10 +1690,6 @@ public sealed class CovenantErasureSameProcessTests
                 ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
                 : null);
 
-        Assert.True(
-            reset.IsSuccess,
-            reset.IsFailure ? reset.Error.Code + " " + harness.CoordinatorDiagnostics() : null);
-
         Assert.Equal(ErasedRoute, await harness.CaptureRouteStateAsync());
 
         Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, reset.Value.Disposition);
@@ -1859,6 +1855,8 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
                             provider.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                             provider.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+                            provider.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                            provider.GetRequiredService<IGrimoireDbPassphraseSource>(),
                             provider.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
                             provider.GetRequiredService<ICovenantConnectionDrain>(),
                             provider.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),

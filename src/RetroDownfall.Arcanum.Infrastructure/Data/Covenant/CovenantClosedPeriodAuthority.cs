@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
@@ -27,11 +29,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 internal sealed class CovenantClosedPeriodAuthority(
     IGrimoireExclusiveClosedLease closed,
     IGrimoireMaintenanceIoLane lane,
-    IGrimoireMaintenanceConnectionFactory factory)
+    IGrimoireMaintenanceConnectionFactory factory,
+    IGrimoireMaintenancePathAuthority paths,
+    IGrimoireDbPassphraseSource passphrase)
 {
 
     private readonly IGrimoireExclusiveClosedLease _closed =
         closed ?? throw new ArgumentNullException(nameof(closed));
+
+    private readonly IGrimoireMaintenancePathAuthority _paths =
+        paths ?? throw new ArgumentNullException(nameof(paths));
+
+    private readonly IGrimoireDbPassphraseSource _passphrase =
+        passphrase ?? throw new ArgumentNullException(nameof(passphrase));
+
+    /// <summary>The compaction lease this closed period last opened, and the only one that may attach.</summary>
+    private IGrimoireMaintenanceConnectionLease? _compaction;
 
     private readonly IGrimoireMaintenanceIoLane _lane =
         lane ?? throw new ArgumentNullException(nameof(lane));
@@ -40,6 +53,7 @@ internal sealed class CovenantClosedPeriodAuthority(
         factory ?? throw new ArgumentNullException(nameof(factory));
 
     /// <summary>Opens the one transaction that empties the Covenant family.</summary>
+    [GrimoireConnectionAcquisitionRoute]
     internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenCanonicalErasureAsync(
         CancellationToken cancellationToken) =>
         OpenAsync(
@@ -48,6 +62,7 @@ internal sealed class CovenantClosedPeriodAuthority(
             cancellationToken);
 
     /// <summary>Opens the connection a checked write-ahead-log truncation runs on.</summary>
+    [GrimoireConnectionAcquisitionRoute]
     internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenWalTruncationAsync(
         CancellationToken cancellationToken) =>
         OpenAsync(
@@ -56,14 +71,34 @@ internal sealed class CovenantClosedPeriodAuthority(
             cancellationToken);
 
     /// <summary>Opens the connection vacuuming, exporting and journal restoration run on.</summary>
-    internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenCompactionAsync(
-        CancellationToken cancellationToken) =>
-        OpenAsync(
+    /// <remarks>
+    /// The lease is remembered because it is the only one an export attach may name. Remembering the
+    /// exact instance rather than a flag means a later compaction open replaces it, so a lease that
+    /// has already been disposed cannot be used to reach the staging file afterwards.
+    /// </remarks>
+    [GrimoireConnectionAcquisitionRoute]
+    internal async Task<Result<IGrimoireMaintenanceConnectionLease>> OpenCompactionAsync(
+        CancellationToken cancellationToken)
+    {
+
+        Result<IGrimoireMaintenanceConnectionLease> opened = await OpenAsync(
             CovenantMaintenanceConnectionPurpose.Compaction,
             _factory.OpenJournalCompactionAsync,
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+
+        if (opened.IsSuccess)
+        {
+
+            _compaction = opened.Value;
+
+        }
+
+        return opened;
+
+    }
 
     /// <summary>Opens the exported candidate, read-only, before the destination is touched.</summary>
+    [GrimoireConnectionAcquisitionRoute]
     internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenExportVerificationAsync(
         CancellationToken cancellationToken) =>
         OpenAsync(
@@ -72,6 +107,7 @@ internal sealed class CovenantClosedPeriodAuthority(
             cancellationToken);
 
     /// <summary>Opens the connection the empty search accelerator is prepared on.</summary>
+    [GrimoireConnectionAcquisitionRoute]
     internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenAcceleratorInitializationAsync(
         CancellationToken cancellationToken) =>
         OpenAsync(
@@ -80,6 +116,7 @@ internal sealed class CovenantClosedPeriodAuthority(
             cancellationToken);
 
     /// <summary>Opens the immutable read that verifies the candidate without writing a sidecar.</summary>
+    [GrimoireConnectionAcquisitionRoute]
     internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenCandidateReopenAsync(
         CancellationToken cancellationToken) =>
         OpenAsync(
@@ -88,6 +125,7 @@ internal sealed class CovenantClosedPeriodAuthority(
             cancellationToken);
 
     /// <summary>Opens the bounded read-only snapshot an inventory page is proved from.</summary>
+    [GrimoireConnectionAcquisitionRoute]
     internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenInventorySnapshotAsync(
         CancellationToken cancellationToken) =>
         OpenAsync(
@@ -106,20 +144,33 @@ internal sealed class CovenantClosedPeriodAuthority(
     /// </remarks>
     internal async Task<Result> AttachExportStagingAsync(
         IGrimoireMaintenanceConnectionLease exportLease,
-        string stagingPath,
-        string passphrase,
         CancellationToken cancellationToken)
     {
 
         ArgumentNullException.ThrowIfNull(exportLease);
 
+        // The refusal is the point, not the null check. An attach names a second database file on an
+        // already-open connection, so a lease opened for anything but the compaction it belongs to
+        // would be reaching past the one purpose its capability was issued for - which is the whole
+        // guarantee the purpose-bound capability exists to make, and the one place it could
+        // otherwise be walked around.
+        if (!ReferenceEquals(exportLease, _compaction))
+        {
+
+            return Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.InvalidScope,
+                    "Only this closed period's compaction lease may attach the export staging database."));
+
+        }
+
         await using SqliteCommand command = exportLease.Connection.CreateCommand();
 
         command.CommandText = $"ATTACH DATABASE $path AS {ExportAlias} KEY $key;";
 
-        _ = command.Parameters.AddWithValue("$path", stagingPath);
+        _ = command.Parameters.AddWithValue("$path", _paths.ExportStagingDatabasePath);
 
-        _ = command.Parameters.AddWithValue("$key", passphrase);
+        _ = command.Parameters.AddWithValue("$key", _passphrase.Passphrase);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -130,6 +181,7 @@ internal sealed class CovenantClosedPeriodAuthority(
     /// <summary>The schema name an export writes its candidate through.</summary>
     internal const string ExportAlias = "covenant_erasure_export";
 
+    [GrimoireConnectionAcquisitionRoute]
     private async Task<Result<IGrimoireMaintenanceConnectionLease>> OpenAsync(
         CovenantMaintenanceConnectionPurpose purpose,
         Func<
@@ -150,9 +202,21 @@ internal sealed class CovenantClosedPeriodAuthority(
 
         }
 
-        await using IGrimoireMaintenanceConnectionCapability issued = capability.Value;
+        // Disposed only when the open did not take. A capability that was consumed has handed its
+        // authority to a live tracked handle, and disposing it while that handle is open revokes the
+        // handle underneath the connection the caller is about to use - which presents as a lease
+        // whose connection is already closed, and is indistinguishable from a provider that refused.
+        Result<IGrimoireMaintenanceConnectionLease> opened =
+            await open(capability.Value, _lane, cancellationToken).ConfigureAwait(false);
 
-        return await open(issued, _lane, cancellationToken).ConfigureAwait(false);
+        if (opened.IsFailure)
+        {
+
+            await capability.Value.DisposeAsync().ConfigureAwait(false);
+
+        }
+
+        return opened;
 
     }
 

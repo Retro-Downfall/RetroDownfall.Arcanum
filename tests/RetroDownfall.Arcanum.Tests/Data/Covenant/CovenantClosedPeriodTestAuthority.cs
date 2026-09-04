@@ -139,7 +139,9 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
             new CovenantClosedPeriodAuthority(
                 closed,
                 lane,
-                decorate is null ? factory : decorate(factory)),
+                decorate is null ? factory : decorate(factory),
+                paths,
+                key),
             paths,
             key);
 
@@ -237,7 +239,12 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
     /// that dropped its argument and substituted one of its own.</para>
     /// </remarks>
     internal static CovenantClosedPeriodAuthority Inert() =>
-        new(new InertClosedLease(), new InertLane(), new UnreachableMaintenanceFactory());
+        new(
+            new InertClosedLease(),
+            new InertLane(),
+            new UnreachableMaintenanceFactory(),
+            new ScratchMaintenancePaths(),
+            new ScratchPassphraseSource());
 
     /// <summary>The scratch file every maintenance purpose in this suite resolves to.</summary>
     private sealed class ScratchPaths(string databasePath) : IGrimoireMaintenancePathAuthority

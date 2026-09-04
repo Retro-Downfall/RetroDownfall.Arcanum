@@ -822,6 +822,8 @@ public sealed partial class DataRetentionServiceTests
             // — so the factory is the unreachable one and the paths are never touched.
             new GrimoireConnectionAdmissionGate(clock, drain, new ScratchMaintenancePaths()),
             new UnreachableMaintenanceFactory(),
+            new ScratchMaintenancePaths(),
+            new ScratchPassphraseSource(),
             ledger,
             drain,
             new GrimoireOfflineTransitionDatabaseReconciler(operations, clock),

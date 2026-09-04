@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -544,6 +546,8 @@ internal sealed class CovenantErasureCoordinator(
     IGrimoireOfflineTransitionPhaseAuthority phaseAuthority,
     IGrimoireConnectionAdmissionGate admissionGate,
     IGrimoireMaintenanceConnectionFactory maintenanceConnections,
+    IGrimoireMaintenancePathAuthority maintenancePaths,
+    IGrimoireDbPassphraseSource passphrase,
     ICovenantClosedPeriodLedgerConnection ledgerConnection,
     ICovenantConnectionDrain drain,
     GrimoireOfflineTransitionDatabaseReconciler reconciler,
@@ -617,6 +621,12 @@ internal sealed class CovenantErasureCoordinator(
     private readonly IGrimoireMaintenanceConnectionFactory _maintenanceConnections =
         maintenanceConnections ?? throw new ArgumentNullException(nameof(maintenanceConnections));
 
+    private readonly IGrimoireMaintenancePathAuthority _maintenancePaths =
+        maintenancePaths ?? throw new ArgumentNullException(nameof(maintenancePaths));
+
+    private readonly IGrimoireDbPassphraseSource _passphrase =
+        passphrase ?? throw new ArgumentNullException(nameof(passphrase));
+
     private readonly ICovenantClosedPeriodLedgerConnection _ledgerConnection =
         ledgerConnection ?? throw new ArgumentNullException(nameof(ledgerConnection));
 
@@ -649,7 +659,9 @@ internal sealed class CovenantErasureCoordinator(
         IGrimoireClosingOwner closingOwner,
         IGrimoireExclusiveClosedLease closed,
         IGrimoireMaintenanceIoLane lane,
-        IGrimoireScopedConnectionPermit ledger)
+        IGrimoireScopedConnectionPermit ledger,
+        SqliteConnection ledgerConnection,
+        ICovenantConnectionDrain drain)
     {
 
         private int _spent;
@@ -662,6 +674,12 @@ internal sealed class CovenantErasureCoordinator(
 
         /// <summary>The permit that keeps the durable ledger's own connection usable while closed.</summary>
         internal IGrimoireScopedConnectionPermit Ledger => ledger;
+
+        /// <summary>The exact connection object the permit was bound to.</summary>
+        internal SqliteConnection LedgerConnection => ledgerConnection;
+
+        /// <summary>The drain whose pool clear follows every ledger close.</summary>
+        internal ICovenantConnectionDrain Drain => drain;
 
         internal async Task<Result> ReleaseAsync(
             CovenantExclusiveLeaseDisposition disposition,
@@ -773,8 +791,25 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
+        // The durable ledger is promoted and physically opened for the whole closed period, not only
+        // around the terminal write. Ordinary admission is shut, so every statement this erasure
+        // makes against its own database - the artifact and managed-file kernels' transactions as
+        // much as the terminal compare-exchange - would otherwise be refused; and the store issues
+        // its statements directly whenever the connection is already open, which is the one way past
+        // an interceptor that is correctly saying no.
+        if (_ledgerConnection.Connection is not SqliteConnection ledgerConnection)
+        {
+
+            await lane.Value.DisposeAsync().ConfigureAwait(false);
+
+            await closed.Value.DisposeAsync().ConfigureAwait(false);
+
+            return await AbandonClosingAsync(closingOwner, MaintenanceFailure()).ConfigureAwait(false);
+
+        }
+
         Result<IGrimoireScopedConnectionPermit> ledger =
-            closed.Value.AcquireScopedConnectionPermit(_ledgerConnection.Connection);
+            closed.Value.AcquireScopedConnectionPermit(ledgerConnection);
 
         if (ledger.IsFailure)
         {
@@ -788,35 +823,46 @@ internal sealed class CovenantErasureCoordinator(
         }
 
         return Result<CovenantGrimoireClosure>.Success(
-            new CovenantGrimoireClosure(closingOwner, closed.Value, lane.Value, ledger.Value));
+            new CovenantGrimoireClosure(
+                closingOwner,
+                closed.Value,
+                lane.Value,
+                ledger.Value,
+                ledgerConnection,
+                _drain));
 
     }
 
     /// <summary>
-    /// Runs the one durable-ledger step of a closed period on the connection the gate admitted.
+    /// Runs one durable-ledger window of a closed period on the connection the gate admitted.
     /// </summary>
     /// <remarks>
     /// Ordinary admission is shut, so the operation store's usual route through the connection
     /// interceptor is refused - correctly, because that route is what the closed period exists to
-    /// stop. What the gate still admits is one exact connection object, under a permit taken when the
-    /// closure was, and the store issues its statements on that object directly whenever it is
-    /// already physically open. So this opens it, does the work, and closes it again.
+    /// stop. What the gate still admits is one exact connection object, and the store issues its
+    /// statements on that object directly whenever it is already physically open. So a window opens
+    /// it, does the work, and closes it again.
+    ///
+    /// <para>A window rather than the whole closed period, and that is the load-bearing part. The
+    /// canonical transaction takes an exclusive maintenance lock on the same file, and a live ledger
+    /// handle would contend with it - so the erasure would retry its own lock against itself until
+    /// the backoff gave up. Every window therefore ends before the next exclusive open begins.</para>
     ///
     /// <para>The pool is cleared after the close rather than trusted to empty itself. The ledger's
     /// connection string leaves provider pooling on, unlike every maintenance connection, so a closed
-    /// handle returns to a pool rather than releasing the file - and a pooled handle over a database
-    /// this erasure is about to replace is exactly the handle the sidecar proof would find.</para>
+    /// handle would otherwise return to a pool rather than release the file - and a pooled handle
+    /// over a database this erasure is about to replace is exactly the handle the sidecar proof finds.</para>
     ///
-    /// <para>A run with no closure has nothing to promote and nothing to close, which is the shape a
-    /// unit-level harness exercises: it never entered a closed period, so the ordinary route works.</para>
+    /// <para>A run with no closure has nothing to promote, which is the shape a unit-level harness
+    /// exercises: it never entered a closed period, so the ordinary route works.</para>
     /// </remarks>
-    private async Task<T> WithLedgerAsync<T>(
+    private static async Task<T> WithLedgerAsync<T>(
         CovenantGrimoireClosure? closure,
         Func<CancellationToken, Task<T>> work,
         CancellationToken cancellationToken)
     {
 
-        if (closure is null || _ledgerConnection.Connection is not SqliteConnection ledger)
+        if (closure is null)
         {
 
             return await work(cancellationToken).ConfigureAwait(false);
@@ -824,7 +870,7 @@ internal sealed class CovenantErasureCoordinator(
         }
 
         Result<IGrimoireTrackedMaintenanceHandle> admitted = closure.Ledger.AcquireOpen(
-            ledger,
+            closure.LedgerConnection,
             closure.Closed.Owner,
             closure.Closed.Generation,
             closure.Lane);
@@ -838,9 +884,7 @@ internal sealed class CovenantErasureCoordinator(
 
         IGrimoireTrackedMaintenanceHandle handle = admitted.Value;
 
-        Result started = handle.ReportOpenStarted();
-
-        if (started.IsFailure)
+        if (handle.ReportOpenStarted().IsFailure)
         {
 
             _ = handle.ReportNotOpened();
@@ -852,7 +896,12 @@ internal sealed class CovenantErasureCoordinator(
         try
         {
 
-            await ledger.OpenAsync(cancellationToken).ConfigureAwait(false);
+            if (closure.LedgerConnection.State is not System.Data.ConnectionState.Open)
+            {
+
+                await closure.LedgerConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            }
 
             return await work(cancellationToken).ConfigureAwait(false);
 
@@ -860,9 +909,9 @@ internal sealed class CovenantErasureCoordinator(
         finally
         {
 
-            await ledger.CloseAsync().ConfigureAwait(false);
+            await closure.LedgerConnection.CloseAsync().ConfigureAwait(false);
 
-            _drain.ClearExactPoolAfterClose(ledger);
+            closure.Drain.ClearExactPoolAfterClose(closure.LedgerConnection);
 
             _ = handle.ReportPhysicallyClosed();
 
@@ -1207,7 +1256,9 @@ internal sealed class CovenantErasureCoordinator(
                             maintenance = new CovenantClosedPeriodAuthority(
                                 closure.Closed,
                                 closure.Lane,
-                                _maintenanceConnections);
+                                _maintenanceConnections,
+                                _maintenancePaths,
+                                _passphrase);
 
                         }
                         else
@@ -1339,11 +1390,14 @@ internal sealed class CovenantErasureCoordinator(
                 async (_, token) =>
                 {
 
-                    Result erased = await EraseDatabaseArtifactsAsync(
-                        datasetGeneration,
-                        maintenance,
-                        authority,
-                        progress,
+                    Result erased = await WithLedgerAsync(
+                        closure,
+                        ledgerToken => EraseDatabaseArtifactsAsync(
+                            datasetGeneration,
+                            maintenance,
+                            authority,
+                            progress,
+                            ledgerToken),
                         token).ConfigureAwait(false);
 
                     if (erased.IsFailure)
@@ -1369,11 +1423,14 @@ internal sealed class CovenantErasureCoordinator(
                 phases,
                 state,
                 CovenantResetPhase.ManagedArtifactsProcessed,
-                (_, token) => EraseManagedFilesAsync(
-                    operation.Id,
-                    maintenance,
-                    authority,
-                    progress,
+                (_, token) => WithLedgerAsync(
+                    closure,
+                    ledgerToken => EraseManagedFilesAsync(
+                        operation.Id,
+                        maintenance,
+                        authority,
+                        progress,
+                        ledgerToken),
                     token),
                 progress,
                 cancellationToken).ConfigureAwait(false);
@@ -1670,6 +1727,40 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
+        // Ordinary admission reopens here, before anything ordinary is asked to come back. The warm
+        // writer opens an ordinary connection, and an ordinary connection is exactly what a closed
+        // Grimoire refuses - so a writer restarted inside the closed period cannot succeed, and its
+        // refusal would be reported instead of whatever the erasure actually did.
+        //
+        // Reopening now is safe and is not the same decision as the Covenant disposition below. The
+        // storage proof has passed and the runtime authority is published, so there is nothing left
+        // that a shut database is protecting; what a failed writer restart still costs is the
+        // Covenant scope, which stays closed on its own terms.
+        if (closure is not null)
+        {
+
+            Result reopened = await closure.ReleaseAsync(
+                CovenantExclusiveLeaseDisposition.CommitAndReopen,
+                publicationAndWriter.Token).ConfigureAwait(false);
+
+            if (reopened.IsFailure)
+            {
+
+                return await CloseAsync(
+                    operation,
+                    state,
+                    ownerId,
+                    lease,
+                    CovenantExclusiveLeaseDisposition.KeepClosed,
+                    progress,
+                    reopened.Error.Code,
+                    phases,
+                    closure).ConfigureAwait(false);
+
+            }
+
+        }
+
         // The warm writer may only come back against the authority that was just published. A restart
         // failure lands here, before the one disposition, so it selects KeepClosed rather than
         // reversing an erasure the storage proof already earned.
@@ -1739,6 +1830,20 @@ internal sealed class CovenantErasureCoordinator(
             error.Code);
 
         using CancellationTokenSource restoration = new(WriterRestorationBound, _timeProvider);
+
+        // Ordinary admission reopens before the writer is asked to come back, for the same reason it
+        // does on the committed path: the writer opens an ordinary connection and a closed Grimoire
+        // refuses one. Nothing here has been touched - this is the pre-effect abort - so there is
+        // nothing a shut database would be protecting, and leaving it shut would replace the reason
+        // this erasure stopped with the refusal that hid it.
+        if (closure is not null)
+        {
+
+            _ = await closure.ReleaseAsync(
+                CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                restoration.Token).ConfigureAwait(false);
+
+        }
 
         Result restored;
 

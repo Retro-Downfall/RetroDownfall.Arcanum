@@ -738,7 +738,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
     /// SQLite's own native busy-handler. <c>Microsoft.Data.Sqlite</c> layers a second, longer wait on
     /// top, bounded by <see cref="SqliteConnection.DefaultTimeout"/> (30 s by default), so a real
     /// racing holder can take up to 30 real seconds to surface as SQLITE_BUSY at all. Waiting that out
-    /// on every test run would make this suite unusable, so <see cref="ThrottledV3ConnectionFactory"/>
+    /// on every test run would make this suite unusable, so <see cref="ThrottledMaintenanceConnectionFactory"/>
     /// lowers both bounds - the same two settings <c>CampaignRepository.AddAsync</c> already lowers
     /// for its own <c>BEGIN IMMEDIATE</c> - on the erasure's connection only, and only after the real
     /// factory's <c>InitializeAsync</c> has already verified the production 5000 ms policy.

@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 /// <summary>
@@ -1120,6 +1122,11 @@ public sealed class CovenantErasureCoordinatorTests
         /// </remarks>
         internal IGrimoireMaintenanceConnectionFactory MaintenanceConnections { get; }
 
+        /// <summary>The scratch file every maintenance purpose in this harness resolves to.</summary>
+        internal IGrimoireMaintenancePathAuthority MaintenancePaths { get; }
+
+        internal IGrimoireDbPassphraseSource MaintenancePassphrase { get; }
+
         /// <summary>
         /// A real journal over this harness's own temporary root, not a stand-in.
         /// </summary>
@@ -1212,10 +1219,14 @@ public sealed class CovenantErasureCoordinatorTests
                     CovenantSqliteConnectionInitializer.Instance,
                     SqliteNativeRuntime.Instance);
 
+            MaintenancePaths = new ScratchMaintenancePaths(databasePath);
+
+            MaintenancePassphrase = new ScratchPassphraseSource();
+
             Admission = new GrimoireConnectionAdmissionGate(
                 TimeProvider.System,
                 Drain,
-                new ScratchMaintenancePaths(databasePath));
+                MaintenancePaths);
 
             Operations = new RecordingOperationCoordinator(Store);
 
@@ -1328,6 +1339,8 @@ public sealed class CovenantErasureCoordinatorTests
                 Phases,
                 Admission,
                 MaintenanceConnections,
+                MaintenancePaths,
+                MaintenancePassphrase,
                 Ledger,
                 Drain,
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
@@ -1382,6 +1395,8 @@ public sealed class CovenantErasureCoordinatorTests
                 Phases,
                 Admission,
                 MaintenanceConnections,
+                MaintenancePaths,
+                MaintenancePassphrase,
                 Ledger,
                 Drain,
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
