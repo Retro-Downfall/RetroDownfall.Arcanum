@@ -1231,10 +1231,13 @@ public sealed class CovenantErasureSameProcessTests
 
         CoordinatorPause pause = new();
 
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
             routeFailure: RouteFailure.Rollback,
             coordinatorPause: pause,
-            fastLeaseHeartbeat: true);
+            fastLeaseHeartbeat: true,
+            storeFaults: faults);
 
         DataRetentionPlan confirmed = await harness.PlanResetAsync();
 
@@ -1242,7 +1245,7 @@ public sealed class CovenantErasureSameProcessTests
 
         await pause.WaitUntilPausedAsync();
 
-        LongRunningOperation before = await harness.ReadResetOperationAsync();
+        int planning = faults.RenewalAttempts;
 
         try
         {
@@ -1252,13 +1255,14 @@ public sealed class CovenantErasureSameProcessTests
             // the row's revision and the journal binds itself to the exact revision the launch
             // produced. Advancing it would make the terminal compare-exchange refuse the very row the
             // transition exists to terminalize.
+            //
+            // The count is what is asserted rather than the row, and not only because it is sharper.
+            // The pause is inside the closed period, where ordinary connection admission is shut, so
+            // reading the row here is refused outright - which is itself the stronger statement: a
+            // heartbeat could not reach the row from in here even if something still wanted to.
             await Task.Delay(TimeSpan.FromMilliseconds(600), TimeProvider.System);
 
-            LongRunningOperation during = await harness.ReadResetOperationAsync();
-
-            Assert.Equal(before.Revision, during.Revision);
-
-            Assert.Equal(before.LeaseExpiresAt, during.LeaseExpiresAt);
+            Assert.Equal(planning, faults.RenewalAttempts);
 
         }
         finally

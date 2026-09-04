@@ -1718,12 +1718,10 @@ internal sealed partial class DataRetentionService(
 
     }
 
-    private static Error CovenantMaintenanceFailure(
-        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
-        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) =>
+    private static Error CovenantMaintenanceFailure() =>
         new(
-            $"Covenant.MaintenanceFailed.{System.IO.Path.GetFileNameWithoutExtension(file)}.L{line}",
-            "diag");
+            ErrorCodes.Covenant.MaintenanceFailed,
+            "The Covenant reset lifecycle could not be recorded safely.");
 
     private const int CovenantCompletionMaximumAttempts = 8;
 
