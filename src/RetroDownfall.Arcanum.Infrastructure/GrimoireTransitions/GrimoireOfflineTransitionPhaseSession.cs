@@ -208,6 +208,81 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
                 }),
             cancellationToken);
 
+    /// <summary>The replacement this transition has committed to, or null while none is planned.</summary>
+    internal GrimoireOfflineTransitionReplacementEvidence? ReplacementEvidence =>
+        _current.Payload.ReplacementEvidence;
+
+    /// <summary>
+    /// Publishes the identities a replacement is about to be built from, before it builds anything.
+    /// </summary>
+    /// <remarks>
+    /// The first of three, and the only one that may be published from no evidence at all. What it
+    /// records is what the replacement is planned against: the file being replaced, the destination
+    /// it will be installed at, the backup the primitive will keep, and the leaf the candidate will
+    /// be written to. All four are observable before a byte is written, which is what makes a resumed
+    /// run able to ask whether the world it is resuming into is the one that was planned for.
+    ///
+    /// <para>Published while the compaction phase is not yet in flight. The graph admits a
+    /// replacement advance only from a complete write-ahead-log truncation with nothing running, so a
+    /// transition that began the phase first would have given the whole sequence up.</para>
+    /// </remarks>
+    internal Task<Result> RecordReplacementPlannedAsync(
+        string stagingLeaf,
+        CovenantDigest source,
+        CovenantDigest destination,
+        CovenantDigest originalBackup,
+        CancellationToken cancellationToken) =>
+        AdvanceAsync(
+            payload => WithReplacement(
+                payload,
+                new GrimoireOfflineTransitionReplacementEvidence(
+                    stagingLeaf,
+                    source,
+                    StagingPhysicalIdentityDigest: null,
+                    destination,
+                    originalBackup,
+                    StagedContentDigest: null)),
+            cancellationToken);
+
+    /// <summary>
+    /// Publishes that the staging file exists and which file it is.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the plan because the file did not exist when the plan was published and does
+    /// now. A resumed run that finds a staging file with a different physical identity has found
+    /// somebody else's file under this transition's name, which is the one thing the leaf alone
+    /// cannot tell it.
+    /// </remarks>
+    internal Task<Result> RecordStagingIdentityAsync(
+        CovenantDigest stagingIdentity,
+        CancellationToken cancellationToken) =>
+        _current.Payload.ReplacementEvidence is not { } planned
+            ? Task.FromResult(Unresumable())
+            : AdvanceAsync(
+                payload => WithReplacement(
+                    payload,
+                    planned with { StagingPhysicalIdentityDigest = stagingIdentity }),
+                cancellationToken);
+
+    /// <summary>
+    /// Publishes that the staged candidate's contents are proven, which is what permits installing it.
+    /// </summary>
+    /// <remarks>
+    /// Last of the three, and the one the graph requires before the compaction phase may begin. The
+    /// staging identity is carried forward unchanged rather than re-observed, so a content proof
+    /// cannot be attached to a different file than the one it was computed over.
+    /// </remarks>
+    internal Task<Result> RecordStagedContentAsync(
+        CovenantDigest stagedContent,
+        CancellationToken cancellationToken) =>
+        _current.Payload.ReplacementEvidence is not { StagingPhysicalIdentityDigest: not null } staged
+            ? Task.FromResult(Unresumable())
+            : AdvanceAsync(
+                payload => WithReplacement(
+                    payload,
+                    staged with { StagedContentDigest = stagedContent }),
+                cancellationToken);
+
     /// <summary>Moves from a complete closing proof into the phase ladder.</summary>
     internal Task<Result> EnterApplyingAsync(CancellationToken cancellationToken) =>
         AdvanceAsync(
@@ -664,6 +739,25 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
             HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory =>
                 Result<IGrimoireOfflineTransitionPayload>.Success(
                     factory with { Lifecycle = lifecycle, BlockerResolutionEvidence = null }),
+
+            _ => Unresumable<IGrimoireOfflineTransitionPayload>(),
+
+        };
+
+    /// <summary>Rewrites the replacement evidence, which only the two payload kinds can carry.</summary>
+    private static Result<IGrimoireOfflineTransitionPayload> WithReplacement(
+        IGrimoireOfflineTransitionPayload payload,
+        GrimoireOfflineTransitionReplacementEvidence replacement) =>
+        payload switch
+        {
+
+            CovenantResetOfflineTransitionPayloadV1 reset =>
+                Result<IGrimoireOfflineTransitionPayload>.Success(
+                    reset with { ReplacementEvidence = replacement }),
+
+            HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory =>
+                Result<IGrimoireOfflineTransitionPayload>.Success(
+                    factory with { ReplacementEvidence = replacement }),
 
             _ => Unresumable<IGrimoireOfflineTransitionPayload>(),
 

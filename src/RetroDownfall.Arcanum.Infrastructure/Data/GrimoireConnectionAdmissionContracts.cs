@@ -535,8 +535,17 @@ internal interface IGrimoireMaintenancePathAuthority
     /// <summary>The installation's canonical Grimoire database.</summary>
     string CanonicalDatabasePath { get; }
 
-    /// <summary>The candidate database a verified export is written to and proven on.</summary>
-    string ExportStagingDatabasePath { get; }
+    /// <summary>
+    /// The candidate database one transition's verified export is written to and proven on.
+    /// </summary>
+    /// <remarks>
+    /// Bound to the operation rather than fixed, so the file a resumed run finds is one it can claim
+    /// or disown by name before it opens anything. It is derived here rather than accepted from a
+    /// caller for the same reason the canonical path is: a caller that could name the file could name
+    /// a different one, and the comparison made on the way back in would be comparing a caller's value
+    /// with the same caller's value.
+    /// </remarks>
+    string ExportStagingDatabasePath(Guid operationId);
 
 }
 

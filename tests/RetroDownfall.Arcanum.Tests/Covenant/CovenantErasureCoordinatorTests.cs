@@ -346,6 +346,157 @@ public sealed class CovenantErasureCoordinatorTests
 
     }
 
+    /// <summary>
+    /// The arm a compaction takes when it cannot prove itself publishes everything it is about to do
+    /// before it does any of it.
+    /// </summary>
+    /// <remarks>
+    /// The ordering is the whole property. The transition graph admits a replacement advance only from
+    /// a completed write-ahead-log truncation with nothing in flight, so a coordinator that began the
+    /// compaction phase first would have given up the ability to record what it was replacing, with
+    /// what, at all — and the one irreversible act in the ladder would be bracketed by a phase whose
+    /// before-state named none of it.
+    /// </remarks>
+    [Fact]
+    public async Task A_compaction_that_cannot_prove_itself_stages_and_proves_before_its_phase_begins()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.ReplacementNeeded = true;
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.WalTruncated);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(
+            ["compact", "stage-candidate", "prove-candidate", "install-replacement"],
+            harness.Steps.Where(static step => Compaction.Contains(step)).ToArray());
+
+        // The proof is made over the file the staging step reported, and the install acts on the pair
+        // the proof was made over. A sequence that re-observed either would be proving one file and
+        // installing whatever happened to be there afterwards.
+        Assert.Equal(
+            [RecordingErasureTransition.StagedIdentity],
+            harness.Transition.ProvenIdentities);
+
+        Assert.Equal(
+            [(RecordingErasureTransition.StagedIdentity, RecordingErasureTransition.StagedContent)],
+            harness.Transition.Installed);
+
+    }
+
+    /// <summary>
+    /// A run whose journal already carries a proven candidate installs it and stages nothing.
+    /// </summary>
+    /// <remarks>
+    /// The measurement is skipped too, and deliberately. A journal that carries a replacement is a
+    /// journal that has already answered the question the measurement asks, and asking it again would
+    /// rewrite the database the recorded candidate was exported from — under evidence describing the
+    /// file as it was before.
+    /// </remarks>
+    [Fact]
+    public async Task A_resumed_replacement_that_was_already_proven_only_installs()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.ReplacementNeeded = true;
+
+        harness.Replacement = harness.ProvedReplacement();
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.WalTruncated);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(["install-replacement"], harness.Steps.Where(Compaction.Contains).ToArray());
+
+    }
+
+    /// <summary>
+    /// A run whose journal carries only the plan builds the candidate the plan named, and does not
+    /// plan again.
+    /// </summary>
+    [Fact]
+    public async Task A_resumed_replacement_that_reached_only_its_plan_stages_without_replanning()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.ReplacementNeeded = true;
+
+        harness.Replacement = harness.PlannedReplacement();
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.WalTruncated);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(
+            ["stage-candidate", "prove-candidate", "install-replacement"],
+            harness.Steps.Where(Compaction.Contains).ToArray());
+
+    }
+
+    /// <summary>
+    /// A replacement planned against a database that is no longer the one in place is refused rather
+    /// than continued.
+    /// </summary>
+    /// <remarks>
+    /// The candidate a resumed run would export is exported from whatever file is there now, and the
+    /// evidence it would be installed under describes the file that was there before. Nothing in the
+    /// journal can reconcile those, which is why this parks with admission closed rather than choosing
+    /// one of them.
+    /// </remarks>
+    [Fact]
+    public async Task A_replacement_planned_against_a_different_database_parks_rather_than_continuing()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.ReplacementNeeded = true;
+
+        harness.Replacement = harness.PlannedReplacement();
+
+        // The plan is seeded against the identity the double reported when it was made, and the world
+        // then reports a different one.
+        harness.Transition.CanonicalIdentity = CovenantOperationGateFixture.Digest(9);
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.WalTruncated);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        Assert.DoesNotContain("stage-candidate", harness.Steps);
+
+        Assert.DoesNotContain("install-replacement", harness.Steps);
+
+        Assert.False(await harness.AdmissionIsOpenAsync());
+
+    }
+
+    /// <summary>The four steps a compaction replacement is made of, in the order they must happen.</summary>
+    private static IReadOnlySet<string> Compaction { get; } =
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "compact",
+            "stage-candidate",
+            "prove-candidate",
+            "install-replacement",
+        };
+
     [Theory]
     [InlineData(CovenantResetPhase.CanonicalApplied, "erase-artifacts")]
     [InlineData(CovenantResetPhase.CanonicalApplied, "apply-canonical")]
@@ -1307,6 +1458,31 @@ public sealed class CovenantErasureCoordinatorTests
 
         }
 
+        /// <summary>The candidate leaf this harness's operation owns, as the coordinator derives it.</summary>
+        internal string StagingLeaf =>
+            CovenantResidualArtifacts.ExportStagingLeaf(
+                MaintenancePaths.CanonicalDatabasePath,
+                OperationId);
+
+        /// <summary>How far a resumed run's journal has already carried its replacement.</summary>
+        internal SeededReplacement? Replacement { get; set; }
+
+        /// <summary>A journal that has recorded the plan and nothing after it.</summary>
+        internal SeededReplacement PlannedReplacement() =>
+            new(
+                StagingLeaf,
+                Transition.CanonicalIdentity,
+                StagingIdentity: null,
+                StagedContent: null);
+
+        /// <summary>A journal that has recorded all three, which is a candidate ready to install.</summary>
+        internal SeededReplacement ProvedReplacement() =>
+            PlannedReplacement() with
+            {
+                StagingIdentity = RecordingErasureTransition.StagedIdentity,
+                StagedContent = RecordingErasureTransition.StagedContent,
+            };
+
         internal async Task<Result<CovenantErasureCompletion>> RunAsync(
             CovenantResetPhase phase,
             CancellationToken? cancellationToken = null,
@@ -1325,6 +1501,7 @@ public sealed class CovenantErasureCoordinatorTests
                 phase,
                 _operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
                     && phase >= CovenantResetPhase.HandlesClosed,
+                Replacement,
                 cancellationToken ?? Token);
 
             CovenantErasureCoordinator coordinator = new(
@@ -1779,7 +1956,95 @@ public sealed class CovenantErasureCoordinatorTests
 
         public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) => Step("truncate-wal");
 
-        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) => Step("compact");
+        public async Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken)
+        {
+
+            Result stepped = await Step("compact");
+
+            return stepped.IsFailure
+                ? Result<bool>.Failure(stepped.Error)
+                : Result<bool>.Success(ReplacementNeeded);
+
+        }
+
+        public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<CovenantDigest>.Success(CanonicalIdentity));
+
+        public async Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
+        {
+
+            Result stepped = await Step("stage-candidate");
+
+            return stepped.IsFailure
+                ? Result<CovenantDigest>.Failure(stepped.Error)
+                : Result<CovenantDigest>.Success(StagedIdentity);
+
+        }
+
+        public async Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken)
+        {
+
+            ProvenIdentities.Add(stagingIdentity);
+
+            Result stepped = await Step("prove-candidate");
+
+            return stepped.IsFailure
+                ? Result<CovenantDigest>.Failure(stepped.Error)
+                : Result<CovenantDigest>.Success(StagedContent);
+
+        }
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CancellationToken cancellationToken)
+        {
+
+            Installed.Add((stagingIdentity, stagedContent));
+
+            return Step("install-replacement");
+
+        }
+
+        /// <summary>
+        /// Whether this double reports a compaction that could not prove itself.
+        /// </summary>
+        /// <remarks>
+        /// False by default, because that is the arm a healthy engine takes and the one every other
+        /// assertion in this suite is written against. Setting it selects the replacement sequence,
+        /// which is the only way a suite can reach it: the arm is chosen by a measurement of the
+        /// engine's own accounting, so nothing a test does to the data selects it.
+        /// </remarks>
+        internal bool ReplacementNeeded { get; set; }
+
+        /// <summary>The identity this double reports for the installation's database.</summary>
+        /// <remarks>
+        /// Settable so a suite can make the file the plan was recorded against stop being the file in
+        /// place, which is the ambiguity a resumed replacement has to refuse rather than act on.
+        /// </remarks>
+        internal CovenantDigest CanonicalIdentity { get; set; } = FixedDigest(0x11);
+
+        /// <summary>Every staging identity a proof was asked to be made over, in order.</summary>
+        internal List<CovenantDigest> ProvenIdentities { get; } = [];
+
+        /// <summary>Every pair an install was asked to act on, in order.</summary>
+        internal List<(CovenantDigest Staging, CovenantDigest Content)> Installed { get; } = [];
+
+        internal static CovenantDigest StagedIdentity { get; } = FixedDigest(0x22);
+
+        internal static CovenantDigest StagedContent { get; } = FixedDigest(0x33);
+
+        private static CovenantDigest FixedDigest(byte fill) =>
+            new(Enumerable.Repeat(fill, CovenantLimits.DigestBytes).ToArray());
+
 
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Step("initialize-accelerator");

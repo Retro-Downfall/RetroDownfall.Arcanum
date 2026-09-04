@@ -2893,8 +2893,35 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             inner.TruncateWalAsync(authority, cancellationToken);
 
-        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+        public Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             inner.CompactAsync(authority, cancellationToken);
+
+        public Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            inner.StageCandidateAsync(authority, cancellationToken);
+
+        public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken) =>
+            inner.ProveStagedCandidateAsync(authority, stagingIdentity, cancellationToken);
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CancellationToken cancellationToken) =>
+            inner.InstallCompactionReplacementAsync(
+                authority,
+                stagingIdentity,
+                stagedContent,
+                cancellationToken);
+
+        public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            inner.ReadCanonicalIdentityAsync(authority, cancellationToken);
 
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             inner.InitializeAcceleratorAsync(authority, cancellationToken);
@@ -3059,8 +3086,44 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
+        public Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<bool>.Success(false));
+
+        public Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+
+        public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        /// <summary>
+        /// Why the four members above throw rather than answer.
+        /// </summary>
+        /// <remarks>
+        /// This double reports that compaction proved itself, and the coordinator only reaches the
+        /// replacement members when it did not. Answering them anyway would let a coordinator that
+        /// staged a replacement it should never have staged still pass, which is the one thing a
+        /// double standing in for the storage layer must not do.
+        /// </remarks>
+        private const string NoReplacement =
+            "This double reports a compaction that proved itself, so no replacement is ever staged.";
 
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
@@ -3102,8 +3165,44 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
+        public Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<bool>.Success(false));
+
+        public Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+
+        public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        /// <summary>
+        /// Why the four members above throw rather than answer.
+        /// </summary>
+        /// <remarks>
+        /// This double reports that compaction proved itself, and the coordinator only reaches the
+        /// replacement members when it did not. Answering them anyway would let a coordinator that
+        /// staged a replacement it should never have staged still pass, which is the one thing a
+        /// double standing in for the storage layer must not do.
+        /// </remarks>
+        private const string NoReplacement =
+            "This double reports a compaction that proved itself, so no replacement is ever staged.";
 
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());

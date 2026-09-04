@@ -62,10 +62,37 @@ internal sealed class CovenantErasureTransition(
         CancellationToken cancellationToken) =>
         _storage.TruncateWalAsync(authority, cancellationToken);
 
-    public Task<Result> CompactAsync(
+    public Task<Result<bool>> CompactAsync(
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken) =>
         _storage.CompactAsync(authority, cancellationToken);
+
+    public Task<Result<CovenantDigest>> StageCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
+        _storage.StageCandidateAsync(authority, cancellationToken);
+
+    public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CancellationToken cancellationToken) =>
+        _storage.ProveStagedCandidateAsync(authority, stagingIdentity, cancellationToken);
+
+    public Task<Result> InstallCompactionReplacementAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CovenantDigest stagedContent,
+        CancellationToken cancellationToken) =>
+        _storage.InstallCompactionReplacementAsync(
+            authority,
+            stagingIdentity,
+            stagedContent,
+            cancellationToken);
+
+    public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
+        _storage.ReadCanonicalIdentityAsync(authority, cancellationToken);
 
     public Task<Result> InitializeAcceleratorAsync(
         CovenantClosedPeriodAuthority authority,

@@ -685,10 +685,74 @@ public sealed class CovenantErasureTransitionTests
             CancellationToken cancellationToken) =>
             Record(authority, () => TruncateCalls++);
 
-        public Task<Result> CompactAsync(
+        public async Task<Result<bool>> CompactAsync(
             CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
+        {
+
+            Result recorded = await Record(authority, () => CompactCalls++);
+
+            return recorded.IsFailure ? Result<bool>.Failure(recorded.Error) : Result<bool>.Success(false);
+
+        }
+
+        public async Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
+        {
+
+            Result recorded = await Record(authority, () => StageCalls++);
+
+            return recorded.IsFailure
+                ? Result<CovenantDigest>.Failure(recorded.Error)
+                : Result<CovenantDigest>.Success(Staged);
+
+        }
+
+        public async Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken)
+        {
+
+            Result recorded = await Record(authority, () => ProveCalls++);
+
+            return recorded.IsFailure
+                ? Result<CovenantDigest>.Failure(recorded.Error)
+                : Result<CovenantDigest>.Success(Staged);
+
+        }
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
             CancellationToken cancellationToken) =>
-            Record(authority, () => CompactCalls++);
+            Record(authority, () => InstallCalls++);
+
+        public async Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
+        {
+
+            Result recorded = await Record(authority, () => CanonicalIdentityReads++);
+
+            return recorded.IsFailure
+                ? Result<CovenantDigest>.Failure(recorded.Error)
+                : Result<CovenantDigest>.Success(Staged);
+
+        }
+
+        internal int StageCalls { get; private set; }
+
+        internal int ProveCalls { get; private set; }
+
+        internal int InstallCalls { get; private set; }
+
+        internal int CanonicalIdentityReads { get; private set; }
+
+        /// <summary>A digest that stands for a staged candidate this double never actually writes.</summary>
+        private static CovenantDigest Staged { get; } = new(Enumerable.Repeat((byte)0x5A, 32).ToArray());
 
         public Task<Result> InitializeAcceleratorAsync(
             CovenantClosedPeriodAuthority authority,

@@ -1394,7 +1394,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         // one, and the comparison this gate makes on the way back in would then be comparing a
         // caller's value with the same caller's value.
         string canonicalPath = purpose is CovenantMaintenanceConnectionPurpose.IntegrityVerification
-            ? _paths.ExportStagingDatabasePath
+            ? _paths.ExportStagingDatabasePath(lease.Closure.Owner.OperationId)
             : _paths.CanonicalDatabasePath;
 
         CovenantMaintenanceConnectionMode mode = purpose switch

@@ -2196,8 +2196,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.Equal(CovenantMaintenanceConnectionPurpose.IntegrityVerification, staging.Purpose);
 
+        // The whole operation-bound name, not just the class suffix. The gate deriving the suffix
+        // would leave every transition sharing one candidate file, and a resumed run unable to say
+        // whether the candidate on disk was written by the operation it is resuming.
         Assert.EndsWith(
-            CovenantResidualArtifacts.ExportStagingPath(string.Empty),
+            CovenantResidualArtifacts.ExportStagingPath(string.Empty, owner.OperationId),
             staging.CanonicalPath,
             StringComparison.Ordinal);
 
@@ -2211,7 +2214,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.Equal(CovenantMaintenanceConnectionMode.ReadWrite, canonical.Mode);
 
         Assert.DoesNotContain(
-            CovenantResidualArtifacts.ExportStagingPath(string.Empty),
+            CovenantResidualArtifacts.ExportStagingSuffix,
             canonical.CanonicalPath,
             StringComparison.Ordinal);
 

@@ -73,10 +73,33 @@ internal interface ICovenantErasureTransition
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Inventories sidecars and staging artifacts, then compacts, using a verified SQLCipher
-    /// export-and-atomic-replace when <c>VACUUM</c> alone cannot prove the freed pages are gone.
+    /// Inventories sidecars and staging artifacts and compacts, reporting whether <c>VACUUM</c> alone
+    /// proved the freed pages gone or a verified SQLCipher export-and-atomic-replace is still needed.
     /// </summary>
-    Task<Result> CompactAsync(
+    Task<Result<bool>> CompactAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken);
+
+    /// <summary>Writes the candidate this transition will install, and says which file it is.</summary>
+    Task<Result<CovenantDigest>> StageCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken);
+
+    /// <summary>Proves the recorded candidate, and says what the proof was made over.</summary>
+    Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CancellationToken cancellationToken);
+
+    /// <summary>Installs the proven candidate, once the journal has recorded all three facts.</summary>
+    Task<Result> InstallCompactionReplacementAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CovenantDigest stagedContent,
+        CancellationToken cancellationToken);
+
+    /// <summary>Establishes which file the installation's database currently is.</summary>
+    Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
@@ -1279,6 +1302,7 @@ internal sealed class CovenantErasureCoordinator(
                             stranded.Closure = closure;
 
                             maintenance = new CovenantClosedPeriodAuthority(
+                                checkpoint.Owner.OperationId,
                                 closure.Closed,
                                 closure.Lane,
                                 _maintenanceConnections,
@@ -1508,11 +1532,10 @@ internal sealed class CovenantErasureCoordinator(
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
-            state = await AdvanceAsync(
+            state = await CompactAsync(
                 phases,
                 state,
-                CovenantResetPhase.DatabaseCompacted,
-                (_, token) => _transition.CompactAsync(maintenance, token),
+                maintenance,
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -2299,6 +2322,288 @@ internal sealed class CovenantErasureCoordinator(
         return checkpoint with { Phase = phase };
 
     }
+
+    /// <summary>
+    /// Compacts, staging and publishing a replacement first when compaction alone cannot prove itself.
+    /// </summary>
+    /// <remarks>
+    /// Everything a replacement is planned against is published before the phase begins, because the
+    /// transition graph admits a replacement advance only from a completed write-ahead-log truncation
+    /// with nothing in flight. That ordering is not a convenience: it is what makes the one
+    /// irreversible act in this whole ladder bracketed by a phase whose before-state already names the
+    /// file being replaced, the file replacing it, and what that file holds.
+    ///
+    /// <para>So the shape is stage, prove, publish, begin, install — and a resumed run re-enters at
+    /// whichever of those it had reached, keyed on the journal rather than on the directory. A
+    /// directory alone cannot distinguish a candidate this transition wrote from one it did not, an
+    /// install that completed from one that never started, or a database that was compacted from one
+    /// that was replaced; the journal can, and every arm below is an answer it gives.</para>
+    /// </remarks>
+    private async Task<CovenantErasureCheckpointState> CompactAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
+        CovenantErasureCheckpointState checkpoint,
+        CovenantClosedPeriodAuthority maintenance,
+        ErasureProgress progress,
+        CancellationToken cancellationToken)
+    {
+
+        // Only while the phase is still ahead and has not begun. A checkpoint that already records
+        // the phase has had this whole sequence run once, and staging again would export a second
+        // candidate over a database that was already replaced; and once the phase is in flight the
+        // graph refuses every publication below, so a run that tried them would turn a resumable stop
+        // into an unresumable one.
+        if (checkpoint.Phase < CovenantResetPhase.DatabaseCompacted && phases.InFlightPhase is null)
+        {
+
+            await StageReplacementAsync(phases, maintenance, cancellationToken).ConfigureAwait(false);
+
+        }
+
+        GrimoireOfflineTransitionReplacementEvidence? replacement = phases.ReplacementEvidence;
+
+        return await AdvanceAsync(
+            phases,
+            checkpoint,
+            CovenantResetPhase.DatabaseCompacted,
+            (_, token) => InstallReplacementAsync(maintenance, replacement, token),
+            progress,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Carries the replacement from wherever the journal left it to a published, proven candidate.
+    /// </summary>
+    /// <remarks>
+    /// One step per call of the loop, and each step publishes before the next one reads: the journal
+    /// is what the next arm is chosen by, so a step that acted twice before recording once would leave
+    /// a resumed run choosing an arm for work that had already happened.
+    ///
+    /// <para>The identity the plan was made against is re-established at every arm. A canonical
+    /// database that is no longer the file the plan named is not a database this plan says anything
+    /// about, and continuing would install a candidate exported from one file over a different one.</para>
+    /// </remarks>
+    private async Task StageReplacementAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
+        CovenantClosedPeriodAuthority maintenance,
+        CancellationToken cancellationToken)
+    {
+
+        if (phases.ReplacementEvidence is null)
+        {
+
+            Result<bool> compacted = await _transition
+                .CompactAsync(maintenance, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (compacted.IsFailure)
+            {
+
+                throw new CovenantErasureStepFailedException(compacted.Error);
+
+            }
+
+            if (!compacted.Value)
+            {
+
+                return;
+
+            }
+
+            Result<CovenantDigest> canonical = await _transition
+                .ReadCanonicalIdentityAsync(maintenance, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (canonical.IsFailure)
+            {
+
+                throw new CovenantErasureStepFailedException(canonical.Error);
+
+            }
+
+            // The same identity three times over, and deliberately so. A compaction replaces a
+            // database with a compaction of itself, so at planning time the file the candidate is
+            // exported from, the file it will be installed over, and the original a recovery would
+            // have to put back are one file. They are recorded separately because they stop being one
+            // the instant the install runs — the destination becomes a new file and the original
+            // survives only as whatever the atomic primitive kept — and because the same evidence
+            // serves a restore, where the three are different files from the start.
+            Require(
+                await phases.RecordReplacementPlannedAsync(
+                    maintenance.ExportStagingLeaf,
+                    canonical.Value,
+                    canonical.Value,
+                    canonical.Value,
+                    cancellationToken).ConfigureAwait(false));
+
+        }
+
+        GrimoireOfflineTransitionReplacementEvidence planned =
+            await RequirePlannedAsync(phases, maintenance, cancellationToken).ConfigureAwait(false);
+
+        if (planned.StagingPhysicalIdentityDigest is null)
+        {
+
+            Result<CovenantDigest> staged = await _transition
+                .StageCandidateAsync(maintenance, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (staged.IsFailure)
+            {
+
+                throw new CovenantErasureStepFailedException(staged.Error);
+
+            }
+
+            Require(
+                await phases.RecordStagingIdentityAsync(staged.Value, cancellationToken)
+                    .ConfigureAwait(false));
+
+            planned = await RequirePlannedAsync(phases, maintenance, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        if (planned is not { StagingPhysicalIdentityDigest: { } stagingIdentity, StagedContentDigest: null })
+        {
+
+            return;
+
+        }
+
+        Result<CovenantDigest> proven = await _transition.ProveStagedCandidateAsync(
+            maintenance,
+            stagingIdentity,
+            cancellationToken).ConfigureAwait(false);
+
+        if (proven.IsFailure)
+        {
+
+            throw new CovenantErasureStepFailedException(proven.Error);
+
+        }
+
+        Require(
+            await phases.RecordStagedContentAsync(proven.Value, cancellationToken)
+                .ConfigureAwait(false));
+
+    }
+
+    /// <summary>
+    /// Performs the compaction phase's own effect: install the proven candidate, or nothing at all.
+    /// </summary>
+    /// <remarks>
+    /// Nothing at all is the ordinary outcome. A healthy engine's own accounting usually proves the
+    /// freed pages gone, and in that case no replacement was ever planned and this phase brackets a
+    /// measurement that has already happened.
+    ///
+    /// <para>Whether an install has already landed is not decided here. That question is about files
+    /// — which one is at the staging path, and what the destination holds — and it is answered where
+    /// every other question about files is, under the same closed-period authority. What is decided
+    /// here is the one thing the journal knows and the storage layer does not: whether this transition
+    /// ever committed to a replacement at all.</para>
+    /// </remarks>
+    private Task<Result> InstallReplacementAsync(
+        CovenantClosedPeriodAuthority maintenance,
+        GrimoireOfflineTransitionReplacementEvidence? replacement,
+        CancellationToken cancellationToken) =>
+        replacement switch
+        {
+
+            null => Task.FromResult(Result.Success()),
+
+            {
+                StagingPhysicalIdentityDigest: { } stagingIdentity,
+                StagedContentDigest: { } stagedContent,
+            } => _transition.InstallCompactionReplacementAsync(
+                maintenance,
+                stagingIdentity,
+                stagedContent,
+                cancellationToken),
+
+            // A replacement that reached the phase without its proof is one the publication sequence
+            // stopped part-way through and something began the phase over the top of. Installing it
+            // would install a candidate nobody proved; retrying the publications is refused by the
+            // graph now the phase has begun. Neither is available, so neither is attempted.
+            _ => Task.FromResult(
+                Result.Failure(
+                    Ambiguous("a compaction replacement reached its phase without the evidence to install it"))),
+
+        };
+
+    /// <summary>Re-reads the plan and refuses if the file it was made against is no longer that file.</summary>
+    private async Task<GrimoireOfflineTransitionReplacementEvidence> RequirePlannedAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
+        CovenantClosedPeriodAuthority maintenance,
+        CancellationToken cancellationToken)
+    {
+
+        if (phases.ReplacementEvidence is not { } planned)
+        {
+
+            throw new CovenantErasureStepFailedException(
+                Ambiguous("a compaction replacement was recorded and then read back as absent"));
+
+        }
+
+        if (!string.Equals(planned.StagingLeaf, maintenance.ExportStagingLeaf, StringComparison.Ordinal))
+        {
+
+            throw new CovenantErasureStepFailedException(
+                Ambiguous("a compaction replacement names a candidate belonging to another operation"));
+
+        }
+
+        Result<CovenantDigest> canonical = await _transition
+            .ReadCanonicalIdentityAsync(maintenance, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (canonical.IsFailure)
+        {
+
+            throw new CovenantErasureStepFailedException(canonical.Error);
+
+        }
+
+        if (canonical.Value != planned.SourcePhysicalIdentityDigest)
+        {
+
+            throw new CovenantErasureStepFailedException(
+                Ambiguous("the database a compaction was planned against is not the one in place"));
+
+        }
+
+        return planned;
+
+    }
+
+    /// <summary>Turns a refused publication into the step failure that leaves admission closed.</summary>
+    private static void Require(Result published)
+    {
+
+        if (published.IsFailure)
+        {
+
+            throw new CovenantErasureStepFailedException(published.Error);
+
+        }
+
+    }
+
+    /// <summary>
+    /// The refusal every arm above shares: two readings of the same directory, and no way to choose.
+    /// </summary>
+    /// <remarks>
+    /// Manual recovery rather than a retry, because every one of these says the world stopped matching
+    /// what this transition recorded about it. Running the ladder again would act on that world under
+    /// evidence that describes a different one, and the whole reason the evidence is in the journal is
+    /// so that nobody does.
+    /// </remarks>
+    private static Error Ambiguous(string detail) =>
+        new(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            $"A Covenant erasure cannot resume its compaction: {detail}. An operator has to establish "
+            + "which database is in place before anything else runs.");
 
     /// <summary>
     /// Raises the injected fault for one boundary, as the step failure a real crash would look like.

@@ -196,10 +196,33 @@ internal interface ICovenantLocalErasureStorageHealth
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Inventories residual artifacts, then compacts, falling back to a verified SQLCipher
-    /// export-and-atomic-replace when compaction alone cannot prove the freed pages are gone.
+    /// Inventories residual artifacts and compacts, reporting whether compaction alone proved the
+    /// freed pages gone or a verified SQLCipher export-and-atomic-replace is still needed.
     /// </summary>
-    Task<Result> CompactAsync(
+    Task<Result<bool>> CompactAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken);
+
+    /// <summary>Writes the candidate this transition will install, and says which file it is.</summary>
+    Task<Result<CovenantDigest>> StageCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken);
+
+    /// <summary>Proves the recorded candidate, and says what the proof was made over.</summary>
+    Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CancellationToken cancellationToken);
+
+    /// <summary>Installs the proven candidate, once the journal has recorded all three facts.</summary>
+    Task<Result> InstallCompactionReplacementAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CovenantDigest stagedContent,
+        CancellationToken cancellationToken);
+
+    /// <summary>Establishes which file the installation's database currently is.</summary>
+    Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
@@ -402,58 +425,49 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     }
 
-    public async Task<Result> CompactAsync(
+    public async Task<Result<bool>> CompactAsync(
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
-    // An interrupted pass of this same step is entitled to have left a staging file behind, and
-    // it is this step's own litter rather than a reason to stop: a staging file is a complete
-    // encrypted copy of a database the erasure is in the middle of replacing, so the one thing
-    // that must not happen is for it to survive the proof.
-    Result cleared = CovenantResidualArtifacts.RemoveOwnStaging(_paths.CanonicalDatabasePath);
+        // An interrupted pass of this same step is entitled to have left a staging file behind, and
+        // it is this step's own litter rather than a reason to stop: a staging file is a complete
+        // encrypted copy of a database the erasure is in the middle of replacing, so the one thing
+        // that must not happen is for it to survive the proof.
+        Result cleared = CovenantResidualArtifacts.RemoveOwnStaging(_paths.CanonicalDatabasePath);
 
-    if (cleared.IsFailure)
-    {
+        if (cleared.IsFailure)
+        {
 
-        return cleared;
+            return Result<bool>.Failure(cleared.Error);
 
-    }
+        }
 
-    // Everything else is refused before a single byte is rewritten. A surviving sidecar names a
-    // handle still holding the database; a surviving replaced original names a previous pass that
-    // installed a candidate it could not verify, and rewriting the file underneath that is
-    // rewriting a destination whose identity nobody has established.
-    Result residue = await ProveAbsentAsync(
-        CovenantResidualArtifacts.Declared,
-        authority,
-        cancellationToken)
-        .ConfigureAwait(false);
+        // Everything else is refused before a single byte is rewritten. A surviving sidecar names a
+        // handle still holding the database; a surviving replaced original names a previous pass that
+        // installed a candidate it could not verify, and rewriting the file underneath that is
+        // rewriting a destination whose identity nobody has established.
+        Result residue = await ProveAbsentAsync(
+            CovenantResidualArtifacts.Declared,
+            authority,
+            cancellationToken).ConfigureAwait(false);
 
-    if (residue.IsFailure)
-    {
+        if (residue.IsFailure)
+        {
 
-        return residue;
+            return Result<bool>.Failure(residue.Error);
 
-    }
+        }
 
-    Result<CovenantCompactionMeasurement?> compacted =
-        await VacuumAsync(authority, cancellationToken).ConfigureAwait(false);
+        Result<CovenantCompactionMeasurement?> compacted =
+            await VacuumAsync(authority, cancellationToken).ConfigureAwait(false);
 
-    if (compacted.IsFailure)
-    {
-
-        return Result.Failure(compacted.Error);
-
-    }
-
-    // The cheaper arm proved itself. Rewriting the file anyway would be a second irreversible
-    // step taken for no reason, on a database an operator is already waiting on.
-    return compacted.Value is { IsProven: true }
-        ? Result.Success()
-        : await ExportAndReplaceAsync(authority, cancellationToken).ConfigureAwait(false);
-
-    
+        // The cheaper arm proving itself is the answer, not a step towards one. Rewriting the file
+        // anyway would be a second irreversible act taken for no reason, on a database an operator is
+        // already waiting on.
+        return compacted.IsFailure
+            ? Result<bool>.Failure(compacted.Error)
+            : Result<bool>.Success(compacted.Value is not { IsProven: true });
 
     }
 
@@ -528,60 +542,210 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     }
 
     /// <summary>
-    /// Writes a fresh database with <c>sqlcipher_export</c>, verifies it, and installs it through the
-    /// shared atomic-replace primitive.
+    /// Writes the candidate this transition will install, and reports which file it is.
     /// </summary>
     /// <remarks>
-    /// Internal rather than private so a suite can drive the arm end to end against a real database.
-    /// The condition that selects it is a measurement of a healthy engine's own accounting, and a
-    /// healthy engine does not normally produce a state that fails it — which is exactly why the
-    /// selection is a measurement rather than a prediction, and why the arm it selects has to be
-    /// exercised directly rather than waited for.
+    /// Every export staging file present is cleared first, this transition's own included. Nothing has
+    /// been recorded about a candidate at the point this runs, so there is no file here anyone holds a
+    /// claim on — and a half-written candidate left by an interrupted export is exactly the file that
+    /// must not be mistaken for a complete one, which is why the identity is observed only after the
+    /// export has returned.
     ///
-    /// <para>The export is verified before the destination is touched, so a candidate that cannot be
-    /// proven leaves the original database exactly where it was. The one outcome that may not be
-    /// reported that way is <see cref="AtomicReplaceStatus.ReplacedButUnverified"/>: the move
-    /// completed and the recovery did not, so the destination may already hold the new file and
-    /// nobody may claim otherwise.</para>
+    /// <para>Internal rather than private so a suite can drive the arm end to end against a real
+    /// database. The condition that selects it is a measurement of a healthy engine's own accounting,
+    /// and a healthy engine does not normally produce a state that fails it — which is exactly why the
+    /// selection is a measurement rather than a prediction, and why the arm it selects has to be
+    /// exercised directly rather than waited for.</para>
     /// </remarks>
-    internal async Task<Result> ExportAndReplaceAsync(
+    public async Task<Result<CovenantDigest>> StageCandidateAsync(
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
-        string databasePath = _paths.CanonicalDatabasePath;
+        ArgumentNullException.ThrowIfNull(authority);
 
-        string stagingPath = CovenantResidualArtifacts.ExportStagingPath(databasePath);
+        Result cleared = CovenantResidualArtifacts.RemoveOwnStaging(authority.CanonicalDatabasePath);
+
+        if (cleared.IsFailure)
+        {
+
+            return Result<CovenantDigest>.Failure(cleared.Error);
+
+        }
+
+        Result exported = await ExportAsync(authority, cancellationToken).ConfigureAwait(false);
+
+        return exported.IsFailure
+            ? Result<CovenantDigest>.Failure(exported.Error)
+            : CovenantFileWitness.IdentityOf(authority.ExportStagingDatabasePath);
+
+    }
+
+    /// <summary>
+    /// Proves the recorded candidate opens, is intact, and is compact, and reports the contents the
+    /// proof was made over.
+    /// </summary>
+    /// <remarks>
+    /// The identity is checked on both sides of the proof. Checking it first refuses a file that is
+    /// not the one the journal recorded; checking it again afterwards refuses one that became a
+    /// different file while the proof was being made, which is the whole window that proving a file
+    /// somebody else can write would otherwise leave open.
+    ///
+    /// <para>The proof happens before the destination is touched, so a candidate that cannot be proven
+    /// leaves the database that is still working exactly where it was.</para>
+    /// </remarks>
+    public async Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(authority);
+
+        string stagingPath = authority.ExportStagingDatabasePath;
+
+        if (!CovenantFileWitness.HasIdentity(stagingPath, stagingIdentity))
+        {
+
+            return Result<CovenantDigest>.Failure(
+                Unverifiable("the staged candidate is not the file this transition recorded"));
+
+        }
+
+        Result<CovenantVerifiedExport> verified =
+            await VerifyExportAsync(authority, cancellationToken).ConfigureAwait(false);
+
+        if (verified.IsFailure)
+        {
+
+            // Destroyed rather than kept. This transition has just established that the candidate is
+            // not installable, so nothing will ever install it — and what would be kept is a complete
+            // encrypted copy of the database an erasure is in the middle of removing. The journal
+            // still names its identity, so the resumed run finds the file gone and refuses rather
+            // than quietly proving a fresh one under evidence written about the old.
+            _ = CovenantResidualArtifacts.RemoveOwnStaging(authority.CanonicalDatabasePath);
+
+            return Result<CovenantDigest>.Failure(verified.Error);
+
+        }
+
+        return CovenantFileWitness.HasIdentity(stagingPath, stagingIdentity)
+            ? await CovenantFileWitness.ContentAsync(stagingPath, cancellationToken).ConfigureAwait(false)
+            : Result<CovenantDigest>.Failure(
+                Unverifiable("the staged candidate changed identity while it was being proven"));
+
+    }
+
+    /// <summary>
+    /// Installs the proven candidate over the destination, which is the one irreversible act here.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the two steps above because the journal has to have recorded what the replacement
+    /// is planned against, which file it built, and what that file holds, before any of it lands — and
+    /// the transition graph admits those records only while the compaction phase is not yet in flight.
+    /// So the coordinator stages, proves, publishes, and only then begins the phase that brackets this.
+    ///
+    /// <para>Both recorded facts are re-established from disk rather than taken on trust. The identity
+    /// says this is still the file that was proven, the content digest says it still holds what the
+    /// proof was made over, and a candidate that fails either is one this transition has no evidence
+    /// about, whatever the journal says about the file it used to be.</para>
+    ///
+    /// <para>The one outcome that may not be reported as "the original is still in place" is
+    /// <see cref="AtomicReplaceStatus.ReplacedButUnverified"/>: the move completed and the recovery did
+    /// not, so the destination may already hold the new file and nobody may claim otherwise.</para>
+    /// </remarks>
+    public async Task<Result> InstallCompactionReplacementAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CovenantDigest stagedContent,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(authority);
+
+        string stagingPath = authority.ExportStagingDatabasePath;
+
+        // No candidate under the recorded identity is not, by itself, a refusal. An install that
+        // completed and then cleared its staging file and an install that never started look the same
+        // from the directory; they do not look the same from the destination's own contents, and that
+        // is the question the recorded content digest exists to answer.
+        if (!CovenantFileWitness.HasIdentity(stagingPath, stagingIdentity))
+        {
+
+            Result<CovenantDigest> installed = await CovenantFileWitness.ContentAsync(
+                authority.CanonicalDatabasePath,
+                cancellationToken).ConfigureAwait(false);
+
+            if (installed.IsFailure)
+            {
+
+                return installed.Error;
+
+            }
+
+            return installed.Value == stagedContent
+                ? Result.Success()
+                : new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "A Covenant erasure cannot resume its compaction: the candidate it proved is no "
+                    + "longer there and the database in place is not the one it proved. An operator "
+                    + "has to establish which database is in place before anything else runs.");
+
+        }
+
+        Result<CovenantDigest> content =
+            await CovenantFileWitness.ContentAsync(stagingPath, cancellationToken).ConfigureAwait(false);
+
+        if (content.IsFailure)
+        {
+
+            return content.Error;
+
+        }
+
+        if (content.Value != stagedContent)
+        {
+
+            return Unverifiable("the proven candidate no longer holds the contents that were proven");
+
+        }
 
         try
         {
 
-            Result exported = await ExportAsync(authority, cancellationToken).ConfigureAwait(false);
-
-            if (exported.IsFailure)
-            {
-
-                return exported;
-
-            }
-
-            Result<CovenantVerifiedExport> verified =
-                await VerifyExportAsync(authority, cancellationToken).ConfigureAwait(false);
-
-            return verified.IsFailure
-                ? Result.Failure(verified.Error)
-                : await ReplaceAsync(
-                    verified.Value,
-                    authority,
-                    cancellationToken).ConfigureAwait(false);
+            return await ReplaceAsync(
+                new CovenantVerifiedExport(stagingPath),
+                authority,
+                cancellationToken).ConfigureAwait(false);
 
         }
         finally
         {
 
-            _ = CovenantResidualArtifacts.RemoveOwnStaging(databasePath);
+            _ = CovenantResidualArtifacts.RemoveOwnStaging(authority.CanonicalDatabasePath);
 
         }
+
+    }
+
+    /// <summary>
+    /// Establishes which file the installation's database currently is.
+    /// </summary>
+    /// <remarks>
+    /// Asynchronous because it is reached through the transition seam every other closed-period step
+    /// is reached through, and a seam whose shape changes with the cost of the answer would make the
+    /// coordinator's sequencing depend on which steps happen to touch a disk.
+    /// </remarks>
+    public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(authority);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(CovenantFileWitness.IdentityOf(authority.CanonicalDatabasePath));
 
     }
 
@@ -677,7 +841,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         CancellationToken cancellationToken)
     {
 
-        string stagingPath = _paths.ExportStagingDatabasePath;
+        string stagingPath = authority.ExportStagingDatabasePath;
 
         if (!File.Exists(stagingPath))
         {

@@ -26,7 +26,7 @@ internal sealed class GrimoireInstallationMaintenancePaths : IGrimoireMaintenanc
 
     public string CanonicalDatabasePath => ArcanumPaths.GrimoireDatabaseFile;
 
-    public string ExportStagingDatabasePath =>
-        CovenantResidualArtifacts.ExportStagingPath(CanonicalDatabasePath);
+    public string ExportStagingDatabasePath(Guid operationId) =>
+        CovenantResidualArtifacts.ExportStagingPath(CanonicalDatabasePath, operationId);
 
 }

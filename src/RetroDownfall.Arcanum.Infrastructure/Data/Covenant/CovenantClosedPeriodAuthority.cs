@@ -27,12 +27,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// phases before it already ran under.</para>
 /// </remarks>
 internal sealed class CovenantClosedPeriodAuthority(
+    Guid operationId,
     IGrimoireExclusiveClosedLease closed,
     IGrimoireMaintenanceIoLane lane,
     IGrimoireMaintenanceConnectionFactory factory,
     IGrimoireMaintenancePathAuthority paths,
     IGrimoireDbPassphraseSource passphrase)
 {
+
+    /// <summary>The operation this closed period belongs to, and the binding its staging file carries.</summary>
+    private readonly Guid _operationId = operationId;
 
     private readonly IGrimoireExclusiveClosedLease _closed =
         closed ?? throw new ArgumentNullException(nameof(closed));
@@ -51,6 +55,23 @@ internal sealed class CovenantClosedPeriodAuthority(
 
     private readonly IGrimoireMaintenanceConnectionFactory _factory =
         factory ?? throw new ArgumentNullException(nameof(factory));
+
+    /// <summary>The installation database every purpose but export verification points at.</summary>
+    internal string CanonicalDatabasePath => _paths.CanonicalDatabasePath;
+
+    /// <summary>
+    /// The candidate file this operation's export writes, and no other operation's.
+    /// </summary>
+    /// <remarks>
+    /// Read from the authority rather than composed by a caller, and derived from the same operation
+    /// the gate derives the export-verification capability's path from, so the file that is written,
+    /// the file that is proven, and the file the journal names are the same file by construction
+    /// rather than by three callers agreeing.
+    /// </remarks>
+    internal string ExportStagingDatabasePath => _paths.ExportStagingDatabasePath(_operationId);
+
+    /// <summary>The leaf of that file, which is what the journal records and a resumed run compares.</summary>
+    internal string ExportStagingLeaf => Path.GetFileName(ExportStagingDatabasePath);
 
     /// <summary>Opens the one transaction that empties the Covenant family.</summary>
     [GrimoireConnectionAcquisitionRoute]
@@ -168,7 +189,7 @@ internal sealed class CovenantClosedPeriodAuthority(
 
         command.CommandText = $"ATTACH DATABASE $path AS {ExportAlias} KEY $key;";
 
-        _ = command.Parameters.AddWithValue("$path", _paths.ExportStagingDatabasePath);
+        _ = command.Parameters.AddWithValue("$path", ExportStagingDatabasePath);
 
         _ = command.Parameters.AddWithValue("$key", _passphrase.Passphrase);
 

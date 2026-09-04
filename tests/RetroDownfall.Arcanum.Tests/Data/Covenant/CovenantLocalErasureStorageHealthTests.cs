@@ -1012,6 +1012,46 @@ public sealed class CovenantLocalErasureStorageHealthTests
     }
 
     /// <summary>
+    /// Drives the whole fresh-file arm the way the coordinator drives it, and reports the first
+    /// refusal.
+    /// </summary>
+    /// <remarks>
+    /// A helper rather than a composed member on the subject, because there is no longer a composed
+    /// member: the three steps exist apart precisely so the journal can record what each one
+    /// established before the next one runs, and a production seam that ran them together would put
+    /// the install back on the far side of a publication the transition graph will not accept.
+    /// </remarks>
+    private static async Task<Result> StageProveAndInstallAsync(
+        ErasedGrimoire erased,
+        CancellationToken cancellationToken)
+    {
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, cancellationToken);
+
+        if (staged.IsFailure)
+        {
+
+            return staged.Error;
+
+        }
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            cancellationToken);
+
+        return proven.IsFailure
+            ? proven.Error
+            : await erased.Health.InstallCompactionReplacementAsync(
+                erased.Authority,
+                staged.Value,
+                proven.Value,
+                cancellationToken);
+
+    }
+
+    /// <summary>
     /// The fresh-file arm, driven directly.
     /// </summary>
     /// <remarks>
@@ -1028,7 +1068,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.DrainAsync(Token);
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(erased.Authority, Token);
+        Result replaced = await StageProveAndInstallAsync(erased, Token);
 
         Assert.True(replaced.IsSuccess, replaced.IsFailure ? replaced.Error.Message : null);
 
@@ -1048,6 +1088,159 @@ public sealed class CovenantLocalErasureStorageHealthTests
     }
 
     /// <summary>
+    /// Installing the same proven candidate twice reaches the same database, because the second
+    /// install recognises the first.
+    /// </summary>
+    /// <remarks>
+    /// This is the crash the whole content digest exists for. An install that completed and then
+    /// cleared its staging file, and an install that never started, leave a directory that looks
+    /// identical — so a resumed run that decided from the directory would either refuse a finished
+    /// replacement or install nothing and call it done. It decides from the destination's own contents
+    /// instead, and only a match may be called an install.
+    /// </remarks>
+    [Fact]
+    public async Task An_install_that_already_happened_is_recognised_rather_than_repeated()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
+
+        Result first = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            Token);
+
+        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+
+        byte[] installed = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
+
+        // The staging file is gone, exactly as a completed install leaves it. This is the resumed run.
+        Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+
+        Result second = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            Token);
+
+        Assert.True(second.IsSuccess, second.IsFailure ? second.Error.Message : null);
+
+        Assert.Equal(installed, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+
+    }
+
+    /// <summary>
+    /// A candidate that is gone from a database that is not the one it proved is refused, not
+    /// installed and not called done.
+    /// </summary>
+    /// <remarks>
+    /// The other reading of the same directory. Nothing here can say whether the candidate was never
+    /// installed or was installed and then overwritten, and both answers change what an operator has
+    /// to do — so this refuses and says so, rather than picking the one that lets the ladder continue.
+    /// </remarks>
+    [Fact]
+    public async Task A_candidate_that_is_gone_from_a_database_it_never_reached_is_refused()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
+
+        byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
+
+        File.Delete(erased.Authority.ExportStagingDatabasePath);
+
+        Result refused = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, refused.Error.Code);
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+
+    }
+
+    /// <summary>
+    /// A candidate whose proof fails is destroyed, and the identity the journal recorded then names
+    /// nothing.
+    /// </summary>
+    /// <remarks>
+    /// It is a complete encrypted copy of the database an erasure is in the middle of removing, and
+    /// this transition has just established that it will never be installed — so keeping it would
+    /// leave exactly the second copy the erasure exists to prevent. What the journal keeps is its
+    /// identity, which is what makes the next run refuse rather than quietly prove a fresh candidate
+    /// under evidence written about the old one.
+    /// </remarks>
+    [Fact]
+    public async Task A_candidate_that_fails_its_proof_is_destroyed_rather_than_left_behind()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.ExecuteAsync("DELETE FROM covenant_state WHERE StateKey = 1;", Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsFailure);
+
+        Assert.Contains("canonical singleton", proven.Error.Message, StringComparison.Ordinal);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+
+        // And the identity it recorded now names nothing, so a second attempt refuses instead of
+        // proving whatever is at that path next.
+        Result second = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(second.IsFailure);
+
+        Assert.Contains("this transition recorded", second.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
     /// The candidate is proven before the destination is touched, so an export that cannot be
     /// verified costs the installation nothing.
     /// </summary>
@@ -1061,7 +1254,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        string staging = CovenantResidualArtifacts.ExportStagingPath(erased.DatabasePath);
+        string staging = erased.Authority.ExportStagingDatabasePath;
 
         Result exported = await erased.Health.ExportAsync(erased.Authority, Token);
 
@@ -1243,21 +1436,34 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        // Something that is not a database, exactly where the export would write one.
-        await File.WriteAllTextAsync(
-            CovenantResidualArtifacts.ExportStagingPath(erased.DatabasePath),
-            "not a database",
-            Token);
+        // A directory exactly where the export would write its file. It has to be a directory rather
+        // than a file that is not a database: staging begins by clearing every file of its own class,
+        // so anything it could delete it would simply delete and then export over. What this leaves is
+        // an obstruction the step is not entitled to remove and cannot write through.
+        string obstruction = erased.Authority.ExportStagingDatabasePath;
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(erased.Authority, Token);
+        Directory.CreateDirectory(obstruction);
 
-        Assert.True(replaced.IsFailure);
+        try
+        {
 
-        Assert.Equal(before, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+            Result replaced = await StageProveAndInstallAsync(erased, Token);
 
-        // The staging file it could not use is still this path's own litter, and a refusal that left
-        // it behind would fail the absence proof two steps later for a reason nothing had recorded.
-        Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+            Assert.True(replaced.IsFailure);
+
+            Assert.Equal(before, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+
+            // The class sweep is over files, so nothing it left behind is a survivor. The obstruction
+            // is the test's own and is removed as such.
+            Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+
+        }
+        finally
+        {
+
+            Directory.Delete(obstruction, recursive: true);
+
+        }
 
     }
 
@@ -1284,7 +1490,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(erased.Authority, Token);
+        Result replaced = await StageProveAndInstallAsync(erased, Token);
 
         Assert.True(replaced.IsFailure);
 
@@ -1312,7 +1518,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        string staging = CovenantResidualArtifacts.ExportStagingPath(erased.DatabasePath);
+        string staging = erased.Authority.ExportStagingDatabasePath;
 
         Result exported = await erased.Health.ExportAsync(erased.Authority, Token);
 
@@ -1585,7 +1791,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
             }
 
-            Result compacted = await Record(
+            Result<bool> compacted = await Record(
                 "compact",
                 seam.CompactAsync(Authority, cancellationToken));
 
@@ -1886,6 +2092,15 @@ public sealed class CovenantLocalErasureStorageHealthTests
         }
 
         private async Task<Result> Record(string step, Task<Result> work)
+        {
+
+            Steps.Add(step);
+
+            return await work;
+
+        }
+
+        private async Task<Result<T>> Record<T>(string step, Task<Result<T>> work)
         {
 
             Steps.Add(step);

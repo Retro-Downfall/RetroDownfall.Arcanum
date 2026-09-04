@@ -137,6 +137,7 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
             closed,
             lane,
             new CovenantClosedPeriodAuthority(
+                Owner.OperationId,
                 closed,
                 lane,
                 decorate is null ? factory : decorate(factory),
@@ -240,6 +241,7 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
     /// </remarks>
     internal static CovenantClosedPeriodAuthority Inert() =>
         new(
+            Owner.OperationId,
             new InertClosedLease(),
             new InertLane(),
             new UnreachableMaintenanceFactory(),
@@ -250,10 +252,10 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
     private sealed class ScratchPaths(string databasePath) : IGrimoireMaintenancePathAuthority
     {
 
-        public string CanonicalDatabasePath { get; } = databasePath;
+        public string CanonicalDatabasePath => databasePath;
 
-        public string ExportStagingDatabasePath { get; } =
-            CovenantResidualArtifacts.ExportStagingPath(databasePath);
+        public string ExportStagingDatabasePath(Guid operationId) =>
+            CovenantResidualArtifacts.ExportStagingPath(databasePath, operationId);
 
     }
 
@@ -409,14 +411,12 @@ internal sealed class ScratchMaintenancePaths : IGrimoireMaintenancePathAuthorit
             $"covenant-unused-{Guid.NewGuid():N}",
             "arcanum.db");
 
-        ExportStagingDatabasePath =
-            CovenantResidualArtifacts.ExportStagingPath(CanonicalDatabasePath);
-
     }
 
     public string CanonicalDatabasePath { get; }
 
-    public string ExportStagingDatabasePath { get; }
+    public string ExportStagingDatabasePath(Guid operationId) =>
+        CovenantResidualArtifacts.ExportStagingPath(CanonicalDatabasePath, operationId);
 
 }
 

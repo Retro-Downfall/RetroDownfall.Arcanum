@@ -37,6 +37,20 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// anything. A root created without it is refused, which is a confusing failure to meet for the
 /// first time inside an erasure.</para>
 /// </remarks>
+/// <summary>
+/// How far a seeded journal carried its compaction replacement.
+/// </summary>
+/// <remarks>
+/// A record rather than a stage enum because every arm a resumed run takes is chosen by comparing
+/// recorded digests against what the world now reports, so a seed that named only a stage could not
+/// arrange the case where the two disagree — which is the case the refusals exist for.
+/// </remarks>
+internal sealed record SeededReplacement(
+    string StagingLeaf,
+    CovenantDigest Source,
+    CovenantDigest? StagingIdentity,
+    CovenantDigest? StagedContent);
+
 internal sealed class LocalOfflineTransitionPhaseAuthority
     : IGrimoireOfflineTransitionPhaseAuthority, IDisposable
 {
@@ -118,10 +132,29 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
     /// that publishes an illegal sequence fails here, in the arrangement, instead of looking like a
     /// coordinator defect later.
     /// </remarks>
+    internal Task SeedAsync(
+        LongRunningOperation operation,
+        CovenantResetPhase phase,
+        bool factoryContinuationCompleted,
+        CancellationToken cancellationToken) =>
+        SeedAsync(operation, phase, factoryContinuationCompleted, null, cancellationToken);
+
+    /// <summary>
+    /// Seeds a journal that also carries a partly-published compaction replacement.
+    /// </summary>
+    /// <remarks>
+    /// The three publications are only legal from a completed write-ahead-log truncation with nothing
+    /// in flight, so a seed that carries any of them is a seed of that exact position. Publishing them
+    /// through the real session rather than writing a payload keeps the seed subject to the same
+    /// validator a production run is: a stage this arrangement could not legally reach is one no
+    /// resumed run has to handle, and a suite that wrote it directly would be testing an impossible
+    /// world.
+    /// </remarks>
     internal async Task SeedAsync(
         LongRunningOperation operation,
         CovenantResetPhase phase,
         bool factoryContinuationCompleted,
+        SeededReplacement? replacement,
         CancellationToken cancellationToken)
     {
 
@@ -178,6 +211,46 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
                 "seed complete " + step);
 
         }
+
+        if (replacement is not { } staged)
+        {
+
+            return;
+
+        }
+
+        Assert.Equal(CovenantResetPhase.WalTruncated, phase);
+
+        Assert.True(
+            (await session.RecordReplacementPlannedAsync(
+                staged.StagingLeaf,
+                staged.Source,
+                staged.Source,
+                staged.Source,
+                cancellationToken)).IsSuccess,
+            "seed replacement plan");
+
+        if (staged.StagingIdentity is not { } stagingIdentity)
+        {
+
+            return;
+
+        }
+
+        Assert.True(
+            (await session.RecordStagingIdentityAsync(stagingIdentity, cancellationToken)).IsSuccess,
+            "seed replacement staging identity");
+
+        if (staged.StagedContent is not { } stagedContent)
+        {
+
+            return;
+
+        }
+
+        Assert.True(
+            (await session.RecordStagedContentAsync(stagedContent, cancellationToken)).IsSuccess,
+            "seed replacement staged content");
 
     }
 
