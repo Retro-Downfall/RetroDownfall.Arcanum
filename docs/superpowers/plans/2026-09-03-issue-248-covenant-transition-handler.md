@@ -84,8 +84,8 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 - [ ] RED: a test asserting the effect registry is closed over exactly the two current kind/version
       pairs and refuses duplicates, zero versions, and unregistered keys.
 - [ ] GREEN: add the registry and the two effect handlers, initially delegating to the existing kernels.
-- [ ] RED: a test asserting a typed bound-begin builds the payload with the epoch the store allocates.
-- [ ] GREEN: add `BeginBoundAsync` to the lifecycle store, keeping `BeginAsync` unchanged.
+- [x] RED: a test asserting a typed bound-begin builds the payload with the epoch the store allocates.
+- [x] GREEN: add `BeginBoundAsync` to the lifecycle store, keeping `BeginAsync` unchanged.
 - [ ] GREEN: register the journal store, both registries, the lifecycle store, the reconciler, and the
       coordinator; extend the architecture-boundary registration inventory.
 - [ ] GREEN: borrow the held maintenance lock in both service paths and seed the profile identity once.
@@ -126,7 +126,7 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 - [x] RED: a test asserting the reseed arm refuses under an offline transition.
 - [x] GREEN: refuse it.
 - [x] GREEN: add the missing epoch to the verified candidate state, its SELECT, and its shape validation.
-- [ ] RED/GREEN: the three-answer classifier drives the recovery arm — retry, accept, or park.
+- [x] RED/GREEN: the three-answer classifier drives the recovery arm — retry, accept, or park.
 
 ### Task 7: Two-revision phase publication and the closed-period write removal
 
