@@ -195,13 +195,6 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
 
             }
 
-            if (factoryContinuationCompleted && step is CovenantResetPhase.HandlesClosed)
-            {
-
-                Assert.True((await session.RecordFactoryContinuationAsync(cancellationToken)).IsSuccess);
-
-            }
-
             Assert.True(
                 (await session.BeginPhaseAsync(step, cancellationToken)).IsSuccess,
                 "seed begin " + step);
@@ -209,6 +202,18 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
             Assert.True(
                 (await session.CompletePhaseAsync(step, cancellationToken)).IsSuccess,
                 "seed complete " + step);
+
+            // Recorded where production records it: after the managed-artifact phase is durable and
+            // before the next one begins. Seeding it at the later phase instead would make the
+            // sub-state a function of the phase, and the one durable state it exists to distinguish -
+            // a crash after the continuation ran and before the next phase completed - would be
+            // unreachable from any arrangement a suite could make.
+            if (factoryContinuationCompleted && step is CovenantResetPhase.ManagedArtifactsProcessed)
+            {
+
+                Assert.True((await session.RecordFactoryContinuationAsync(cancellationToken)).IsSuccess);
+
+            }
 
         }
 

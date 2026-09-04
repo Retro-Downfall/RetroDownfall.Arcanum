@@ -120,16 +120,32 @@ public sealed class CovenantErasureCoordinatorTests
 
     }
 
+    /// <summary>
+    /// Whether the ordinary continuation runs again is decided by the journal's own sub-state, not by
+    /// how far the phase ladder got.
+    /// </summary>
+    /// <remarks>
+    /// The two rules agree everywhere except one durable state, and that state is the whole reason the
+    /// sub-state exists: a run that completed the continuation and died before the next phase
+    /// completed sits at exactly the phase a run that never started it sits at. The last case below is
+    /// that state, and a coordinator comparing phases instead of reading the journal reruns ordinary
+    /// deletion that has already happened.
+    /// </remarks>
     [Theory]
-    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed, 1)]
-    [InlineData(CovenantResetPhase.HandlesClosed, 0)]
-    [InlineData(CovenantResetPhase.SidecarsVerified, 0)]
-    public async Task Factory_recovery_reruns_continuation_only_before_HandlesClosed_is_durable(
+    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed, null, 1)]
+    [InlineData(CovenantResetPhase.HandlesClosed, null, 0)]
+    [InlineData(CovenantResetPhase.SidecarsVerified, null, 0)]
+    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed, true, 0)]
+    public async Task Factory_recovery_reruns_the_continuation_only_when_the_journal_does_not_record_it(
         CovenantResetPhase phase,
+        bool? continuationRecorded,
         int expectedCalls)
     {
 
-        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
+        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
+        {
+            ContinuationRecorded = continuationRecorded,
+        };
 
         await harness.CloseAndAdoptAsync();
 
@@ -1519,6 +1535,18 @@ public sealed class CovenantErasureCoordinatorTests
         /// <summary>How far a resumed run's journal has already carried its replacement.</summary>
         internal SeededReplacement? Replacement { get; set; }
 
+        /// <summary>
+        /// Whether the seeded journal records the ordinary continuation as done, independently of the
+        /// phase it is seeded at.
+        /// </summary>
+        /// <remarks>
+        /// Independent on purpose. The default derives it from the phase, which is convenient and
+        /// makes every assertion about the sub-state pass under a phase-window rule as well — so the
+        /// one durable state the sub-state exists for, a crash after the continuation ran and before
+        /// the next phase completed, has to be arranged explicitly.
+        /// </remarks>
+        internal bool? ContinuationRecorded { get; set; }
+
         /// <summary>A journal that has recorded the plan and nothing after it.</summary>
         internal SeededReplacement PlannedReplacement() =>
             new(
@@ -1551,8 +1579,9 @@ public sealed class CovenantErasureCoordinatorTests
             await Phases.SeedAsync(
                 operation,
                 phase,
-                _operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
-                    && phase >= CovenantResetPhase.HandlesClosed,
+                ContinuationRecorded
+                    ?? (_operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
+                        && phase >= CovenantResetPhase.HandlesClosed),
                 Replacement,
                 cancellationToken ?? Token);
 

@@ -161,6 +161,28 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     /// <summary>Where the shared lifecycle stands.</summary>
     internal GrimoireOfflineTransitionState State => _current.Payload.Lifecycle.State;
 
+    /// <summary>
+    /// Whether the closing proof this transition published is a complete one.
+    /// </summary>
+    /// <remarks>
+    /// Asked because closing is two publications and a run can die between them. Every edge out of
+    /// <see cref="GrimoireOfflineTransitionState.Closing"/> except the closing advance itself requires
+    /// a complete proof, so a resumed run that assumed the state alone meant the proof was in would
+    /// leave a journal that can never be advanced, rolled back, parked, or retired.
+    /// </remarks>
+    internal bool ClosingProofIsComplete => _current.Payload.Lifecycle.ClosingEvidence.IsComplete;
+
+    /// <summary>
+    /// Whether the verification this transition published is already the complete one.
+    /// </summary>
+    /// <remarks>
+    /// Asked for the same reason the closing proof is, and with the opposite conclusion. The graph
+    /// admits a verification advance only when it changes something, so republishing an identical one
+    /// is refused - and a resumed run that published unconditionally would park on that refusal, and
+    /// park again on the next run, and never get past the state it had already reached.
+    /// </remarks>
+    internal bool VerificationIsComplete => _current.Payload.Lifecycle.VerificationEvidence.IsComplete;
+
     /// <summary>The kind and version the durable payload is bound to, which is what resolves a handler.</summary>
     internal GrimoireOfflineTransitionBinding Binding => _current.Payload.Binding;
 
@@ -447,11 +469,39 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
 
     /// <summary>Moves to retirement-pending once the whole suffix is proved.</summary>
     internal Task<Result> PrepareRetirementAsync(CancellationToken cancellationToken) =>
-        AdvanceAsync(
-            payload => WithLifecycle(
+        AdvanceAsync(RetirementPending, cancellationToken);
+
+    /// <summary>
+    /// The one rewrite that moves a spent transition to retirement-pending.
+    /// </summary>
+    /// <remarks>
+    /// Exposed because a journal can outlive the run that was driving it: the row it is bound to is
+    /// terminalized before retirement, so a run that dies in between leaves a spent journal that no
+    /// later run of that operation can adopt — the row is terminal, so nothing resumes it — and that
+    /// holds the profile's one slot against every future transition. The authority sweeps such a
+    /// journal, and it does it through this rewrite rather than a copy of it, so the two can never
+    /// disagree about what retirement-pending means.
+    /// </remarks>
+    internal static Result<IGrimoireOfflineTransitionPayload> RetirementPending(
+        IGrimoireOfflineTransitionPayload payload) =>
+        WithLifecycle(
+            payload,
+            payload.Lifecycle with { State = GrimoireOfflineTransitionState.RetirementPending });
+
+    /// <summary>The rewrite that records the Covenant disposition as verified, for the same reason.</summary>
+    internal static Result<IGrimoireOfflineTransitionPayload> CovenantDispositionVerified(
+        IGrimoireOfflineTransitionPayload payload) =>
+        payload.Lifecycle.ReconciliationEvidence is not { } evidence
+            ? Unresumable<IGrimoireOfflineTransitionPayload>()
+            : WithLifecycle(
                 payload,
-                payload.Lifecycle with { State = GrimoireOfflineTransitionState.RetirementPending }),
-            cancellationToken);
+                payload.Lifecycle with
+                {
+                    ReconciliationEvidence = evidence with
+                    {
+                        Step = GrimoireOfflineTransitionReconciliationStep.CovenantDispositionVerified,
+                    },
+                });
 
     /// <summary>
     /// Parks the transition with a content-free blocker and the exact state a resume must reach.

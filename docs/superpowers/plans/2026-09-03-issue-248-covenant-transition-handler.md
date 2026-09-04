@@ -226,7 +226,9 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 
 ### Task 15: Review, integrate, deliver
 
-- [ ] Bounded review of the whole child diff.
+- [x] Bounded review of the whole child diff: seven hazard dimensions, each finding refuted or confirmed
+      by three independent lenses, plus a completeness critic. Thirteen findings survived verification
+      and five more came from the critic; after deduplication, twelve distinct defects, all fixed.
 - [ ] Warning-free Release solution build; changed-file style verification; clean branch diff.
 - [ ] Child-scoped focused suites green.
 - [ ] Merge into `grimoire-fixes`, push, delete the child branch, close #248.

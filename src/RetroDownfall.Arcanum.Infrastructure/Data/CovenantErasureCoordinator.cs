@@ -813,7 +813,14 @@ internal sealed class CovenantErasureCoordinator(
         if (closed.IsFailure)
         {
 
-            return await AbandonClosingAsync(closingOwner, closed.Error).ConfigureAwait(false);
+            // The owner is kept, not abandoned. Stage two commits the gate to Closed on a burned
+            // generation before it waits on terminal callbacks and drains, so a failure here may
+            // already be past the point of no return - and the gate's only route back to ordinary
+            // admission from there is a closed lease that was never issued. What it does offer is a
+            // retry by the exact same closing owner, which a later run reaches by resuming the
+            // exclusive scope. Disposing it would take that away and hold admission shut for the life
+            // of the process.
+            return Result<CovenantGrimoireClosure>.Failure(closed.Error);
 
         }
 
@@ -826,9 +833,7 @@ internal sealed class CovenantErasureCoordinator(
         if (lane.IsFailure)
         {
 
-            await closed.Value.DisposeAsync().ConfigureAwait(false);
-
-            return await AbandonClosingAsync(closingOwner, lane.Error).ConfigureAwait(false);
+            return await AbandonClosedAsync(closed.Value, closingOwner, lane.Error).ConfigureAwait(false);
 
         }
 
@@ -843,9 +848,10 @@ internal sealed class CovenantErasureCoordinator(
 
             await lane.Value.DisposeAsync().ConfigureAwait(false);
 
-            await closed.Value.DisposeAsync().ConfigureAwait(false);
-
-            return await AbandonClosingAsync(closingOwner, MaintenanceFailure()).ConfigureAwait(false);
+            return await AbandonClosedAsync(
+                closed.Value,
+                closingOwner,
+                MaintenanceFailure()).ConfigureAwait(false);
 
         }
 
@@ -857,9 +863,10 @@ internal sealed class CovenantErasureCoordinator(
 
             await lane.Value.DisposeAsync().ConfigureAwait(false);
 
-            await closed.Value.DisposeAsync().ConfigureAwait(false);
-
-            return await AbandonClosingAsync(closingOwner, ledger.Error).ConfigureAwait(false);
+            return await AbandonClosedAsync(
+                closed.Value,
+                closingOwner,
+                ledger.Error).ConfigureAwait(false);
 
         }
 
@@ -998,6 +1005,35 @@ internal sealed class CovenantErasureCoordinator(
         await closingOwner.DisposeAsync().ConfigureAwait(false);
 
         return Result<CovenantGrimoireClosure>.Failure(error);
+
+    }
+
+    /// <summary>
+    /// Gives up a closure that got as far as a closed lease, leaving ordinary admission open.
+    /// </summary>
+    /// <remarks>
+    /// Completed rather than disposed. Completing the lease is the gate's only edge from closed back
+    /// to ordinary; disposing it releases the lease and leaves the gate closed, which for a closure
+    /// that never ran a phase means an installation nobody can open over a setup step that failed
+    /// before it touched anything.
+    ///
+    /// <para>The disposition is a rollback because nothing durable happened: the lane, the ledger
+    /// connection or the permit could not be taken, and no phase has begun. A commit would record a
+    /// reason for the reopen that did not happen.</para>
+    /// </remarks>
+    private static async Task<Result<CovenantGrimoireClosure>> AbandonClosedAsync(
+        IGrimoireExclusiveClosedLease closed,
+        IGrimoireClosingOwner closingOwner,
+        Error error)
+    {
+
+        _ = await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None).ConfigureAwait(false);
+
+        await closed.DisposeAsync().ConfigureAwait(false);
+
+        return await AbandonClosingAsync(closingOwner, error).ConfigureAwait(false);
 
     }
 
@@ -2210,6 +2246,19 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
+        // Closing is two publications, and a run can die between them. A journal left in Closing with
+        // an incomplete proof has exactly one legal edge - the closing advance itself - because every
+        // other edge out of Closing requires the proof to be complete. So a resumed run finishes the
+        // proof rather than treating the state as evidence that it was already made; skipping it
+        // would leave a transition that can never be advanced, rolled back, parked, or retired, on an
+        // installation whose admission stays shut.
+        if (phases.State is GrimoireOfflineTransitionState.Closing && !phases.ClosingProofIsComplete)
+        {
+
+            return await phases.RecordClosedAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+
         if (phases.State is not GrimoireOfflineTransitionState.Prepared)
         {
 
@@ -3047,7 +3096,12 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        return phases.State is GrimoireOfflineTransitionState.Verifying
+        // Published only when it would say something new. The graph admits a verification advance
+        // only when the evidence changes, so a resumed run that had already published the complete
+        // one would be refused - and this method's caller answers a refusal by parking, which puts
+        // the journal straight back into the state it was resuming from. That is a loop no number of
+        // resumes gets out of, over a transition that had in fact already done the work.
+        return phases.State is GrimoireOfflineTransitionState.Verifying && !phases.VerificationIsComplete
             ? await phases.RecordVerificationAsync(true, true, true, cancellationToken)
                 .ConfigureAwait(false)
             : Result.Success();
