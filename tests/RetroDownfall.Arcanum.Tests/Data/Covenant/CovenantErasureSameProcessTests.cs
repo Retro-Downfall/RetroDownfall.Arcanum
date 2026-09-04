@@ -29,6 +29,8 @@ using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Secrets.Security;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -1208,7 +1210,7 @@ public sealed class CovenantErasureSameProcessTests
     }
 
     [SkippableFact]
-    public async Task Direct_retention_reset_renews_its_durable_lease_while_the_coordinator_is_running()
+    public async Task Direct_retention_reset_stops_renewing_its_durable_lease_once_the_journal_opens()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -1231,9 +1233,18 @@ public sealed class CovenantErasureSameProcessTests
         try
         {
 
-            LongRunningOperation renewed = await harness.WaitForResetRevisionAfterAsync(before.Revision);
+            // Deliberately given time to renew, and asserted not to have. The heartbeat used to run
+            // for the whole erasure; it stops before the journal opens now, because a renewal advances
+            // the row's revision and the journal binds itself to the exact revision the launch
+            // produced. Advancing it would make the terminal compare-exchange refuse the very row the
+            // transition exists to terminalize.
+            await Task.Delay(TimeSpan.FromMilliseconds(600), TimeProvider.System);
 
-            Assert.True(renewed.LeaseExpiresAt > before.LeaseExpiresAt);
+            LongRunningOperation during = await harness.ReadResetOperationAsync();
+
+            Assert.Equal(before.Revision, during.Revision);
+
+            Assert.Equal(before.LeaseExpiresAt, during.LeaseExpiresAt);
 
         }
         finally
@@ -1650,6 +1661,14 @@ public sealed class CovenantErasureSameProcessTests
                 services.AddSingleton(coordinatorLog);
 
                 services.AddSingleton<ILogger<CovenantErasureCoordinator>>(coordinatorLog);
+
+                // The offline-transition journal keeps its key and anchor in the credential store, and
+                // the real one is the developer's login keychain. Every other suite that reaches the
+                // credential layer substitutes this for the same reason: a test has no business
+                // leaving credentials behind on the machine that ran it.
+                services.RemoveAll<IOsCredentialStore>();
+
+                services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
 
                 if (storeFaults is not null)
                 {

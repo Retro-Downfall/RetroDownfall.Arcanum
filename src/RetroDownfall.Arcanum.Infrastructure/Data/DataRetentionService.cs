@@ -1426,27 +1426,19 @@ internal sealed partial class DataRetentionService(
 
             }
 
-            Result<CovenantErasureCompletion> erased = await _leaseMaintainer.RunAsync(
-                operation.Id,
-                ownerId,
-                async maintainedToken =>
-                {
-
-                    using CancellationTokenSource coordinatorCancellation =
-                        CancellationTokenSource.CreateLinkedTokenSource(
-                            cancellationToken,
-                            maintainedToken);
-
-                    return await _covenantErasureCoordinator
-                        .RunAsync(
-                            committed,
-                            checkpoint.Value,
-                            ownerId,
-                            coordinatorCancellation.Token)
-                        .ConfigureAwait(false);
-
-                },
-                CancellationToken.None).ConfigureAwait(false);
+            // No durable lease is renewed across the closed period. A renewal advances the row's
+            // revision, and the journal has bound itself to the exact revision the launch produced -
+            // so a heartbeat would invalidate the terminal compare-exchange the transition has to
+            // make before it can retire. What the lease was protecting against is instead held by the
+            // installation maintenance lock, the journal's own slot, and the process-local ownership
+            // the coordinator claims for the length of the run.
+            Result<CovenantErasureCompletion> erased = await _covenantErasureCoordinator
+                .RunAsync(
+                    committed,
+                    checkpoint.Value,
+                    ownerId,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             if (erased.IsFailure)
             {

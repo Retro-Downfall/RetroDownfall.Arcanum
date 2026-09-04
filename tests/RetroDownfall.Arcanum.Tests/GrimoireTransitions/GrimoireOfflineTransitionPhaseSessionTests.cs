@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
+using RetroDownfall.Arcanum.Tests.Operations;
+
 namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 
 /// <summary>
@@ -255,10 +257,7 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
         await RunPhaseAsync(session, CovenantResetPhase.CanonicalApplied);
 
-        Assert.True((await session.ParkAsync(
-            Digest(0x51),
-            Digest(0x52),
-            CancellationToken.None)).IsSuccess);
+        Assert.True((await session.ParkAsync(CancellationToken.None)).IsSuccess);
 
         Assert.Equal(GrimoireOfflineTransitionState.KeepClosed, session.State);
 
@@ -268,7 +267,9 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
         Assert.Equal(GrimoireOfflineTransitionState.Applying, blocker.ResumeState);
 
-        Assert.Equal(Digest(0x52), blocker.ExpectedStateDigest);
+        Assert.True(blocker.ExpectedStateDigest.IsValid);
+
+        Assert.NotEqual(blocker.ResolutionBindingDigest, blocker.ExpectedStateDigest);
 
         Assert.Equal(CovenantResetPhase.CanonicalApplied, session.LastCompletedPhase);
 
@@ -396,14 +397,24 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
     }
 
-    private GrimoireOfflineTransitionPhaseAuthority Authority() =>
-        new(
+    private readonly FakeLongRunningOperationStore _operations = new(TimeProvider.System);
+
+    private GrimoireOfflineTransitionPhaseAuthority Authority()
+    {
+
+        _operations.Add(LaunchRow());
+
+        return new(
             new GrimoireOfflineTransitionLifecycleStore(
                 new GrimoireOfflineTransitionJournalStore(_credentials),
                 GrimoireOfflineTransitionHandlerRegistry.Production),
             new HeldLockAccessor(_lock, _guarded),
             new FixedInstallationIdentity(Installation),
+            _operations,
+            _credentials,
             _guarded);
+
+    }
 
     private static LongRunningOperation LaunchRow(Guid? target = null) =>
         new(
@@ -536,10 +547,7 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
     {
 
         Assert.True(
-            (await session.BeginPhaseAsync(
-                phase,
-                new GrimoireOfflineTransitionBeforeStateEvidence(Digest(0x21), Digest(0x22)),
-                CancellationToken.None)).IsSuccess,
+            (await session.BeginPhaseAsync(phase, CancellationToken.None)).IsSuccess,
             "begin " + phase);
 
         Assert.Equal(phase, session.InFlightPhase);

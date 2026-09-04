@@ -263,6 +263,8 @@ public sealed class CovenantArchitectureBoundaryTests
 
         AssertSingleRegistration<IGrimoireOfflineTransitionPhaseAuthority>(services, ServiceLifetime.Scoped);
 
+        AssertSingleRegistration<GrimoireOfflineTransitionDatabaseReconciler>(services, ServiceLifetime.Scoped);
+
         AssertSingleRegistration<ICovenantCanonicalErasure>(services, ServiceLifetime.Singleton);
 
         AssertSingleRegistration<ICovenantLocalErasureStorageHealth>(services, ServiceLifetime.Singleton);

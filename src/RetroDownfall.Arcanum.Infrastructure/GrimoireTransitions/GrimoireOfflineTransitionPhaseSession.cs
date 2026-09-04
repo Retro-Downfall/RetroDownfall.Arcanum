@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -117,16 +120,17 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
                 payload.Lifecycle with { State = GrimoireOfflineTransitionState.Applying }),
             cancellationToken);
 
-    /// <summary>Publishes that one phase is about to run, with the evidence that resolves it later.</summary>
+    /// <summary>Publishes that one phase is about to run, before anything it does can happen.</summary>
     internal Task<Result> BeginPhaseAsync(
         CovenantResetPhase phase,
-        GrimoireOfflineTransitionBeforeStateEvidence beforeState,
         CancellationToken cancellationToken) =>
-        beforeState is null
-            ? Task.FromResult(Unresumable())
-            : AdvanceAsync(
-                payload => WithPhases(payload, payload.LastCompletedPhase, phase, beforeState),
-                cancellationToken);
+        AdvanceAsync(
+            payload => WithPhases(
+                payload,
+                payload.LastCompletedPhase,
+                phase,
+                BeforeState(payload.Binding, phase)),
+            cancellationToken);
 
     /// <summary>Publishes that the phase in flight is proved complete.</summary>
     internal Task<Result> CompletePhaseAsync(
@@ -279,18 +283,32 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     /// Parks the transition with a content-free blocker and the exact state a resume must reach.
     /// </summary>
     /// <remarks>
-    /// The expected-state digest is recomputed by whoever resumes, from the state it actually
-    /// observes, and compared against the value recorded here. A resume that echoed this digest back
-    /// would be asserting equality with itself, which is why the two are stored separately and why
-    /// this one is written before the blocker exists to answer.
+    /// The two digests are stored separately because they answer different questions, and because a
+    /// resume that echoed the recorded value back would be asserting equality with itself.
+    ///
+    /// <para>Both are currently derived from the binding and the phase this transition stopped at,
+    /// which binds the blocker to exactly this transition and no further. That is all they can carry
+    /// until something resumes from a park: the resume side is what recomputes an expected state from
+    /// what it actually observes, and deriving a richer value here before that exists would be
+    /// laying a trap for whoever writes it — a digest over an observation nothing checks reads as a
+    /// proof and is not one.</para>
     /// </remarks>
-    internal Task<Result> ParkAsync(
-        CovenantDigest resolutionBindingDigest,
-        CovenantDigest expectedStateDigest,
-        CancellationToken cancellationToken)
+    internal Task<Result> ParkAsync(CancellationToken cancellationToken)
     {
 
         GrimoireOfflineTransitionState resumeState = _current.Payload.Lifecycle.State;
+
+        CovenantResetPhase phase = _current.Payload.LastCompletedPhase;
+
+        CovenantDigest resolutionBindingDigest = PhaseDigest(
+            BlockerResolutionDomain,
+            _current.Payload.Binding,
+            phase);
+
+        CovenantDigest expectedStateDigest = PhaseDigest(
+            BlockerExpectedStateDomain,
+            _current.Payload.Binding,
+            phase);
 
         return AdvanceAsync(
             payload => WithLifecycle(
@@ -311,6 +329,54 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     /// <summary>Retires the journal, which is legal only from an exact retirement-pending suffix.</summary>
     internal Task<Result> RetireAsync(CancellationToken cancellationToken) =>
         _lifecycle.RetireAsync(_heldInstallationLock, _current, cancellationToken);
+
+    /// <summary>
+    /// The evidence an in-flight publication carries, derived rather than supplied.
+    /// </summary>
+    /// <remarks>
+    /// Derived because a caller-supplied value can be wrong, and this one has exactly one correct
+    /// answer: it binds the in-flight record to this transition and this phase, so a payload cannot
+    /// carry evidence belonging to another. Two digests rather than one because they answer different
+    /// questions - which state this ran against, and which effect it was - and a single value would
+    /// collapse a phase that ran against the wrong state into one that ran the wrong effect.
+    ///
+    /// <para>It deliberately carries nothing observed. What actually happened is resolved against the
+    /// database by the launch classifier, which compares the live generation and epoch tuple with the
+    /// pair the launch committed to; a digest of a reading taken before the effect could not answer
+    /// that, because the reading it describes is the one the effect was about to invalidate.</para>
+    /// </remarks>
+    private static GrimoireOfflineTransitionBeforeStateEvidence BeforeState(
+        GrimoireOfflineTransitionBinding binding,
+        CovenantResetPhase phase) =>
+        new(
+            PhaseDigest(SourceStateDomain, binding, phase),
+            PhaseDigest(EffectEvidenceDomain, binding, phase));
+
+    private static CovenantDigest PhaseDigest(
+        string domain,
+        GrimoireOfflineTransitionBinding binding,
+        CovenantResetPhase phase)
+    {
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        hash.AppendData(Encoding.ASCII.GetBytes(domain));
+
+        hash.AppendData([0]);
+
+        hash.AppendData(binding.OperationId.ToByteArray(bigEndian: true));
+
+        hash.AppendData([(byte)binding.Kind, binding.PayloadVersion, (byte)phase]);
+
+        hash.AppendData(binding.EffectDigest.Bytes);
+
+        hash.AppendData(binding.SourceDatasetGeneration.ToByteArray(bigEndian: true));
+
+        hash.AppendData(binding.TargetDatasetGeneration.ToByteArray(bigEndian: true));
+
+        return new CovenantDigest(hash.GetHashAndReset());
+
+    }
 
     private Task<Result> AdvanceReconciliationAsync(
         GrimoireOfflineTransitionReconciliationStep step,
@@ -427,6 +493,18 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
             ? Result<IGrimoireOfflineTransitionPayload>.Success(
                 factory with { OrdinaryFactoryContinuationCompleted = true })
             : Unresumable<IGrimoireOfflineTransitionPayload>();
+
+    private const string BlockerResolutionDomain =
+        "arcanum.grimoire.offline-transition.blocker-resolution.v1";
+
+    private const string BlockerExpectedStateDomain =
+        "arcanum.grimoire.offline-transition.blocker-expected-state.v1";
+
+    private const string SourceStateDomain =
+        "arcanum.grimoire.offline-transition.phase-source-state.v1";
+
+    private const string EffectEvidenceDomain =
+        "arcanum.grimoire.offline-transition.phase-effect-evidence.v1";
 
     private static Result Unresumable() => new Error(
         ErrorCodes.Covenant.ManualRecoveryRequired,

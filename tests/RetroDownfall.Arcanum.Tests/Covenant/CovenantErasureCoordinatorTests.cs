@@ -14,6 +14,10 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Operations;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 /// <summary>
@@ -536,7 +540,7 @@ public sealed class CovenantErasureCoordinatorTests
     [InlineData(DispositionFailureMode.ReturnedFailure)]
     [InlineData(DispositionFailureMode.Cancelled)]
     [InlineData(DispositionFailureMode.Thrown)]
-    public async Task A_failed_one_shot_commit_records_recoverability_without_a_fallback_disposition(
+    public async Task A_failed_one_shot_commit_retains_its_journal_without_a_fallback_disposition(
         DispositionFailureMode failureMode)
     {
 
@@ -564,11 +568,18 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.False(await harness.AdmissionIsOpenAsync());
 
+        // No database status describes the failure. The row carries the terminal answer the reconciler
+        // already committed to, and what went wrong afterwards is the journal's to say — it records
+        // the disposition as in flight and unverified, which is both more precise than a status column
+        // and readable by a process that cannot open the database at all.
         LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
 
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, durable.State);
+        Assert.Equal(LongRunningOperationState.Completed, durable.State);
 
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, durable.TerminalErrorCode);
+        Assert.Null(durable.TerminalErrorCode);
+
+        // The journal is retained rather than retired, which is what keeps the operation adoptable.
+        Assert.True(File.Exists(harness.Phases.JournalPath));
 
     }
 
@@ -582,170 +593,6 @@ public sealed class CovenantErasureCoordinatorTests
         Cancelled,
 
         Thrown,
-
-    }
-
-    public enum LifecycleFailureRaceMode
-    {
-
-        TransientMissing,
-
-        WrongAttentionCode,
-
-        ChangedCheckpoint,
-
-        NonActiveCheckpoint,
-
-        ValidWinner,
-
-    }
-
-    [Theory]
-    [InlineData(LifecycleFailureRaceMode.TransientMissing)]
-    [InlineData(LifecycleFailureRaceMode.WrongAttentionCode)]
-    [InlineData(LifecycleFailureRaceMode.ChangedCheckpoint)]
-    [InlineData(LifecycleFailureRaceMode.NonActiveCheckpoint)]
-    [InlineData(LifecycleFailureRaceMode.ValidWinner)]
-    public async Task A_failed_disposition_retries_until_a_fresh_read_proves_recoverability(
-        LifecycleFailureRaceMode raceMode)
-    {
-
-        CoordinatorHarness harness = new(dispositionFailure: DispositionFailureMode.ReturnedFailure);
-
-        int reads = 0;
-
-        int invalidTransitions = 0;
-
-        bool nonActiveReadOutstanding = false;
-
-        harness.Gate.OnDispositionAttempt = () =>
-        {
-
-            if (raceMode == LifecycleFailureRaceMode.WrongAttentionCode)
-            {
-
-                LongRunningOperation current = Assert.Single(
-                    harness.Store.Operations,
-                    static operation => operation.Id == OperationId);
-
-                harness.Store.Add(
-                    current with
-                    {
-                        State = LongRunningOperationState.ReconciliationRequired,
-                        LeaseOwner = null,
-                        LeaseExpiresAt = null,
-                        TerminalErrorCode = "Covenant.UnrecognizedAttention",
-                        Revision = current.Revision + 1,
-                    });
-
-            }
-
-            harness.Store.GetOverride = current =>
-            {
-
-                int read = Interlocked.Increment(ref reads);
-
-                if (raceMode == LifecycleFailureRaceMode.TransientMissing && read == 1)
-                {
-
-                    return null;
-
-                }
-
-                if (raceMode == LifecycleFailureRaceMode.ChangedCheckpoint && read == 1)
-                {
-
-                    return current! with { CheckpointPayload = [0] };
-
-                }
-
-                if (raceMode == LifecycleFailureRaceMode.NonActiveCheckpoint && read == 1)
-                {
-
-                    nonActiveReadOutstanding = true;
-
-                    return current! with
-                    {
-                        State = LongRunningOperationState.Completed,
-                        CompletedAt = DateTimeOffset.UtcNow,
-                        LeaseOwner = null,
-                        LeaseExpiresAt = null,
-                    };
-
-                }
-
-                nonActiveReadOutstanding = false;
-
-                return current;
-
-            };
-
-            if (raceMode == LifecycleFailureRaceMode.ValidWinner)
-            {
-
-                harness.Store.TryTransitionOverride = current =>
-                {
-
-                    Assert.NotNull(current);
-
-                    harness.Store.Add(
-                        current with
-                        {
-                            State = LongRunningOperationState.ReconciliationRequired,
-                            LeaseOwner = null,
-                            LeaseExpiresAt = null,
-                            TerminalErrorCode = ErrorCodes.Covenant.MaintenanceFailed,
-                            Revision = current.Revision + 1,
-                        });
-
-                    return false;
-
-                };
-
-            }
-            else if (raceMode == LifecycleFailureRaceMode.NonActiveCheckpoint)
-            {
-
-                harness.Store.TryTransitionOverride = current =>
-                {
-
-                    _ = current;
-
-                    if (!nonActiveReadOutstanding)
-                    {
-
-                        return null;
-
-                    }
-
-                    _ = Interlocked.Increment(ref invalidTransitions);
-
-                    return false;
-
-                };
-
-            }
-
-        };
-
-        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
-            CovenantResetPhase.InventoryPrepared);
-
-        Assert.True(completion.IsFailure);
-
-        Assert.Equal(1, harness.Gate.DispositionAttempts);
-
-        Assert.Equal(0, harness.Gate.KeepClosedAttempts);
-
-        Assert.Equal(0, invalidTransitions);
-
-        Assert.True(reads >= 2);
-
-        LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
-
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, durable.State);
-
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, durable.TerminalErrorCode);
 
     }
 
@@ -875,7 +722,7 @@ public sealed class CovenantErasureCoordinatorTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public async Task A_database_replay_read_failure_before_the_first_kernel_restores_then_rolls_back(
+    public async Task A_database_replay_read_failure_after_its_phase_began_parks_with_its_journal(
         int failureKind)
     {
 
@@ -899,13 +746,23 @@ public sealed class CovenantErasureCoordinatorTests
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
             CovenantResetPhase.InventoryPrepared);
 
-        Assert.True(completion.IsSuccess);
+        Assert.True(
+            completion.IsSuccess,
+            completion.IsFailure ? completion.Error.Code + ": " + completion.Error.Message : null);
 
-        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
+        // The read failed after the phase was already published in flight, and a published phase is
+        // not something a later process can be told to disbelieve: the journal records that the step
+        // began, and whether its effect happened is a question only that step's own resolver can
+        // answer. So the transition parks with its journal retained rather than reopening on the
+        // strength of an in-memory flag that no longer exists once the process does not.
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
 
+        // Nothing was erased, which is what makes the park recoverable rather than damaging.
         Assert.Equal(0, harness.Artifacts.Calls);
 
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
+        Assert.True(File.Exists(harness.Phases.JournalPath));
 
     }
 
@@ -1241,6 +1098,16 @@ public sealed class CovenantErasureCoordinatorTests
     private sealed class CoordinatorHarness
     {
 
+        /// <summary>
+        /// A real journal over this harness's own temporary root, not a stand-in.
+        /// </summary>
+        /// <remarks>
+        /// The phases a coordinator publishes have to form a legal ladder, and only the real
+        /// lifecycle validator can say whether they do. A double would accept whatever it was handed,
+        /// and the first illegal sequence would reach an operator instead of this suite.
+        /// </remarks>
+        internal LocalOfflineTransitionPhaseAuthority Phases { get; }
+
         private readonly CovenantExclusiveOperation _operation;
 
         private readonly ICovenantErasureInventorySource _inventory;
@@ -1283,6 +1150,8 @@ public sealed class CovenantErasureCoordinatorTests
             _operation = operation;
 
             Operations = new RecordingOperationCoordinator(Store);
+
+            Phases = new LocalOfflineTransitionPhaseAuthority(Store);
 
             FakeCovenantAvailability? availability = null;
 
@@ -1369,6 +1238,16 @@ public sealed class CovenantErasureCoordinatorTests
 
             Store.Add(operation);
 
+            // A resumed run is one whose journal already records progress. The journal is the phase
+            // authority now, so the arrangement has to produce that journal rather than hand the
+            // coordinator a phase the durable evidence does not support.
+            await Phases.SeedAsync(
+                operation,
+                phase,
+                _operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
+                    && phase >= CovenantResetPhase.HandlesClosed,
+                cancellationToken ?? Token);
+
             CovenantErasureCoordinator coordinator = new(
                 Operations,
                 Store,
@@ -1378,6 +1257,8 @@ public sealed class CovenantErasureCoordinatorTests
                 _inventory,
                 Transition,
                 DisclosureWriter,
+                Phases,
+                new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 TimeProvider.System,
                 NullLogger<CovenantErasureCoordinator>.Instance);
 
@@ -1425,6 +1306,8 @@ public sealed class CovenantErasureCoordinatorTests
                 _inventory,
                 Transition,
                 DisclosureWriter,
+                Phases,
+                new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 TimeProvider.System,
                 NullLogger<CovenantErasureCoordinator>.Instance);
 

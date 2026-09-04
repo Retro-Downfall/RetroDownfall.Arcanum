@@ -24,6 +24,10 @@ using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Tests.Data;
 
 /// <summary>
@@ -790,7 +794,8 @@ public sealed partial class DataRetentionServiceTests
         CovenantResetPhase phase,
         RecoveryDisposition disposition = RecoveryDisposition.Commit,
         RecoveryPause? pause = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        LocalOfflineTransitionPhaseAuthority? phases = null)
     {
 
         Result<CovenantErasureCheckpointState> checkpoint = operation.Kind
@@ -827,6 +832,8 @@ public sealed partial class DataRetentionServiceTests
             new RecoveryInventory(disposition, pause),
             new RecoveryTransition(disposition),
             new RecoveryWriterLifecycle(),
+            phases ?? new LocalOfflineTransitionPhaseAuthority(operations),
+            new GrimoireOfflineTransitionDatabaseReconciler(operations, clock),
             clock,
             NullLogger<CovenantErasureCoordinator>.Instance);
 

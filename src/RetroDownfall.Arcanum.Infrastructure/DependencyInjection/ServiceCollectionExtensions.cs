@@ -2007,11 +2007,33 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IGrimoireOfflineTransitionJournalStore>(),
                 sp.GetRequiredService<GrimoireOfflineTransitionHandlerRegistry>()));
 
+        // Scoped rather than singleton: the terminal compare-exchange it performs goes through the
+        // scoped operation store, and a singleton holding one would capture a scope it outlives.
+        services.AddScoped(
+            static sp => new GrimoireOfflineTransitionDatabaseReconciler(
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        // The CLI graph composes the erasure coordinator without the host services around it, so the
+        // accessor may not exist yet. It is added rather than assumed because a CLI holds no
+        // installation lock and must therefore refuse to open a journal — which is the correct answer
+        // for a process that cannot run an offline transition, and a clearer one than a missing
+        // registration.
+        services.TryAddSingleton<InstallationResetMaintenanceLockAccessor>();
+
+        services.TryAddSingleton<IInstallationResetMaintenanceLockAccessor>(
+            static sp => sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>());
+
+        services.TryAddScoped<IInstallationResetDatabaseIdentityReader,
+            InstallationResetDatabaseIdentityReader>();
+
         services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
             static sp => new GrimoireOfflineTransitionPhaseAuthority(
                 sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
                 sp.GetRequiredService<IInstallationResetMaintenanceLockAccessor>(),
                 sp.GetRequiredService<IInstallationResetDatabaseIdentityReader>(),
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<IOsCredentialStore>(),
                 ArcanumPaths.GrimoireDirectory));
 
         services.AddScoped(
@@ -2044,6 +2066,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantErasureInventorySource>(),
                 sp.GetRequiredService<ICovenantErasureTransition>(),
                 sp.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ILogger<CovenantErasureCoordinator>>()));
 

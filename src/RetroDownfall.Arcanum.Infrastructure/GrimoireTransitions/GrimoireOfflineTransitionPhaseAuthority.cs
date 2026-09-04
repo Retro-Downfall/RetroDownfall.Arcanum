@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
@@ -45,6 +46,8 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
     GrimoireOfflineTransitionLifecycleStore lifecycle,
     IInstallationResetMaintenanceLockAccessor maintenanceLocks,
     IInstallationResetDatabaseIdentityReader installationIdentities,
+    ILongRunningOperationStore operations,
+    IOsCredentialStore credentials,
     string guardedDirectory) : IGrimoireOfflineTransitionPhaseAuthority
 {
 
@@ -56,6 +59,12 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
 
     private readonly IInstallationResetDatabaseIdentityReader _installationIdentities =
         installationIdentities ?? throw new ArgumentNullException(nameof(installationIdentities));
+
+    private readonly ILongRunningOperationStore _operations =
+        operations ?? throw new ArgumentNullException(nameof(operations));
+
+    private readonly IOsCredentialStore _credentials =
+        credentials ?? throw new ArgumentNullException(nameof(credentials));
 
     private readonly string _guardedDirectory = string.IsNullOrWhiteSpace(guardedDirectory)
         ? throw new ArgumentException("A guarded directory is required.", nameof(guardedDirectory))
@@ -154,6 +163,35 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
 
         }
 
+        // The journal's envelope binds this profile's external installation identity, and the identity
+        // has to exist before the first publication can commit to it. Seeding is idempotent and
+        // refuses rather than overwrites: an identity already present and matching is returned
+        // unchanged, and one naming a different installation is a refusal rather than a correction.
+        Result<Guid> identity = SeedIdentity(heldInstallationLock, installation.Value);
+
+        if (identity.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionPhaseSession>.Failure(identity.Error);
+
+        }
+
+        // Read back rather than taken from the instance the caller is holding. The revision a launch
+        // commit produces is not the one the launch recorded, and whatever the caller last read may
+        // already be behind - a lease acquisition or a single-flight start moves it. Binding a stale
+        // value would make the terminal compare-exchange that has to happen before retirement refuse
+        // its own row, which is the one refusal nothing downstream can act on.
+        LongRunningOperation? current = await _operations
+            .GetAsync(launch.OperationId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (current is null)
+        {
+
+            return Unresumable();
+
+        }
+
         Result<GrimoireOfflineTransitionTypedPublication> opened = await _lifecycle
             .BeginBoundAsync(
                 heldInstallationLock,
@@ -162,7 +200,7 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
                 launch.OperationId,
                 launch.Kind,
                 PayloadVersion,
-                slotEpoch => OpeningPayload(launch, operation.Revision, slotEpoch),
+                slotEpoch => OpeningPayload(launch, current.Revision, slotEpoch),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -173,6 +211,22 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
                     _lifecycle,
                     heldInstallationLock,
                     opened.Value));
+
+    }
+
+    private Result<Guid> SeedIdentity(ArcanumMaintenanceLock heldInstallationLock, Guid installation)
+    {
+
+        Result<GrimoireOfflineTransitionJournalLocation> location =
+            new GrimoireOfflineTransitionJournalFileStore().ResolveLocation(_guardedDirectory);
+
+        return location.IsFailure
+            ? Result<Guid>.Failure(location.Error)
+            : new BackupRestoreJournalInstallationIdentityProvider(_credentials).SeedFromDatabase(
+                heldInstallationLock,
+                _guardedDirectory,
+                location.Value.ProfileNamespace,
+                installation);
 
     }
 

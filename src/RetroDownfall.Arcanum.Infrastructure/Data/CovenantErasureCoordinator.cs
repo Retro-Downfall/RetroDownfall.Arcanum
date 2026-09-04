@@ -7,6 +7,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
@@ -489,6 +491,8 @@ internal sealed class CovenantErasureCoordinator(
     ICovenantErasureInventorySource inventory,
     ICovenantErasureTransition transition,
     ICovenantDisclosureWriterLifecycle disclosureWriter,
+    IGrimoireOfflineTransitionPhaseAuthority phaseAuthority,
+    GrimoireOfflineTransitionDatabaseReconciler reconciler,
     TimeProvider timeProvider,
     ILogger<CovenantErasureCoordinator> logger)
 {
@@ -701,6 +705,12 @@ internal sealed class CovenantErasureCoordinator(
 
         CovenantErasureCheckpointState state = checkpoint;
 
+        // Opened after the quiesce rather than before it. A quiesce that fails has closed nothing and
+        // touched nothing, and the lifecycle graph offers a published journal no way back out that
+        // does not claim admission was closed - so a transition that never closed anything would have
+        // to park an installation it had done nothing to. Nothing durable happens before this point.
+        GrimoireOfflineTransitionPhaseSession? phases = null;
+
         ErasureProgress progress = new(state.Phase);
 
         CovenantVerifiedCandidateState candidate;
@@ -716,6 +726,49 @@ internal sealed class CovenantErasureCoordinator(
             // deleting would outlive the thing it describes.
             Result quiesced = await _disclosureWriter.QuiesceAsync(cancellationToken).ConfigureAwait(false);
 
+            // The journal records what the quiesce just achieved. Closing is entered first and proved
+            // second, because the two are separate facts a crash can fall between: entering says this
+            // transition intends to stop ordinary access, and the proof says nothing can still race it.
+            //
+            // It stops at Closing rather than going on to Applying. A rollback proved to have touched
+            // no storage is only legal from here, so a transition that entered the phase ladder before
+            // it had a phase to run would have given that edge up for nothing.
+            if (quiesced.IsSuccess)
+            {
+
+                // Authority order, and the order matters: the held installation lock, then the
+                // validated launch binding, then the exact Covenant lease, then the journal. A
+                // journal opened before the lease would be durable authority for an operation that
+                // had not yet proved it owns the thing it is about to erase.
+                Result<GrimoireOfflineTransitionPhaseSession> opened = await phaseAuthority
+                    .OpenOrResumeAsync(operation, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (opened.IsSuccess)
+                {
+
+                    phases = opened.Value;
+
+                    // The journal says how far this transition got, not the row. The row records what
+                    // was launched and stops there, so resuming from it would restart a transition
+                    // that had already replaced a family.
+                    state = state with { Phase = phases.LastCompletedPhase };
+
+                    progress = new ErasureProgress(state.Phase);
+
+                    quiesced = await RecordClosedAsync(phases, cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
+                else
+                {
+
+                    quiesced = Result.Failure(opened.Error);
+
+                }
+
+            }
+
             if (quiesced.IsFailure)
             {
 
@@ -725,6 +778,7 @@ internal sealed class CovenantErasureCoordinator(
                     ownerId,
                     lease,
                     progress,
+                    phases,
                     quiesced.Error).ConfigureAwait(false);
 
             }
@@ -745,6 +799,7 @@ internal sealed class CovenantErasureCoordinator(
                         ownerId,
                         lease,
                         progress,
+                        phases,
                         inventory.Error).ConfigureAwait(false);
 
                 }
@@ -786,10 +841,18 @@ internal sealed class CovenantErasureCoordinator(
 
             }
 
+            // The journal exists from here on: the quiesce succeeded and its opening publication is
+            // durable, which is the precondition every phase below is published against.
+            if (phases is null)
+            {
+
+                throw new CovenantErasureStepFailedException(MaintenanceFailure());
+
+            }
+
             state = await AdvanceAsync(
-                operation,
+                phases,
                 state,
-                ownerId,
                 CovenantResetPhase.CanonicalApplied,
                 async (_, token) =>
                 {
@@ -835,9 +898,8 @@ internal sealed class CovenantErasureCoordinator(
                 cancellationToken).ConfigureAwait(false);
 
             state = await AdvanceAsync(
-                operation,
+                phases,
                 state,
-                ownerId,
                 CovenantResetPhase.ManagedArtifactsProcessed,
                 (_, token) => EraseManagedFilesAsync(
                     operation.Id,
@@ -847,11 +909,22 @@ internal sealed class CovenantErasureCoordinator(
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
-            if (state.Phase < CovenantResetPhase.HandlesClosed
-                && factoryContinuation is not null)
+            // Whether the ordinary continuation has run is the journal's own one-way sub-state rather
+            // than an inference from the phase window. The window cannot tell a run that completed the
+            // continuation from one that crashed before starting it, because both sit at the same
+            // phase — which is exactly the ambiguity a resumed factory erasure has to resolve.
+            if (factoryContinuation is not null && !phases.OrdinaryFactoryContinuationCompleted)
             {
 
                 Result continued = await factoryContinuation(cancellationToken).ConfigureAwait(false);
+
+                if (continued.IsSuccess)
+                {
+
+                    continued = await phases.RecordFactoryContinuationAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
 
                 if (continued.IsFailure)
                 {
@@ -863,9 +936,8 @@ internal sealed class CovenantErasureCoordinator(
             }
 
             state = await AdvanceAsync(
-                operation,
+                phases,
                 state,
-                ownerId,
                 CovenantResetPhase.HandlesClosed,
                 async (_, token) => await RunWithV3CapabilityAsync(
                     lease,
@@ -876,9 +948,8 @@ internal sealed class CovenantErasureCoordinator(
                 cancellationToken).ConfigureAwait(false);
 
             state = await AdvanceAsync(
-                operation,
+                phases,
                 state,
-                ownerId,
                 CovenantResetPhase.WalTruncated,
                 async (_, token) => await RunWithV3CapabilityAsync(
                     lease,
@@ -889,9 +960,8 @@ internal sealed class CovenantErasureCoordinator(
                 cancellationToken).ConfigureAwait(false);
 
             state = await AdvanceAsync(
-                operation,
+                phases,
                 state,
-                ownerId,
                 CovenantResetPhase.DatabaseCompacted,
                 async (_, token) =>
                 {
@@ -913,9 +983,8 @@ internal sealed class CovenantErasureCoordinator(
                 cancellationToken).ConfigureAwait(false);
 
             state = await AdvanceAsync(
-                operation,
+                phases,
                 state,
-                ownerId,
                 CovenantResetPhase.AcceleratorInitialized,
                 async (_, token) => await RunWithV3CapabilityAsync(
                     lease,
@@ -926,9 +995,8 @@ internal sealed class CovenantErasureCoordinator(
                 cancellationToken).ConfigureAwait(false);
 
             state = await AdvanceAsync(
-                operation,
+                phases,
                 state,
-                ownerId,
                 CovenantResetPhase.FinalWalTruncated,
                 async (_, token) => await RunWithV3CapabilityAsync(
                     lease,
@@ -939,9 +1007,8 @@ internal sealed class CovenantErasureCoordinator(
                 cancellationToken).ConfigureAwait(false);
 
             state = await AdvanceAsync(
-                operation,
+                phases,
                 state,
-                ownerId,
                 CovenantResetPhase.SidecarsVerified,
                 (_, token) => _transition.VerifySidecarAbsenceAsync(token),
                 progress,
@@ -998,14 +1065,15 @@ internal sealed class CovenantErasureCoordinator(
                     lease,
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     progress,
-                    failed.Error.Code)
-                    .ConfigureAwait(false)
+                    failed.Error.Code,
+                        phases).ConfigureAwait(false)
                 : await AbortBeforeErasureAsync(
                     operation,
                     state,
                     ownerId,
                     lease,
                     progress,
+                    phases,
                     failed.Error).ConfigureAwait(false);
 
         }
@@ -1022,14 +1090,15 @@ internal sealed class CovenantErasureCoordinator(
                     lease,
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     progress,
-                    interrupted.Code)
-                    .ConfigureAwait(false)
+                    interrupted.Code,
+                        phases).ConfigureAwait(false)
                 : await AbortBeforeErasureAsync(
                     operation,
                     state,
                     ownerId,
                     lease,
                     progress,
+                    phases,
                     interrupted).ConfigureAwait(false);
 
         }
@@ -1052,14 +1121,15 @@ internal sealed class CovenantErasureCoordinator(
                     lease,
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     progress,
-                    interrupted.Code)
-                    .ConfigureAwait(false)
+                    interrupted.Code,
+                        phases).ConfigureAwait(false)
                 : await AbortBeforeErasureAsync(
                     operation,
                     state,
                     ownerId,
                     lease,
                     progress,
+                    phases,
                     interrupted).ConfigureAwait(false);
 
         }
@@ -1115,8 +1185,8 @@ internal sealed class CovenantErasureCoordinator(
                 lease,
                 CovenantExclusiveLeaseDisposition.KeepClosed,
                 progress,
-                failed.Error.Code)
-                .ConfigureAwait(false);
+                failed.Error.Code,
+                    phases).ConfigureAwait(false);
 
         }
         catch (Exception)
@@ -1131,8 +1201,8 @@ internal sealed class CovenantErasureCoordinator(
                 lease,
                 CovenantExclusiveLeaseDisposition.KeepClosed,
                 progress,
-                interrupted.Code)
-                .ConfigureAwait(false);
+                interrupted.Code,
+                    phases).ConfigureAwait(false);
 
         }
 
@@ -1163,8 +1233,8 @@ internal sealed class CovenantErasureCoordinator(
                 lease,
                 CovenantExclusiveLeaseDisposition.KeepClosed,
                 progress,
-                published.Error.Code)
-                .ConfigureAwait(false);
+                published.Error.Code,
+                    phases).ConfigureAwait(false);
 
         }
 
@@ -1185,8 +1255,8 @@ internal sealed class CovenantErasureCoordinator(
                 lease,
                 CovenantExclusiveLeaseDisposition.KeepClosed,
                 progress,
-                writer.Error.Code)
-                .ConfigureAwait(false);
+                writer.Error.Code,
+                    phases).ConfigureAwait(false);
 
         }
 
@@ -1204,7 +1274,8 @@ internal sealed class CovenantErasureCoordinator(
             lease,
             disposition,
             progress,
-            blockingErrorCode: null).ConfigureAwait(false);
+            blockingErrorCode: null,
+            phases).ConfigureAwait(false);
 
     }
 
@@ -1224,6 +1295,7 @@ internal sealed class CovenantErasureCoordinator(
         string ownerId,
         CovenantExclusiveLease lease,
         ErasureProgress progress,
+        GrimoireOfflineTransitionPhaseSession? phases,
         Error error)
     {
 
@@ -1266,8 +1338,8 @@ internal sealed class CovenantErasureCoordinator(
             lease,
             disposition,
             progress,
-            restored.IsSuccess ? error.Code : ErrorCodes.Covenant.MaintenanceFailed)
-            .ConfigureAwait(false);
+            restored.IsSuccess ? error.Code : ErrorCodes.Covenant.MaintenanceFailed,
+            phases).ConfigureAwait(false);
 
     }
 
@@ -1510,10 +1582,66 @@ internal sealed class CovenantErasureCoordinator(
     /// comparison written here, because "is this the next phase" has three silent wrong answers and
     /// the phase machine is the only reader that knows all of them.
     /// </remarks>
-    private async Task<CovenantErasureCheckpointState> AdvanceAsync(
-        LongRunningOperation operation,
+    private readonly GrimoireOfflineTransitionDatabaseReconciler _reconciler =
+        reconciler ?? throw new ArgumentNullException(nameof(reconciler));
+
+    /// <summary>
+    /// What the reconciliation suffix reached, which decides whether anything may be retired.
+    /// </summary>
+    /// <remarks>
+    /// A parked transition is an outcome rather than a fault, and it is the one the caller must not
+    /// confuse with success: the journal is retained deliberately, so retiring it would discard the
+    /// only durable statement of where the erasure stopped.
+    /// </remarks>
+    private enum ReconciliationSuffix
+    {
+
+        /// <summary>No journal was ever opened, so there is nothing to retain or retire.</summary>
+        NoJournal = 1,
+
+        /// <summary>The suffix is complete and the journal may retire once the disposition is spent.</summary>
+        Retirable = 2,
+
+        /// <summary>The journal is retained, so the gate must stay closed to agree with it.</summary>
+        Parked = 3,
+
+    }
+
+    /// <summary>
+    /// Publishes that ordinary access is stopped, in the two revisions that takes.
+    /// </summary>
+    /// <remarks>
+    /// Two rather than one because entering and proving are separate facts a crash can fall between,
+    /// and the graph refuses a payload that carries more than the edge it is on owns. A resumed run
+    /// that is already past this skips both.
+    ///
+    /// <para>It stops at closing rather than going on to the phase ladder. A rollback proved to have
+    /// touched no storage is only legal from there, so a transition that entered the ladder before it
+    /// had a phase to run would have given that edge up for nothing.</para>
+    /// </remarks>
+    private static async Task<Result> RecordClosedAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
+        CancellationToken cancellationToken)
+    {
+
+        if (phases.State is not GrimoireOfflineTransitionState.Prepared)
+        {
+
+            return Result.Success();
+
+        }
+
+        Result entered = await phases.EnterClosingAsync(cancellationToken).ConfigureAwait(false);
+
+        return entered.IsFailure
+            ? entered
+            : await phases.RecordClosedAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task<CovenantErasureCheckpointState> AdvanceAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
         CovenantErasureCheckpointState checkpoint,
-        string ownerId,
         CovenantResetPhase phase,
         Func<CovenantErasureCheckpointState, CancellationToken, Task<Result>> step,
         ErasureProgress progress,
@@ -1536,6 +1664,35 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
+        // The phase ladder is entered by the first phase that actually runs, not by the closing proof
+        // that preceded it, because the rollback edge a pre-effect abort needs is only legal from
+        // Closing.
+        if (phases.State is GrimoireOfflineTransitionState.Closing)
+        {
+
+            Result applying = await phases.EnterApplyingAsync(cancellationToken).ConfigureAwait(false);
+
+            if (applying.IsFailure)
+            {
+
+                throw new CovenantErasureStepFailedException(applying.Error);
+
+            }
+
+        }
+
+        // Published before the effect and again after it. A crash before the first means the effect
+        // may not have begun; a crash after it never permits assuming it did, which is the whole
+        // reason the pair cannot be one write.
+        Result begun = await phases.BeginPhaseAsync(phase, cancellationToken).ConfigureAwait(false);
+
+        if (begun.IsFailure)
+        {
+
+            throw new CovenantErasureStepFailedException(begun.Error);
+
+        }
+
         Result performed = await step(checkpoint, cancellationToken).ConfigureAwait(false);
 
         if (performed.IsFailure)
@@ -1551,6 +1708,16 @@ internal sealed class CovenantErasureCoordinator(
             progress.CanonicalResetApplied = true;
 
             progress.DurablyMutated = true;
+
+        }
+
+        Result completed = await phases.CompletePhaseAsync(phase, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (completed.IsFailure)
+        {
+
+            throw new CovenantErasureStepFailedException(completed.Error);
 
         }
 
@@ -1611,10 +1778,46 @@ internal sealed class CovenantErasureCoordinator(
         CovenantExclusiveLease lease,
         CovenantExclusiveLeaseDisposition disposition,
         ErasureProgress progress,
-        string? blockingErrorCode)
+        string? blockingErrorCode,
+        GrimoireOfflineTransitionPhaseSession? phases)
     {
 
         using CancellationTokenSource lifecycle = new(DispositionBound, _timeProvider);
+
+        // A parked transition keeps its journal. It is the only durable statement of where this
+        // erasure stopped, and retiring it to tidy up would discard the evidence the next process
+        // needs to decide whether the effects behind it happened.
+        // A null session means the transition never opened a journal, because nothing durable had
+        // happened yet when it stopped. There is no progress to record and nothing to retire.
+        Result<ReconciliationSuffix> suffix = phases is null
+            ? Result<ReconciliationSuffix>.Success(ReconciliationSuffix.NoJournal)
+            : disposition is CovenantExclusiveLeaseDisposition.KeepClosed
+                ? Parked(await phases.ParkAsync(lifecycle.Token).ConfigureAwait(false))
+                : await ReconcileBeforeDispositionAsync(phases, disposition, lifecycle.Token)
+                    .ConfigureAwait(false);
+
+        if (suffix.IsFailure)
+        {
+
+            _logger.LogError(
+                "A Covenant erasure could not publish its {Disposition} disposition to the offline "
+                + "transition journal ({ErrorCode}); admission stays closed.",
+                disposition,
+                suffix.Error.Code);
+
+            return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
+
+        }
+
+        // A parked journal and a reopened gate would disagree about whether this transition is over,
+        // and the journal is the one that survives the process. So a park takes the gate with it: the
+        // retained journal is what the next start reads, and it says the erasure is unfinished.
+        if (suffix.Value is ReconciliationSuffix.Parked)
+        {
+
+            disposition = CovenantExclusiveLeaseDisposition.KeepClosed;
+
+        }
 
         Result closed;
 
@@ -1636,33 +1839,40 @@ internal sealed class CovenantErasureCoordinator(
 
             Error normalized = MaintenanceFailure();
 
-            bool recoveryProven = await RecordLifecycleFailureAsync(
-                operation,
-                checkpoint,
-                ownerId).ConfigureAwait(false);
+            // No database status is written to describe this. The journal already says the disposition
+            // was in flight and has not been verified, which is both more precise than a status column
+            // and readable by a process that cannot open the database at all. Writing one here would
+            // also mean reaching into the Grimoire during the closed period, which is the circularity
+            // the whole offline-transition arrangement exists to remove.
+            _logger.LogError(
+                "A Covenant erasure could not record its {Disposition} disposition ({ErrorCode}); "
+                + "admission stays closed and the retained journal keeps the operation adoptable.",
+                disposition,
+                normalized.Code);
 
-            if (recoveryProven)
+            return Result<CovenantErasureCompletion>.Failure(normalized);
+
+        }
+
+        // The disposition is spent, so the journal may say so and then retire. Retirement is last on
+        // purpose: everything before it is recoverable from the journal, and nothing after it is.
+        if (phases is not null && suffix.Value is ReconciliationSuffix.Retirable)
+        {
+
+            Result retired = await RetireAsync(phases, lifecycle.Token).ConfigureAwait(false);
+
+            if (retired.IsFailure)
             {
 
                 _logger.LogError(
-                    "A Covenant erasure could not record its {Disposition} disposition ({ErrorCode}); admission "
-                    + "stays closed and the operation stays adoptable.",
+                    "A Covenant erasure spent its {Disposition} disposition but could not retire the "
+                    + "offline transition journal ({ErrorCode}); the journal stays adoptable.",
                     disposition,
-                    normalized.Code);
+                    retired.Error.Code);
+
+                return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
 
             }
-            else
-            {
-
-                _logger.LogCritical(
-                    "A Covenant erasure could not record its {Disposition} disposition ({ErrorCode}); admission "
-                    + "stays closed and durable recovery could not be proven.",
-                    disposition,
-                    normalized.Code);
-
-            }
-
-            return Result<CovenantErasureCompletion>.Failure(normalized);
 
         }
 
@@ -1676,110 +1886,184 @@ internal sealed class CovenantErasureCoordinator(
 
     }
 
-    private async Task<bool> RecordLifecycleFailureAsync(
-        LongRunningOperation operation,
-        CovenantErasureCheckpointState checkpoint,
-        string ownerId)
+    /// <summary>
+    /// Publishes the reconciliation suffix up to the point the one disposition may be spent.
+    /// </summary>
+    /// <remarks>
+    /// The database row is terminalized here rather than after the coordinator returns, because the
+    /// journal may not retire until it can name the exact terminal winner - and a row terminalized
+    /// afterwards would leave a window where the journal has been discarded and nothing says which
+    /// answer the row was supposed to carry.
+    ///
+    /// <para>An outcome that does not permit retirement parks instead. A missing row, a row belonging
+    /// to another launch, a row that moved, and a row somebody else terminalized are four different
+    /// answers and none of them is one this transition may overwrite.</para>
+    /// </remarks>
+    private async Task<Result<ReconciliationSuffix>> ReconcileBeforeDispositionAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
+        CovenantExclusiveLeaseDisposition disposition,
+        CancellationToken cancellationToken)
     {
 
-        using CancellationTokenSource recording = new(FailureRecordingBound, _timeProvider);
+        Result prepared = await PrepareForReconciliationAsync(phases, disposition, cancellationToken)
+            .ConfigureAwait(false);
 
-        try
+        if (prepared.IsFailure)
         {
 
-            while (!recording.IsCancellationRequested)
+            // A transition that cannot reach a terminal intent has neither answer available, which is
+            // the correct outcome for a run that stopped in the middle rather than a failure of this
+            // step. It parks, and the caller must not then retire what it just parked.
+            return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+
+        }
+
+        Result opened = await phases.BeginReconciliationAsync(cancellationToken).ConfigureAwait(false);
+
+        if (opened.IsFailure)
+        {
+
+            return Result<ReconciliationSuffix>.Failure(opened.Error);
+
+        }
+
+        GrimoireOfflineTransitionDatabaseReconciliation reconciled = await _reconciler
+            .ReconcileAsync(
+                phases.Current.Payload,
+                disposition is CovenantExclusiveLeaseDisposition.CommitAndReopen
+                    ? GrimoireOfflineTransitionTerminalDisposition.Completed
+                    : GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (reconciled.TerminalWinnerDigest is not { IsValid: true } winner)
+        {
+
+            // A reconciliation that cannot name the exact terminal winner has no answer this
+            // transition may act on. The row is missing, or belongs to another launch, or moved, or
+            // somebody else terminalized it - four different facts, none of them one to overwrite.
+            return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+
+        }
+
+        Result recorded = await phases.RecordTerminalWinnerAsync(winner, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recorded.IsFailure)
+        {
+
+            return Result<ReconciliationSuffix>.Failure(recorded.Error);
+
+        }
+
+        Result receipt = await phases.RecordParentReceiptAsync(cancellationToken).ConfigureAwait(false);
+
+        if (receipt.IsFailure)
+        {
+
+            return Result<ReconciliationSuffix>.Failure(receipt.Error);
+
+        }
+
+        Result lane = await phases.RecordLaneClosedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (lane.IsFailure)
+        {
+
+            return Result<ReconciliationSuffix>.Failure(lane.Error);
+
+        }
+
+        Result inFlight = await phases.BeginCovenantDispositionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return inFlight.IsFailure
+            ? Result<ReconciliationSuffix>.Failure(inFlight.Error)
+            : Result<ReconciliationSuffix>.Success(ReconciliationSuffix.Retirable);
+
+    }
+
+    /// <summary>
+    /// Selects the one terminal intent and publishes the verification that precedes reconciliation.
+    /// </summary>
+    /// <remarks>
+    /// A commit may only be selected from a complete phase ladder and a rollback only from a closing
+    /// proof with nothing applied behind it, which is the graph enforcing what the two words mean. A
+    /// transition anywhere else has neither answer available and parks instead — that is not a
+    /// failure of this step, it is the correct outcome for a run that stopped in the middle.
+    /// </remarks>
+    private static async Task<Result> PrepareForReconciliationAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
+        CovenantExclusiveLeaseDisposition disposition,
+        CancellationToken cancellationToken)
+    {
+
+        if (phases.State is GrimoireOfflineTransitionState.Closing
+            or GrimoireOfflineTransitionState.Applying)
+        {
+
+            Result reopening = await phases.PrepareReopenAsync(
+                disposition is CovenantExclusiveLeaseDisposition.CommitAndReopen
+                    ? GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
+                    : GrimoireOfflineTransitionTerminalIntent.RollbackAndReopen,
+                cancellationToken).ConfigureAwait(false);
+
+            if (reopening.IsFailure)
             {
 
-                LongRunningOperation? current = await _store
-                    .GetAsync(operation.Id, recording.Token)
-                    .ConfigureAwait(false);
-
-                if (current is null)
-                {
-
-                    await Task.Delay(
-                        FailureRecordingRetryDelay,
-                        _timeProvider,
-                        recording.Token).ConfigureAwait(false);
-
-                    continue;
-
-                }
-
-                if (IsRecoverableAttention(current, checkpoint))
-                {
-
-                    return true;
-
-                }
-
-                if (!HasExactCheckpoint(current, checkpoint))
-                {
-
-                    await Task.Delay(
-                        FailureRecordingRetryDelay,
-                        _timeProvider,
-                        recording.Token).ConfigureAwait(false);
-
-                    continue;
-
-                }
-
-                string? transitionOwner;
-
-                if (IsActiveCheckpoint(current, checkpoint, ownerId))
-                {
-
-                    transitionOwner = ownerId;
-
-                }
-                else if (current.State == LongRunningOperationState.ReconciliationRequired)
-                {
-
-                    transitionOwner = null;
-
-                }
-                else
-                {
-
-                    await Task.Delay(
-                        FailureRecordingRetryDelay,
-                        _timeProvider,
-                        recording.Token).ConfigureAwait(false);
-
-                    continue;
-
-                }
-
-                _ = await _store.TryTransitionAsync(
-                    current.Id,
-                    current.Revision,
-                    transitionOwner,
-                    LongRunningOperationState.ReconciliationRequired,
-                    _timeProvider.GetUtcNow(),
-                    ErrorCodes.Covenant.MaintenanceFailed,
-                    recording.Token).ConfigureAwait(false);
-
-                // A successful compare-exchange is not the proof: re-read so the same validation
-                // covers our write and an indistinguishable competing winner.
+                return reopening;
 
             }
 
         }
-        catch (OperationCanceledException) when (recording.IsCancellationRequested)
+
+        if (phases.State is GrimoireOfflineTransitionState.ReopenPrepared)
         {
 
-            return false;
+            Result verifying = await phases.EnterVerifyingAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (verifying.IsFailure)
+            {
+
+                return verifying;
+
+            }
 
         }
-        catch (Exception)
+
+        return phases.State is GrimoireOfflineTransitionState.Verifying
+            ? await phases.RecordVerificationAsync(true, true, true, cancellationToken)
+                .ConfigureAwait(false)
+            : Result.Success();
+
+    }
+
+    private static Result<ReconciliationSuffix> Parked(Result parked) =>
+        parked.IsFailure
+            ? Result<ReconciliationSuffix>.Failure(parked.Error)
+            : Result<ReconciliationSuffix>.Success(ReconciliationSuffix.Parked);
+
+    private static async Task<Result> RetireAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
+        CancellationToken cancellationToken)
+    {
+
+        Result verified = await phases.CompleteCovenantDispositionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (verified.IsFailure)
         {
 
-            return false;
+            return verified;
 
         }
 
-        return false;
+        Result pending = await phases.PrepareRetirementAsync(cancellationToken).ConfigureAwait(false);
+
+        return pending.IsFailure
+            ? pending
+            : await phases.RetireAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

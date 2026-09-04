@@ -389,35 +389,28 @@ internal sealed partial class DataRetentionService
 
             ValidateFactoryFileSystemSnapshot(fileSystem);
 
-            DateTimeOffset leaseRenewedAt = timeProvider.GetUtcNow();
-
-            int renewed = await ExecuteAsync(
+            // The launch row is preserved and reread rather than renewed. It used to have its lease
+            // extended, its heartbeat stamped and its revision advanced inside this very transaction,
+            // which is three things the closed period may not do: the revision in particular is the
+            // one the authenticated journal bound itself to, so advancing it here would make the
+            // terminal compare-exchange that has to happen before the journal can retire refuse its
+            // own row.
+            //
+            // What the renewal was proving - that this operation still owns what it is about to
+            // delete - is proved by reading the row back instead. A row that is not the exact launch
+            // this transaction belongs to is a refusal, never a repair.
+            bool owned = await FactoryLaunchRowSurvivesAsync(
                 connection,
                 transaction,
-                """
-                UPDATE LongRunningOperations
-                SET HeartbeatAt = @now,
-                    LeaseExpiresAt = @expiresAt,
-                    Revision = Revision + 1
-                WHERE lower(replace(Id, '-', '')) = @currentId
-                  AND State = @running
-                  AND LeaseOwner = @leaseOwner
-                  AND LeaseExpiresAt > @now
-                """,
-                cancellationToken,
-                ("@now", leaseRenewedAt.ToString("o", CultureInfo.InvariantCulture)),
-                ("@expiresAt", leaseRenewedAt
-                    .Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration)
-                    .ToString("o", CultureInfo.InvariantCulture)),
-                ("@currentId", operationId.ToString("N")),
-                ("@leaseOwner", leaseOwner),
-                ("@running", (int)LongRunningOperationState.Running)).ConfigureAwait(false);
+                operationId,
+                leaseOwner,
+                cancellationToken).ConfigureAwait(false);
 
-            if (renewed != 1)
+            if (!owned)
             {
 
                 throw new DataRetentionLeaseLostException(
-                    "Factory reset lost its durable operation lease before file cleanup.");
+                    "Factory reset no longer owns the durable operation it was launched under.");
 
             }
 
@@ -1015,6 +1008,45 @@ internal sealed partial class DataRetentionService
             transaction,
             $"DELETE FROM \"{table.Table}\"",
             cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Whether the exact launch row this deletion belongs to is still there and still owned.
+    /// </summary>
+    /// <remarks>
+    /// Read inside the same transaction as the deletion, so the answer cannot change between the
+    /// check and the rows it authorizes. It reads rather than renews: the revision this row carries
+    /// is the one the authenticated journal bound itself to, and advancing it here would make the
+    /// terminal compare-exchange refuse the row it is trying to terminalize.
+    /// </remarks>
+    private static async Task<bool> FactoryLaunchRowSurvivesAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        Guid operationId,
+        string leaseOwner,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM LongRunningOperations
+            WHERE lower(replace(Id, '-', '')) = @currentId
+              AND State = @running
+              AND LeaseOwner = @leaseOwner
+            """;
+
+        Add(command, "@currentId", operationId.ToString("N"));
+
+        Add(command, "@leaseOwner", leaseOwner);
+
+        Add(command, "@running", (int)LongRunningOperationState.Running);
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L;
 
     }
 
