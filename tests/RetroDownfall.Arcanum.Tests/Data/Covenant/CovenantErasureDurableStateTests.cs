@@ -4,6 +4,8 @@ using System.Reflection;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -23,10 +25,11 @@ public sealed class CovenantErasureDurableStateTests
     /// <summary>Every durable shape a Covenant erasure writes, or resumes from.</summary>
     public static TheoryData<Type> DurableShapes =>
     [
-        typeof(CovenantResetEffectArmV1),
         typeof(CovenantOfflineTransitionEpochsV1),
         typeof(CovenantOfflineTransitionLaunchV4),
         typeof(DataRetentionFactoryTransitionLaunchV2),
+        typeof(CovenantResetOfflineTransitionPayloadV1),
+        typeof(HealthyCatalogFactoryErasureOfflineTransitionPayloadV1),
         typeof(LocalErasureWorkItemRow),
     ];
 

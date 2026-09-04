@@ -154,64 +154,6 @@ public sealed class GrimoireOfflineTransitionLaunchBindingTests
 
     }
 
-    /// <summary>
-    /// A legacy checkpoint never becomes a launch, however well-formed it is.
-    /// </summary>
-    /// <remarks>
-    /// The legacy shapes carry an owner and a phase and no target at all. A projection that filled
-    /// the missing target in — from the live database, from a plan, from a default — would authorize
-    /// an offline transition against a generation nobody ever committed to replacing, and the only
-    /// evidence that it had done so would be gone by the time anyone looked. The refusal is asserted
-    /// on payloads that are otherwise entirely valid, because a refusal that only fired on malformed
-    /// input would prove nothing about this rule.
-    /// </remarks>
-    [Fact]
-    public void A_valid_legacy_checkpoint_never_becomes_a_launch_binding()
-    {
-
-        DataRetentionMutationCheckpointV3 mutation = new(
-            DataRetentionMutationCheckpointV3.CurrentVersion,
-            Subtype: "reset-memory",
-            Target: "5",
-            new CovenantResetEffectArmV1(
-                Operation,
-                Effect,
-                CovenantExclusiveOperation.CovenantReset,
-                CovenantResetPhaseMachine.First));
-
-        DataRetentionFactoryResetCheckpointV1 factory = new(
-            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-            Operation,
-            Effect,
-            CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-            CovenantResetPhaseMachine.First);
-
-        Assert.True(
-            CovenantRecoveryCheckpointCodec
-                .DecodeDataRetentionMutation(CovenantRecoveryCheckpointCodec.Encode(mutation))
-                .IsSuccess);
-
-        Assert.True(
-            CovenantRecoveryCheckpointCodec
-                .DecodeDataRetentionFactoryReset(CovenantRecoveryCheckpointCodec.Encode(factory))
-                .IsSuccess);
-
-        Result<GrimoireOfflineTransitionLaunchBinding> fromMutation =
-            GrimoireOfflineTransitionLaunch.FromLegacy(mutation);
-
-        Result<GrimoireOfflineTransitionLaunchBinding> fromFactory =
-            GrimoireOfflineTransitionLaunch.FromLegacy(factory);
-
-        Assert.True(fromMutation.IsFailure);
-
-        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, fromMutation.Error.Code);
-
-        Assert.True(fromFactory.IsFailure);
-
-        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, fromFactory.Error.Code);
-
-    }
-
     [Fact]
     public void The_same_launch_digests_to_the_same_value()
     {

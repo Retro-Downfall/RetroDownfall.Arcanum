@@ -22,6 +22,8 @@ using RetroDownfall.Arcanum.Tests.Data;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 [Collection("Grimoire")]
@@ -336,22 +338,14 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         CovenantExclusiveRecoveryOwner mutation = await SeedCurrentAsync(
             LongRunningOperationKinds.DataRetentionMutation);
 
-        byte[] retired = CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionMutationCheckpointV3(
-                DataRetentionMutationCheckpointV3.CurrentVersion,
-                "reset-memory",
-                ((int)MemoryResetScope.Covenant).ToString(
-                    System.Globalization.CultureInfo.InvariantCulture),
-                new CovenantResetEffectArmV1(
-                    mutation.OperationId,
-                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(mutation.EffectDigest),
-                    CovenantExclusiveOperation.CovenantReset,
-                    CovenantResetPhase.InventoryPrepared)));
+        byte[] retired = RetiredCovenantCheckpoints.Mutation(
+            mutation.OperationId,
+            CovenantRecoveryCheckpointCodec.EncodeEffectDigest(mutation.EffectDigest));
 
         await ExecuteAsync(
             "UPDATE \"LongRunningOperations\" SET \"CheckpointVersion\" = @retired, "
                 + "\"CheckpointPayload\" = @payload WHERE \"Id\" = @id;",
-            ("@retired", DataRetentionMutationCheckpointV3.CurrentVersion),
+            ("@retired", RetiredCovenantCheckpoints.MutationVersion),
             ("@payload", retired),
             ("@id", mutation.OperationId.ToString("N")));
 

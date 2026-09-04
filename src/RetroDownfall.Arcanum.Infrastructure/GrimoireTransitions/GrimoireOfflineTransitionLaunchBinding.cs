@@ -118,27 +118,6 @@ internal static class GrimoireOfflineTransitionLaunch
             : Unlaunchable();
 
     /// <summary>
-    /// A legacy version-3 retention-mutation checkpoint is never a launch.
-    /// </summary>
-    /// <remarks>
-    /// The legacy shapes record an owner and the phase they reached, and no target at all. Filling
-    /// the missing target in — from the live database, from a plan, from a default — would authorize
-    /// an offline transition against a generation nobody committed to replacing, and the evidence
-    /// that it had happened would be gone by the time the family was already replaced. The refusal is
-    /// unconditional rather than conditional on the payload being malformed: a perfectly valid legacy
-    /// row still says nothing about a target, and a rule that only refused broken ones would be a
-    /// rule about parsing rather than about authority.
-    /// </remarks>
-    internal static Result<GrimoireOfflineTransitionLaunchBinding> FromLegacy(
-        DataRetentionMutationCheckpointV3 checkpoint) =>
-        Unlaunchable();
-
-    /// <summary>A legacy version-1 factory-erasure checkpoint is never a launch, for the same reason.</summary>
-    internal static Result<GrimoireOfflineTransitionLaunchBinding> FromLegacy(
-        DataRetentionFactoryResetCheckpointV1 checkpoint) =>
-        Unlaunchable();
-
-    /// <summary>
     /// Builds the journal binding this launch may be published under.
     /// </summary>
     /// <remarks>
@@ -147,9 +126,9 @@ internal static class GrimoireOfflineTransitionLaunch
     /// supply it could publish a journal bound to a launch it is not.
     ///
     /// <para><paramref name="expectedDatabaseOperationRevision"/> cannot be derived and stays the
-    /// caller's to read back: committing the launch checkpoint advances the row, and a lease renewal
-    /// before the opening publication may advance it again, so only a reread immediately before
-    /// publishing knows the value. What is enforced here is the one thing that is knowable — it must
+    /// caller's to read back: committing the launch checkpoint advances the row, and a recovery pass
+    /// adopting the operation advances it again, so only a reread immediately before publishing knows
+    /// the value. What is enforced here is the one thing that is knowable — it must
     /// be past the revision the launch itself recorded, because an expected revision at or below that
     /// one names a row state from before the checkpoint existed.</para>
     /// </remarks>

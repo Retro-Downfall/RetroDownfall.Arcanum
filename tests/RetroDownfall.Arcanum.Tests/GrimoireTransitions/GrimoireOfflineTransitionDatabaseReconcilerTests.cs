@@ -648,16 +648,7 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
             "launch-payload" => CovenantRecoveryCheckpointCodec.Encode(
                 Launch(operationId) with { StartingRevision = LaunchRevision + 1 }),
 
-            "legacy" => CovenantRecoveryCheckpointCodec.Encode(
-                new DataRetentionMutationCheckpointV3(
-                    DataRetentionMutationCheckpointV3.CurrentVersion,
-                    Subtype: "reset-memory",
-                    Target: "5",
-                    new CovenantResetEffectArmV1(
-                        operationId,
-                        Effect,
-                        CovenantExclusiveOperation.CovenantReset,
-                        CovenantResetPhaseMachine.First))),
+            "legacy" => RetiredCovenantCheckpoints.Mutation(operationId, Effect),
 
             _ => CovenantRecoveryCheckpointCodec.Encode(Launch(operationId)),
 
@@ -687,11 +678,9 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
                 LeaseOwner: null,
                 LeaseExpiresAt: null,
                 AttemptCount: 1,
-                CheckpointVersion: disturbed is "checkpoint-version"
-                    ? DataRetentionMutationCheckpointV3.CurrentVersion
-                    : disturbed is "legacy"
-                        ? DataRetentionMutationCheckpointV3.CurrentVersion
-                        : CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                CheckpointVersion: disturbed is "checkpoint-version" or "legacy"
+                    ? RetiredCovenantCheckpoints.MutationVersion
+                    : CovenantOfflineTransitionLaunchV4.CurrentVersion,
                 CheckpointPayload: disturbed is "missing-payload" ? null : payload,
                 CheckpointReference: disturbed is "checkpoint-reference"
                     ? "retention-mutation:not-this-one"
