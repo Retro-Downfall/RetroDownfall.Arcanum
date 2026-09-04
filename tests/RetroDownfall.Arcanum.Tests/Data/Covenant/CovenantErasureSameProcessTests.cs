@@ -1441,21 +1441,27 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    /// <summary>
+    /// A direct reset attempts no lease renewal at all once the coordinator has the operation.
+    /// </summary>
+    /// <remarks>
+    /// This replaces a test that drained an in-flight heartbeat racing the terminal write. That race
+    /// is gone rather than handled: the closed period runs outside the lease maintainer entirely, so
+    /// there is no renewal left to arrive late. The count is asserted rather than the row, because a
+    /// renewal that was attempted and refused would leave the row looking untouched while still being
+    /// exactly the thing that must not happen - it is what advances the revision the journal bound.
+    /// </remarks>
     [SkippableFact]
-    public async Task Direct_retention_reset_drains_an_inflight_heartbeat_before_completed_releases_the_lease()
+    public async Task Direct_retention_reset_attempts_no_lease_renewal_once_the_coordinator_runs()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using CancellationTokenSource proofSignal = new();
-
         CoordinatorPause pause = new();
 
-        RouteStoreFaults faults = new(RouteStoreFault.TerminalHeartbeatRace);
+        RouteStoreFaults faults = new(RouteStoreFault.None);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
-            routeFailure: RouteFailure.CancelAfterProof,
-            cancelAfterProof: proofSignal,
             coordinatorPause: pause,
             fastLeaseHeartbeat: true,
             storeFaults: faults);
@@ -1466,38 +1472,33 @@ public sealed class CovenantErasureSameProcessTests
 
         await pause.WaitUntilPausedAsync();
 
-        await faults.WaitUntilRenewalStartedAsync();
+        int planning = faults.RenewalAttempts;
 
-        pause.Release();
-
-        Task firstTerminalSignal = await Task.WhenAny(
-            faults.CompletedTransitionStarted,
-            faults.ExclusiveLeaseReleased);
-
-        if (ReferenceEquals(firstTerminalSignal, faults.CompletedTransitionStarted))
+        try
         {
 
-            faults.AllowCompletedTransition();
+            // Several heartbeat intervals of the fast maintainer, deliberately given the chance.
+            await Task.Delay(TimeSpan.FromMilliseconds(600), TimeProvider.System);
 
-            await faults.WaitUntilCompletedTransitionCommittedAsync();
+            Assert.Equal(planning, faults.RenewalAttempts);
 
         }
-        else
+        finally
         {
 
-            faults.AllowCompletedTransition();
+            pause.Release();
 
         }
 
-        faults.AllowRenewal();
-
-        Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(10));
+        Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(45));
 
         Assert.True(
             reset.IsSuccess,
             reset.IsFailure
                 ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
                 : null);
+
+        Assert.Equal(planning, faults.RenewalAttempts);
 
         LongRunningOperation operation = await harness.ReadResetOperationAsync();
 
@@ -1723,8 +1724,7 @@ public sealed class CovenantErasureSameProcessTests
 
                 services.AddSingleton(
                     provider => new RecordingRouteGate(
-                        provider.GetRequiredService<CovenantOperationGate>(),
-                        storeFaults));
+                        provider.GetRequiredService<CovenantOperationGate>()));
 
                 services.AddSingleton<ICovenantOperationGate>(
                     static provider => provider.GetRequiredService<RecordingRouteGate>());
@@ -2951,9 +2951,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    private sealed class RecordingRouteGate(
-        CovenantOperationGate inner,
-        RouteStoreFaults? storeFaults = null) : ICovenantOperationGate
+    private sealed class RecordingRouteGate(CovenantOperationGate inner) : ICovenantOperationGate
     {
 
         private int _installationReadAcquisitions;
@@ -3017,11 +3015,7 @@ public sealed class CovenantErasureSameProcessTests
             Result<CovenantExclusiveLease> acquired = await inner
                 .ResumeOrAcquireExclusiveAsync(owner, cancellationToken);
 
-            return acquired.IsFailure || storeFaults?.Fault is not RouteStoreFault.TerminalHeartbeatRace
-                ? acquired
-                : Result<CovenantExclusiveLease>.Success(
-                    new CovenantExclusiveLease(
-                        new RecordingExclusiveRegistration(acquired.Value, storeFaults)));
+            return acquired;
 
         }
 
@@ -3132,36 +3126,6 @@ public sealed class CovenantErasureSameProcessTests
 
         }
 
-        private sealed class RecordingExclusiveRegistration(
-            CovenantExclusiveLease inner,
-            RouteStoreFaults faults) : ICovenantExclusiveLeaseRegistration
-        {
-
-            public CovenantOperationLeaseSnapshot Snapshot => inner.Snapshot;
-
-            public CancellationToken Revocation => inner.Revocation;
-
-            public Result ExecuteWhileHeld(Func<Result> callback) => inner.ExecuteWhileHeld(callback);
-
-            public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
-                inner.RevalidateAsync(cancellationToken);
-
-            public ValueTask<Result> CompleteAsync(
-                CovenantExclusiveLeaseDisposition disposition,
-                CancellationToken cancellationToken) =>
-                inner.CompleteAsync(disposition, cancellationToken);
-
-            public async ValueTask ReleaseAsync()
-            {
-
-                await inner.DisposeAsync();
-
-                faults.SignalExclusiveLeaseReleased();
-
-            }
-
-        }
-
     }
 
     public enum RouteStoreFault
@@ -3179,8 +3143,6 @@ public sealed class CovenantErasureSameProcessTests
 
         FailAllCompletedTransitions,
 
-        TerminalHeartbeatRace,
-
     }
 
     internal sealed class RouteStoreFaults(RouteStoreFault fault)
@@ -3190,39 +3152,24 @@ public sealed class CovenantErasureSameProcessTests
 
         private int _completedTransitionAttempts;
 
+        private int _renewalAttempts;
+
         private int _throwNextGet;
 
         private int _completedTransitionsDisarmed;
 
-        private readonly TaskCompletionSource _renewalStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _allowRenewal = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _completedTransitionStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _allowCompletedTransition = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _completedTransitionCommitted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _exclusiveLeaseReleased = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
         internal int CompletedTransitionAttempts => Volatile.Read(ref _completedTransitionAttempts);
+
+        /// <summary>Every durable lease renewal this store was asked for, whether or not it took.</summary>
+        internal int RenewalAttempts => Volatile.Read(ref _renewalAttempts);
+
+        internal int RecordRenewalAttempt() => Interlocked.Increment(ref _renewalAttempts);
 
         internal Func<CancellationToken, Task>? AfterFactoryStarted { get; set; }
 
         internal CoordinatorPause? FactoryCheckpointPause { get; init; }
 
         internal RouteStoreFault Fault { get; } = fault;
-
-        internal Task CompletedTransitionStarted => _completedTransitionStarted.Task;
-
-        internal Task ExclusiveLeaseReleased => _exclusiveLeaseReleased.Task;
 
         internal bool TakeThrowNextGet() => Interlocked.Exchange(ref _throwNextGet, 0) != 0;
 
@@ -3237,32 +3184,6 @@ public sealed class CovenantErasureSameProcessTests
 
         internal int RecordCompletedTransitionAttempt() =>
             Interlocked.Increment(ref _completedTransitionAttempts);
-
-        internal void AllowCompletedTransition() => _allowCompletedTransition.TrySetResult();
-
-        internal void AllowRenewal() => _allowRenewal.TrySetResult();
-
-        internal void SignalCompletedTransitionCommitted() =>
-            _completedTransitionCommitted.TrySetResult();
-
-        internal void SignalCompletedTransitionStarted() =>
-            _completedTransitionStarted.TrySetResult();
-
-        internal void SignalExclusiveLeaseReleased() => _exclusiveLeaseReleased.TrySetResult();
-
-        internal void SignalRenewalStarted() => _renewalStarted.TrySetResult();
-
-        internal Task WaitForCompletedTransitionAsync(CancellationToken cancellationToken) =>
-            _allowCompletedTransition.Task.WaitAsync(cancellationToken);
-
-        internal Task WaitForRenewalAsync(CancellationToken cancellationToken) =>
-            _allowRenewal.Task.WaitAsync(cancellationToken);
-
-        internal Task WaitUntilCompletedTransitionCommittedAsync() =>
-            _completedTransitionCommitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        internal Task WaitUntilRenewalStartedAsync() =>
-            _renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
     }
 
@@ -3368,14 +3289,7 @@ public sealed class CovenantErasureSameProcessTests
             CancellationToken cancellationToken = default)
         {
 
-            if (faults.Fault is RouteStoreFault.TerminalHeartbeatRace)
-            {
-
-                faults.SignalRenewalStarted();
-
-                await faults.WaitForRenewalAsync(cancellationToken);
-
-            }
+            _ = faults.RecordRenewalAttempt();
 
             return await inner.RenewLeaseAsync(
                 operationId,
@@ -3501,16 +3415,6 @@ public sealed class CovenantErasureSameProcessTests
 
             }
 
-            if (state is LongRunningOperationState.Completed
-                && faults.Fault is RouteStoreFault.TerminalHeartbeatRace)
-            {
-
-                faults.SignalCompletedTransitionStarted();
-
-                await faults.WaitForCompletedTransitionAsync(cancellationToken);
-
-            }
-
             if (state is LongRunningOperationState.Completed)
             {
 
@@ -3526,15 +3430,6 @@ public sealed class CovenantErasureSameProcessTests
                 utcNow,
                 terminalErrorCode,
                 cancellationToken);
-
-            if (transitioned
-                && state is LongRunningOperationState.Completed
-                && faults.Fault is RouteStoreFault.TerminalHeartbeatRace)
-            {
-
-                faults.SignalCompletedTransitionCommitted();
-
-            }
 
             return transitioned;
 
