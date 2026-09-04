@@ -478,6 +478,13 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         // Every class, not only the ones a live handle produces. A staging or replaced file that
         // survived this far is a copy of protected state the erasure has already reported compacting.
+        //
+        // Settled between attempts like every other proof here. A checkpoint-truncate is the last
+        // close SQLite is waiting for, not a way of hiding a failure: it removes a write-ahead log
+        // exactly when the log is removable, and the classes that would make this erasure incomplete
+        // - an export staging copy, a replaced original - are untouched by it and still refuse. What
+        // it does remove is this erasure's own residue, including a resumed run inheriting the
+        // sidecars a crashed one left after its final truncation had already been recorded.
         return await ProveAbsentAsync(CovenantResidualArtifacts.Declared, authority, cancellationToken)
             .ConfigureAwait(false);
 
@@ -1761,6 +1768,18 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// next reader of a Windows-only failure has to go and find out whether the proof was retried at
     /// all — which is the question two investigations of this refusal have already had to ask.
     /// </remarks>
+    /// <summary>
+    /// The pure measurement behind every absence proof, with nothing settled and nothing removed.
+    /// </summary>
+    /// <remarks>
+    /// Internal so a suite can pin the refusal vocabulary itself - one message per residual class,
+    /// none of them naming a path. Going through the retried proof to do that would be measuring a
+    /// planted file against a step whose job includes performing the close that removes it, which
+    /// tests the plant rather than the message.
+    /// </remarks>
+    internal Result RequireResidualAbsence(IReadOnlyList<CovenantResidualArtifactClass> classes) =>
+        RequireAbsent(classes);
+
     private Result RequireAbsent(IReadOnlyList<CovenantResidualArtifactClass> classes, int attempts = 1)
     {
 

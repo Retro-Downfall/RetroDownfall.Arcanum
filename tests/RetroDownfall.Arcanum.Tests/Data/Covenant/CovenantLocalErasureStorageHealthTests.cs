@@ -390,7 +390,11 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await File.WriteAllTextAsync(erased.DatabasePath + suffix, "residue", Token);
 
-        Result verified = await erased.Health.VerifySidecarAbsenceAsync(erased.Authority, Token);
+        // The pure measurement, not the retried proof. The proof performs the last close SQLite is
+        // waiting for between attempts, which removes exactly the write-ahead log and index this
+        // plants - so going through it would be asserting that a checkpoint works rather than that
+        // each residual class has its own message and none of them names a path.
+        Result verified = erased.Health.RequireResidualAbsence(CovenantResidualArtifacts.Declared);
 
         Assert.True(verified.IsFailure);
 
