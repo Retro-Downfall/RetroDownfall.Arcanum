@@ -101,7 +101,7 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
         }
 
         return recovered.Value.Outcome is GrimoireOfflineTransitionTypedRecoveryOutcome.NoActiveJournal
-            ? await OpenAsync(borrowed.Value, operation, launch.Value, cancellationToken)
+            ? await BeginJournalAsync(borrowed.Value, operation, launch.Value, cancellationToken)
                 .ConfigureAwait(false)
             : Resume(borrowed.Value, launch.Value, recovered.Value);
 
@@ -127,7 +127,16 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
                 new GrimoireOfflineTransitionPhaseSession(_lifecycle, heldInstallationLock, publication))
             : Unresumable();
 
-    private async Task<Result<GrimoireOfflineTransitionPhaseSession>> OpenAsync(
+    /// <summary>
+    /// Publishes the opening journal revision for a launch that has none yet.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not called <c>OpenAsync</c>. Every acquisition of a database handle in this
+    /// repository is catalogued by a syntax-only scanner that treats that name as a provider open, and
+    /// a journal publication borrowing it would either be catalogued as a connection it is not, or be
+    /// exempted by name — and an exemption by name is how the next real opener slips through.
+    /// </remarks>
+    private async Task<Result<GrimoireOfflineTransitionPhaseSession>> BeginJournalAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         LongRunningOperation operation,
         GrimoireOfflineTransitionLaunchBinding launch,
