@@ -89,7 +89,9 @@ internal interface ICovenantErasureTransition
     /// Clears pools and handles a final time and proves the absence of every sidecar, journal, temp,
     /// staging, and replaced file.
     /// </summary>
-    Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken);
+    Task<Result> VerifySidecarAbsenceAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Reopens read-only on the unpublished candidate state, on a handle that cannot create WAL or
@@ -1534,7 +1536,7 @@ internal sealed class CovenantErasureCoordinator(
                 phases,
                 state,
                 CovenantResetPhase.SidecarsVerified,
-                (_, token) => _transition.VerifySidecarAbsenceAsync(token),
+                (_, token) => _transition.VerifySidecarAbsenceAsync(maintenance, token),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 

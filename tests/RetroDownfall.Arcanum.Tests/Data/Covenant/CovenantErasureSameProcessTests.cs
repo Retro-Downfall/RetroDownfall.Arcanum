@@ -2895,8 +2895,10 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             inner.InitializeAcceleratorAsync(authority, cancellationToken);
 
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
-            inner.VerifySidecarAbsenceAsync(cancellationToken);
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            inner.VerifySidecarAbsenceAsync(authority, cancellationToken);
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
             CovenantClosedPeriodAuthority authority,
@@ -3059,7 +3061,9 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
@@ -3100,7 +3104,9 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(

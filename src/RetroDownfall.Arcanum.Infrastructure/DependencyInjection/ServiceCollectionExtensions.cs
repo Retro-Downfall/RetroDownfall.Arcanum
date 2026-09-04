@@ -1835,6 +1835,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantLocalErasureStorageHealth(
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),

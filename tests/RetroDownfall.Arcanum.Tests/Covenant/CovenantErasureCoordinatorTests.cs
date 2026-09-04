@@ -1784,7 +1784,9 @@ public sealed class CovenantErasureCoordinatorTests
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Step("initialize-accelerator");
 
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Step("verify-sidecar-absence");
 
         public async Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(

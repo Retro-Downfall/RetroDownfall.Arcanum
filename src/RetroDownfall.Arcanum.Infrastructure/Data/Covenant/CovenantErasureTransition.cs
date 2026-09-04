@@ -72,8 +72,10 @@ internal sealed class CovenantErasureTransition(
         CancellationToken cancellationToken) =>
         _storage.InitializeAcceleratorAsync(authority, cancellationToken);
 
-    public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
-        _storage.VerifySidecarAbsenceAsync(cancellationToken);
+    public Task<Result> VerifySidecarAbsenceAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
+        _storage.VerifySidecarAbsenceAsync(authority, cancellationToken);
 
     public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
         CovenantClosedPeriodAuthority authority,

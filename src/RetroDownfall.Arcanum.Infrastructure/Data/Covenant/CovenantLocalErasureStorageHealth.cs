@@ -209,7 +209,9 @@ internal interface ICovenantLocalErasureStorageHealth
         CancellationToken cancellationToken);
 
     /// <summary>Drains again and proves every residual artifact class absent.</summary>
-    Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken);
+    Task<Result> VerifySidecarAbsenceAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Reopens the unpublished candidate read-only on a handle that cannot create a write-ahead log
@@ -270,6 +272,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// <summary>The pause between two attempts at the same proof.</summary>
     private static readonly TimeSpan AbsenceProofRetryInterval = TimeSpan.FromMilliseconds(25);
 
+    private readonly ICovenantConnectionDrain _drain;
+
     private readonly IGrimoireMaintenancePathAuthority _paths;
 
     private readonly IGrimoireDbPassphraseSource _passphrase;
@@ -279,11 +283,14 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     private readonly TimeProvider _timeProvider;
 
     internal CovenantLocalErasureStorageHealth(
+        ICovenantConnectionDrain drain,
         IGrimoireMaintenancePathAuthority paths,
         IGrimoireDbPassphraseSource passphrase,
         ICovenantSqliteConnectionInitializer initializer,
         TimeProvider timeProvider)
     {
+
+        _drain = drain ?? throw new ArgumentNullException(nameof(drain));
 
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
 
@@ -337,7 +344,10 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         return settled.IsFailure
             ? settled
-            : await ProveAbsentAsync(CovenantResidualArtifacts.LiveHandleClasses, cancellationToken)
+            : await ProveAbsentAsync(
+                    CovenantResidualArtifacts.LiveHandleClasses,
+                    authority,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
     }
@@ -414,7 +424,10 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     // handle still holding the database; a surviving replaced original names a previous pass that
     // installed a candidate it could not verify, and rewriting the file underneath that is
     // rewriting a destination whose identity nobody has established.
-    Result residue = await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
+    Result residue = await ProveAbsentAsync(
+        CovenantResidualArtifacts.Declared,
+        authority,
+        cancellationToken)
         .ConfigureAwait(false);
 
     if (residue.IsFailure)
@@ -458,12 +471,14 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     }
 
-    public async Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken)
+    public async Task<Result> VerifySidecarAbsenceAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken)
     {
 
         // Every class, not only the ones a live handle produces. A staging or replaced file that
         // survived this far is a copy of protected state the erasure has already reported compacting.
-        return await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
+        return await ProveAbsentAsync(CovenantResidualArtifacts.Declared, authority, cancellationToken)
             .ConfigureAwait(false);
 
     }
@@ -476,7 +491,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         // Before the handle, not only after it. The sidecar-free handle is opened immutable, which
         // tells the engine the file cannot change underneath it — so a write-ahead log that did exist
         // would be ignored and this verification would answer from superseded pages.
-        Result before = await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
+        Result before = await ProveAbsentAsync(CovenantResidualArtifacts.Declared, authority, cancellationToken)
             .ConfigureAwait(false);
 
         if (before.IsFailure)
@@ -1701,6 +1716,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// </remarks>
     private async Task<Result> ProveAbsentAsync(
         IReadOnlyList<CovenantResidualArtifactClass> classes,
+        CovenantClosedPeriodAuthority? authority,
         CancellationToken cancellationToken)
     {
 
@@ -1712,6 +1728,21 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             await Task.Delay(AbsenceProofRetryInterval, _timeProvider, cancellationToken)
                 .ConfigureAwait(false);
 
+            // Drained and settled between attempts, and the reason survived the move onto the closed
+            // period. The gate's stage-two close drains once, on the way in; after that the closed
+            // period itself opens and closes handles - the durable ledger's connection in every
+            // window that needs one, and a maintenance connection in every phase. A close that ran no
+            // statement leaves the write-ahead log and its index behind, so a sidecar seen here is as
+            // likely to be this erasure's own residue as a leak, and only performing the last close
+            // SQLite is waiting for can tell the two apart.
+            _ = await _drain.DrainAsync(cancellationToken).ConfigureAwait(false);
+
+            if (authority is not null)
+            {
+
+                _ = await SettleSidecarsAsync(authority, cancellationToken).ConfigureAwait(false);
+
+            }
 
             absent = RequireAbsent(classes, attempt);
 

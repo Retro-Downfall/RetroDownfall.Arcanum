@@ -78,7 +78,7 @@ public sealed class CovenantErasureTransitionTests
             harness.Authority,
             CancellationToken.None)).IsSuccess);
 
-        Assert.True((await harness.Subject.VerifySidecarAbsenceAsync(CancellationToken.None)).IsSuccess);
+        Assert.True((await harness.Subject.VerifySidecarAbsenceAsync(harness.Authority, CancellationToken.None)).IsSuccess);
 
         Result<CovenantVerifiedCandidateState> verified =
             await harness.Subject.VerifyReopenAsync(
@@ -695,7 +695,9 @@ public sealed class CovenantErasureTransitionTests
             CancellationToken cancellationToken) =>
             Record(authority, () => InitializeCalls++);
 
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Record(authority: null, () => AbsenceCalls++);
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(

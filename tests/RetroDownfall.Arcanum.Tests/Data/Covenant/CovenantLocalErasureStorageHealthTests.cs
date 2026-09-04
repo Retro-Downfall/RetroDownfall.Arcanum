@@ -303,7 +303,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         _ = await Scalar(survivor, "SELECT COUNT(*) FROM covenant_state;", Token);
 
-        Result verified = await erased.Health.VerifySidecarAbsenceAsync(Token);
+        Result verified = await erased.Health.VerifySidecarAbsenceAsync(erased.Authority, Token);
 
         Assert.True(verified.IsFailure);
 
@@ -390,7 +390,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await File.WriteAllTextAsync(erased.DatabasePath + suffix, "residue", Token);
 
-        Result verified = await erased.Health.VerifySidecarAbsenceAsync(Token);
+        Result verified = await erased.Health.VerifySidecarAbsenceAsync(erased.Authority, Token);
 
         Assert.True(verified.IsFailure);
 
@@ -418,7 +418,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await File.WriteAllTextAsync(backup, "a copy of the database this erasure replaced", Token);
 
-        Result verified = await erased.Health.VerifySidecarAbsenceAsync(Token);
+        Result verified = await erased.Health.VerifySidecarAbsenceAsync(erased.Authority, Token);
 
         Assert.True(verified.IsFailure);
 
@@ -1528,6 +1528,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
                     fixture,
                     period,
                     new CovenantLocalErasureStorageHealth(
+                        new CovenantConnectionDrain(),
                         period.Paths,
                         period.Passphrase,
                         CovenantSqliteConnectionInitializer.Instance,
@@ -1619,7 +1620,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
             Result absent = await Record(
                 "verify-sidecar-absence",
-                seam.VerifySidecarAbsenceAsync(cancellationToken));
+                seam.VerifySidecarAbsenceAsync(Authority, cancellationToken));
 
             if (absent.IsFailure)
             {
