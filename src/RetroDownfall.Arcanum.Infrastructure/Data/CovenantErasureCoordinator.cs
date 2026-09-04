@@ -824,60 +824,95 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        Result<IGrimoireMaintenanceIoLane> lane = await closed.Value
-            .AcquireMaintenanceIoLaneAsync(
-                (laneOwner, _, token) => RevalidateAsync(lease, laneOwner, owner, token),
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (lane.IsFailure)
+        // Everything from here to the closure being handed back runs inside a catch. The lease is
+        // issued and the gate is committed to closed, but nothing yet holds the lease on the caller's
+        // behalf - the closure that would release it does not exist until the last statement below.
+        // An exception in that window, and the maintenance lane honours the run's cancellation token
+        // in three places, would leave the gate closed with a live lease nobody can reach: worse than
+        // any refusal, because even the retry the gate offers is then refused.
+        try
         {
 
-            return await AbandonClosedAsync(closed.Value, closingOwner, lane.Error).ConfigureAwait(false);
+            Result<IGrimoireMaintenanceIoLane> lane = await closed.Value
+                .AcquireMaintenanceIoLaneAsync(
+                    (laneOwner, _, token) => RevalidateAsync(lease, laneOwner, owner, token),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (lane.IsFailure)
+            {
+
+                return await AbandonClosedAsync(closed.Value, closingOwner, lane.Error).ConfigureAwait(false);
+
+            }
+
+            // The durable ledger is promoted and physically opened for the whole closed period, not
+            // only around the terminal write. Ordinary admission is shut, so every statement this
+            // erasure makes against its own database - the artifact and managed-file kernels'
+            // transactions as much as the terminal compare-exchange - would otherwise be refused; and
+            // the store issues its statements directly whenever the connection is already open, which
+            // is the one way past an interceptor that is correctly saying no.
+            if (_ledgerConnection.Connection is not SqliteConnection ledgerConnection)
+            {
+
+                await lane.Value.DisposeAsync().ConfigureAwait(false);
+
+                return await AbandonClosedAsync(
+                    closed.Value,
+                    closingOwner,
+                    MaintenanceFailure()).ConfigureAwait(false);
+
+            }
+
+            Result<IGrimoireScopedConnectionPermit> ledger =
+                closed.Value.AcquireScopedConnectionPermit(ledgerConnection);
+
+            if (ledger.IsFailure)
+            {
+
+                await lane.Value.DisposeAsync().ConfigureAwait(false);
+
+                return await AbandonClosedAsync(
+                    closed.Value,
+                    closingOwner,
+                    ledger.Error).ConfigureAwait(false);
+
+            }
+
+            return Result<CovenantGrimoireClosure>.Success(
+                new CovenantGrimoireClosure(
+                    closingOwner,
+                    closed.Value,
+                    lane.Value,
+                    ledger.Value,
+                    _ledgerConnection,
+                    _drain));
 
         }
-
-        // The durable ledger is promoted and physically opened for the whole closed period, not only
-        // around the terminal write. Ordinary admission is shut, so every statement this erasure
-        // makes against its own database - the artifact and managed-file kernels' transactions as
-        // much as the terminal compare-exchange - would otherwise be refused; and the store issues
-        // its statements directly whenever the connection is already open, which is the one way past
-        // an interceptor that is correctly saying no.
-        if (_ledgerConnection.Connection is not SqliteConnection ledgerConnection)
+        catch (Exception failed)
         {
 
-            await lane.Value.DisposeAsync().ConfigureAwait(false);
+            // Reopened and rethrown. The caller's own unwinding is entitled to see the exception it
+            // threw, and the gate is entitled not to be left closed over it - and only one of those
+            // is the exception's own business. The disposition runs on an uncancellable token because
+            // a cleanup unwinding under an ambient shutdown is exactly the caller that must still be
+            // allowed to reopen.
+            _ = await closed.Value.CompleteAsync(
+                CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                CancellationToken.None).ConfigureAwait(false);
 
-            return await AbandonClosedAsync(
-                closed.Value,
-                closingOwner,
-                MaintenanceFailure()).ConfigureAwait(false);
+            await closed.Value.DisposeAsync().ConfigureAwait(false);
 
-        }
+            await closingOwner.DisposeAsync().ConfigureAwait(false);
 
-        Result<IGrimoireScopedConnectionPermit> ledger =
-            closed.Value.AcquireScopedConnectionPermit(ledgerConnection);
+            _logger.LogWarning(
+                failed,
+                "A Covenant erasure could not finish taking its Grimoire closure; ordinary admission "
+                + "was reopened before the failure was allowed to propagate.");
 
-        if (ledger.IsFailure)
-        {
-
-            await lane.Value.DisposeAsync().ConfigureAwait(false);
-
-            return await AbandonClosedAsync(
-                closed.Value,
-                closingOwner,
-                ledger.Error).ConfigureAwait(false);
+            throw;
 
         }
-
-        return Result<CovenantGrimoireClosure>.Success(
-            new CovenantGrimoireClosure(
-                closingOwner,
-                closed.Value,
-                lane.Value,
-                ledger.Value,
-                _ledgerConnection,
-                _drain));
 
     }
 

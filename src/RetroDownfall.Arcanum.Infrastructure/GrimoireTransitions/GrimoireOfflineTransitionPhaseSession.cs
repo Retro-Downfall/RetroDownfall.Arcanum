@@ -469,39 +469,11 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
 
     /// <summary>Moves to retirement-pending once the whole suffix is proved.</summary>
     internal Task<Result> PrepareRetirementAsync(CancellationToken cancellationToken) =>
-        AdvanceAsync(RetirementPending, cancellationToken);
-
-    /// <summary>
-    /// The one rewrite that moves a spent transition to retirement-pending.
-    /// </summary>
-    /// <remarks>
-    /// Exposed because a journal can outlive the run that was driving it: the row it is bound to is
-    /// terminalized before retirement, so a run that dies in between leaves a spent journal that no
-    /// later run of that operation can adopt — the row is terminal, so nothing resumes it — and that
-    /// holds the profile's one slot against every future transition. The authority sweeps such a
-    /// journal, and it does it through this rewrite rather than a copy of it, so the two can never
-    /// disagree about what retirement-pending means.
-    /// </remarks>
-    internal static Result<IGrimoireOfflineTransitionPayload> RetirementPending(
-        IGrimoireOfflineTransitionPayload payload) =>
-        WithLifecycle(
-            payload,
-            payload.Lifecycle with { State = GrimoireOfflineTransitionState.RetirementPending });
-
-    /// <summary>The rewrite that records the Covenant disposition as verified, for the same reason.</summary>
-    internal static Result<IGrimoireOfflineTransitionPayload> CovenantDispositionVerified(
-        IGrimoireOfflineTransitionPayload payload) =>
-        payload.Lifecycle.ReconciliationEvidence is not { } evidence
-            ? Unresumable<IGrimoireOfflineTransitionPayload>()
-            : WithLifecycle(
+        AdvanceAsync(
+            payload => WithLifecycle(
                 payload,
-                payload.Lifecycle with
-                {
-                    ReconciliationEvidence = evidence with
-                    {
-                        Step = GrimoireOfflineTransitionReconciliationStep.CovenantDispositionVerified,
-                    },
-                });
+                payload.Lifecycle with { State = GrimoireOfflineTransitionState.RetirementPending }),
+            cancellationToken);
 
     /// <summary>
     /// Parks the transition with a content-free blocker and the exact state a resume must reach.

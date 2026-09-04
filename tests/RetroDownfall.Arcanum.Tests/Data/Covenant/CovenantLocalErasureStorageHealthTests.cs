@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
@@ -1075,19 +1076,21 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
 
+        // Asserted here, before anything else opens the database. sqlcipher_export writes a
+        // rollback-journalled file and the installation opens its Grimoire in write-ahead logging, so
+        // a replace that left the other mode behind would change how every later connection journals
+        // underneath a proof that had already been made.
+        //
+        // Journal mode is persisted in the database header, and every ordinary route into this
+        // fixture runs the connection initializer, whose read-write arm issues PRAGMA
+        // journal_mode=WAL against the file. So the read has to happen on a policy-free handle AND
+        // before any policy-applying handle has touched it; either alone measures the pragma the test
+        // itself caused, and passes whatever the replace did or did not restore.
+        Assert.Equal("wal", await erased.ReadInstalledJournalModeAsync(Token));
+
         await erased.ReopenAsync(Token);
 
         Assert.Equal(erased.CandidateGeneration, await erased.ReadDatasetGenerationAsync(Token));
-
-        // sqlcipher_export writes a rollback-journalled database, and the installation opens its
-        // Grimoire in write-ahead logging. A replace that left the other mode behind would change how
-        // every later connection journals, underneath a proof that had already been made.
-        //
-        // Read on a handle that applies no policy of its own. The fixture's ordinary reopen runs the
-        // connection initializer, whose read-write arm issues PRAGMA journal_mode=WAL - so asking it
-        // would measure the pragma this assertion had just set for itself, and would pass whatever
-        // the replace did or did not restore.
-        Assert.Equal("wal", await erased.ReadInstalledJournalModeAsync(Token));
 
         await erased.AssertFileIsExactlyItsPagesAsync(Token);
 
@@ -1166,27 +1169,27 @@ public sealed class CovenantLocalErasureStorageHealthTests
     }
 
     /// <summary>
-    /// A candidate nobody could examine is kept rather than destroyed.
+    /// A candidate the verification could not open is kept; one it opened and rejected is destroyed.
     /// </summary>
     /// <remarks>
-    /// "This file is not installable" and "nobody could look at this file" arrive as the same failed
-    /// result, and acting on the wrong one is unrecoverable in exactly one direction. A refused
-    /// capability, an unavailable provider or a busy database says nothing about the candidate — and
-    /// once it is gone the journal names a staging identity that the lifecycle graph will not let any
-    /// later run replace, so the transition can never finish. Keeping a candidate that turns out to be
+    /// The two arrive as the same failed result and acting on the wrong one is unrecoverable in
+    /// exactly one direction. A capability that would not issue says nothing about the candidate — and
+    /// once it is gone the journal names a staging identity the lifecycle graph will not let any later
+    /// run replace, so the transition can never finish. Keeping a candidate that turns out to be
     /// worthless costs one sweep by the next transition's staging step; destroying one that was fine
     /// costs the installation its ability to be erased.
     ///
-    /// <para>The destruction half of the rule is covered by
-    /// <see cref="A_candidate_that_fails_its_proof_is_destroyed_rather_than_left_behind"/>, which
-    /// reaches a real verdict — a candidate that exports cleanly and carries no canonical
-    /// singleton.</para>
+    /// <para>The refusal is injected at the verification connection rather than by handing in a wrong
+    /// identity, because a wrong identity is refused by the guard <em>above</em> the examination and
+    /// would never reach the distinction under test at all.</para>
     /// </remarks>
     [Fact]
-    public async Task A_candidate_nobody_could_examine_is_kept_rather_than_destroyed()
+    public async Task A_candidate_the_verification_could_not_open_is_kept_rather_than_destroyed()
     {
 
-        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(
+            Token,
+            decorate: inner => new ExportVerificationRefusingFactory(inner));
 
         await erased.DrainAsync(Token);
 
@@ -1195,26 +1198,89 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
 
-        // Nothing examined the candidate: the identity the caller offers is not the one on disk, so
-        // the proof refuses before it opens anything.
+        // The identity matches, so the guard above the examination passes and the examination itself
+        // is what refuses - at the opener, having looked at nothing.
         Result<CovenantDigest> unexamined = await erased.Health.ProveStagedCandidateAsync(
             erased.Authority,
-            new CovenantDigest(Enumerable.Repeat((byte)0x3C, CovenantLimits.DigestBytes).ToArray()),
+            staged.Value,
             Token);
 
         Assert.True(unexamined.IsFailure);
 
         Assert.True(
             File.Exists(erased.Authority.ExportStagingDatabasePath),
-            "A candidate nobody examined was destroyed.");
+            "A candidate the verification could not open was destroyed.");
 
-        // And the candidate is still usable: the transition that recorded it can still finish.
-        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
-            erased.Authority,
-            staged.Value,
-            Token);
+        // Still the file the journal named, so the transition that recorded it can still finish.
+        Assert.True(
+            CovenantFileWitness.HasIdentity(
+                erased.Authority.ExportStagingDatabasePath,
+                staged.Value),
+            "The surviving candidate is no longer the file the journal recorded.");
 
-        Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
+    }
+
+    /// <summary>A maintenance factory whose export-verification opener always refuses.</summary>
+    /// <remarks>
+    /// Refusing at the opener is the one way to reach the "nobody looked at it" arm: every other
+    /// producer of that answer is an exception from the engine, which a suite cannot arrange against a
+    /// real database without corrupting the very file whose survival is the assertion.
+    /// </remarks>
+    private sealed class ExportVerificationRefusingFactory(IGrimoireMaintenanceConnectionFactory inner)
+        : IGrimoireMaintenanceConnectionFactory
+    {
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<IGrimoireMaintenanceConnectionLease>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.MaintenanceFailed,
+                        "This suite refuses the export-verification capability.")));
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalCanonicalErasureAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalWalTruncationAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalPostReplaceRestoreAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalCompactionAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAcceleratorInitializationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalAcceleratorInitializationAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCandidateReopenAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalCandidateReopenAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalInventorySnapshotAsync(capability, lane, cancellationToken);
 
     }
 
@@ -1840,7 +1906,8 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         internal static async Task<ErasedGrimoire> CreateAsync(
             CancellationToken cancellationToken,
-            bool withAccelerator = true)
+            bool withAccelerator = true,
+            Func<IGrimoireMaintenanceConnectionFactory, IGrimoireMaintenanceConnectionFactory>? decorate = null)
         {
 
             CovenantCanonicalErasureFixture fixture =
@@ -1858,7 +1925,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
                 CovenantCanonicalDatasetTransition preselected =
                     await fixture.PreselectAsync(cancellationToken);
 
-                CovenantClosedPeriodTestAuthority period = await fixture.ClosedPeriodAsync();
+                CovenantClosedPeriodTestAuthority period = await fixture.ClosedPeriodAsync(decorate);
 
                 CovenantCanonicalErasureTransaction transaction = new(
                     CovenantSqliteConnectionInitializer.Instance,

@@ -241,17 +241,27 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
     /// destructive effects, and the case where the two paths differ is exactly the case where a
     /// recovered journal belongs to somebody else's launch.
     /// </remarks>
-    /// <summary>Whether this journal's own evidence says its operation row is already terminal.</summary>
+    /// <summary>
+    /// Whether this journal has finished everything but the act of retiring itself.
+    /// </summary>
     /// <remarks>
-    /// The reconciliation step is the record of the compare-exchange that terminalized the row, and it
-    /// is published before the disposition is spent and before retirement. Anything at or past it
-    /// describes a transition whose answer is already durable, so nothing is lost by discarding the
-    /// journal and everything is lost by keeping it.
+    /// Retirement-pending exactly, and not the wider "its row is already terminal". The row is
+    /// terminalized several publications before this state, so the wider reading names more of the
+    /// window in which a dead journal can hold the slot — but reaching retirement from there means
+    /// publishing a reconciliation suffix this transition never performed, and a journal that records
+    /// a lane it did not close and a disposition it did not spend is worse than one that is merely in
+    /// the way. Retirement-pending is the one state whose remaining step is retirement itself, so
+    /// sweeping it asserts nothing that did not happen.
+    ///
+    /// <para>The earlier windows stay wedged, and an operator has to clear the slot by hand. Closing
+    /// them needs a retirement edge that means "abandoned because its operation is terminal", which
+    /// the lifecycle graph does not have and which is a change to the graph rather than to this
+    /// method.</para>
     /// </remarks>
     private static bool IsSpent(IGrimoireOfflineTransitionPayload payload) =>
-        payload.Lifecycle.ReconciliationEvidence is { } evidence
-        && evidence.Step >= GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner
-        && payload.Lifecycle.TerminalIntent is not GrimoireOfflineTransitionTerminalIntent.Undecided;
+        payload.Lifecycle.State is GrimoireOfflineTransitionState.RetirementPending
+        && payload.Lifecycle.TerminalIntent is not GrimoireOfflineTransitionTerminalIntent.Undecided
+        && GrimoireOfflineTransitionLifecycleValidator.RetirementReady(payload);
 
     /// <summary>Whether the active journal is this launch's own, which resumes rather than sweeps.</summary>
     private static bool NamesLaunch(
@@ -259,84 +269,12 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
         GrimoireOfflineTransitionLaunchBinding launch) =>
         payload.Binding.OperationId == launch.OperationId;
 
-    /// <summary>
-    /// Drives a spent journal the rest of the way to retirement and retires it.
-    /// </summary>
-    /// <remarks>
-    /// Through the same rewrites a session uses rather than copies of them, so the two can never
-    /// disagree about what a retirement-ready payload is; and each step is skipped when the journal
-    /// already carries it, because a sweep is itself a thing a process can die in the middle of.
-    /// </remarks>
-    private async Task<Result> RetireSpentAsync(
+    /// <summary>Retires a journal whose only remaining step was retirement.</summary>
+    private Task<Result> RetireSpentAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionTypedPublication publication,
-        CancellationToken cancellationToken)
-    {
-
-        GrimoireOfflineTransitionTypedPublication current = publication;
-
-        if (current.Payload.Lifecycle.ReconciliationEvidence is
-            { Step: not GrimoireOfflineTransitionReconciliationStep.CovenantDispositionVerified })
-        {
-
-            Result<GrimoireOfflineTransitionTypedPublication> verified = await AdvanceSpentAsync(
-                heldInstallationLock,
-                current,
-                GrimoireOfflineTransitionPhaseSession.CovenantDispositionVerified,
-                cancellationToken).ConfigureAwait(false);
-
-            if (verified.IsFailure)
-            {
-
-                return Result.Failure(verified.Error);
-
-            }
-
-            current = verified.Value;
-
-        }
-
-        if (current.Payload.Lifecycle.State is not GrimoireOfflineTransitionState.RetirementPending)
-        {
-
-            Result<GrimoireOfflineTransitionTypedPublication> pending = await AdvanceSpentAsync(
-                heldInstallationLock,
-                current,
-                GrimoireOfflineTransitionPhaseSession.RetirementPending,
-                cancellationToken).ConfigureAwait(false);
-
-            if (pending.IsFailure)
-            {
-
-                return Result.Failure(pending.Error);
-
-            }
-
-            current = pending.Value;
-
-        }
-
-        return await _lifecycle.RetireAsync(heldInstallationLock, current, cancellationToken)
-            .ConfigureAwait(false);
-
-    }
-
-    private async Task<Result<GrimoireOfflineTransitionTypedPublication>> AdvanceSpentAsync(
-        ArcanumMaintenanceLock heldInstallationLock,
-        GrimoireOfflineTransitionTypedPublication current,
-        Func<IGrimoireOfflineTransitionPayload, Result<IGrimoireOfflineTransitionPayload>> rewrite,
-        CancellationToken cancellationToken)
-    {
-
-        Result<IGrimoireOfflineTransitionPayload> next = rewrite(current.Payload);
-
-        return next.IsFailure
-            ? Result<GrimoireOfflineTransitionTypedPublication>.Failure(next.Error)
-            : await _lifecycle
-                .AdvanceAsync(heldInstallationLock, current, next.Value, cancellationToken)
-                .ConfigureAwait(false);
-
-    }
+        CancellationToken cancellationToken) =>
+        _lifecycle.RetireAsync(heldInstallationLock, publication, cancellationToken);
 
     private Result<GrimoireOfflineTransitionPhaseSession> Admit(
         ArcanumMaintenanceLock heldInstallationLock,
