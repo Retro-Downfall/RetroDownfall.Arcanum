@@ -17,6 +17,8 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 /// <summary>
@@ -250,6 +252,16 @@ public sealed class CovenantArchitectureBoundaryTests
         AssertSingleRegistration<CovenantDisclosureExposureReader>(services, ServiceLifetime.Singleton);
 
         AssertSingleRegistration<CovenantErasureStartupRecoveryOwnerAdopter>(services, ServiceLifetime.Singleton);
+
+        // The journal's slot is one per profile, so its store is a singleton; the authority above it
+        // reads this installation's identity, which is scoped.
+        AssertSingleRegistration<IGrimoireOfflineTransitionJournalStore>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<GrimoireOfflineTransitionHandlerRegistry>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<GrimoireOfflineTransitionLifecycleStore>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<IGrimoireOfflineTransitionPhaseAuthority>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<ICovenantCanonicalErasure>(services, ServiceLifetime.Singleton);
 

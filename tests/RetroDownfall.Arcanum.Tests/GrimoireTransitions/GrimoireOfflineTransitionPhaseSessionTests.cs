@@ -1,10 +1,16 @@
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.Operations;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -300,6 +306,162 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
         Assert.True((await session.PrepareRetirementAsync(CancellationToken.None)).IsFailure);
 
         Assert.True((await session.RetireAsync(CancellationToken.None)).IsFailure);
+
+    }
+
+    /// <summary>
+    /// The authority opens a journal from a committed launch, and resumes that same one afterwards.
+    /// </summary>
+    /// <remarks>
+    /// One entry point rather than separate open and resume calls, because the caller cannot tell
+    /// which it needs: a crash between the launch commit and the first publication leaves a row with
+    /// no journal, and a crash after leaves a journal already ahead of anything the caller knows.
+    /// Asking every call site to decide would put that reasoning in all of them.
+    /// </remarks>
+    [Fact]
+    public async Task The_authority_opens_a_launch_and_then_resumes_the_journal_it_opened()
+    {
+
+        GrimoireOfflineTransitionPhaseAuthority authority = Authority();
+
+        LongRunningOperation row = LaunchRow();
+
+        GrimoireOfflineTransitionPhaseSession opened =
+            Value(await authority.OpenOrResumeAsync(row, CancellationToken.None));
+
+        Assert.Equal(GrimoireOfflineTransitionState.Prepared, opened.State);
+
+        Assert.True((await opened.EnterClosingAsync(CancellationToken.None)).IsSuccess);
+
+        GrimoireOfflineTransitionPhaseSession resumed =
+            Value(await authority.OpenOrResumeAsync(row, CancellationToken.None));
+
+        // The resumed session is the journal the first one advanced, not a second slot beside it.
+        Assert.Equal(GrimoireOfflineTransitionState.Closing, resumed.State);
+
+        Assert.Equal(2UL, resumed.Current.Raw.Envelope.Revision);
+
+    }
+
+    /// <summary>
+    /// A journal describing a different launch is refused rather than adopted.
+    /// </summary>
+    /// <remarks>
+    /// A journal is authority over destructive effects. One bound to another launch would let this
+    /// operation continue somebody else's plan against a database it never established the state of,
+    /// which is the single thing the launch binding exists to make impossible. The comparison is the
+    /// domain-separated launch digest rather than a field-by-field check, so a launch that differed
+    /// anywhere differs here.
+    /// </remarks>
+    [Fact]
+    public async Task The_authority_refuses_a_journal_bound_to_another_launch()
+    {
+
+        GrimoireOfflineTransitionPhaseAuthority authority = Authority();
+
+        _ = Value(await authority.OpenOrResumeAsync(LaunchRow(), CancellationToken.None));
+
+        LongRunningOperation foreign = LaunchRow(
+            target: Guid.Parse("55555555-5555-4555-8555-555555555555"));
+
+        Result<GrimoireOfflineTransitionPhaseSession> resumed =
+            await authority.OpenOrResumeAsync(foreign, CancellationToken.None);
+
+        Assert.True(resumed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, resumed.Error.Code);
+
+    }
+
+    /// <summary>
+    /// A row whose checkpoint is not a launch cannot mint a journal at all.
+    /// </summary>
+    /// <remarks>
+    /// The row is the only durable statement of what was committed to. A checkpoint this build does
+    /// not recognise as a launch records no target, and filling that in from the live database or a
+    /// default would authorize a transition against a generation nobody committed to replacing.
+    /// </remarks>
+    [Fact]
+    public async Task The_authority_refuses_a_row_that_carries_no_launch()
+    {
+
+        GrimoireOfflineTransitionPhaseAuthority authority = Authority();
+
+        LongRunningOperation ordinary = LaunchRow() with { CheckpointVersion = 2 };
+
+        Result<GrimoireOfflineTransitionPhaseSession> opened =
+            await authority.OpenOrResumeAsync(ordinary, CancellationToken.None);
+
+        Assert.True(opened.IsFailure);
+
+    }
+
+    private GrimoireOfflineTransitionPhaseAuthority Authority() =>
+        new(
+            new GrimoireOfflineTransitionLifecycleStore(
+                new GrimoireOfflineTransitionJournalStore(_credentials),
+                GrimoireOfflineTransitionHandlerRegistry.Production),
+            new HeldLockAccessor(_lock, _guarded),
+            new FixedInstallationIdentity(Installation),
+            _guarded);
+
+    private static LongRunningOperation LaunchRow(Guid? target = null) =>
+        new(
+            Operation,
+            LongRunningOperationKinds.DataRetentionMutation,
+            LongRunningOperationState.Running,
+            LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            RootOperationId: null,
+            ParentOperationId: null,
+            SessionId: null,
+            RunId: null,
+            InferenceRunId: null,
+            BudgetReservationId: null,
+            IdempotencyClaimId: null,
+            CreatedAt: DateTimeOffset.UnixEpoch,
+            StartedAt: null,
+            HeartbeatAt: null,
+            CompletedAt: null,
+            LeaseOwner: "owner",
+            LeaseExpiresAt: null,
+            AttemptCount: 1,
+            CheckpointVersion: CovenantOfflineTransitionLaunchV4.CurrentVersion,
+            CheckpointPayload: CovenantRecoveryCheckpointCodec.Encode(
+                new CovenantOfflineTransitionLaunchV4(
+                    CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                    Operation,
+                    LongRunningOperationKinds.DataRetentionMutation,
+                    nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+                    CovenantExclusiveOperation.CovenantReset,
+                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(Digest(0x11)),
+                    Source,
+                    target ?? Target,
+                    new CovenantOfflineTransitionEpochsV1(1, 2, 3),
+                    new CovenantOfflineTransitionEpochsV1(2, 3, 4),
+                    StartingRevision: 3)),
+            CheckpointReference: null,
+            PublicSummary: "Covenant reset",
+            TerminalErrorCode: null,
+            Revision: 4);
+
+    private sealed class HeldLockAccessor(ArcanumMaintenanceLock held, string guarded)
+        : IInstallationResetMaintenanceLockAccessor
+    {
+
+        public Result<ArcanumMaintenanceLock> BorrowHeldLock(string guardedDirectory) =>
+            string.Equals(guardedDirectory, guarded, StringComparison.Ordinal)
+                ? Result<ArcanumMaintenanceLock>.Success(held)
+                : Result<ArcanumMaintenanceLock>.Failure(
+                    new Error(ErrorCodes.Covenant.Unavailable, "No lock is held for that directory."));
+
+    }
+
+    private sealed class FixedInstallationIdentity(Guid installation)
+        : IInstallationResetDatabaseIdentityReader
+    {
+
+        public Task<Result<Guid>> ReadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Guid>.Success(installation));
 
     }
 

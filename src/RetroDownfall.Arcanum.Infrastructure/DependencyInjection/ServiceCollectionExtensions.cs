@@ -49,6 +49,7 @@ using RetroDownfall.Arcanum.Infrastructure.Chronosync;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -1990,6 +1991,28 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IManagedFileCapabilityOpener>(),
                 sp.GetRequiredService<IManagedFileOwnershipVerifier>(),
                 sp.GetRequiredService<TimeProvider>()));
+
+        // The offline-transition journal is the durable phase authority of a Covenant reset or a
+        // healthy-catalog factory erasure. Its store is a singleton because the slot it owns is one
+        // per profile; the authority above it is scoped because reading this installation's identity
+        // is.
+        services.AddSingleton<IGrimoireOfflineTransitionJournalStore>(
+            static sp => new GrimoireOfflineTransitionJournalStore(
+                sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.AddSingleton(static _ => GrimoireOfflineTransitionHandlerRegistry.Production);
+
+        services.AddSingleton(
+            static sp => new GrimoireOfflineTransitionLifecycleStore(
+                sp.GetRequiredService<IGrimoireOfflineTransitionJournalStore>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionHandlerRegistry>()));
+
+        services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
+            static sp => new GrimoireOfflineTransitionPhaseAuthority(
+                sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
+                sp.GetRequiredService<IInstallationResetMaintenanceLockAccessor>(),
+                sp.GetRequiredService<IInstallationResetDatabaseIdentityReader>(),
+                ArcanumPaths.GrimoireDirectory));
 
         services.AddScoped(
             static sp => new CovenantErasureInventorySource(
