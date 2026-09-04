@@ -81,9 +81,12 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 `GrimoireOfflineTransitionCoordinator.cs`, `GrimoireOfflineTransitionLifecycleStore.cs`,
 `ServiceCollectionExtensions.cs`.
 
-- [ ] RED: a test asserting the effect registry is closed over exactly the two current kind/version
+- [x] RED: a test asserting the effect registry is closed over exactly the two current kind/version
       pairs and refuses duplicates, zero versions, and unregistered keys.
-- [ ] GREEN: add the registry and the two effect handlers, initially delegating to the existing kernels.
+- [x] GREEN: add the registry and the two effect handlers. One handler class registered twice rather
+      than two classes: the kinds differ in configuration, not behaviour. Rather than delegating to the
+      kernels, the handler owns the two facts that actually vary by kind — which durable operation the
+      kind is, and whether it owes the ordinary factory continuation.
 - [x] RED: a test asserting a typed bound-begin builds the payload with the epoch the store allocates.
 - [x] GREEN: add `BeginBoundAsync` to the lifecycle store, keeping `BeginAsync` unchanged.
 - [x] GREEN: register the journal store, both registries, the lifecycle store, the reconciler, and the
@@ -109,7 +112,9 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 - [x] GREEN: add the two missing purposes and the gate validation; make path and mode capability
       properties derived by the gate; add one narrow factory method per purpose with a
       repository-unique acquisition-route marker.
-- [ ] GREEN: re-impose the operation restriction at the journal-driven entry gate.
+- [x] GREEN: re-impose the operation restriction at the journal-driven entry gate, through the effect
+      table: the journal names a kind, the table names that kind's operation, and a run claiming a
+      different one is refused before the ladder starts.
 - [x] GREEN: delete the direct drain calls from the canonical transaction and the storage kernels.
 - [x] Rewrite the journal-maintenance contract inventory test to name the exact new methods and call
       sites, and recompute the expected acquisition count.
@@ -152,11 +157,21 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 
 **Files:** `CovenantResidualArtifacts.cs`, `CovenantLocalErasureStorageHealth.cs`, coordinator, tests.
 
-- [ ] RED: a test asserting the leaf is operation-bound and valid under the journal's leaf predicate.
-- [ ] RED: a test asserting recovery removes only this operation's staging.
-- [ ] GREEN: the leaf minter, the ownership predicate, and the narrowed sweep.
-- [ ] RED/GREEN: the three journaled replacement steps in the validator's exact order.
-- [ ] RED/GREEN: the five ambiguity refusals each park rather than rerun replacement.
+- [x] RED: a test asserting the leaf is operation-bound and valid under the journal's leaf predicate.
+- [~] RED: a test asserting recovery removes only this operation's staging. **Not taken.** The sweep
+      stays class-wide, and deliberately: the installation lock admits one process and the admission
+      gate admits one closed period within it, so an export staging file that is not the caller's is
+      abandoned litter — and litter that is a complete encrypted copy of the database being erased is
+      the last thing a privacy erasure may leave behind. Narrowing the sweep would have preserved it.
+      The leaf's purpose is to let a resumed run ask whether the candidate on disk is its own, which
+      the journal's recorded identity settles; it was never to protect the file from the sweep.
+- [x] GREEN: the leaf minter (gate-derived from the closing owner, never caller-supplied) and the
+      ownership predicate.
+- [x] RED/GREEN: the three journaled replacement steps in the validator's exact order.
+- [x] RED/GREEN: the ambiguity refusals park rather than rerun — a plan made against a different
+      database, a candidate that is not the recorded file, one whose contents are not what was proven,
+      one that is gone from a destination that does not carry it, and a replacement that reached its
+      phase without the evidence to install it.
 
 ### Task 10: Factory ordinary-row preservation
 

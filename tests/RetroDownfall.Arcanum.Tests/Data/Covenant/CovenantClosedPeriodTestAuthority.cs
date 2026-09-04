@@ -316,7 +316,6 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
 
     }
 
-
     private sealed class FixedPassphrase(string passphrase) : IGrimoireDbPassphraseSource
     {
 

@@ -627,7 +627,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
     }
 
-
     /// <summary>
     /// Moves the shared per-capability cleanup cursor up to the journal it has just been excused from.
     /// </summary>

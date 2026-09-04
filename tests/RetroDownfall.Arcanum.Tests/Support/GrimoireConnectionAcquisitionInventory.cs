@@ -3301,17 +3301,12 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
 
-
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ICovenantConnectionSource.cs", "CovenantConnectionSource", "GetOpenCoreConnectionAsync(1)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(connection,CovenantSqliteConnectionMode.ReadWrite,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
-
-
-
-
 
         ]);
 

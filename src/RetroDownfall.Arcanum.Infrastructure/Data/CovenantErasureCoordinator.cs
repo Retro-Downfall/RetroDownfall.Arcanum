@@ -1686,7 +1686,6 @@ internal sealed class CovenantErasureCoordinator(
 
             Error interrupted = MaintenanceFailure();
 
-
             return progress.EffectAttempted || progress.DurablyMutated
                 ? await CloseAsync(
                     operation,

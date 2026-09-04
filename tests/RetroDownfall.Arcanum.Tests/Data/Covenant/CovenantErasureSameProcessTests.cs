@@ -3108,7 +3108,6 @@ public sealed class CovenantErasureSameProcessTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException(NoReplacement);
 
-
         public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
@@ -3186,7 +3185,6 @@ public sealed class CovenantErasureSameProcessTests
             CovenantDigest stagedContent,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException(NoReplacement);
-
 
         public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
             CovenantClosedPeriodAuthority authority,

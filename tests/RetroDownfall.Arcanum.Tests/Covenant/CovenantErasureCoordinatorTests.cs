@@ -2060,7 +2060,6 @@ public sealed class CovenantErasureCoordinatorTests
         private static CovenantDigest FixedDigest(byte fill) =>
             new(Enumerable.Repeat(fill, CovenantLimits.DigestBytes).ToArray());
 
-
         public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Step("initialize-accelerator");
 

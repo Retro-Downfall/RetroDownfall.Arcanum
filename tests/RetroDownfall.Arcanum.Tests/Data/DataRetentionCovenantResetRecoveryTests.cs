@@ -998,7 +998,6 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException(NoReplacement);
 
-
         public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>

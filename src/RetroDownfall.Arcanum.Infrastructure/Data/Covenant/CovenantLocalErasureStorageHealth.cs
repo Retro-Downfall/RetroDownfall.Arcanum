@@ -345,7 +345,6 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         CancellationToken cancellationToken)
     {
 
-
         // Closing every handle and causing the last close are not the same statement. SQLite removes
         // a write-ahead log when the last connection to the database closes, and a read-only
         // connection has no authority to remove one - so an installation whose last reader was
@@ -407,7 +406,6 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
-
 
         return await WithMaintenanceConnectionAsync(
             "truncate the write-ahead log",
@@ -475,7 +473,6 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
-
 
         return await WithMaintenanceConnectionAsync(
             "initialize the empty Covenant accelerator",
