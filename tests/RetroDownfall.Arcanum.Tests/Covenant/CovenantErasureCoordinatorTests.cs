@@ -1291,6 +1291,19 @@ public sealed class CovenantErasureCoordinatorTests
         internal LongRunningOperationOwnership Ownership { get; } = new();
 
         /// <summary>
+        /// The real effect table, not a double.
+        /// </summary>
+        /// <remarks>
+        /// What it decides — which operation a journal kind is, and whether that kind owes ordinary
+        /// work — is exactly what several assertions here are about, and a double would answer yes to
+        /// whatever this harness happened to arrange.
+        /// </remarks>
+        internal GrimoireOfflineTransitionEffectHandlerRegistry Effects { get; } =
+            GrimoireOfflineTransitionEffectHandlerRegistry
+                .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                .Value;
+
+        /// <summary>
         /// The real admission gate the coordinator closes, over this harness's own scratch paths.
         /// </summary>
         /// <remarks>
@@ -1514,6 +1527,7 @@ public sealed class CovenantErasureCoordinatorTests
                 Transition,
                 DisclosureWriter,
                 Phases,
+                Effects,
                 Admission,
                 MaintenanceConnections,
                 MaintenancePaths,
@@ -1570,6 +1584,7 @@ public sealed class CovenantErasureCoordinatorTests
                 Transition,
                 DisclosureWriter,
                 Phases,
+                Effects,
                 Admission,
                 MaintenanceConnections,
                 MaintenancePaths,

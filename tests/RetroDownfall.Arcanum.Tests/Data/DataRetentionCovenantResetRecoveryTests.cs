@@ -816,6 +816,9 @@ public sealed partial class DataRetentionServiceTests
             new RecoveryTransition(disposition),
             new RecoveryWriterLifecycle(),
             phases ?? new LocalOfflineTransitionPhaseAuthority(operations),
+            GrimoireOfflineTransitionEffectHandlerRegistry
+                .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                .Value,
             // A real gate over scratch paths, because closing the Grimoire is the coordinator's own
             // work now and a recovery run has to be able to re-enter a closed period. Nothing in this
             // file ever opens a maintenance connection — the transition and the inventory are doubles

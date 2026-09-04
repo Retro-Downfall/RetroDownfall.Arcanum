@@ -1857,6 +1857,7 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<ICovenantErasureTransition>(),
                             provider.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
                             provider.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                            provider.GetRequiredService<GrimoireOfflineTransitionEffectHandlerRegistry>(),
                             provider.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                             provider.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
                             provider.GetRequiredService<IGrimoireMaintenancePathAuthority>(),

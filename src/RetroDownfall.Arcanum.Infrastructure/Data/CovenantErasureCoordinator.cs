@@ -569,6 +569,7 @@ internal sealed class CovenantErasureCoordinator(
     ICovenantErasureTransition transition,
     ICovenantDisclosureWriterLifecycle disclosureWriter,
     IGrimoireOfflineTransitionPhaseAuthority phaseAuthority,
+    GrimoireOfflineTransitionEffectHandlerRegistry effects,
     IGrimoireConnectionAdmissionGate admissionGate,
     IGrimoireMaintenanceConnectionFactory maintenanceConnections,
     IGrimoireMaintenancePathAuthority maintenancePaths,
@@ -642,6 +643,17 @@ internal sealed class CovenantErasureCoordinator(
 
     private readonly IGrimoireConnectionAdmissionGate _admissionGate =
         admissionGate ?? throw new ArgumentNullException(nameof(admissionGate));
+
+    /// <summary>
+    /// The closed table saying what each journal kind is allowed to be and owes.
+    /// </summary>
+    /// <remarks>
+    /// Injected rather than reached for statically, because it is the seam a third kind of offline
+    /// transition arrives through. A coordinator that composed the table itself would make adding one
+    /// an edit to this file.
+    /// </remarks>
+    private readonly GrimoireOfflineTransitionEffectHandlerRegistry _effects =
+        effects ?? throw new ArgumentNullException(nameof(effects));
 
     private readonly IGrimoireMaintenanceConnectionFactory _maintenanceConnections =
         maintenanceConnections ?? throw new ArgumentNullException(nameof(maintenanceConnections));
@@ -1229,7 +1241,13 @@ internal sealed class CovenantErasureCoordinator(
         // to park an installation it had done nothing to. Nothing durable happens before this point.
         GrimoireOfflineTransitionPhaseSession? phases = null;
 
-        ErasureProgress progress = new(state.Phase);
+        // Resolved from the journal once it is open, and never from the checkpoint. The journal is
+        // what says which kind this transition is; the checkpoint only says which operation somebody
+        // claimed it was, and the whole point of the effect table is to be the one place those two are
+        // made to agree.
+        IGrimoireOfflineTransitionEffectHandler? effect = null;
+
+        CovenantErasureProgress progress = new(state.Phase);
 
         CovenantVerifiedCandidateState candidate;
 
@@ -1267,12 +1285,42 @@ internal sealed class CovenantErasureCoordinator(
 
                     phases = opened.Value;
 
+                    Result<IGrimoireOfflineTransitionEffectHandler> resolved = _effects.Resolve(
+                        phases.Binding.Kind,
+                        phases.Binding.PayloadVersion);
+
+                    if (resolved.IsFailure)
+                    {
+
+                        throw new CovenantErasureStepFailedException(resolved.Error);
+
+                    }
+
+                    effect = resolved.Value;
+
+                    // The operation restriction, re-imposed where the journal is the authority. Both
+                    // entry points already refuse a checkpoint whose operation is not theirs, but that
+                    // is a caller checking a caller; this is the durable record naming a kind, the
+                    // table saying which operation that kind is, and the claim being refused when they
+                    // disagree.
+                    if (effect.Operation != state.Operation
+                        || effect.Operation != phases.Launch.Operation)
+                    {
+
+                        throw new CovenantErasureStepFailedException(
+                            new Error(
+                                ErrorCodes.Covenant.InvalidScope,
+                                "An authenticated offline transition names a kind whose effect is not "
+                                + "the operation this run claims to be."));
+
+                    }
+
                     // The journal says how far this transition got, not the row. The row records what
                     // was launched and stops there, so resuming from it would restart a transition
                     // that had already replaced a family.
                     state = state with { Phase = phases.LastCompletedPhase };
 
-                    progress = new ErasureProgress(state.Phase);
+                    progress = new CovenantErasureProgress(state.Phase);
 
                     // Read from the journal rather than the row. The row records the launch and stops
                     // there, so it always says the first phase - and a flag derived from it would be
@@ -1350,7 +1398,7 @@ internal sealed class CovenantErasureCoordinator(
             // resumed run for having already done the thing it was resuming to finish. So a journal
             // that names the canonical phase in flight takes the resumed path instead, where the
             // exposure is read on its own and the replacement is replayed to converge.
-            if (maintenance is null)
+            if (maintenance is null || phases is null || effect is null)
             {
 
                 throw new CovenantErasureStepFailedException(MaintenanceFailure());
@@ -1484,35 +1532,22 @@ internal sealed class CovenantErasureCoordinator(
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
-            // Whether the ordinary continuation has run is the journal's own one-way sub-state rather
-            // than an inference from the phase window. The window cannot tell a run that completed the
-            // continuation from one that crashed before starting it, because both sit at the same
-            // phase — which is exactly the ambiguity a resumed factory erasure has to resolve.
-            if (factoryContinuation is not null && !phases.OrdinaryFactoryContinuationCompleted)
+            // What this kind owes the installation beyond the ladder is the effect handler's to say,
+            // and whether it has already been paid is the journal's. Neither is inferred here: the
+            // phase window cannot tell a run that completed the continuation from one that crashed
+            // before starting it, because both sit at the same phase.
+            Result continued = await effect.RunOrdinaryContinuationAsync(
+                new GrimoireOfflineTransitionEffectContext(
+                    phases,
+                    factoryContinuation,
+                    (work, token) => WithLedgerAsync(closure, work, token)),
+                progress,
+                cancellationToken).ConfigureAwait(false);
+
+            if (continued.IsFailure)
             {
 
-                // The continuation is ordinary database work - it rebuilds a retention plan and
-                // deletes through the ordinary store - so it needs the same admitted ledger window
-                // every other durable step of this closed period runs in.
-                Result continued = await WithLedgerAsync(
-                    closure,
-                    factoryContinuation,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (continued.IsSuccess)
-                {
-
-                    continued = await phases.RecordFactoryContinuationAsync(cancellationToken)
-                        .ConfigureAwait(false);
-
-                }
-
-                if (continued.IsFailure)
-                {
-
-                    throw new CovenantErasureStepFailedException(continued.Error);
-
-                }
+                throw new CovenantErasureStepFailedException(continued.Error);
 
             }
 
@@ -1874,7 +1909,7 @@ internal sealed class CovenantErasureCoordinator(
         CovenantErasureCheckpointState checkpoint,
         string ownerId,
         CovenantExclusiveLease lease,
-        ErasureProgress progress,
+        CovenantErasureProgress progress,
         GrimoireOfflineTransitionPhaseSession? phases,
         CovenantGrimoireClosure? closure,
         Error error)
@@ -1943,7 +1978,7 @@ internal sealed class CovenantErasureCoordinator(
         Guid datasetGeneration,
         CovenantClosedPeriodAuthority maintenance,
         CovenantArtifactErasureAuthority authority,
-        ErasureProgress progress,
+        CovenantErasureProgress progress,
         CancellationToken cancellationToken)
     {
 
@@ -2025,7 +2060,7 @@ internal sealed class CovenantErasureCoordinator(
         Guid operationId,
         CovenantClosedPeriodAuthority maintenance,
         CovenantArtifactErasureAuthority authority,
-        ErasureProgress progress,
+        CovenantErasureProgress progress,
         CancellationToken cancellationToken)
     {
 
@@ -2193,7 +2228,7 @@ internal sealed class CovenantErasureCoordinator(
         CovenantErasureCheckpointState checkpoint,
         CovenantResetPhase phase,
         Func<CovenantErasureCheckpointState, CancellationToken, Task<Result>> step,
-        ErasureProgress progress,
+        CovenantErasureProgress progress,
         CancellationToken cancellationToken)
     {
 
@@ -2343,7 +2378,7 @@ internal sealed class CovenantErasureCoordinator(
         GrimoireOfflineTransitionPhaseSession phases,
         CovenantErasureCheckpointState checkpoint,
         CovenantClosedPeriodAuthority maintenance,
-        ErasureProgress progress,
+        CovenantErasureProgress progress,
         CancellationToken cancellationToken)
     {
 
@@ -2681,7 +2716,7 @@ internal sealed class CovenantErasureCoordinator(
         string ownerId,
         CovenantExclusiveLease lease,
         CovenantExclusiveLeaseDisposition disposition,
-        ErasureProgress progress,
+        CovenantErasureProgress progress,
         string? blockingErrorCode,
         GrimoireOfflineTransitionPhaseSession? phases,
         CovenantGrimoireClosure? closure)
@@ -3175,29 +3210,6 @@ internal sealed class CovenantErasureCoordinator(
     /// and the third is a dataset identity the database itself owns. A checkpoint that carried them
     /// would be a second source for facts that already have one.
     /// </remarks>
-    private sealed class ErasureProgress(CovenantResetPhase resumedFrom)
-    {
-
-        /// <summary>Whether a previous pass already committed the canonical erasure.</summary>
-        internal bool CanonicalResetApplied { get; set; } =
-            resumedFrom >= CovenantResetPhase.CanonicalApplied;
-
-        internal bool LocalSecureErasureComplete { get; set; }
-
-        /// <summary>Whether control has crossed from inventory into any protected effect.</summary>
-        internal bool EffectAttempted { get; set; }
-
-        internal CovenantDisclosureExposure Exposure { get; set; } =
-            new(0, CovenantDisclosureCountKind.Exact);
-
-        /// <summary>
-        /// Whether anything irreversible has happened yet, which is the only fact that separates a
-        /// reopening abort from one that must keep admission closed.
-        /// </summary>
-        internal bool DurablyMutated { get; set; } = resumedFrom > CovenantResetPhaseMachine.First;
-
-    }
-
 }
 
 /// <summary>

@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
@@ -71,6 +72,47 @@ public sealed class CovenantResidualArtifactTests : IDisposable
     /// The replace primitive's own prefixes are read from it rather than copied, so a rename there
     /// cannot silently leave this proof looking for a file that no longer has that name.
     /// </summary>
+    /// <summary>
+    /// The candidate leaf names one operation, stays inside the database's own directory, and is a
+    /// name the journal will accept.
+    /// </summary>
+    /// <remarks>
+    /// All three at once, because dropping any of them breaks something different. A leaf that is not
+    /// operation-bound leaves a resumed run unable to say whether the candidate on disk is its own; a
+    /// leaf that is not a leaf reaches outside the directory the atomic rename needs; and a leaf the
+    /// journal refuses cannot be recorded at all, which would strand the replacement at its first
+    /// publication with a file already written.
+    /// </remarks>
+    [Fact]
+    public void An_export_staging_leaf_is_operation_bound_and_recordable()
+    {
+
+        Guid other = new("1e6dbb95-1d0e-4c1a-8a55-1f0d0a1c2b3d");
+
+        string mine = CovenantResidualArtifacts.ExportStagingLeaf(DatabasePath, StagingOperation);
+
+        string theirs = CovenantResidualArtifacts.ExportStagingLeaf(DatabasePath, other);
+
+        Assert.NotEqual(mine, theirs);
+
+        Assert.True(GrimoireOfflineTransitionLeafName.IsValid(mine));
+
+        Assert.True(GrimoireOfflineTransitionLeafName.IsValid(theirs));
+
+        Assert.Equal(mine, Path.GetFileName(mine));
+
+        // Still export staging to the classifier, so the absence proof reports it by class and the
+        // operator is never told where an installation keeps its storage.
+        Assert.Equal(
+            CovenantResidualArtifactClass.ExportStaging,
+            CovenantResidualArtifacts.Classify(Path.GetFileName(DatabasePath), mine));
+
+        Assert.Equal(
+            CovenantResidualArtifactClass.ExportStaging,
+            CovenantResidualArtifacts.Classify(Path.GetFileName(DatabasePath), theirs));
+
+    }
+
     [Fact]
     public void The_replaced_original_prefixes_come_from_the_replace_primitive()
     {

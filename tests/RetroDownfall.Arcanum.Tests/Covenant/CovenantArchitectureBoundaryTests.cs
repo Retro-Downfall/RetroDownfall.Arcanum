@@ -268,6 +268,13 @@ public sealed class CovenantArchitectureBoundaryTests
 
         AssertSingleRegistration<GrimoireOfflineTransitionLifecycleStore>(services, ServiceLifetime.Singleton);
 
+        // Scoped, unlike the payload table above it. Decoding a journal depends on nothing but the
+        // bytes; deciding what a transition of that kind owes is reached through the same scope its
+        // session and operation store are, and a singleton would let a handler capture one it outlives.
+        AssertSingleRegistration<GrimoireOfflineTransitionEffectHandlerRegistry>(
+            services,
+            ServiceLifetime.Scoped);
+
         AssertSingleRegistration<IGrimoireOfflineTransitionPhaseAuthority>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<GrimoireOfflineTransitionDatabaseReconciler>(services, ServiceLifetime.Scoped);

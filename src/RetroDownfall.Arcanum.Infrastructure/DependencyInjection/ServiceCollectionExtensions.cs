@@ -1996,6 +1996,15 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(static _ => GrimoireOfflineTransitionHandlerRegistry.Production);
 
+        // Scoped and composed, unlike the payload table above. Decoding a journal depends on nothing
+        // but the bytes and can be a process-wide constant; deciding what a transition of that kind
+        // owes is reached through the same scope its journal session and operation store are, and a
+        // process-wide instance would invite one of its handlers to capture a scope it outlives.
+        services.AddScoped(
+            static _ => GrimoireOfflineTransitionEffectHandlerRegistry
+                .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                .Value);
+
         services.AddSingleton(
             static sp => new GrimoireOfflineTransitionLifecycleStore(
                 sp.GetRequiredService<IGrimoireOfflineTransitionJournalStore>(),
@@ -2076,6 +2085,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantErasureTransition>(),
                 sp.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
                 sp.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionEffectHandlerRegistry>(),
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                 sp.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
                 sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),

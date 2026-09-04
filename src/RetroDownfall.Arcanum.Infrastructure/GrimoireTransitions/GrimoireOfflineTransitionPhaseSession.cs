@@ -161,6 +161,9 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     /// <summary>Where the shared lifecycle stands.</summary>
     internal GrimoireOfflineTransitionState State => _current.Payload.Lifecycle.State;
 
+    /// <summary>The kind and version the durable payload is bound to, which is what resolves a handler.</summary>
+    internal GrimoireOfflineTransitionBinding Binding => _current.Payload.Binding;
+
     /// <summary>What the registry's handler makes of the current publication.</summary>
     internal GrimoireOfflineTransitionHandlerOutcome Outcome => _current.Outcome;
 
