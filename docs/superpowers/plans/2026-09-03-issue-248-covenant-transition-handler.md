@@ -94,9 +94,9 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 
 **Files:** `CovenantResetCheckpointInitiator.cs`, tests.
 
-- [ ] RED: a test asserting the closing owner cannot be constructed without both a committed launch and
+- [x] RED: a test asserting the closing owner cannot be constructed without both a committed launch and
       a verified opening journal revision.
-- [ ] GREEN: extend the nested private-constructor type to carry the typed publication.
+- [x] GREEN: extend the nested private-constructor type to carry the typed publication.
 
 ### Task 5: Journal-era maintenance capabilities and the drain move
 
@@ -104,14 +104,14 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 `GrimoireMaintenanceConnectionFactory.cs`, `CovenantCanonicalErasureTransaction.cs`,
 `CovenantLocalErasureStorageHealth.cs`, the acquisition inventory and its tests.
 
-- [ ] RED: tests asserting each purpose issues a capability bound to its own path, mode, and purpose,
+- [x] RED: tests asserting each purpose issues a capability bound to its own path, mode, and purpose,
       and that a caller cannot supply a path.
-- [ ] GREEN: add the two missing purposes and the gate validation; make path and mode capability
+- [x] GREEN: add the two missing purposes and the gate validation; make path and mode capability
       properties derived by the gate; add one narrow factory method per purpose with a
       repository-unique acquisition-route marker.
 - [ ] GREEN: re-impose the operation restriction at the journal-driven entry gate.
-- [ ] GREEN: delete the direct drain calls from the canonical transaction and the storage kernels.
-- [ ] Rewrite the journal-maintenance contract inventory test to name the exact new methods and call
+- [x] GREEN: delete the direct drain calls from the canonical transaction and the storage kernels.
+- [x] Rewrite the journal-maintenance contract inventory test to name the exact new methods and call
       sites, and recompute the expected acquisition count.
 
 ### Task 6: Canonical target binding
@@ -194,11 +194,11 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 **Files:** `CovenantV3MaintenanceConnectionFactory.cs`, `CovenantV3MaintenanceCapability.cs`,
 `ServiceCollectionExtensions.cs`, the acquisition inventory and its tests, architecture-boundary tests.
 
-- [ ] GREEN: delete the adapter types and their three registrations; move both kernel constructors onto
+- [x] GREEN: delete the adapter types and their three registrations; move both kernel constructors onto
       the journal-era factory.
-- [ ] GREEN: delete the catalog entries, the helper, the validation arms, and the two enum members;
+- [x] GREEN: delete the catalog entries, the helper, the validation arms, and the two enum members;
       retire the assertions that require them to be non-empty.
-- [ ] GREEN: recompute the expected acquisition count exactly.
+- [x] GREEN: recompute the expected acquisition count exactly.
 
 ### Task 14: Documentation
 

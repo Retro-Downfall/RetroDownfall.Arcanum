@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -47,12 +49,12 @@ internal interface ICovenantErasureTransition
     Task<Result<Guid>> ApplyCanonicalErasureAsync(
         CovenantExclusiveOperation operation,
         CovenantCanonicalDatasetTransition dataset,
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>Clears every pool and drains direct handles through the central connection owner.</summary>
     Task<Result> CloseHandlesAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -65,7 +67,7 @@ internal interface ICovenantErasureTransition
     /// erased pages are actually gone.
     /// </remarks>
     Task<Result> TruncateWalAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -73,12 +75,12 @@ internal interface ICovenantErasureTransition
     /// export-and-atomic-replace when <c>VACUUM</c> alone cannot prove the freed pages are gone.
     /// </summary>
     Task<Result> CompactAsync(
-        CovenantV3CompactionCapabilities capabilities,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>Installs the empty accelerator and runs rank-1 integrity over it.</summary>
     Task<Result> InitializeAcceleratorAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -92,7 +94,7 @@ internal interface ICovenantErasureTransition
     /// SHM, verifies both tiers, and closes that handle.
     /// </summary>
     Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -268,21 +270,27 @@ internal interface ICovenantErasureInventorySource
     Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
         CovenantExclusiveOperation operation,
         Guid datasetGeneration,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
-    Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken);
+    Task<Result> PreflightRemainingManagedAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken);
 
     Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
         Guid datasetGeneration,
         Guid? afterLabelId,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
         Guid operationId,
         Guid? afterLabelId,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
@@ -534,6 +542,10 @@ internal sealed class CovenantErasureCoordinator(
     ICovenantErasureTransition transition,
     ICovenantDisclosureWriterLifecycle disclosureWriter,
     IGrimoireOfflineTransitionPhaseAuthority phaseAuthority,
+    IGrimoireConnectionAdmissionGate admissionGate,
+    IGrimoireMaintenanceConnectionFactory maintenanceConnections,
+    ICovenantClosedPeriodLedgerConnection ledgerConnection,
+    ICovenantConnectionDrain drain,
     GrimoireOfflineTransitionDatabaseReconciler reconciler,
     LongRunningOperationOwnership ownership,
     TimeProvider timeProvider,
@@ -599,6 +611,18 @@ internal sealed class CovenantErasureCoordinator(
     private readonly ILogger<CovenantErasureCoordinator> _logger =
         logger ?? throw new ArgumentNullException(nameof(logger));
 
+    private readonly IGrimoireConnectionAdmissionGate _admissionGate =
+        admissionGate ?? throw new ArgumentNullException(nameof(admissionGate));
+
+    private readonly IGrimoireMaintenanceConnectionFactory _maintenanceConnections =
+        maintenanceConnections ?? throw new ArgumentNullException(nameof(maintenanceConnections));
+
+    private readonly ICovenantClosedPeriodLedgerConnection _ledgerConnection =
+        ledgerConnection ?? throw new ArgumentNullException(nameof(ledgerConnection));
+
+    private readonly ICovenantConnectionDrain _drain =
+        drain ?? throw new ArgumentNullException(nameof(drain));
+
     private readonly CovenantErasureFaultSeam _faultSeam = faultSeam ?? NoFault;
 
     private static Task<Result> NoFault(
@@ -606,6 +630,266 @@ internal sealed class CovenantErasureCoordinator(
         CovenantResetPhase phase,
         CancellationToken cancellationToken) =>
         Task.FromResult(Result.Success());
+
+    /// <summary>
+    /// The Grimoire closure one run holds, spent exactly once on one disposition.
+    /// </summary>
+    /// <remarks>
+    /// Two paths legitimately reach the spending: the terminal suffix, which knows which disposition
+    /// was earned, and the run's own unwind, which does not and therefore keeps the installation
+    /// closed. Releasing twice would reopen ordinary admission on a generation somebody else may
+    /// already have closed, so the first one wins and the second is a no-op.
+    ///
+    /// <para>The lane goes first, and the gate enforces that rather than trusting it: a closure with
+    /// a live maintenance authority refuses to disposition, which is the right refusal, because
+    /// reopening ordinary admission beside a live exclusive handle is what the closed period exists
+    /// to prevent. The ledger permit goes with it for the same reason.</para>
+    /// </remarks>
+    private sealed class CovenantGrimoireClosure(
+        IGrimoireClosingOwner closingOwner,
+        IGrimoireExclusiveClosedLease closed,
+        IGrimoireMaintenanceIoLane lane,
+        IGrimoireScopedConnectionPermit ledger)
+    {
+
+        private int _spent;
+
+        /// <summary>The closed authority every purpose-bound capability is issued from.</summary>
+        internal IGrimoireExclusiveClosedLease Closed => closed;
+
+        /// <summary>The one lane every maintenance open of this closed period is spent on.</summary>
+        internal IGrimoireMaintenanceIoLane Lane => lane;
+
+        /// <summary>The permit that keeps the durable ledger's own connection usable while closed.</summary>
+        internal IGrimoireScopedConnectionPermit Ledger => ledger;
+
+        internal async Task<Result> ReleaseAsync(
+            CovenantExclusiveLeaseDisposition disposition,
+            CancellationToken cancellationToken)
+        {
+
+            if (Interlocked.Exchange(ref _spent, 1) != 0)
+            {
+
+                return Result.Success();
+
+            }
+
+            await ledger.DisposeAsync().ConfigureAwait(false);
+
+            await lane.DisposeAsync().ConfigureAwait(false);
+
+            Result completed = await closed
+                .CompleteAsync(disposition, cancellationToken)
+                .ConfigureAwait(false);
+
+            await closed.DisposeAsync().ConfigureAwait(false);
+
+            await closingOwner.DisposeAsync().ConfigureAwait(false);
+
+            return completed;
+
+        }
+
+    }
+
+    /// <summary>The one closure a run takes, so its unwind can find it without threading it back.</summary>
+    private sealed class GrimoireClosureSlot
+    {
+
+        internal CovenantGrimoireClosure? Closure { get; set; }
+
+    }
+
+    /// <summary>
+    /// Takes the Grimoire's own closure, the one maintenance lane, and the ledger's permit.
+    /// </summary>
+    /// <remarks>
+    /// This is the fifth and last item of the authority order - the held installation lock, the
+    /// validated launch, the exact Covenant lease, the verified journal publication, and only then
+    /// the Grimoire closing and closed owner. Each earlier item is what makes the next legitimate,
+    /// and reversing any pair would let something be closed that nothing durable had yet claimed.
+    ///
+    /// <para>The permit is taken here rather than at the terminal write, because a closure that
+    /// cannot keep the ledger usable is one this erasure must not enter at all: the compare-exchange
+    /// the journal binds itself to happens while admission is closed, and discovering at that point
+    /// that it cannot be made would leave a family already erased and no row able to say so.</para>
+    ///
+    /// <para>The lane's revalidation is answered from the Covenant lease this run already holds. A
+    /// second opinion about whether this operation still owns the scope would be a second authority,
+    /// and the lease is the one that closed the scope in the first place.</para>
+    /// </remarks>
+    private async Task<Result<CovenantGrimoireClosure>> CloseGrimoireAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CovenantExclusiveLease lease,
+        CancellationToken cancellationToken)
+    {
+
+        Result<IGrimoireClosingOwner> closing = _admissionGate.BeginOrResumeExclusive(owner);
+
+        if (closing.IsFailure)
+        {
+
+            return Result<CovenantGrimoireClosure>.Failure(closing.Error);
+
+        }
+
+        IGrimoireClosingOwner closingOwner = closing.Value;
+
+        Result drained = await _admissionGate
+            .DrainRequestAndWorkAsync(closingOwner, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (drained.IsFailure)
+        {
+
+            return await AbandonClosingAsync(closingOwner, drained.Error).ConfigureAwait(false);
+
+        }
+
+        Result<IGrimoireExclusiveClosedLease> closed = await _admissionGate
+            .CloseConnectionAdmissionAsync(closingOwner, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (closed.IsFailure)
+        {
+
+            return await AbandonClosingAsync(closingOwner, closed.Error).ConfigureAwait(false);
+
+        }
+
+        Result<IGrimoireMaintenanceIoLane> lane = await closed.Value
+            .AcquireMaintenanceIoLaneAsync(
+                (laneOwner, _, token) => RevalidateAsync(lease, laneOwner, owner, token),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (lane.IsFailure)
+        {
+
+            await closed.Value.DisposeAsync().ConfigureAwait(false);
+
+            return await AbandonClosingAsync(closingOwner, lane.Error).ConfigureAwait(false);
+
+        }
+
+        Result<IGrimoireScopedConnectionPermit> ledger =
+            closed.Value.AcquireScopedConnectionPermit(_ledgerConnection.Connection);
+
+        if (ledger.IsFailure)
+        {
+
+            await lane.Value.DisposeAsync().ConfigureAwait(false);
+
+            await closed.Value.DisposeAsync().ConfigureAwait(false);
+
+            return await AbandonClosingAsync(closingOwner, ledger.Error).ConfigureAwait(false);
+
+        }
+
+        return Result<CovenantGrimoireClosure>.Success(
+            new CovenantGrimoireClosure(closingOwner, closed.Value, lane.Value, ledger.Value));
+
+    }
+
+    /// <summary>
+    /// Runs the one durable-ledger step of a closed period on the connection the gate admitted.
+    /// </summary>
+    /// <remarks>
+    /// Ordinary admission is shut, so the operation store's usual route through the connection
+    /// interceptor is refused - correctly, because that route is what the closed period exists to
+    /// stop. What the gate still admits is one exact connection object, under a permit taken when the
+    /// closure was, and the store issues its statements on that object directly whenever it is
+    /// already physically open. So this opens it, does the work, and closes it again.
+    ///
+    /// <para>The pool is cleared after the close rather than trusted to empty itself. The ledger's
+    /// connection string leaves provider pooling on, unlike every maintenance connection, so a closed
+    /// handle returns to a pool rather than releasing the file - and a pooled handle over a database
+    /// this erasure is about to replace is exactly the handle the sidecar proof would find.</para>
+    ///
+    /// <para>A run with no closure has nothing to promote and nothing to close, which is the shape a
+    /// unit-level harness exercises: it never entered a closed period, so the ordinary route works.</para>
+    /// </remarks>
+    private async Task<T> WithLedgerAsync<T>(
+        CovenantGrimoireClosure? closure,
+        Func<CancellationToken, Task<T>> work,
+        CancellationToken cancellationToken)
+    {
+
+        if (closure is null || _ledgerConnection.Connection is not SqliteConnection ledger)
+        {
+
+            return await work(cancellationToken).ConfigureAwait(false);
+
+        }
+
+        Result<IGrimoireTrackedMaintenanceHandle> admitted = closure.Ledger.AcquireOpen(
+            ledger,
+            closure.Closed.Owner,
+            closure.Closed.Generation,
+            closure.Lane);
+
+        if (admitted.IsFailure)
+        {
+
+            return await work(cancellationToken).ConfigureAwait(false);
+
+        }
+
+        IGrimoireTrackedMaintenanceHandle handle = admitted.Value;
+
+        Result started = handle.ReportOpenStarted();
+
+        if (started.IsFailure)
+        {
+
+            _ = handle.ReportNotOpened();
+
+            return await work(cancellationToken).ConfigureAwait(false);
+
+        }
+
+        try
+        {
+
+            await ledger.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            return await work(cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            await ledger.CloseAsync().ConfigureAwait(false);
+
+            _drain.ClearExactPoolAfterClose(ledger);
+
+            _ = handle.ReportPhysicallyClosed();
+
+        }
+
+    }
+
+    /// <summary>Answers the lane's revalidation from the lease that closed the scope, and nothing else.</summary>
+    private static async ValueTask<bool> RevalidateAsync(
+        CovenantExclusiveLease lease,
+        CovenantExclusiveRecoveryOwner laneOwner,
+        CovenantExclusiveRecoveryOwner expected,
+        CancellationToken cancellationToken) =>
+        laneOwner == expected
+        && (await lease.RevalidateAsync(cancellationToken).ConfigureAwait(false)).IsSuccess;
+
+    /// <summary>Lets go of a half-taken closure so ordinary admission is not left shut behind it.</summary>
+    private static async Task<Result<CovenantGrimoireClosure>> AbandonClosingAsync(
+        IGrimoireClosingOwner closingOwner,
+        Error error)
+    {
+
+        await closingOwner.DisposeAsync().ConfigureAwait(false);
+
+        return Result<CovenantGrimoireClosure>.Failure(error);
+
+    }
 
     /// <summary>
     /// Runs, or resumes, one erasure and reports how it left admission.
@@ -768,6 +1052,15 @@ internal sealed class CovenantErasureCoordinator(
 
     }
 
+    /// <summary>
+    /// Runs the closed period, and guarantees the Grimoire closure is let go of however it ends.
+    /// </summary>
+    /// <remarks>
+    /// A wrapper rather than a <c>finally</c> inside the run, because the run has a great many
+    /// endings and every one of them would otherwise have to remember. What it releases is a closure
+    /// no disposition was ever reached for, so it keeps the installation closed: reopening on the way
+    /// out of a failure would be announcing an answer nothing durable carries.
+    /// </remarks>
     private async Task<Result<CovenantErasureCompletion>> RunUnderLeaseAsync(
         LongRunningOperation operation,
         CovenantErasureCheckpointState checkpoint,
@@ -779,7 +1072,59 @@ internal sealed class CovenantErasureCoordinator(
         CancellationToken cancellationToken)
     {
 
+        GrimoireClosureSlot stranded = new();
+
+        try
+        {
+
+            return await RunClosedAsync(
+                operation,
+                checkpoint,
+                datasetGeneration,
+                ownerId,
+                lease,
+                authority,
+                factoryContinuation,
+                stranded,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            if (stranded.Closure is { } unspent)
+            {
+
+                _ = await unspent
+                    .ReleaseAsync(CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+            }
+
+        }
+
+    }
+
+    private async Task<Result<CovenantErasureCompletion>> RunClosedAsync(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint,
+        Guid datasetGeneration,
+        string ownerId,
+        CovenantExclusiveLease lease,
+        CovenantArtifactErasureAuthority authority,
+        Func<CancellationToken, Task<Result>>? factoryContinuation,
+        GrimoireClosureSlot stranded,
+        CancellationToken cancellationToken)
+    {
+
         CovenantErasureCheckpointState state = checkpoint;
+
+        // Released in the terminal suffix beside the Covenant lease, and in the unwind below on every
+        // path that never reaches one. A closure left behind holds ordinary admission shut for the
+        // life of the process, which is strictly worse than the failure that stranded it.
+        CovenantGrimoireClosure? closure = null;
+
+        CovenantClosedPeriodAuthority? maintenance = null;
 
         // Opened after the quiesce rather than before it. A quiesce that fails has closed nothing and
         // touched nothing, and the lifecycle graph offers a published journal no way back out that
@@ -840,6 +1185,40 @@ internal sealed class CovenantErasureCoordinator(
                     quiesced = await RecordClosedAsync(phases, cancellationToken)
                         .ConfigureAwait(false);
 
+                    if (quiesced.IsSuccess)
+                    {
+
+                        // The Grimoire's own closure is the last item of the authority order, and it
+                        // is held for the whole closed period: it is what every database open below
+                        // is performed under, and a second closure part-way through would invalidate
+                        // the authority the phases before it already ran with.
+                        Result<CovenantGrimoireClosure> grimoire = await CloseGrimoireAsync(
+                            checkpoint.Owner,
+                            lease,
+                            cancellationToken).ConfigureAwait(false);
+
+                        if (grimoire.IsSuccess)
+                        {
+
+                            closure = grimoire.Value;
+
+                            stranded.Closure = closure;
+
+                            maintenance = new CovenantClosedPeriodAuthority(
+                                closure.Closed,
+                                closure.Lane,
+                                _maintenanceConnections);
+
+                        }
+                        else
+                        {
+
+                            quiesced = Result.Failure(grimoire.Error);
+
+                        }
+
+                    }
+
                 }
                 else
                 {
@@ -860,6 +1239,7 @@ internal sealed class CovenantErasureCoordinator(
                     lease,
                     progress,
                     phases,
+                    closure,
                     quiesced.Error).ConfigureAwait(false);
 
             }
@@ -870,12 +1250,23 @@ internal sealed class CovenantErasureCoordinator(
             // resumed run for having already done the thing it was resuming to finish. So a journal
             // that names the canonical phase in flight takes the resumed path instead, where the
             // exposure is read on its own and the replacement is replayed to converge.
+            if (maintenance is null)
+            {
+
+                throw new CovenantErasureStepFailedException(MaintenanceFailure());
+
+            }
+
             if (state.Phase == CovenantResetPhase.InventoryPrepared
                 && phases?.InFlightPhase is not CovenantResetPhase.CanonicalApplied)
             {
 
                 Result<CovenantErasureInventorySummary> inventory = await _inventory
-                    .PreflightBeforeCanonicalAsync(state.Operation, datasetGeneration, cancellationToken)
+                    .PreflightBeforeCanonicalAsync(
+                        state.Operation,
+                        datasetGeneration,
+                        maintenance,
+                        cancellationToken)
                     .ConfigureAwait(false);
 
                 if (inventory.IsFailure)
@@ -888,6 +1279,7 @@ internal sealed class CovenantErasureCoordinator(
                         lease,
                         progress,
                         phases,
+                        closure,
                         inventory.Error).ConfigureAwait(false);
 
                 }
@@ -899,7 +1291,7 @@ internal sealed class CovenantErasureCoordinator(
             {
 
                 Result<CovenantDisclosureExposure> exposure = await _inventory
-                    .ReadDisclosureExposureAsync(cancellationToken)
+                    .ReadDisclosureExposureAsync(maintenance, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (exposure.IsFailure)
@@ -915,7 +1307,7 @@ internal sealed class CovenantErasureCoordinator(
                 {
 
                     Result managedPreflight = await _inventory
-                        .PreflightRemainingManagedAsync(cancellationToken)
+                        .PreflightRemainingManagedAsync(maintenance, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (managedPreflight.IsFailure)
@@ -929,9 +1321,11 @@ internal sealed class CovenantErasureCoordinator(
 
             }
 
-            // The journal exists from here on: the quiesce succeeded and its opening publication is
-            // durable, which is the precondition every phase below is published against.
-            if (phases is null)
+            // The journal and the Grimoire closure both exist from here on: the quiesce succeeded,
+            // the opening publication is durable, and ordinary admission is shut for a generation
+            // this run owns. Those are the preconditions every phase below is published and performed
+            // against, and a run that reached this point without them has no authority to erase.
+            if (phases is null || maintenance is null)
             {
 
                 throw new CovenantErasureStepFailedException(MaintenanceFailure());
@@ -945,23 +1339,9 @@ internal sealed class CovenantErasureCoordinator(
                 async (_, token) =>
                 {
 
-                    Result<CovenantV3MaintenanceCapability> minted =
-                        await CovenantV3MaintenanceCapability.MintAsync(
-                            lease,
-                            CovenantV3MaintenancePurpose.CanonicalErasure,
-                            token).ConfigureAwait(false);
-
-                    if (minted.IsFailure)
-                    {
-
-                        return Result.Failure(minted.Error);
-
-                    }
-
-                    await using CovenantV3MaintenanceCapability capability = minted.Value;
-
                     Result erased = await EraseDatabaseArtifactsAsync(
                         datasetGeneration,
+                        maintenance,
                         authority,
                         progress,
                         token).ConfigureAwait(false);
@@ -976,7 +1356,7 @@ internal sealed class CovenantErasureCoordinator(
                     progress.EffectAttempted = true;
 
                     Result<Guid> applied = await _transition
-                        .ApplyCanonicalErasureAsync(state.Operation, state.Dataset, capability, token)
+                        .ApplyCanonicalErasureAsync(state.Operation, state.Dataset, maintenance, token)
                         .ConfigureAwait(false);
 
                     return applied.IsFailure ? Result.Failure(applied.Error) : Result.Success();
@@ -991,6 +1371,7 @@ internal sealed class CovenantErasureCoordinator(
                 CovenantResetPhase.ManagedArtifactsProcessed,
                 (_, token) => EraseManagedFilesAsync(
                     operation.Id,
+                    maintenance,
                     authority,
                     progress,
                     token),
@@ -1027,11 +1408,7 @@ internal sealed class CovenantErasureCoordinator(
                 phases,
                 state,
                 CovenantResetPhase.HandlesClosed,
-                async (_, token) => await RunWithV3CapabilityAsync(
-                    lease,
-                    CovenantV3MaintenancePurpose.WalTruncation,
-                    _transition.CloseHandlesAsync,
-                    token).ConfigureAwait(false),
+                (_, token) => _transition.CloseHandlesAsync(maintenance, token),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1039,11 +1416,7 @@ internal sealed class CovenantErasureCoordinator(
                 phases,
                 state,
                 CovenantResetPhase.WalTruncated,
-                async (_, token) => await RunWithV3CapabilityAsync(
-                    lease,
-                    CovenantV3MaintenancePurpose.WalTruncation,
-                    _transition.TruncateWalAsync,
-                    token).ConfigureAwait(false),
+                (_, token) => _transition.TruncateWalAsync(maintenance, token),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1051,22 +1424,7 @@ internal sealed class CovenantErasureCoordinator(
                 phases,
                 state,
                 CovenantResetPhase.DatabaseCompacted,
-                async (_, token) =>
-                {
-
-                    Result<CovenantV3CompactionCapabilities> minted =
-                        await MintCompactionCapabilitiesAsync(lease, token).ConfigureAwait(false);
-
-                    if (minted.IsFailure)
-                    {
-
-                        return Result.Failure(minted.Error);
-
-                    }
-
-                    return await _transition.CompactAsync(minted.Value, token).ConfigureAwait(false);
-
-                },
+                (_, token) => _transition.CompactAsync(maintenance, token),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1074,11 +1432,7 @@ internal sealed class CovenantErasureCoordinator(
                 phases,
                 state,
                 CovenantResetPhase.AcceleratorInitialized,
-                async (_, token) => await RunWithV3CapabilityAsync(
-                    lease,
-                    CovenantV3MaintenancePurpose.AcceleratorInitialization,
-                    _transition.InitializeAcceleratorAsync,
-                    token).ConfigureAwait(false),
+                (_, token) => _transition.InitializeAcceleratorAsync(maintenance, token),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1086,11 +1440,7 @@ internal sealed class CovenantErasureCoordinator(
                 phases,
                 state,
                 CovenantResetPhase.FinalWalTruncated,
-                async (_, token) => await RunWithV3CapabilityAsync(
-                    lease,
-                    CovenantV3MaintenancePurpose.WalTruncation,
-                    _transition.TruncateWalAsync,
-                    token).ConfigureAwait(false),
+                (_, token) => _transition.TruncateWalAsync(maintenance, token),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1102,23 +1452,8 @@ internal sealed class CovenantErasureCoordinator(
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
-            Result<CovenantV3MaintenanceCapability> reopenCapability =
-                await CovenantV3MaintenanceCapability.MintAsync(
-                    lease,
-                    CovenantV3MaintenancePurpose.CandidateReopenVerification,
-                    cancellationToken).ConfigureAwait(false);
-
-            if (reopenCapability.IsFailure)
-            {
-
-                throw new CovenantErasureStepFailedException(reopenCapability.Error);
-
-            }
-
-            await using CovenantV3MaintenanceCapability reopen = reopenCapability.Value;
-
             Result<CovenantVerifiedCandidateState> verified =
-                await _transition.VerifyReopenAsync(reopen, cancellationToken).ConfigureAwait(false);
+                await _transition.VerifyReopenAsync(maintenance, cancellationToken).ConfigureAwait(false);
 
             if (verified.IsFailure)
             {
@@ -1154,7 +1489,8 @@ internal sealed class CovenantErasureCoordinator(
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     progress,
                     failed.Error.Code,
-                        phases).ConfigureAwait(false)
+                        phases,
+                        closure).ConfigureAwait(false)
                 : await AbortBeforeErasureAsync(
                     operation,
                     state,
@@ -1162,6 +1498,7 @@ internal sealed class CovenantErasureCoordinator(
                     lease,
                     progress,
                     phases,
+                    closure,
                     failed.Error).ConfigureAwait(false);
 
         }
@@ -1179,7 +1516,8 @@ internal sealed class CovenantErasureCoordinator(
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     progress,
                     interrupted.Code,
-                        phases).ConfigureAwait(false)
+                        phases,
+                        closure).ConfigureAwait(false)
                 : await AbortBeforeErasureAsync(
                     operation,
                     state,
@@ -1187,6 +1525,7 @@ internal sealed class CovenantErasureCoordinator(
                     lease,
                     progress,
                     phases,
+                    closure,
                     interrupted).ConfigureAwait(false);
 
         }
@@ -1210,7 +1549,8 @@ internal sealed class CovenantErasureCoordinator(
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     progress,
                     interrupted.Code,
-                        phases).ConfigureAwait(false)
+                        phases,
+                        closure).ConfigureAwait(false)
                 : await AbortBeforeErasureAsync(
                     operation,
                     state,
@@ -1218,6 +1558,7 @@ internal sealed class CovenantErasureCoordinator(
                     lease,
                     progress,
                     phases,
+                    closure,
                     interrupted).ConfigureAwait(false);
 
         }
@@ -1274,7 +1615,8 @@ internal sealed class CovenantErasureCoordinator(
                 CovenantExclusiveLeaseDisposition.KeepClosed,
                 progress,
                 failed.Error.Code,
-                    phases).ConfigureAwait(false);
+                    phases,
+                    closure).ConfigureAwait(false);
 
         }
         catch (Exception)
@@ -1290,7 +1632,8 @@ internal sealed class CovenantErasureCoordinator(
                 CovenantExclusiveLeaseDisposition.KeepClosed,
                 progress,
                 interrupted.Code,
-                    phases).ConfigureAwait(false);
+                    phases,
+                    closure).ConfigureAwait(false);
 
         }
 
@@ -1322,7 +1665,8 @@ internal sealed class CovenantErasureCoordinator(
                 CovenantExclusiveLeaseDisposition.KeepClosed,
                 progress,
                 published.Error.Code,
-                    phases).ConfigureAwait(false);
+                    phases,
+                    closure).ConfigureAwait(false);
 
         }
 
@@ -1344,7 +1688,8 @@ internal sealed class CovenantErasureCoordinator(
                 CovenantExclusiveLeaseDisposition.KeepClosed,
                 progress,
                 writer.Error.Code,
-                    phases).ConfigureAwait(false);
+                    phases,
+                    closure).ConfigureAwait(false);
 
         }
 
@@ -1363,7 +1708,8 @@ internal sealed class CovenantErasureCoordinator(
             disposition,
             progress,
             blockingErrorCode: null,
-            phases).ConfigureAwait(false);
+            phases,
+            closure).ConfigureAwait(false);
 
     }
 
@@ -1384,6 +1730,7 @@ internal sealed class CovenantErasureCoordinator(
         CovenantExclusiveLease lease,
         ErasureProgress progress,
         GrimoireOfflineTransitionPhaseSession? phases,
+        CovenantGrimoireClosure? closure,
         Error error)
     {
 
@@ -1427,12 +1774,14 @@ internal sealed class CovenantErasureCoordinator(
             disposition,
             progress,
             restored.IsSuccess ? error.Code : ErrorCodes.Covenant.MaintenanceFailed,
-            phases).ConfigureAwait(false);
+            phases,
+            closure).ConfigureAwait(false);
 
     }
 
     private async Task<Result> EraseDatabaseArtifactsAsync(
         Guid datasetGeneration,
+        CovenantClosedPeriodAuthority maintenance,
         CovenantArtifactErasureAuthority authority,
         ErasureProgress progress,
         CancellationToken cancellationToken)
@@ -1444,7 +1793,7 @@ internal sealed class CovenantErasureCoordinator(
         {
 
             Result<CovenantDatabaseErasureBatch> batch = await _inventory
-                .ReadNextDatabaseBatchAsync(datasetGeneration, cursor, cancellationToken)
+                .ReadNextDatabaseBatchAsync(datasetGeneration, cursor, maintenance, cancellationToken)
                 .ConfigureAwait(false);
 
             if (batch.IsFailure)
@@ -1514,6 +1863,7 @@ internal sealed class CovenantErasureCoordinator(
 
     private async Task<Result> EraseManagedFilesAsync(
         Guid operationId,
+        CovenantClosedPeriodAuthority maintenance,
         CovenantArtifactErasureAuthority authority,
         ErasureProgress progress,
         CancellationToken cancellationToken)
@@ -1525,7 +1875,7 @@ internal sealed class CovenantErasureCoordinator(
         {
 
             Result<CovenantManagedFileErasureBatch> batch = await _inventory
-                .ReadNextManagedFileBatchAsync(operationId, cursor, cancellationToken)
+                .ReadNextManagedFileBatchAsync(operationId, cursor, maintenance, cancellationToken)
                 .ConfigureAwait(false);
 
             if (batch.IsFailure)
@@ -1590,73 +1940,6 @@ internal sealed class CovenantErasureCoordinator(
             cursor = batch.Value.NextCursor;
 
         }
-
-    }
-
-    private static async Task<Result> RunWithV3CapabilityAsync(
-        ICovenantExclusiveOperationLease lease,
-        CovenantV3MaintenancePurpose purpose,
-        Func<CovenantV3MaintenanceCapability, CancellationToken, Task<Result>> work,
-        CancellationToken cancellationToken)
-    {
-
-        Result<CovenantV3MaintenanceCapability> minted =
-            await CovenantV3MaintenanceCapability.MintAsync(lease, purpose, cancellationToken)
-                .ConfigureAwait(false);
-
-        if (minted.IsFailure)
-        {
-
-            return Result.Failure(minted.Error);
-
-        }
-
-        await using CovenantV3MaintenanceCapability capability = minted.Value;
-
-        return await work(capability, cancellationToken).ConfigureAwait(false);
-
-    }
-
-    private static async Task<Result<CovenantV3CompactionCapabilities>> MintCompactionCapabilitiesAsync(
-        ICovenantExclusiveOperationLease lease,
-        CancellationToken cancellationToken)
-    {
-
-        List<CovenantV3MaintenanceCapability> minted = [];
-
-        foreach (CovenantV3MaintenancePurpose purpose in new[]
-        {
-            CovenantV3MaintenancePurpose.CompactionVacuum,
-            CovenantV3MaintenancePurpose.CompactionExport,
-            CovenantV3MaintenancePurpose.CompactionExportVerification,
-            CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore,
-        })
-        {
-
-            Result<CovenantV3MaintenanceCapability> capability =
-                await CovenantV3MaintenanceCapability.MintAsync(lease, purpose, cancellationToken)
-                    .ConfigureAwait(false);
-
-            if (capability.IsFailure)
-            {
-
-                foreach (CovenantV3MaintenanceCapability previous in minted)
-                {
-
-                    await previous.DisposeAsync().ConfigureAwait(false);
-
-                }
-
-                return Result<CovenantV3CompactionCapabilities>.Failure(capability.Error);
-
-            }
-
-            minted.Add(capability.Value);
-
-        }
-
-        return Result<CovenantV3CompactionCapabilities>.Success(
-            new CovenantV3CompactionCapabilities(minted[0], minted[1], minted[2], minted[3]));
 
     }
 
@@ -1958,7 +2241,8 @@ internal sealed class CovenantErasureCoordinator(
         CovenantExclusiveLeaseDisposition disposition,
         ErasureProgress progress,
         string? blockingErrorCode,
-        GrimoireOfflineTransitionPhaseSession? phases)
+        GrimoireOfflineTransitionPhaseSession? phases,
+        CovenantGrimoireClosure? closure)
     {
 
         using CancellationTokenSource lifecycle = new(DispositionBound, _timeProvider);
@@ -1972,7 +2256,7 @@ internal sealed class CovenantErasureCoordinator(
             ? Result<ReconciliationSuffix>.Success(ReconciliationSuffix.NoJournal)
             : disposition is CovenantExclusiveLeaseDisposition.KeepClosed
                 ? Parked(await phases.ParkAsync(lifecycle.Token).ConfigureAwait(false))
-                : await ReconcileBeforeDispositionAsync(phases, disposition, lifecycle.Token)
+                : await ReconcileBeforeDispositionAsync(phases, disposition, closure, lifecycle.Token)
                     .ConfigureAwait(false);
 
         if (suffix.IsFailure)
@@ -1995,6 +2279,32 @@ internal sealed class CovenantErasureCoordinator(
         {
 
             disposition = CovenantExclusiveLeaseDisposition.KeepClosed;
+
+        }
+
+        // The Grimoire's closure is spent first, and on the same answer. The two gates are separate
+        // closures over one installation, and a run that reopened either while keeping the other shut
+        // would leave an operator with an installation that is neither open nor closed. This one goes
+        // first because it is the outer of the two: ordinary admission has to be reopenable before
+        // the Covenant scope that closed it lets go.
+        if (closure is not null)
+        {
+
+            Result reopened = await closure.ReleaseAsync(disposition, lifecycle.Token)
+                .ConfigureAwait(false);
+
+            if (reopened.IsFailure)
+            {
+
+                _logger.LogError(
+                    "A Covenant erasure could not spend its {Disposition} disposition on the Grimoire "
+                    + "closure ({ErrorCode}); admission stays closed.",
+                    disposition,
+                    reopened.Error.Code);
+
+                return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
+
+            }
 
         }
 
@@ -2081,6 +2391,7 @@ internal sealed class CovenantErasureCoordinator(
     private async Task<Result<ReconciliationSuffix>> ReconcileBeforeDispositionAsync(
         GrimoireOfflineTransitionPhaseSession phases,
         CovenantExclusiveLeaseDisposition disposition,
+        CovenantGrimoireClosure? closure,
         CancellationToken cancellationToken)
     {
 
@@ -2129,14 +2440,15 @@ internal sealed class CovenantErasureCoordinator(
         if (step < GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner)
         {
 
-            GrimoireOfflineTransitionDatabaseReconciliation reconciled = await _reconciler
-                .ReconcileAsync(
+            GrimoireOfflineTransitionDatabaseReconciliation reconciled = await WithLedgerAsync(
+                closure,
+                token => _reconciler.ReconcileAsync(
                     phases.Current.Payload,
                     disposition is CovenantExclusiveLeaseDisposition.CommitAndReopen
                         ? GrimoireOfflineTransitionTerminalDisposition.Completed
                         : GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect,
-                    cancellationToken)
-                .ConfigureAwait(false);
+                    token),
+                cancellationToken).ConfigureAwait(false);
 
             if (reconciled.TerminalWinnerDigest is not { IsValid: true } winner)
             {

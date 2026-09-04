@@ -1812,18 +1812,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IStoppedHostGrimoireConnectionFactory>(static sp =>
             sp.GetRequiredService<StoppedHostGrimoireConnectionFactory>());
 
-        services.AddSingleton<CovenantV3MaintenanceConnectionFactory>(
-            static sp => new CovenantV3MaintenanceConnectionFactory(
-                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
-                sp.GetRequiredService<ISqliteNativeRuntime>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
-
-        services.AddSingleton<ICovenantV3MaintenanceConnectionFactory>(
-            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
-
-        services.AddSingleton<ICovenantV3MaintenancePathAuthority>(
-            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
-
         services.AddSingleton(
             static sp => new CovenantHealthyCatalogErasureGuard(
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
@@ -1839,9 +1827,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantCanonicalErasureTransaction(
-                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<TimeProvider>()));
 
         services.AddSingleton<ICovenantCanonicalErasure>(
@@ -1849,10 +1835,9 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantLocalErasureStorageHealth(
-                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantV3MaintenancePathAuthority>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<TimeProvider>()));
 
         services.AddSingleton<ICovenantLocalErasureStorageHealth>(
@@ -2043,6 +2028,12 @@ public static class ServiceCollectionExtensions
         // row alone whose lease this process deliberately stopped renewing.
         services.TryAddSingleton<LongRunningOperationOwnership>();
 
+        // Scoped, because it names the scoped database context's own connection - the exact object
+        // the operation store issues its statements on, which is what makes a scoped permit over it
+        // keep the terminal compare-exchange working while ordinary admission is shut.
+        services.TryAddScoped<ICovenantClosedPeriodLedgerConnection,
+            CovenantClosedPeriodLedgerConnection>();
+
         services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
             static sp => new GrimoireOfflineTransitionPhaseAuthority(
                 sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
@@ -2084,6 +2075,10 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantErasureTransition>(),
                 sp.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
                 sp.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                sp.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
                 sp.GetRequiredService<LongRunningOperationOwnership>(),
                 sp.GetRequiredService<TimeProvider>(),

@@ -153,7 +153,7 @@ internal sealed record CovenantCandidateAuthorityState(
     CovenantHostToolsState HostToolsState,
     string? TransitionId);
 
-/// <summary>The Covenant family's own row in the shared per-capability cleanup cursor.</summary>
+/// <summary>The Covenant family's own row in the shared per-authority cleanup cursor.</summary>
 internal sealed record CovenantCandidateCapabilityState(
     long AppliedCampaignSequence,
     long AppliedSessionSequence,
@@ -187,12 +187,12 @@ internal interface ICovenantLocalErasureStorageHealth
 
     /// <summary>Clears every pool, drains direct handles, and proves no live sidecar survived.</summary>
     Task<Result> CloseHandlesAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>Runs a checked <c>wal_checkpoint(TRUNCATE)</c>, refusing on busy or a leftover frame.</summary>
     Task<Result> TruncateWalAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -200,12 +200,12 @@ internal interface ICovenantLocalErasureStorageHealth
     /// export-and-atomic-replace when compaction alone cannot prove the freed pages are gone.
     /// </summary>
     Task<Result> CompactAsync(
-        CovenantV3CompactionCapabilities capabilities,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>Installs the empty accelerator's own configuration and runs rank-1 integrity over it.</summary>
     Task<Result> InitializeAcceleratorAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
     /// <summary>Drains again and proves every residual artifact class absent.</summary>
@@ -213,10 +213,10 @@ internal interface ICovenantLocalErasureStorageHealth
 
     /// <summary>
     /// Reopens the unpublished candidate read-only on a handle that cannot create a write-ahead log
-    /// or a wal-index, verifies its dataset, master, authority, and capability state, and closes it.
+    /// or a wal-index, verifies its dataset, master, authority, and authority state, and closes it.
     /// </summary>
     Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
 }
@@ -246,7 +246,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// <summary>The attachment name an export writes through. A fixed identifier, never input.</summary>
     private const string ExportAlias = "covenant_erasure_export";
 
-    /// <summary>The Covenant family's row in the shared per-capability cleanup cursor.</summary>
+    /// <summary>The Covenant family's row in the shared per-authority cleanup cursor.</summary>
     private const long CovenantFamilyCode = (long)GrimoireSchemaFamily.Covenant;
 
     /// <summary>How many times a proof of absence is taken before its refusal stands.</summary>
@@ -270,31 +270,26 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// <summary>The pause between two attempts at the same proof.</summary>
     private static readonly TimeSpan AbsenceProofRetryInterval = TimeSpan.FromMilliseconds(25);
 
-    private readonly ICovenantV3MaintenanceConnectionFactory _connections;
+    private readonly IGrimoireMaintenancePathAuthority _paths;
 
-    private readonly ICovenantV3MaintenancePathAuthority _paths;
+    private readonly IGrimoireDbPassphraseSource _passphrase;
 
     private readonly ICovenantSqliteConnectionInitializer _initializer;
-
-    private readonly ICovenantConnectionDrain _drain;
 
     private readonly TimeProvider _timeProvider;
 
     internal CovenantLocalErasureStorageHealth(
-        ICovenantV3MaintenanceConnectionFactory connections,
-        ICovenantV3MaintenancePathAuthority paths,
+        IGrimoireMaintenancePathAuthority paths,
+        IGrimoireDbPassphraseSource passphrase,
         ICovenantSqliteConnectionInitializer initializer,
-        ICovenantConnectionDrain drain,
         TimeProvider timeProvider)
     {
 
-        _connections = connections ?? throw new ArgumentNullException(nameof(connections));
-
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
 
-        _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
+        _passphrase = passphrase ?? throw new ArgumentNullException(nameof(passphrase));
 
-        _drain = drain ?? throw new ArgumentNullException(nameof(drain));
+        _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
 
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
@@ -316,18 +311,10 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     internal Action<SqliteConnection>? BeforeAcceleratorInitializationForTesting { get; set; }
 
     public async Task<Result> CloseHandlesAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
-        Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
-
-        if (drained.IsFailure)
-        {
-
-            return drained;
-
-        }
 
         // Closing every handle and causing the last close are not the same statement. SQLite removes
         // a write-ahead log when the last connection to the database closes, and a read-only
@@ -346,7 +333,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         }
 
-        Result settled = await SettleSidecarsAsync(capability, cancellationToken).ConfigureAwait(false);
+        Result settled = await SettleSidecarsAsync(authority, cancellationToken).ConfigureAwait(false);
 
         return settled.IsFailure
             ? settled
@@ -367,12 +354,11 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// that follows is what answers that, and it answers it from the filesystem.
     /// </remarks>
     private Task<Result> SettleSidecarsAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken) =>
         WithMaintenanceConnectionAsync(
             "close the handles a Covenant erasure is about to prove absent",
-            capability,
-            (proof, token) => _connections.OpenV3WalTruncationAsync(proof, token),
+            authority.OpenWalTruncationAsync,
             async (connection, token) =>
             {
 
@@ -385,23 +371,14 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             cancellationToken);
 
     public async Task<Result> TruncateWalAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
-        Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
-
-        if (drained.IsFailure)
-        {
-
-            return drained;
-
-        }
 
         return await WithMaintenanceConnectionAsync(
             "truncate the write-ahead log",
-            capability,
-            (proof, token) => _connections.OpenV3WalTruncationAsync(proof, token),
+            authority.OpenWalTruncationAsync,
             async (connection, token) =>
             {
 
@@ -416,87 +393,66 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     }
 
     public async Task<Result> CompactAsync(
-        CovenantV3CompactionCapabilities capabilities,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
-        await using (capabilities.ConfigureAwait(false))
-        {
+    // An interrupted pass of this same step is entitled to have left a staging file behind, and
+    // it is this step's own litter rather than a reason to stop: a staging file is a complete
+    // encrypted copy of a database the erasure is in the middle of replacing, so the one thing
+    // that must not happen is for it to survive the proof.
+    Result cleared = CovenantResidualArtifacts.RemoveOwnStaging(_paths.CanonicalDatabasePath);
 
-        Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
+    if (cleared.IsFailure)
+    {
 
-        if (drained.IsFailure)
-        {
+        return cleared;
 
-            return drained;
+    }
 
-        }
+    // Everything else is refused before a single byte is rewritten. A surviving sidecar names a
+    // handle still holding the database; a surviving replaced original names a previous pass that
+    // installed a candidate it could not verify, and rewriting the file underneath that is
+    // rewriting a destination whose identity nobody has established.
+    Result residue = await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
+        .ConfigureAwait(false);
 
-        // An interrupted pass of this same step is entitled to have left a staging file behind, and
-        // it is this step's own litter rather than a reason to stop: a staging file is a complete
-        // encrypted copy of a database the erasure is in the middle of replacing, so the one thing
-        // that must not happen is for it to survive the proof.
-        Result cleared = CovenantResidualArtifacts.RemoveOwnStaging(_paths.CanonicalDatabasePath);
+    if (residue.IsFailure)
+    {
 
-        if (cleared.IsFailure)
-        {
+        return residue;
 
-            return cleared;
+    }
 
-        }
+    Result<CovenantCompactionMeasurement?> compacted =
+        await VacuumAsync(authority, cancellationToken).ConfigureAwait(false);
 
-        // Everything else is refused before a single byte is rewritten. A surviving sidecar names a
-        // handle still holding the database; a surviving replaced original names a previous pass that
-        // installed a candidate it could not verify, and rewriting the file underneath that is
-        // rewriting a destination whose identity nobody has established.
-        Result residue = await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
-            .ConfigureAwait(false);
+    if (compacted.IsFailure)
+    {
 
-        if (residue.IsFailure)
-        {
+        return Result.Failure(compacted.Error);
 
-            return residue;
+    }
 
-        }
+    // The cheaper arm proved itself. Rewriting the file anyway would be a second irreversible
+    // step taken for no reason, on a database an operator is already waiting on.
+    return compacted.Value is { IsProven: true }
+        ? Result.Success()
+        : await ExportAndReplaceAsync(authority, cancellationToken).ConfigureAwait(false);
 
-        Result<CovenantCompactionMeasurement?> compacted =
-            await VacuumAsync(capabilities.Vacuum, cancellationToken).ConfigureAwait(false);
-
-        if (compacted.IsFailure)
-        {
-
-            return Result.Failure(compacted.Error);
-
-        }
-
-        // The cheaper arm proved itself. Rewriting the file anyway would be a second irreversible
-        // step taken for no reason, on a database an operator is already waiting on.
-        return compacted.Value is { IsProven: true }
-            ? Result.Success()
-            : await ExportAndReplaceAsync(capabilities, cancellationToken).ConfigureAwait(false);
-
-        }
+    
 
     }
 
     public async Task<Result> InitializeAcceleratorAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
-        Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
-
-        if (drained.IsFailure)
-        {
-
-            return drained;
-
-        }
 
         return await WithMaintenanceConnectionAsync(
             "initialize the empty Covenant accelerator",
-            capability,
-            (proof, token) => _connections.OpenV3AcceleratorInitializationAsync(proof, token),
+            authority.OpenAcceleratorInitializationAsync,
             InitializeAcceleratorOnConnectionAsync,
             cancellationToken).ConfigureAwait(false);
 
@@ -505,30 +461,17 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     public async Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken)
     {
 
-        Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
-
         // Every class, not only the ones a live handle produces. A staging or replaced file that
         // survived this far is a copy of protected state the erasure has already reported compacting.
-        return drained.IsFailure
-            ? drained
-            : await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
-                .ConfigureAwait(false);
+        return await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
     public async Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
-
-        Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
-
-        if (drained.IsFailure)
-        {
-
-            return Result<CovenantVerifiedCandidateState>.Failure(drained.Error);
-
-        }
 
         // Before the handle, not only after it. The sidecar-free handle is opened immutable, which
         // tells the engine the file cannot change underneath it — so a write-ahead log that did exist
@@ -544,7 +487,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         }
 
         Result<CovenantVerifiedCandidateState> verified =
-            await ReadAndVerifyCandidateAsync(capability, cancellationToken).ConfigureAwait(false);
+            await ReadAndVerifyCandidateAsync(authority, cancellationToken).ConfigureAwait(false);
 
         if (verified.IsFailure)
         {
@@ -580,7 +523,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// nobody may claim otherwise.</para>
     /// </remarks>
     internal async Task<Result> ExportAndReplaceAsync(
-        CovenantV3CompactionCapabilities capabilities,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
@@ -591,7 +534,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         try
         {
 
-            Result exported = await ExportAsync(capabilities.Export, cancellationToken).ConfigureAwait(false);
+            Result exported = await ExportAsync(authority, cancellationToken).ConfigureAwait(false);
 
             if (exported.IsFailure)
             {
@@ -601,13 +544,13 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             }
 
             Result<CovenantVerifiedExport> verified =
-                await VerifyExportAsync(capabilities.ExportVerification, cancellationToken).ConfigureAwait(false);
+                await VerifyExportAsync(authority, cancellationToken).ConfigureAwait(false);
 
             return verified.IsFailure
                 ? Result.Failure(verified.Error)
                 : await ReplaceAsync(
                     verified.Value,
-                    capabilities.PostReplaceJournalRestore,
+                    authority,
                     cancellationToken).ConfigureAwait(false);
 
         }
@@ -630,12 +573,11 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// somebody's word for.
     /// </remarks>
     internal async Task<Result> ExportAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
-        Result<ICovenantV3MaintenanceConnectionLease> opened = await _connections
-            .OpenV3ExportSourceAsync(capability, cancellationToken).ConfigureAwait(false);
+        Result<IGrimoireMaintenanceConnectionLease> opened = await authority.OpenCompactionAsync(cancellationToken).ConfigureAwait(false);
 
         if (opened.IsFailure)
         {
@@ -652,8 +594,10 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             try
             {
 
-                Result attached = await _connections.AttachV3ExportStagingAsync(
+                Result attached = await authority.AttachExportStagingAsync(
                     opened.Value,
+                    _paths.ExportStagingDatabasePath,
+                    _passphrase.Passphrase,
                     cancellationToken).ConfigureAwait(false);
 
                 if (attached.IsFailure)
@@ -709,7 +653,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// before anything replaces the database that is still working.
     /// </summary>
     internal async Task<Result<CovenantVerifiedExport>> VerifyExportAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
@@ -722,8 +666,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         }
 
-        Result<ICovenantV3MaintenanceConnectionLease> opened = await _connections
-            .OpenV3ExportVerificationAsync(capability, cancellationToken).ConfigureAwait(false);
+        Result<IGrimoireMaintenanceConnectionLease> opened = await authority.OpenExportVerificationAsync(cancellationToken).ConfigureAwait(false);
 
         if (opened.IsFailure)
         {
@@ -822,7 +765,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// </remarks>
     internal async Task<Result> ReplaceAsync(
         CovenantVerifiedExport verified,
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
@@ -892,8 +835,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         // an owner, and the read-back is the whole value of having one.
         return await WithMaintenanceConnectionAsync(
             "restore write-ahead logging on the replaced Covenant database",
-            capability,
-            (proof, token) => _connections.OpenV3PostReplaceJournalRestoreAsync(proof, token),
+            authority.OpenCompactionAsync,
             static (_, _) => Task.FromResult(Result.Success()),
             cancellationToken).ConfigureAwait(false);
 
@@ -912,7 +854,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// looked at the finished file would pass whether or not the cheaper arm ever ran.</para>
     /// </remarks>
     internal async Task<Result<CovenantCompactionMeasurement?>> VacuumAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
@@ -920,8 +862,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         Result compacted = await WithMaintenanceConnectionAsync(
             "compact the Covenant database",
-            capability,
-            (proof, token) => _connections.OpenV3VacuumAsync(proof, token),
+            authority.OpenCompactionAsync,
             async (connection, token) =>
             {
 
@@ -1064,12 +1005,11 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// Opens the sidecar-free handle, reads the candidate's four states, and refuses any disagreement.
     /// </summary>
     private async Task<Result<CovenantVerifiedCandidateState>> ReadAndVerifyCandidateAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
-        Result<ICovenantV3MaintenanceConnectionLease> opened = await _connections
-            .OpenV3CandidateReopenVerificationAsync(capability, cancellationToken).ConfigureAwait(false);
+        Result<IGrimoireMaintenanceConnectionLease> opened = await authority.OpenCandidateReopenAsync(cancellationToken).ConfigureAwait(false);
 
         if (opened.IsFailure)
         {
@@ -1270,9 +1210,9 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                    authority.RecoveryEnvelopeEpoch,
                    authority.HostToolsStateCode,
                    authority.TransitionId,
-                   capability.AppliedCampaignSequence,
-                   capability.AppliedSessionSequence,
-                   capability.FullSweepRequired,
+                   authority.AppliedCampaignSequence,
+                   authority.AppliedSessionSequence,
+                   authority.FullSweepRequired,
                    state.RebuildTargetSequence,
                    state.RebuildCursor,
                    authority.TaintTimeMasterVersion,
@@ -1283,8 +1223,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                    state.KeyReclamationEpoch
             FROM covenant_state AS state
             CROSS JOIN covenant_authority_state AS authority
-            INNER JOIN capability_cleanup_state AS capability
-                ON capability.CapabilityFamilyCode = $family
+            INNER JOIN capability_cleanup_state AS authority
+                ON authority.CapabilityFamilyCode = $family
             WHERE state.StateKey = 1
               AND authority.StateKey = 1;
             """;
@@ -1774,14 +1714,6 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             await Task.Delay(AbsenceProofRetryInterval, _timeProvider, cancellationToken)
                 .ConfigureAwait(false);
 
-            Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
-
-            if (drained.IsFailure)
-            {
-
-                return drained;
-
-            }
 
             absent = RequireAbsent(classes, attempt);
 
@@ -1827,35 +1759,15 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     }
 
-    /// <summary>
-    /// Drains, and reports a drain that could not prove itself as the incomplete erasure it is.
-    /// </summary>
-    /// <remarks>
-    /// The drain's own code says a maintenance step failed, which is true and is not what an operator
-    /// needs here: a handle this process could not close is a handle still holding the database, and
-    /// the erasure standing behind it is incomplete whatever the drain calls it internally.
-    /// </remarks>
-    private async Task<Result> DrainAsync(CancellationToken cancellationToken)
-    {
-
-        Result drained = await _drain.DrainAsync(cancellationToken).ConfigureAwait(false);
-
-        return drained.IsSuccess
-            ? drained
-            : new Error(ErrorCodes.Covenant.ErasureIncomplete, drained.Error.Message);
-
-    }
-
-    private async Task<Result> WithMaintenanceConnectionAsync(
+    private static async Task<Result> WithMaintenanceConnectionAsync(
         string step,
-        CovenantV3MaintenanceCapability capability,
-        Func<CovenantV3MaintenanceCapability, CancellationToken, Task<Result<ICovenantV3MaintenanceConnectionLease>>> open,
+        Func<CancellationToken, Task<Result<IGrimoireMaintenanceConnectionLease>>> open,
         Func<SqliteConnection, CancellationToken, Task<Result>> work,
         CancellationToken cancellationToken)
     {
 
-        Result<ICovenantV3MaintenanceConnectionLease> opened =
-            await open(capability, cancellationToken).ConfigureAwait(false);
+        Result<IGrimoireMaintenanceConnectionLease> opened =
+            await open(cancellationToken).ConfigureAwait(false);
 
         if (opened.IsFailure)
         {

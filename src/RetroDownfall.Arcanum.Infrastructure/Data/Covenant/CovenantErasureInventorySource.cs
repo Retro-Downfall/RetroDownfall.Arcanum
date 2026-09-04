@@ -72,11 +72,15 @@ internal sealed class CovenantErasureInventorySource(
     /// </remarks>
     public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
         CancellationToken cancellationToken) =>
-        WithOwnedSnapshotAsync(ReadOfflineTransitionSourceStateAsync, cancellationToken);
+        WithOwnedSnapshotAsync(
+            authority: null,
+            ReadOfflineTransitionSourceStateAsync,
+            cancellationToken);
 
     public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
         CovenantExclusiveOperation operation,
         Guid datasetGeneration,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
@@ -90,6 +94,7 @@ internal sealed class CovenantErasureInventorySource(
         }
 
         return WithOwnedSnapshotAsync(
+            authority,
             async (connection, transaction, token) =>
             {
 
@@ -233,8 +238,11 @@ internal sealed class CovenantErasureInventorySource(
 
     }
 
-    public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
+    public Task<Result> PreflightRemainingManagedAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
         WithOwnedSnapshotAsync(
+            authority,
             async (connection, transaction, token) =>
             {
 
@@ -317,6 +325,7 @@ internal sealed class CovenantErasureInventorySource(
     public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
         Guid datasetGeneration,
         Guid? afterLabelId,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
@@ -328,6 +337,7 @@ internal sealed class CovenantErasureInventorySource(
         }
 
         return WithOwnedSnapshotAsync(
+            authority,
             async (connection, transaction, token) =>
             {
 
@@ -389,6 +399,7 @@ internal sealed class CovenantErasureInventorySource(
     public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
         Guid operationId,
         Guid? afterLabelId,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
@@ -400,6 +411,7 @@ internal sealed class CovenantErasureInventorySource(
         }
 
         return WithOwnedSnapshotAsync(
+            authority,
             async (connection, transaction, token) =>
             {
 
@@ -469,8 +481,10 @@ internal sealed class CovenantErasureInventorySource(
     }
 
     public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken) =>
         WithOwnedSnapshotAsync(
+            authority,
             (connection, transaction, token) =>
                 _disclosures.ReadWithinAsync(connection, transaction, token),
             cancellationToken);
@@ -609,10 +623,100 @@ internal sealed class CovenantErasureInventorySource(
 
     }
 
-    private async Task<Result<T>> WithOwnedSnapshotAsync<T>(
+    /// <summary>
+    /// Reads one bounded snapshot on the closed period's own maintenance connection.
+    /// </summary>
+    /// <remarks>
+    /// The same bounded shape as the ordinary route — one connection, one transaction, nothing left
+    /// open — over a handle the admission gate authorized for exactly this purpose. It is read-only
+    /// and it is not the exclusive maintenance handle the destructive phases take, because an
+    /// inventory page has no business being able to write and taking an exclusive lock to count rows
+    /// would contend with the erasure standing beside it.
+    /// </remarks>
+    private static async Task<Result<T>> WithClosedSnapshotAsync<T>(
+        CovenantClosedPeriodAuthority authority,
         Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<Result<T>>> work,
         CancellationToken cancellationToken)
     {
+
+        Result<IGrimoireMaintenanceConnectionLease> opened =
+            await authority.OpenInventorySnapshotAsync(cancellationToken).ConfigureAwait(false);
+
+        if (opened.IsFailure)
+        {
+
+            return Result<T>.Failure(UnsafeInventory);
+
+        }
+
+        await using (opened.Value.ConfigureAwait(false))
+        {
+
+            SqliteTransaction? transaction = null;
+
+            try
+            {
+
+                transaction = (SqliteTransaction)await opened.Value.Connection
+                    .BeginTransactionAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                return await work(opened.Value.Connection, transaction, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+
+                throw;
+
+            }
+            catch
+            {
+
+                return Result<T>.Failure(UnsafeInventory);
+
+            }
+            finally
+            {
+
+                if (transaction is not null)
+                {
+
+                    await transaction.DisposeAsync().ConfigureAwait(false);
+
+                }
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Reads one bounded snapshot, through the closed period's own route when there is one.
+    /// </summary>
+    /// <remarks>
+    /// Two routes because there are two moments. The launch-time read happens before anything is
+    /// closed and takes the ordinary one; every read inside a closed period has to take the
+    /// maintenance one, because ordinary admission is shut for the exact generation this erasure is
+    /// erasing and the gate refuses an ordinary open outright. A single route would mean either
+    /// refusing the launch read or leaving a way around the closed period, and the second is
+    /// indistinguishable from having no closed period at all.
+    /// </remarks>
+    private async Task<Result<T>> WithOwnedSnapshotAsync<T>(
+        CovenantClosedPeriodAuthority? authority,
+        Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<Result<T>>> work,
+        CancellationToken cancellationToken)
+    {
+
+        if (authority is not null)
+        {
+
+            return await WithClosedSnapshotAsync(authority, work, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
 
         IGrimoireOrdinaryConnectionLease? lease = null;
 
@@ -682,11 +786,13 @@ internal sealed class CovenantErasureInventorySource(
     }
 
     private async Task<Result> WithOwnedSnapshotAsync(
+        CovenantClosedPeriodAuthority? authority,
         Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<Result>> work,
         CancellationToken cancellationToken)
     {
 
         Result<Unit> result = await WithOwnedSnapshotAsync(
+            authority,
             async (connection, transaction, token) =>
             {
 

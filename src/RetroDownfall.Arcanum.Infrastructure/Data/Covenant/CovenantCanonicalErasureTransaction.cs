@@ -71,7 +71,7 @@ internal interface ICovenantCanonicalErasure
     Task<Result<Guid>> ApplyAsync(
         CovenantExclusiveOperation operation,
         CovenantCanonicalDatasetTransition dataset,
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
 }
@@ -142,11 +142,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     internal static IReadOnlyList<string> FamilyTables { get; } =
         Array.AsReadOnly(FamilyTablesInDeletionOrder);
 
-    private readonly ICovenantV3MaintenanceConnectionFactory _connections;
-
     private readonly ICovenantSqliteConnectionInitializer _initializer;
-
-    private readonly ICovenantConnectionDrain _drain;
 
     private readonly TimeProvider _timeProvider;
 
@@ -158,17 +154,11 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     internal Func<int, Exception, CancellationToken, ValueTask>? RetryingForTesting { get; set; }
 
     internal CovenantCanonicalErasureTransaction(
-        ICovenantV3MaintenanceConnectionFactory connections,
         ICovenantSqliteConnectionInitializer initializer,
-        ICovenantConnectionDrain drain,
         TimeProvider timeProvider)
     {
 
-        _connections = connections ?? throw new ArgumentNullException(nameof(connections));
-
         _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
-
-        _drain = drain ?? throw new ArgumentNullException(nameof(drain));
 
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
@@ -177,7 +167,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     public async Task<Result<Guid>> ApplyAsync(
         CovenantExclusiveOperation operation,
         CovenantCanonicalDatasetTransition dataset,
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
 
@@ -204,20 +194,13 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         }
 
-        // Before the connection, never after. An exclusive maintenance handle cannot take its lock
-        // while any other handle holds the same database open, so draining afterwards would mean
-        // failing on a lock whose holder this component had just declined to close.
-        Result drained = await _drain.DrainAsync(cancellationToken).ConfigureAwait(false);
-
-        if (drained.IsFailure)
-        {
-
-            return Result<Guid>.Failure(drained.Error);
-
-        }
-
-        Result<ICovenantV3MaintenanceConnectionLease> opened =
-            await _connections.OpenV3CanonicalErasureAsync(capability, cancellationToken).ConfigureAwait(false);
+        // No drain here any more. The closed period this runs inside was entered through the
+        // admission gate's own stage two, which resolved every outstanding native open, waited for
+        // the enrolled handles to close, and cleared the pools before it issued the closed lease this
+        // authority was minted from. A second drain would be re-proving what the gate refuses to
+        // issue an authority without.
+        Result<IGrimoireMaintenanceConnectionLease> opened =
+            await authority.OpenCanonicalErasureAsync(cancellationToken).ConfigureAwait(false);
 
         if (opened.IsFailure)
         {

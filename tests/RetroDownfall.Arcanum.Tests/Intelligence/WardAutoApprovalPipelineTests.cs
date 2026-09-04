@@ -529,6 +529,25 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
     }
 
+    /// <summary>
+    /// Issue #220: a record-only tool call must cost the same whether the operator has configured no
+    /// forbidden arts or five hundred of them. Nothing on this path has any business reading that list,
+    /// and the way a reader would betray itself is allocation — enumerating, copying or hashing the
+    /// names once per call.
+    ///
+    /// The statistic is the median per-call allocation rather than the total over the window, and that
+    /// distinction is the whole of this test's stability. Two costs land inside the window
+    /// that have nothing to do with the settings. <see cref="WardGate"/>'s resolved-tombstone
+    /// <c>ConcurrentDictionary</c> rehashes itself once during the run — around 100 KB charged to a
+    /// single call, at an index chosen by this process's string hash seed and by the freshly minted
+    /// ward GUIDs, so it falls inside one gate's window and outside the other's roughly half the time.
+    /// A gen0 collection likewise retires the measuring thread's allocation context and charges its
+    /// unused remainder to whichever call was in flight. Both are lone spikes in a window of otherwise
+    /// identical samples, and a total-over-the-window budget has to be widened past 100 KB to survive
+    /// them — wide enough to wave through the very scaling this test exists to catch. Real scaling is
+    /// not a spike: consulting the list happens on every call, so it moves the median, which the tight
+    /// per-call budget below then refuses.
+    /// </summary>
     [Fact]
     public void N_tool_record_path_allocation_does_not_scale_with_ForbiddenArts_count()
     {
@@ -539,7 +558,11 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         const int ForbiddenArtCount = 512;
 
-        const long MaximumSettingsDependentDelta = 4096;
+        // Measured, every sampled call allocates the same 3240 bytes under both settings, so the
+        // honest budget is "nothing measurable" and this is slack for a stray boxed value rather than
+        // room for a real cost. It sits two orders of magnitude under the cheapest way a call could
+        // consult the list at all: merely copying 512 references would be 4096 bytes on its own.
+        const long MaximumSettingsDependentBytesPerToolCall = 64;
 
         const int TombstoneCapacitySeedCount = 768;
 
@@ -572,8 +595,11 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         WardGate configuredWard = new(new TestOptionsMonitor<ArcanumSettings>(configuredSettings));
 
-        // The production record ids are random GUIDs. Give both real gates the same table shape
-        // outside measurement so unrelated ConcurrentDictionary growth cannot consume the tolerance.
+        // The production record ids are random GUIDs. Give both real gates the same table shape so a
+        // settings-dependent cost cannot hide behind one gate's tombstone dictionary simply being
+        // smaller than the other's. This does not pin down when that dictionary rehashes — growth is
+        // triggered by bucket-chain length against random keys, not by a count the seeding could step
+        // over — which is why the reduction below is a median and not a sum.
         for (int i = 0; i < TombstoneCapacitySeedCount; i++)
         {
 
@@ -643,57 +669,101 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             options,
             turnContext);
 
-        long emptyBytes = MeasureToolCalls(
+        // Allocated ahead of both windows so that recording a sample never itself allocates inside the
+        // span being measured.
+        long[] emptyPerCallBytes = new long[SampleCount];
+
+        long[] configuredPerCallBytes = new long[SampleCount];
+
+        MeasureToolCalls(
             emptyPipeline,
             calls,
             start: WarmupCount,
-            count: SampleCount,
             request,
             options,
-            turnContext);
+            turnContext,
+            emptyPerCallBytes);
 
-        long configuredBytes = MeasureToolCalls(
+        MeasureToolCalls(
             configuredPipeline,
             calls,
             start: WarmupCount,
-            count: SampleCount,
             request,
             options,
-            turnContext);
+            turnContext,
+            configuredPerCallBytes);
 
-        long deltaBytes = configuredBytes - emptyBytes;
+        long emptyBytesPerCall = MedianOf(emptyPerCallBytes);
 
+        long configuredBytesPerCall = MedianOf(configuredPerCallBytes);
+
+        long deltaBytesPerCall = configuredBytesPerCall - emptyBytesPerCall;
+
+        // The window totals are not asserted on, but a human reading a failure needs them: they are
+        // what says whether a rehash or a collection landed in one window, and the medians alone hide
+        // that by design.
         output.WriteLine(
-            $"Issue #220 allocation sample: N={SampleCount}; empty={emptyBytes}; "
-                + $"configured={configuredBytes}; delta={deltaBytes}");
+            $"Issue #220 allocation sample: N={SampleCount}; "
+                + $"empty={emptyBytesPerCall}/call over {emptyPerCallBytes.Sum()}; "
+                + $"configured={configuredBytesPerCall}/call over {configuredPerCallBytes.Sum()}; "
+                + $"delta={deltaBytesPerCall}/call");
 
         Assert.True(
-            Math.Abs(deltaBytes) <= MaximumSettingsDependentDelta,
-            $"N={SampleCount}; empty={emptyBytes}; configured={configuredBytes}; delta={deltaBytes}");
+            Math.Abs(deltaBytesPerCall) <= MaximumSettingsDependentBytesPerToolCall,
+            $"N={SampleCount}; empty={emptyBytesPerCall}/call over {emptyPerCallBytes.Sum()}; "
+                + $"configured={configuredBytesPerCall}/call over {configuredPerCallBytes.Sum()}; "
+                + $"delta={deltaBytesPerCall}/call");
 
     }
 
-    private static long MeasureToolCalls(
+    /// <summary>
+    /// The middle sample of the window, over a copy so the caller's record stays in call order. With
+    /// an even sample count this is the upper middle rather than the mean of the two: the reported
+    /// number should be one the run actually observed, and no per-call cost is ever going to hinge on
+    /// half a byte.
+    /// </summary>
+    private static long MedianOf(long[] perCallBytes)
+    {
+
+        long[] ordered = (long[])perCallBytes.Clone();
+
+        Array.Sort(ordered);
+
+        return ordered[ordered.Length / 2];
+
+    }
+
+    /// <summary>
+    /// Fills <paramref name="perCallBytes"/> with what each individual call allocated, rather than
+    /// returning what the window allocated in total, so the caller can reduce the window with a
+    /// statistic no single outlier can move.
+    ///
+    /// The reading is <see cref="GC.GetAllocatedBytesForCurrentThread"/> and not a process-wide
+    /// counter: xunit's own machinery, the test host and any logging on other threads allocate
+    /// throughout this window, and every byte of it would otherwise be charged to the pipeline under
+    /// test. The thread identity is re-checked afterwards because that guarantee only holds while the
+    /// loop stays on one thread — the calls are asserted to complete synchronously for the same
+    /// reason.
+    /// </summary>
+    private static void MeasureToolCalls(
         ToolExecutionPipeline pipeline,
         FunctionCallContent[] calls,
         int start,
-        int count,
         PingRequest request,
         ChatOptions options,
-        ToolExecutionPipeline.TurnContext turnContext)
+        ToolExecutionPipeline.TurnContext turnContext,
+        long[] perCallBytes)
     {
 
         int managedThreadId = System.Environment.CurrentManagedThreadId;
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-
-        int end = start + count;
-
-        for (int i = start; i < end; i++)
+        for (int i = 0; i < perCallBytes.Length; i++)
         {
 
+            long before = GC.GetAllocatedBytesForCurrentThread();
+
             Task<ToolExecutionPipeline.ProcessedToolCall> task = pipeline.ProcessSingleToolCallAsync(
-                calls[i],
+                calls[start + i],
                 request,
                 options,
                 activeSpell: null,
@@ -712,9 +782,9 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
             _ = task.GetAwaiter().GetResult();
 
-        }
+            perCallBytes[i] = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        long allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        }
 
         if (System.Environment.CurrentManagedThreadId != managedThreadId)
         {
@@ -722,8 +792,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             throw new InvalidOperationException("Allocation measurement changed managed threads.");
 
         }
-
-        return allocatedBytes;
 
     }
 
