@@ -2024,8 +2024,12 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IInstallationResetMaintenanceLockAccessor>(
             static sp => sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>());
 
-        services.TryAddScoped<IInstallationResetDatabaseIdentityReader,
-            InstallationResetDatabaseIdentityReader>();
+        // The concrete reader only, never the interface. The installation-reset graph registers its
+        // own implementation of that interface with TryAdd, and this block composes ahead of it in the
+        // CLI stack - so claiming the interface here would silently take the reset service's reader
+        // away from it and hand it one that opens the database, which is exactly what a reset must not
+        // do while it is deciding whether a database is there at all.
+        services.TryAddScoped<InstallationResetDatabaseIdentityReader>();
 
         // The claim the coordinator takes for the length of a run, so generic reconciliation leaves a
         // row alone whose lease this process deliberately stopped renewing.
@@ -2035,7 +2039,8 @@ public static class ServiceCollectionExtensions
             static sp => new GrimoireOfflineTransitionPhaseAuthority(
                 sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
                 sp.GetRequiredService<IInstallationResetMaintenanceLockAccessor>(),
-                sp.GetRequiredService<IInstallationResetDatabaseIdentityReader>(),
+                sp.GetService<IInstallationResetDatabaseIdentityReader>()
+                    ?? sp.GetRequiredService<InstallationResetDatabaseIdentityReader>(),
                 sp.GetRequiredService<ILongRunningOperationStore>(),
                 sp.GetRequiredService<IOsCredentialStore>(),
                 ArcanumPaths.GrimoireDirectory));
