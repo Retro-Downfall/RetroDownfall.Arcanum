@@ -67,10 +67,10 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 `CovenantPublicContractInventory.cs`, `DataRetentionService.cs`, `DataRetentionService.FactoryReset.cs`.
 
 - [x] RED: a test asserting a row at the removed versions is refused content-free rather than throwing.
-- [ ] GREEN: delete `DataRetentionMutationCheckpointV3` and `DataRetentionFactoryResetCheckpointV1`,
+- [x] GREEN: delete `DataRetentionMutationCheckpointV3` and `DataRetentionFactoryResetCheckpointV1`,
       their encode and decode arms, and their serialization registrations. Keep the ordinary
       non-Covenant arms and `MinCheckpointVersion: 0`.
-- [ ] GREEN: remove their declarations from the public contract inventory and the durable-shape list.
+- [x] GREEN: remove their declarations from the public contract inventory and the durable-shape list.
 - [x] GREEN: window to 4 and 2; both handlers' supported version to match; the adopter recognizes the
       new versions; the coordinator's exact-checkpoint check moves with them.
 - [x] Update the four pinned window assertions and the adopter's seeded rows.
@@ -86,9 +86,9 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 - [ ] GREEN: add the registry and the two effect handlers, initially delegating to the existing kernels.
 - [x] RED: a test asserting a typed bound-begin builds the payload with the epoch the store allocates.
 - [x] GREEN: add `BeginBoundAsync` to the lifecycle store, keeping `BeginAsync` unchanged.
-- [ ] GREEN: register the journal store, both registries, the lifecycle store, the reconciler, and the
+- [x] GREEN: register the journal store, both registries, the lifecycle store, the reconciler, and the
       coordinator; extend the architecture-boundary registration inventory.
-- [ ] GREEN: borrow the held maintenance lock in both service paths and seed the profile identity once.
+- [x] GREEN: borrow the held maintenance lock in both service paths and seed the profile identity once.
 
 ### Task 4: Extend `GateAdmission` to carry the verified publication
 
@@ -133,20 +133,20 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 **Files:** `GrimoireOfflineTransitionCoordinator.cs`, `CovenantErasureCoordinator.cs`,
 `DataRetentionService*.cs`, new digest calculators, tests.
 
-- [ ] RED: a test asserting each phase publishes in-flight with before-state evidence, then completed.
-- [ ] GREEN: the drive loop; the evidence-digest calculators following the two existing house patterns.
-- [ ] RED: a test asserting no checkpoint, heartbeat, lease renewal, or reconciliation-required write
+- [x] RED: a test asserting each phase publishes in-flight with before-state evidence, then completed.
+- [x] GREEN: the drive loop; the evidence-digest calculators following the two existing house patterns.
+- [x] RED: a test asserting no checkpoint, heartbeat, lease renewal, or reconciliation-required write
       happens between the first journal publication and the terminal reread.
-- [ ] GREEN: delete the in-closure checkpoint writer, the reopened-verified checkpoint, the encoder,
+- [x] GREEN: delete the in-closure checkpoint writer, the reopened-verified checkpoint, the encoder,
       and the lifecycle-failure transition; unwrap the lease maintainer from the offline segment.
-- [ ] GREEN: publish closing evidence monotonically with the launch's exact source generation.
+- [x] GREEN: publish closing evidence monotonically with the launch's exact source generation.
 
 ### Task 8: Reconciliation exclusion
 
 **Files:** new ownership singleton, `LongRunningOperationReconciler.cs`, `ServiceCollectionExtensions.cs`.
 
-- [ ] RED: a test asserting the generic reconciler skips exactly a claimed operation and nothing else.
-- [ ] GREEN: the process-local claim, released on every exit including failure and parked outcomes.
+- [x] RED: a test asserting the generic reconciler skips exactly a claimed operation and nothing else.
+- [x] GREEN: the process-local claim, released on every exit including failure and parked outcomes.
 
 ### Task 9: Operation-bound staging and replacement ambiguity
 
@@ -162,31 +162,31 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 
 **Files:** `DataRetentionService.FactoryReset.cs`, coordinator, tests, acquisition inventory.
 
-- [ ] RED: a test asserting the deletion transaction writes no heartbeat, renews no lease, and advances
+- [x] RED: a test asserting the deletion transaction writes no heartbeat, renews no lease, and advances
       no revision.
-- [ ] RED: a test asserting the surviving row is proved to be the exact launch and refuses on mismatch.
-- [ ] GREEN: delete the in-transaction renewal block; add the preserve-and-reread; strengthen the
+- [x] RED: a test asserting the surviving row is proved to be the exact launch and refuses on mismatch.
+- [x] GREEN: delete the in-transaction renewal block; add the preserve-and-reread; strengthen the
       reconcile proof; update the inventory fingerprint for the changed signature.
-- [ ] RED/GREEN: the continuation flag moves from the phase window into the journal's one-way sub-state.
+- [x] RED/GREEN: the continuation flag moves from the phase window into the journal's one-way sub-state.
 
 ### Task 11: Runtime authority, dispositions, suffix, retirement
 
 **Files:** coordinator, `CovenantExclusiveDisposition.cs`, `CovenantErasureCoordinator.cs`, tests.
 
-- [ ] RED: a test asserting runtime authority is published while admission is still closed.
-- [ ] RED: tests asserting the six suffix steps publish in order, one revision each.
-- [ ] RED: a test asserting the journal cannot retire past a disposition that did not happen.
-- [ ] GREEN: the suffix loop, the post-disposition finalizer, the parent-receipt-not-required branch.
-- [ ] RED/GREEN: the three no-disposition escapes each reach an explicit parked outcome.
-- [ ] RED/GREEN: a parked outcome writes no database status and spends its disposition while the
+- [x] RED: a test asserting runtime authority is published while admission is still closed.
+- [x] RED: tests asserting the six suffix steps publish in order, one revision each.
+- [x] RED: a test asserting the journal cannot retire past a disposition that did not happen.
+- [x] GREEN: the suffix loop, the post-disposition finalizer, the parent-receipt-not-required branch.
+- [x] RED/GREEN: the three no-disposition escapes each reach an explicit parked outcome.
+- [x] RED/GREEN: a parked outcome writes no database status and spends its disposition while the
       journal is still active.
 
 ### Task 12: Fault injection matrix
 
 **Files:** coordinator, new crash-matrix test.
 
-- [ ] GREEN: the constructor-supplied fail-before-step seam with a production no-op.
-- [ ] RED/GREEN: one case per boundary, injected into a second coordinator over the same durable state
+- [x] GREEN: the constructor-supplied fail-before-step seam with a production no-op.
+- [x] RED/GREEN: one case per boundary, injected into a second coordinator over the same durable state
       and recovered with a fresh one, boundary name as the assertion message.
 
 ### Task 13: Remove the V3 maintenance adapter
@@ -202,12 +202,12 @@ handlers, `CovenantErasureStartupRecoveryOwnerAdopter.cs`, `CovenantErasureCoord
 
 ### Task 14: Documentation
 
-- [ ] `docs/Arcanum.DESIGN.md` §10.20.3–§10.20.6, in the document's own voice, naming no tracker issue.
-- [ ] `docs/Arcanum.Engineering.md` status paragraph and the Covenant reset sentences; do not rename the
+- [x] `docs/Arcanum.DESIGN.md` §10.20.3–§10.20.6, in the document's own voice, naming no tracker issue.
+- [x] `docs/Arcanum.Engineering.md` status paragraph and the Covenant reset sentences; do not rename the
       provider-retention heading.
-- [ ] `docs/Arcanum.API.md` §8.20 checkpoint sentences only.
-- [ ] `docs/Arcanum.Command.Reference.md` the one narration cell; no first cell, no heading.
-- [ ] `README.md` and `docs/Compendium.README.md` unchanged.
+- [x] `docs/Arcanum.API.md` §8.20 checkpoint sentences only.
+- [x] `docs/Arcanum.Command.Reference.md` the one narration cell; no first cell, no heading.
+- [x] `README.md` and `docs/Compendium.README.md` unchanged.
 
 ### Task 15: Review, integrate, deliver
 
