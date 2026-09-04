@@ -66,21 +66,27 @@ public sealed partial class DataRetentionServiceTests
     private static readonly Guid CovenantResetTargetGeneration =
         Guid.Parse("22222222-2222-4222-8222-222222222222");
 
+    /// <summary>
+    /// Recovery stops renewing the durable lease once the journal is its authority.
+    /// </summary>
+    /// <remarks>
+    /// It used to heartbeat for the whole recovery, and the revision that heartbeat advanced is now
+    /// the one the authenticated journal binds itself to — so a renewal would make the terminal
+    /// compare-exchange refuse the very row the transition exists to terminalize.
+    ///
+    /// <para>What the heartbeat was guarding is guarded differently. Another process cannot be running
+    /// an erasure at all, because the installation maintenance lock admits one; and generic
+    /// reconciliation skips an operation this process has claimed, which is what stops a background
+    /// pass adopting a row whose lease was deliberately allowed to lapse.</para>
+    /// </remarks>
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Recovery_maintains_the_exact_adopted_owner_while_the_coordinator_is_paused(
+    public async Task Recovery_stops_renewing_the_durable_lease_while_the_coordinator_runs(
         bool factoryReset)
     {
 
         RequireSqlCipher();
-
-        TimeSpan recoveryLease = TimeSpan.FromMinutes(2);
-
-        TimeSpan heartbeat = TimeSpan.FromSeconds(30);
-
-        RecoveryTimeProvider clock = new(
-            new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
 
         LongRunningOperationStore operations = new(
             _db!,
@@ -89,81 +95,47 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
             operations,
             factoryReset,
-            startedAt: clock.GetUtcNow().Subtract(TimeSpan.FromMinutes(5)),
+            startedAt: DateTimeOffset.UtcNow.Subtract(TimeSpan.FromMinutes(5)),
             leaseDuration: TimeSpan.FromMinutes(1));
 
         RecoveryPause pause = new();
 
-        DataRetentionLeaseMaintainer maintainer = new(
-            async (operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken) =>
-            {
-
-                return await operations.RenewLeaseAsync(
-                    operationId,
-                    ownerId,
-                    utcNow,
-                    leaseExpiresAt,
-                    cancellationToken);
-
-            },
-            clock,
-            leaseDuration: recoveryLease,
-            heartbeatInterval: heartbeat);
+        LongRunningOperationOwnership ownership = new();
 
         DataRetentionService service = CreateService(
-            timeProvider: clock,
             operationStore: operations,
             erasureCoordinator: RecoveryCoordinator(
                 operations,
                 operation,
                 CovenantResetPhase.InventoryPrepared,
                 pause: pause,
-                timeProvider: clock),
-            leaseMaintainer: maintainer);
+                ownership: ownership));
 
-        ILongRunningOperationRecoveryHandler handler = factoryReset
-            ? new DataRetentionFactoryResetRecoveryHandler(service)
-            : new DataRetentionMutationRecoveryHandler(service);
+        LongRunningOperation snapshot = (await operations.GetAsync(operation.Id))!;
 
-        LongRunningOperationReconciler reconciler = new(
-            operations,
-            [handler],
-            clock,
-            NullLogger<LongRunningOperationReconciler>.Instance);
-
-        const string adoptedOwner = "fake-time-recovery-owner";
-
-        DateTimeOffset adoptedAt = clock.GetUtcNow();
-
-        Task<LongRunningOperationReconciliationSummary> recovering = reconciler.ReconcileNowAsync(
-            adoptedOwner,
-            maxOperations: 1,
-            maxConcurrency: 1,
-            CancellationToken.None);
+        Task<LongRunningOperationRecoveryResult> recovering = factoryReset
+            ? service.RecoverFactoryResetAsync(snapshot, CancellationToken.None)
+            : service.RecoverMutationAsync(snapshot, CancellationToken.None);
 
         await pause.WaitUntilPausedAsync();
 
-        LongRunningOperation adopted = (await operations.GetAsync(operation.Id))!;
-
-        LongRunningOperation? maintainedWhilePaused = null;
+        LongRunningOperation duringPause;
 
         try
         {
 
-            await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(TimeSpan.FromSeconds(5));
+            // Given time to renew, and asserted not to have.
+            await Task.Delay(TimeSpan.FromMilliseconds(400), TimeProvider.System);
 
-            for (int heartbeatNumber = 1; heartbeatNumber <= 6; heartbeatNumber++)
-            {
+            duringPause = (await operations.GetAsync(operation.Id))!;
 
-                clock.Advance(heartbeat);
+            Assert.Equal(snapshot.Revision, duringPause.Revision);
 
-                await clock
-                    .WaitForScheduledTimerCountAsync(heartbeatNumber + 1)
-                    .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(snapshot.LeaseExpiresAt, duringPause.LeaseExpiresAt);
 
-            }
-
-            maintainedWhilePaused = await operations.GetAsync(operation.Id);
+            // And claimed, so a background reconciliation pass would leave the row alone rather than
+            // reading its lapsed lease as an invitation to start a second recovery beside this one.
+            Assert.True(ownership.IsClaimed(operation.Id));
 
         }
         finally
@@ -173,41 +145,23 @@ public sealed partial class DataRetentionServiceTests
 
         }
 
-        Assert.NotNull(maintainedWhilePaused);
+        LongRunningOperationRecoveryResult result = await recovering.WaitAsync(
+            TimeSpan.FromSeconds(30));
 
-        LongRunningOperation duringPause = maintainedWhilePaused;
-
-        LongRunningOperationReconciliationSummary result = await recovering.WaitAsync(
-            TimeSpan.FromSeconds(10));
-
-        Assert.Equal(1, result.Claimed);
-
-        Assert.Equal(1, result.Completed);
-
-        Assert.Equal(adoptedOwner, adopted.LeaseOwner);
-
-        Assert.Equal(adoptedAt.Add(recoveryLease), adopted.LeaseExpiresAt);
-
-        Assert.True(clock.GetUtcNow() > adopted.LeaseExpiresAt);
-
-        Assert.Equal(adoptedOwner, duringPause.LeaseOwner);
-
-        Assert.True(duringPause.LeaseExpiresAt > clock.GetUtcNow());
-
-        Assert.True(duringPause.Revision >= adopted.Revision + 6);
+        Assert.Equal(LongRunningOperationState.Completed, result.State);
 
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
         Assert.Equal(LongRunningOperationState.Completed, after.State);
 
-        Assert.Null(after.LeaseOwner);
+        Assert.False(ownership.IsClaimed(operation.Id));
 
     }
 
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Recovery_owner_loss_cancels_without_overwriting_the_new_owner(bool factoryReset)
+    public async Task Recovery_owner_loss_leaves_the_new_owners_row_exactly_as_it_found_it(bool factoryReset)
     {
 
         RequireSqlCipher();
@@ -222,52 +176,13 @@ public sealed partial class DataRetentionServiceTests
 
         RecoveryPause pause = new();
 
-        TaskCompletionSource<LongRunningOperation> adopted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        DataRetentionLeaseMaintainer maintainer = new(
-            async (operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken) =>
-            {
-
-                LongRunningOperation current = (await operations.GetAsync(
-                    operationId,
-                    cancellationToken))!;
-
-                Assert.True(await operations.TryTransitionAsync(
-                    operationId,
-                    current.Revision,
-                    ownerId,
-                    LongRunningOperationState.ReconciliationRequired,
-                    utcNow,
-                    ErrorCodes.Covenant.MaintenanceFailed,
-                    cancellationToken));
-
-                LongRunningOperationLeaseResult replacement = await operations.TryAcquireLeaseAsync(
-                    operationId,
-                    "replacement-recovery-owner",
-                    utcNow,
-                    leaseExpiresAt,
-                    cancellationToken);
-
-                Assert.True(replacement.Acquired);
-
-                adopted.TrySetResult(replacement.Operation);
-
-                return false;
-
-            },
-            TimeProvider.System,
-            leaseDuration: TimeSpan.FromMinutes(10),
-            heartbeatInterval: TimeSpan.FromMilliseconds(20));
-
         DataRetentionService service = CreateService(
             operationStore: operations,
             erasureCoordinator: RecoveryCoordinator(
                 operations,
                 operation,
                 CovenantResetPhase.InventoryPrepared,
-                pause: pause),
-            leaseMaintainer: maintainer);
+                pause: pause));
 
         LongRunningOperation snapshot = (await operations.GetAsync(operation.Id))!;
 
@@ -282,7 +197,27 @@ public sealed partial class DataRetentionServiceTests
         try
         {
 
-            replacement = await adopted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            // The takeover is performed directly rather than waited for. It used to arrive through a
+            // renewal callback, because the durable lease was being heartbeated for the whole run and
+            // the heartbeat was what noticed; the closed period renews nothing now, so nothing notices
+            // in flight and the test has to stage the takeover itself.
+            Assert.True(await operations.TryTransitionAsync(
+                operation.Id,
+                snapshot.Revision,
+                snapshot.LeaseOwner!,
+                LongRunningOperationState.ReconciliationRequired,
+                DateTimeOffset.UtcNow,
+                ErrorCodes.Covenant.MaintenanceFailed));
+
+            LongRunningOperationLeaseResult adopted = await operations.TryAcquireLeaseAsync(
+                operation.Id,
+                "replacement-recovery-owner",
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddMinutes(5));
+
+            Assert.True(adopted.Acquired);
+
+            replacement = adopted.Operation;
 
         }
         finally
@@ -293,11 +228,12 @@ public sealed partial class DataRetentionServiceTests
         }
 
         LongRunningOperationRecoveryResult result = await recovering.WaitAsync(
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(30));
 
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
-
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.ErrorCode);
+        // The row is what matters, and it is untouched. A transition whose row moved under it cannot
+        // name the terminal winner its journal requires, so it parks with the journal retained rather
+        // than writing over an answer another owner is now responsible for.
+        Assert.NotEqual(LongRunningOperationState.Completed, result.State);
 
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
@@ -306,6 +242,8 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(replacement.Revision, after.Revision);
 
         Assert.Equal(replacement.LeaseExpiresAt, after.LeaseExpiresAt);
+
+        Assert.Equal(replacement.State, after.State);
 
     }
 
@@ -795,7 +733,8 @@ public sealed partial class DataRetentionServiceTests
         RecoveryDisposition disposition = RecoveryDisposition.Commit,
         RecoveryPause? pause = null,
         TimeProvider? timeProvider = null,
-        LocalOfflineTransitionPhaseAuthority? phases = null)
+        LocalOfflineTransitionPhaseAuthority? phases = null,
+        LongRunningOperationOwnership? ownership = null)
     {
 
         Result<CovenantErasureCheckpointState> checkpoint = operation.Kind
@@ -834,6 +773,7 @@ public sealed partial class DataRetentionServiceTests
             new RecoveryWriterLifecycle(),
             phases ?? new LocalOfflineTransitionPhaseAuthority(operations),
             new GrimoireOfflineTransitionDatabaseReconciler(operations, clock),
+            ownership ?? new LongRunningOperationOwnership(),
             clock,
             NullLogger<CovenantErasureCoordinator>.Instance);
 

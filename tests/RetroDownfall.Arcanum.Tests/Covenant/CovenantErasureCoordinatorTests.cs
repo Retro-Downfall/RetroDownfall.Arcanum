@@ -1108,6 +1108,8 @@ public sealed class CovenantErasureCoordinatorTests
         /// </remarks>
         internal LocalOfflineTransitionPhaseAuthority Phases { get; }
 
+        internal LongRunningOperationOwnership Ownership { get; } = new();
+
         private readonly CovenantExclusiveOperation _operation;
 
         private readonly ICovenantErasureInventorySource _inventory;
@@ -1259,6 +1261,7 @@ public sealed class CovenantErasureCoordinatorTests
                 DisclosureWriter,
                 Phases,
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
+                Ownership,
                 TimeProvider.System,
                 NullLogger<CovenantErasureCoordinator>.Instance);
 
@@ -1308,6 +1311,7 @@ public sealed class CovenantErasureCoordinatorTests
                 DisclosureWriter,
                 Phases,
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
+                Ownership,
                 TimeProvider.System,
                 NullLogger<CovenantErasureCoordinator>.Instance);
 

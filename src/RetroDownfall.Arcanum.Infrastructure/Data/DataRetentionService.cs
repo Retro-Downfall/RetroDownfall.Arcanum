@@ -7035,14 +7035,15 @@ internal sealed partial class DataRetentionService(
         try
         {
 
-            recovered = await _leaseMaintainer.RunAsync(
-                operation.Id,
+            // No lease is renewed across the closed period, on recovery for the same reason as on a
+            // fresh apply: a renewal advances the row's revision, and the journal binds itself to the
+            // exact revision the launch produced. What the renewal was guarding - a second recovery
+            // starting beside this one - is guarded by the process-local claim the coordinator takes
+            // and by the journal's one active slot per profile.
+            recovered = await _covenantErasureCoordinator.RunAsync(
+                operation,
+                state.Value,
                 operation.LeaseOwner,
-                maintainedToken => _covenantErasureCoordinator.RunAsync(
-                    operation,
-                    state.Value,
-                    operation.LeaseOwner,
-                    maintainedToken),
                 cancellationToken).ConfigureAwait(false);
 
         }

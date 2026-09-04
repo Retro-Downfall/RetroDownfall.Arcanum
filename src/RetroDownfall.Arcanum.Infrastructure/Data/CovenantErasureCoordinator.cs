@@ -493,6 +493,7 @@ internal sealed class CovenantErasureCoordinator(
     ICovenantDisclosureWriterLifecycle disclosureWriter,
     IGrimoireOfflineTransitionPhaseAuthority phaseAuthority,
     GrimoireOfflineTransitionDatabaseReconciler reconciler,
+    LongRunningOperationOwnership ownership,
     TimeProvider timeProvider,
     ILogger<CovenantErasureCoordinator> logger)
 {
@@ -680,15 +681,39 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        return await RunUnderLeaseAsync(
-            operation,
-            checkpoint,
-            datasetGeneration.Value,
-            ownerId,
-            lease,
-            authority.Value,
-            factoryContinuation,
-            cancellationToken).ConfigureAwait(false);
+        // Claimed for the length of the run because the durable lease stops being renewed once the
+        // journal opens. Nothing else would then stop the background reconciliation pass finding an
+        // apparently abandoned row and starting a second recovery beside this one.
+        if (!ownership.TryClaim(operation.Id, out Guid claim))
+        {
+
+            return Result<CovenantErasureCompletion>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.LifecycleConflict,
+                    "This process is already running the operation this erasure was asked to run."));
+
+        }
+
+        try
+        {
+
+            return await RunUnderLeaseAsync(
+                operation,
+                checkpoint,
+                datasetGeneration.Value,
+                ownerId,
+                lease,
+                authority.Value,
+                factoryContinuation,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            _ = ownership.Release(operation.Id, claim);
+
+        }
 
     }
 

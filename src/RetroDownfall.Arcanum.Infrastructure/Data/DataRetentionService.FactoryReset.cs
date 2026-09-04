@@ -404,7 +404,6 @@ internal sealed partial class DataRetentionService
                 transaction,
                 operationId,
                 leaseOwner,
-                timeProvider.GetUtcNow(),
                 cancellationToken).ConfigureAwait(false);
 
             if (!owned)
@@ -594,40 +593,36 @@ internal sealed partial class DataRetentionService
         try
         {
 
-            return await _leaseMaintainer.RunAsync(
+            // Planning is pre-closure work and keeps its lease renewed. The apply below is the closed
+            // period and runs outside the maintainer entirely - not merely on a different token,
+            // because a maintainer that is still ticking will advance the row's revision whether or
+            // not the work it wraps is listening, and that revision is the one the authenticated
+            // journal has bound itself to.
+            DataRetentionPlan plan = await _leaseMaintainer.RunAsync(
                 operation.Id,
                 operation.LeaseOwner,
-                async maintainedToken =>
-                {
-
-                    DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
-
-                    DataRetentionPlan plan = await BuildFactoryResetPlanCoreAsync(
-                        request,
-                        operation.Id,
-                        maintainedToken).ConfigureAwait(false);
-
-                    if (plan.Conflicts.Length > 0)
-                    {
-
-                        return LongRunningOperationRecoveryResult.Failed(
-                            ErrorCodes.Data.Conflict);
-
-                    }
-
-                    DataRetentionApplyResult result = await ApplyFactoryResetAsync(
-                        operation.Id,
-                        operation.LeaseOwner,
-                        plan,
-                        maintainedToken).ConfigureAwait(false);
-
-                    return result.Reconciled
-                        ? LongRunningOperationRecoveryResult.Completed()
-                        : LongRunningOperationRecoveryResult.Failed(
-                            ErrorCodes.Data.ReconciliationFailed);
-
-                },
+                maintainedToken => BuildFactoryResetPlanCoreAsync(
+                    new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+                    operation.Id,
+                    maintainedToken),
                 cancellationToken).ConfigureAwait(false);
+
+            if (plan.Conflicts.Length > 0)
+            {
+
+                return LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.Conflict);
+
+            }
+
+            DataRetentionApplyResult applied = await ApplyFactoryResetAsync(
+                operation.Id,
+                operation.LeaseOwner,
+                plan,
+                cancellationToken).ConfigureAwait(false);
+
+            return applied.Reconciled
+                ? LongRunningOperationRecoveryResult.Completed()
+                : LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.ReconciliationFailed);
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -741,27 +736,27 @@ internal sealed partial class DataRetentionService
         try
         {
 
-            recovered = await _leaseMaintainer.RunAsync(
-                operation.Id,
+            // Outside the lease maintainer: the closed period renews nothing, because a renewal moves
+            // the row's revision and the authenticated journal has bound itself to the exact revision
+            // the launch produced. A second recovery starting beside this one is kept off by the
+            // process-local claim the coordinator takes rather than by a heartbeat.
+            recovered = await _covenantErasureCoordinator.RunAsync(
+                operation,
+                state.Value,
                 operation.LeaseOwner,
-                maintainedToken => _covenantErasureCoordinator.RunAsync(
-                    operation,
-                    state.Value,
-                    operation.LeaseOwner,
-                    async continuationToken =>
-                    {
+                async continuationToken =>
+                {
 
-                        Result<DataRetentionApplyResult> continued = await ContinueFactoryResetAsync(
-                            operation.Id,
-                            operation.LeaseOwner,
-                            continuationToken).ConfigureAwait(false);
+                    Result<DataRetentionApplyResult> continued = await ContinueFactoryResetAsync(
+                        operation.Id,
+                        operation.LeaseOwner,
+                        continuationToken).ConfigureAwait(false);
 
-                        return continued.IsSuccess
-                            ? Result.Success()
-                            : Result.Failure(continued.Error);
+                    return continued.IsSuccess
+                        ? Result.Success()
+                        : Result.Failure(continued.Error);
 
-                    },
-                    maintainedToken),
+                },
                 cancellationToken).ConfigureAwait(false);
 
         }
@@ -1021,17 +1016,18 @@ internal sealed partial class DataRetentionService
     /// is the one the authenticated journal bound itself to, and advancing it here would make the
     /// terminal compare-exchange refuse the row it is trying to terminalize.
     ///
-    /// <para>It still asks whether the lease is live, not only who holds it. A lease that has expired
-    /// is one another owner may adopt at any moment, and deleting an installation's files on the
-    /// strength of a name nobody is defending is exactly the race the original renewal was there to
-    /// lose safely.</para>
+    /// <para>It asks who holds the row, not whether the lease is still live. Nothing renews a lease
+    /// across the closed period any more, so an erasure long enough to be worth doing will always
+    /// find its own lease expired - and refusing then would make the operation impossible rather than
+    /// safe. What an expiry used to stand in for is asked directly instead: if another owner had
+    /// adopted this row, the name on it would have changed, and the read happens inside the same
+    /// transaction as the deletion so nobody can adopt it in between.</para>
     /// </remarks>
     private static async Task<bool> FactoryLaunchRowSurvivesAsync(
         DbConnection connection,
         DbTransaction transaction,
         Guid operationId,
         string leaseOwner,
-        DateTimeOffset now,
         CancellationToken cancellationToken)
     {
 
@@ -1045,7 +1041,6 @@ internal sealed partial class DataRetentionService
             WHERE lower(replace(Id, '-', '')) = @currentId
               AND State = @running
               AND LeaseOwner = @leaseOwner
-              AND LeaseExpiresAt > @now
             """;
 
         Add(command, "@currentId", operationId.ToString("N"));
@@ -1053,8 +1048,6 @@ internal sealed partial class DataRetentionService
         Add(command, "@leaseOwner", leaseOwner);
 
         Add(command, "@running", (int)LongRunningOperationState.Running);
-
-        Add(command, "@now", now.ToString("o", CultureInfo.InvariantCulture));
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L;
 

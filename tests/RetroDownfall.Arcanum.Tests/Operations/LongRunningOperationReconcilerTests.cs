@@ -19,7 +19,8 @@ public sealed class LongRunningOperationReconcilerTests
             store,
             handlers,
             timeProvider,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
     /// <summary>
     /// DESIGN §10.8.2: the reconciler acquires a <em>fresh</em> two-minute recovery lease. Stamping every
@@ -321,6 +322,7 @@ public sealed class LongRunningOperationReconcilerTests
             [sharedHandler],
             time,
             NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership(),
             scopes);
 
         LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
@@ -371,7 +373,8 @@ public sealed class LongRunningOperationReconcilerTests
             new CancelsOnCompensationOperationStore(store),
             [handler],
             time,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => reconciler.ReconcileAsync(

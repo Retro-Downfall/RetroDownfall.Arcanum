@@ -557,7 +557,8 @@ public sealed class CovenantResetBootstrapBarrierTests
             store,
             [ordinaryHandler, resetHandler],
             clock,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("barrier", maxConcurrency: 1);
 

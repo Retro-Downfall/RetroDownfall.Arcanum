@@ -62,7 +62,8 @@ public sealed class LongRunningOperationCrashRecoveryTests
             store,
             [handler],
             time,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("restart-1");
         time.Advance(TimeSpan.FromMinutes(10));
@@ -112,7 +113,8 @@ public sealed class LongRunningOperationCrashRecoveryTests
             store,
             [],
             time,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("restart-1");
 
@@ -159,7 +161,8 @@ public sealed class LongRunningOperationCrashRecoveryTests
             store,
             [handler],
             time,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("restart-1");
         time.Advance(TimeSpan.FromHours(1));

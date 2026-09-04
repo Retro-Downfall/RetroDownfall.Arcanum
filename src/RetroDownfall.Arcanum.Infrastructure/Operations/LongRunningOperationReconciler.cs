@@ -18,6 +18,7 @@ public sealed class LongRunningOperationReconciler(
     IEnumerable<ILongRunningOperationRecoveryHandler> handlers,
     TimeProvider timeProvider,
     ILogger<LongRunningOperationReconciler> logger,
+    LongRunningOperationOwnership ownership,
     IServiceScopeFactory? scopeFactory = null)
 {
     private static readonly TimeSpan RecoveryLease = TimeSpan.FromMinutes(2);
@@ -123,6 +124,21 @@ public sealed class LongRunningOperationReconciler(
             // recovered as "expired leases nobody claimed" and degrades `GET /api/health`, and an
             // overlapping manual reconcile can steal the row and duplicate the handler's work. DESIGN
             // §10.8.2 requires a *fresh* recovery lease per operation.
+            // An operation this process is already running is skipped before its lease is even looked
+            // at. An offline transition stops renewing for the length of its closed period, so its row
+            // looks abandoned to anything deciding by the lease alone — and starting a second recovery
+            // beside a transition that is still erasing is the one outcome that cannot be undone.
+            if (ownership.IsClaimed(operation.Id))
+            {
+
+                Interlocked.Increment(ref skipped);
+
+                RecordOutcome(operation.Kind, "owned_in_process");
+
+                return;
+
+            }
+
             DateTimeOffset leaseTakenAt = timeProvider.GetUtcNow();
 
             LongRunningOperationLeaseResult lease = await operationStore.TryAcquireLeaseAsync(

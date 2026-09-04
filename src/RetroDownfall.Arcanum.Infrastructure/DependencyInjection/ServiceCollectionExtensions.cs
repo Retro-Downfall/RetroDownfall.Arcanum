@@ -2027,6 +2027,10 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<IInstallationResetDatabaseIdentityReader,
             InstallationResetDatabaseIdentityReader>();
 
+        // The claim the coordinator takes for the length of a run, so generic reconciliation leaves a
+        // row alone whose lease this process deliberately stopped renewing.
+        services.TryAddSingleton<LongRunningOperationOwnership>();
+
         services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
             static sp => new GrimoireOfflineTransitionPhaseAuthority(
                 sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
@@ -2068,6 +2072,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
                 sp.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
                 sp.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
+                sp.GetRequiredService<LongRunningOperationOwnership>(),
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ILogger<CovenantErasureCoordinator>>()));
 
