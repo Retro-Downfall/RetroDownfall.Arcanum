@@ -462,17 +462,16 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
 
-        CovenantCanonicalErasureTransaction erasure = new(
-            harness.Fixture.V3Connections(),
-            CovenantSqliteConnectionInitializer.Instance,
-            harness.Fixture.Drain,
-            TimeProvider.System);
+        CovenantCanonicalDatasetTransition preselected = await harness.Fixture.PreselectAsync(Token);
 
-        Result<Guid> applied = await erasure.ApplyAsync(
-            CovenantExclusiveOperation.CovenantReset,
-            await harness.Fixture.PreselectAsync(Token),
-            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
-            Token);
+        Result<Guid> applied = await harness.Fixture.InClosedPeriodAsync(
+            authority => new CovenantCanonicalErasureTransaction(
+                CovenantSqliteConnectionInitializer.Instance,
+                TimeProvider.System).ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 

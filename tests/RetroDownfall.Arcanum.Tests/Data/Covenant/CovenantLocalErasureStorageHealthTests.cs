@@ -84,7 +84,15 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         long lengthBefore = new FileInfo(erased.DatabasePath).Length;
 
-        Result compacted = await erased.Health.CompactAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        // Closed before compacting, which this test did not used to have to do. The free-page read
+        // above reopens this fixture's handle, and that handle leaves a write-ahead log beside the
+        // database. The compaction used to drain before measuring, so it closed the handle its own
+        // caller had just opened; the drain is the gate's now and it ran when the closed period was
+        // entered, before this measurement existed. A suite that opens a handle inside a closed
+        // period owns closing it — the same reason the sweep at the end of this test already does.
+        await erased.CloseAsync();
+
+        Result compacted = await erased.Health.CompactAsync(erased.Authority, Token);
 
         Assert.True(compacted.IsSuccess, compacted.IsFailure ? compacted.Error.Message : null);
 
@@ -130,7 +138,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        Result compacted = await erased.Health.CompactAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        Result compacted = await erased.Health.CompactAsync(erased.Authority, Token);
 
         Assert.True(compacted.IsFailure);
 
@@ -164,7 +172,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.WriteWalFramesAsync(Token);
 
-        Result truncated = await erased.Health.TruncateWalAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation), Token);
+        Result truncated = await erased.Health.TruncateWalAsync(erased.Authority, Token);
 
         Assert.True(truncated.IsFailure);
 
@@ -263,7 +271,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         _ = await Scalar(survivor, "SELECT COUNT(*) FROM covenant_state;", Token);
 
         Result closed = await erased.Health.CloseHandlesAsync(
-            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            erased.Authority,
             Token);
 
         Assert.True(closed.IsFailure);
@@ -335,7 +343,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         Assert.True(File.Exists(erased.DatabasePath + "-wal"));
 
         Result closed = await erased.Health.CloseHandlesAsync(
-            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            erased.Authority,
             Token);
 
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
@@ -353,7 +361,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
 
         Result closed = await erased.Health.CloseHandlesAsync(
-            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            erased.Authority,
             Token);
 
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
@@ -443,7 +451,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         // Run it a second time on its own. The first reopen sat behind six other steps, and a handle
         // that only avoids a sidecar because an earlier step happened to leave none is not the handle
         // this acceptance asks for.
-        Result<CovenantVerifiedCandidateState> again = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> again = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(again.IsSuccess, again.IsFailure ? again.Error.Message : null);
 
@@ -711,7 +719,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteUncheckedAsync(corruption, Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure, caseName);
 
@@ -736,7 +744,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteUncheckedAsync(corruption, Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure, caseName);
 
@@ -766,7 +774,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure);
 
@@ -791,7 +799,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteUncheckedAsync(corruption, Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure, caseName);
 
@@ -818,7 +826,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result initialized = await erased.Health.InitializeAcceleratorAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization), Token);
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(erased.Authority, Token);
 
         Assert.True(initialized.IsFailure);
 
@@ -849,7 +857,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result initialized = await erased.Health.InitializeAcceleratorAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization), Token);
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(erased.Authority, Token);
 
         Assert.True(initialized.IsFailure);
 
@@ -876,7 +884,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure);
 
@@ -896,7 +904,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             "UPDATE capability_cleanup_state SET AppliedSessionSequence = 0 WHERE CapabilityFamilyCode = 1;",
             Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure);
 
@@ -924,7 +932,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure);
 
@@ -946,7 +954,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteAsync("DELETE FROM covenant_fts_config WHERE k = 'secure-delete';", Token);
 
-        Result initialized = await erased.Health.InitializeAcceleratorAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization), Token);
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(erased.Authority, Token);
 
         Assert.True(initialized.IsSuccess, initialized.IsFailure ? initialized.Error.Message : null);
 
@@ -972,7 +980,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteAsync("DROP TABLE covenant_fts_data;", Token);
 
-        Result initialized = await erased.Health.InitializeAcceleratorAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization), Token);
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(erased.Authority, Token);
 
         Assert.True(initialized.IsFailure);
 
@@ -1016,7 +1024,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.DrainAsync(Token);
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        Result replaced = await erased.Health.ExportAndReplaceAsync(erased.Authority, Token);
 
         Assert.True(replaced.IsSuccess, replaced.IsFailure ? replaced.Error.Message : null);
 
@@ -1051,7 +1059,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         string staging = CovenantResidualArtifacts.ExportStagingPath(erased.DatabasePath);
 
-        Result exported = await erased.Health.ExportAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExport), Token);
+        Result exported = await erased.Health.ExportAsync(erased.Authority, Token);
 
         Assert.True(exported.IsSuccess, exported.IsFailure ? exported.Error.Message : null);
 
@@ -1063,7 +1071,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await File.WriteAllBytesAsync(staging, candidate, Token);
 
-        Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExportVerification), Token);
+        Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(erased.Authority, Token);
 
         Assert.True(verified.IsFailure);
 
@@ -1137,7 +1145,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         {
 
             exported = await erased.Health.ExportAsync(
-                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExport),
+                erased.Authority,
                 cts.Token);
 
         });
@@ -1206,7 +1214,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         {
 
             initialized = await erased.Health.InitializeAcceleratorAsync(
-                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization),
+                erased.Authority,
                 cts.Token);
 
         });
@@ -1237,7 +1245,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             "not a database",
             Token);
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        Result replaced = await erased.Health.ExportAndReplaceAsync(erased.Authority, Token);
 
         Assert.True(replaced.IsFailure);
 
@@ -1272,7 +1280,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        Result replaced = await erased.Health.ExportAndReplaceAsync(erased.Authority, Token);
 
         Assert.True(replaced.IsFailure);
 
@@ -1302,17 +1310,17 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         string staging = CovenantResidualArtifacts.ExportStagingPath(erased.DatabasePath);
 
-        Result exported = await erased.Health.ExportAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExport), Token);
+        Result exported = await erased.Health.ExportAsync(erased.Authority, Token);
 
         Assert.True(exported.IsSuccess, exported.IsFailure ? exported.Error.Message : null);
 
-        Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExportVerification), Token);
+        Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(erased.Authority, Token);
 
         Assert.True(verified.IsSuccess, verified.IsFailure ? verified.Error.Message : null);
 
         File.Delete(staging);
 
-        Result replaced = await erased.Health.ReplaceAsync(verified.Value, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore), Token);
+        Result replaced = await erased.Health.ReplaceAsync(verified.Value, erased.Authority, Token);
 
         Assert.True(replaced.IsFailure);
 
@@ -1331,7 +1339,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         await erased.DrainAsync(Token);
 
         Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(
-            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExportVerification),
+            erased.Authority,
             Token);
 
         Assert.True(verified.IsFailure);
@@ -1356,7 +1364,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.DrainAsync(Token);
 
-        Result<CovenantCompactionMeasurement?> measured = await erased.Health.VacuumAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionVacuum), Token);
+        Result<CovenantCompactionMeasurement?> measured = await erased.Health.VacuumAsync(erased.Authority, Token);
 
         Assert.True(measured.IsSuccess, measured.IsFailure ? measured.Error.Message : null);
 
@@ -1435,19 +1443,35 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         private readonly CovenantCanonicalErasureFixture _fixture;
 
+        private readonly CovenantClosedPeriodTestAuthority _period;
+
         private ErasedGrimoire(
             CovenantCanonicalErasureFixture fixture,
+            CovenantClosedPeriodTestAuthority period,
             CovenantLocalErasureStorageHealth health,
             Guid candidateGeneration)
         {
 
             _fixture = fixture;
 
+            _period = period;
+
             Health = health;
 
             CandidateGeneration = candidateGeneration;
 
         }
+
+        /// <summary>
+        /// The one closed period the erasure and every storage-health step of it run inside.
+        /// </summary>
+        /// <remarks>
+        /// One for the whole harness rather than one per step, and that is the production shape
+        /// rather than a convenience. The coordinator closes admission once and drives all seven
+        /// steps under that single closure; a period per step would re-close and re-open the gate
+        /// between phases, which is precisely the window an erasure exists to not have.
+        /// </remarks>
+        internal CovenantClosedPeriodAuthority Authority => _period.Authority;
 
         /// <summary>
         /// The concrete proof, because two of its members are the fresh-file arm the seam does not
@@ -1478,29 +1502,35 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
                 await SeedJunkAsync(fixture, cancellationToken);
 
-                CovenantV3MaintenanceTestConnectionFactory v3Connections = fixture.V3Connections();
+                // Preselected before admission closes: the read goes through the fixture's own
+                // handle, and that handle is what the gate's stage-two close is about to drain.
+                CovenantCanonicalDatasetTransition preselected =
+                    await fixture.PreselectAsync(cancellationToken);
+
+                CovenantClosedPeriodTestAuthority period = await fixture.ClosedPeriodAsync();
 
                 CovenantCanonicalErasureTransaction transaction = new(
-                    v3Connections,
                     CovenantSqliteConnectionInitializer.Instance,
-                    fixture.Drain,
                     TimeProvider.System);
 
                 Result<Guid> applied = await transaction.ApplyAsync(
                     CovenantExclusiveOperation.CovenantReset,
-                    await fixture.PreselectAsync(cancellationToken),
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+                    preselected,
+                    period.Authority,
                     cancellationToken);
 
                 Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
+                // The proof's paths and key come from the period rather than from a second pair built
+                // beside it, so the file it measures, enumerates and replaces is provably the file the
+                // gate authorized every open against.
                 return new ErasedGrimoire(
                     fixture,
+                    period,
                     new CovenantLocalErasureStorageHealth(
-                        v3Connections,
-                        v3Connections,
+                        period.Paths,
+                        period.Passphrase,
                         CovenantSqliteConnectionInitializer.Instance,
-                        fixture.Drain,
                         TimeProvider.System),
                     applied.Value);
 
@@ -1527,7 +1557,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Result closed = await Record(
                 "close-handles",
                 seam.CloseHandlesAsync(
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+                    Authority,
                     cancellationToken));
 
             if (closed.IsFailure)
@@ -1540,7 +1570,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Result truncated = await Record(
                 "truncate-wal",
                 seam.TruncateWalAsync(
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+                    Authority,
                     cancellationToken));
 
             if (truncated.IsFailure)
@@ -1552,7 +1582,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
             Result compacted = await Record(
                 "compact",
-                seam.CompactAsync(CovenantV3MaintenanceTestAuthority.Compaction(), cancellationToken));
+                seam.CompactAsync(Authority, cancellationToken));
 
             if (compacted.IsFailure)
             {
@@ -1564,7 +1594,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Result accelerator = await Record(
                 "initialize-accelerator",
                 seam.InitializeAcceleratorAsync(
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization),
+                    Authority,
                     cancellationToken));
 
             if (accelerator.IsFailure)
@@ -1577,7 +1607,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Result finalTruncate = await Record(
                 "truncate-wal",
                 seam.TruncateWalAsync(
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+                    Authority,
                     cancellationToken));
 
             if (finalTruncate.IsFailure)
@@ -1601,7 +1631,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Steps.Add("verify-reopen");
 
             return await seam.VerifyReopenAsync(
-                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification),
+                Authority,
                 cancellationToken);
 
         }
@@ -1809,7 +1839,17 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         }
 
-        public ValueTask DisposeAsync() => _fixture.DisposeAsync();
+        public async ValueTask DisposeAsync()
+        {
+
+            // The period first. It holds the process-wide maintenance lane, and releasing it after
+            // the fixture had already deleted the database underneath it would make the reopen its
+            // disposition performs a reopen of a file that is no longer there.
+            await _period.DisposeAsync();
+
+            await _fixture.DisposeAsync();
+
+        }
 
         /// <summary>
         /// Enough Covenant rows that emptying the family frees real pages, so the compaction under

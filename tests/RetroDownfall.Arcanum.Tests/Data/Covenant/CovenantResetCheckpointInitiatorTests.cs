@@ -1285,25 +1285,31 @@ public sealed class CovenantResetCheckpointInitiatorTests
         public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             throw OutsidePreparation();
 
-        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
+        public Task<Result> PreflightRemainingManagedAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             throw OutsidePreparation();
 
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
             Guid datasetGeneration,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             throw OutsidePreparation();
 
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
             Guid operationId,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             throw OutsidePreparation();
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             throw OutsidePreparation();
 

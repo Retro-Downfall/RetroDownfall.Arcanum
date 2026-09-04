@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 421;
+    private const int ExpectedProductionAcquisitionCount = 401;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -35,7 +35,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadProbeOnFreshConnectionAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadReceiptOnFreshConnectionAsync(3)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(3)"),
-        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOwnedSnapshotAsync(2)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOwnedSnapshotAsync(3)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs", "CovenantHealthyCatalogErasureGuard", "RequireHealthyAsync(1)"),
     ];
 
@@ -48,7 +48,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureFreshProcessRecoveryTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureInventorySourceTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureSameProcessTests.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantV3MaintenanceTestAuthority.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantClosedPeriodTestAuthority.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/GrimoireConnectionAcquisitionInventoryTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Fixtures/CovenantSchemaScratchDatabase.cs",
         "tests/RetroDownfall.Arcanum.Tests/InstallationReset/HostToolsMarkerPairResetCoordinatorTests.cs",
@@ -730,8 +730,14 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             [Entry(
                 identity,
                 GrimoirePathAuthority.LiveGrimoire,
-                GrimoireAcquisitionKind.LegacyV3Maintenance,
-                new(ExactNonServingProofKind.LegacyV3ExclusiveLease, "Fixture.Open()", 124),
+                // A journal maintenance route that also claims an exact non-serving proof. The two
+                // are mutually exclusive by construction — a maintenance open is authorized by the
+                // closed generation its capability came from, and an entry carrying a second,
+                // separate proof is describing an acquisition that has two answers to "what makes
+                // this safe". Any such pair will do here; this one exists to prove the validator
+                // rejects it rather than to describe a route anything actually takes.
+                GrimoireAcquisitionKind.JournalMaintenance,
+                new(ExactNonServingProofKind.StoppedHostAuthority, "Fixture.Open()", 124),
                 GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
@@ -1112,12 +1118,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 is GrimoireAcquisitionKind.StoppedHostRecovery),
         ];
 
-        GrimoireAcquisitionCatalogEntry[] legacyV3 =
-        [
-            .. catalog.Where(entry => entry.AcquisitionKind
-                is GrimoireAcquisitionKind.LegacyV3Maintenance),
-        ];
-
         GrimoireAcquisitionCatalogEntry[] preReadiness =
         [
             .. catalog.Where(entry => entry.PathAuthority
@@ -1196,15 +1196,14 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
                 ExactNonServingProofKind.StoppedHostAuthority));
 
-        Assert.NotEmpty(legacyV3);
-
+        // The staging path is now reached by a journal maintenance route as well as by the typed
+        // staging acquisitions, so it is asserted here rather than left to the staging projection
+        // below: the export verification opener's purpose resolves to the candidate file, and its
+        // safety comes from the closed generation rather than from a proof of its own.
         Assert.All(
-            legacyV3,
-            entry => AssertExactProof(
-                entry,
-                GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
-                ExactNonServingProofKind.LegacyV3ExclusiveLease,
-                248));
+            journalMaintenance.Where(entry =>
+                entry.PathAuthority is GrimoirePathAuthority.RestoreOrCompactionStaging),
+            static entry => Assert.Null(entry.NonServingProof));
 
         Assert.NotEmpty(preReadiness);
 

@@ -1690,6 +1690,10 @@ public sealed class CovenantErasureSameProcessTests
                 ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
                 : null);
 
+        Assert.True(
+            reset.IsSuccess,
+            reset.IsFailure ? reset.Error.Code + " " + harness.CoordinatorDiagnostics() : null);
+
         Assert.Equal(ErasedRoute, await harness.CaptureRouteStateAsync());
 
         Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, reset.Value.Disposition);
@@ -1853,6 +1857,10 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<ICovenantErasureTransition>(),
                             provider.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
                             provider.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                            provider.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                            provider.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+                            provider.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                            provider.GetRequiredService<ICovenantConnectionDrain>(),
                             provider.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
                             provider.GetRequiredService<LongRunningOperationOwnership>(),
                             provider.GetRequiredService<TimeProvider>(),
@@ -2865,39 +2873,37 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.ApplyCanonicalErasureAsync(operation, dataset, capability, cancellationToken);
+            inner.ApplyCanonicalErasureAsync(operation, dataset, authority, cancellationToken);
 
         public Task<Result> CloseHandlesAsync(
-
-            CovenantV3MaintenanceCapability capability,
-
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
             observer.StateAtHandleProof = database.Database.GetDbConnection().State;
 
-            return inner.CloseHandlesAsync(capability, cancellationToken);
+            return inner.CloseHandlesAsync(authority, cancellationToken);
 
         }
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.TruncateWalAsync(capability, cancellationToken);
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            inner.TruncateWalAsync(authority, cancellationToken);
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
-            inner.CompactAsync(capabilities, cancellationToken);
+        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            inner.CompactAsync(authority, cancellationToken);
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.InitializeAcceleratorAsync(capability, cancellationToken);
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            inner.InitializeAcceleratorAsync(authority, cancellationToken);
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             inner.VerifySidecarAbsenceAsync(cancellationToken);
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.VerifyReopenAsync(capability, cancellationToken);
+            inner.VerifyReopenAsync(authority, cancellationToken);
 
         public Task<Result> PublishCommittedAsync(
             ICovenantExclusiveOperationLease lease,
@@ -2919,35 +2925,41 @@ public sealed class CovenantErasureSameProcessTests
         public async Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
             await pause.WaitForReleaseAsync(cancellationToken);
 
             return await inner
-                .PreflightBeforeCanonicalAsync(operation, datasetGeneration, cancellationToken)
+                .PreflightBeforeCanonicalAsync(operation, datasetGeneration, authority, cancellationToken)
                 .ConfigureAwait(false);
 
         }
 
-        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
-            inner.PreflightRemainingManagedAsync(cancellationToken);
+        public Task<Result> PreflightRemainingManagedAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            inner.PreflightRemainingManagedAsync(authority, cancellationToken);
 
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
             Guid datasetGeneration,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.ReadNextDatabaseBatchAsync(datasetGeneration, afterLabelId, cancellationToken);
+            inner.ReadNextDatabaseBatchAsync(datasetGeneration, afterLabelId, authority, cancellationToken);
 
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
             Guid operationId,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.ReadNextManagedFileBatchAsync(operationId, afterLabelId, cancellationToken);
+            inner.ReadNextManagedFileBatchAsync(operationId, afterLabelId, authority, cancellationToken);
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.ReadDisclosureExposureAsync(cancellationToken);
+            inner.ReadDisclosureExposureAsync(authority, cancellationToken);
 
     }
 
@@ -2973,6 +2985,7 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 failure is RouteFailure.Rollback
@@ -2988,12 +3001,15 @@ public sealed class CovenantErasureSameProcessTests
                                 0,
                                 CovenantDisclosureCountKind.Exact))));
 
-        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
+        public Task<Result> PreflightRemainingManagedAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
             Guid datasetGeneration,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantDatabaseErasureBatch>.Success(
@@ -3002,12 +3018,14 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
             Guid operationId,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantManagedFileErasureBatch>.Success(
                     new CovenantManagedFileErasureBatch(afterLabelId, true, [])));
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantDisclosureExposure>.Success(
@@ -3021,7 +3039,7 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<Guid>.Failure(
@@ -3030,26 +3048,24 @@ public sealed class CovenantErasureSameProcessTests
                         "The direct reset transition was refused.")));
 
         public Task<Result> CloseHandlesAsync(
-
-            CovenantV3MaintenanceCapability capability,
-
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
+        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
@@ -3068,31 +3084,29 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<Guid>.Success(Guid.Parse("99999999-9999-4999-8999-999999999999")));
 
         public Task<Result> CloseHandlesAsync(
-
-            CovenantV3MaintenanceCapability capability,
-
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
+        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 

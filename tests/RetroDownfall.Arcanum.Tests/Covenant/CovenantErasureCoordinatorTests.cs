@@ -1,5 +1,7 @@
+using System.Data.Common;
 using System.Reflection;
 
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -780,9 +782,14 @@ public sealed class CovenantErasureCoordinatorTests
 
         await fixture.CorruptManagedProducerEvidenceAsync(corruptDurableLocation);
 
+        // The database as well as the inventory, because the coordinator reads that inventory inside
+        // its own closed period now: the gate has to resolve its purposes to this fixture's file and
+        // the maintenance factory has to be able to open it. Supplying one without the other would
+        // leave the real source reading through an authority pointed somewhere else.
         CoordinatorHarness harness = new(
             inventory: fixture.CreateSource(),
-            datasetGeneration: await fixture.ReadDatasetGenerationAsync());
+            datasetGeneration: await fixture.ReadDatasetGenerationAsync(),
+            databasePath: fixture.DatabasePath);
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
             CovenantResetPhase.InventoryPrepared);
@@ -1099,6 +1106,21 @@ public sealed class CovenantErasureCoordinatorTests
     {
 
         /// <summary>
+        /// The maintenance factory the coordinator hands to its closed-period authority.
+        /// </summary>
+        /// <remarks>
+        /// Usually never called, and unreachable when so. The transition and the inventory this
+        /// harness supplies are ordinarily doubles, so no phase of the erasure opens a database; the
+        /// coordinator still needs a factory because it is what the closed-period authority is built
+        /// over, and one that throws keeps "nothing opened anything" an assertion rather than a hope.
+        ///
+        /// <para>A suite that supplies a <em>real</em> inventory is the exception, and it passes the
+        /// scratch database that inventory reads. Then this is the production factory over that file,
+        /// because the read happens inside the closed period like every other one.</para>
+        /// </remarks>
+        internal IGrimoireMaintenanceConnectionFactory MaintenanceConnections { get; }
+
+        /// <summary>
         /// A real journal over this harness's own temporary root, not a stand-in.
         /// </summary>
         /// <remarks>
@@ -1109,6 +1131,37 @@ public sealed class CovenantErasureCoordinatorTests
         internal LocalOfflineTransitionPhaseAuthority Phases { get; }
 
         internal LongRunningOperationOwnership Ownership { get; } = new();
+
+        /// <summary>
+        /// The real admission gate the coordinator closes, over this harness's own scratch paths.
+        /// </summary>
+        /// <remarks>
+        /// Real rather than a double because closing the Grimoire is now the coordinator's own work
+        /// rather than something it delegates: it begins the exclusive scope, drains, closes
+        /// admission, takes the maintenance lane and takes a scoped permit over the ledger, and the
+        /// ordering and failure handling of those five steps is exactly what this suite asserts. A
+        /// gate double would answer yes to all of them and the phase ladder would look correct
+        /// whatever the coordinator did.
+        ///
+        /// <para>The paths are scratch ones, and nothing in this suite ever opens them — the
+        /// transition and the inventory are doubles, so no maintenance connection is ever made. They
+        /// exist because the gate derives a path per purpose and refuses to be built without one.</para>
+        /// </remarks>
+        internal GrimoireConnectionAdmissionGate Admission { get; }
+
+        internal CovenantConnectionDrain Drain { get; } = new();
+
+        /// <summary>
+        /// A real connection object for the gate's scoped permit, over a scratch file nothing reads.
+        /// </summary>
+        /// <remarks>
+        /// The coordinator terminalizes its operation row while admission is closed, and the gate
+        /// admits exactly one connection object for it. The permit is taken over whatever object this
+        /// hands back, and the ledger step opens and closes it — so it has to be a real
+        /// <see cref="SqliteConnection"/> rather than a stand-in, or the coordinator takes its
+        /// no-closure fallback and this suite would never exercise the admitted route at all.
+        /// </remarks>
+        internal ScratchLedgerConnection Ledger { get; } = new();
 
         private readonly CovenantExclusiveOperation _operation;
 
@@ -1146,10 +1199,23 @@ public sealed class CovenantErasureCoordinatorTests
             DispositionFailureMode dispositionFailure = DispositionFailureMode.None,
             bool emptyLeaseDataset = false,
             ICovenantErasureInventorySource? inventory = null,
-            Guid? datasetGeneration = null)
+            Guid? datasetGeneration = null,
+            string? databasePath = null)
         {
 
             _operation = operation;
+
+            MaintenanceConnections = databasePath is null
+                ? new UnreachableMaintenanceFactory()
+                : new GrimoireMaintenanceConnectionFactory(
+                    new ScratchPassphraseSource(),
+                    CovenantSqliteConnectionInitializer.Instance,
+                    SqliteNativeRuntime.Instance);
+
+            Admission = new GrimoireConnectionAdmissionGate(
+                TimeProvider.System,
+                Drain,
+                new ScratchMaintenancePaths(databasePath));
 
             Operations = new RecordingOperationCoordinator(Store);
 
@@ -1260,6 +1326,10 @@ public sealed class CovenantErasureCoordinatorTests
                 Transition,
                 DisclosureWriter,
                 Phases,
+                Admission,
+                MaintenanceConnections,
+                Ledger,
+                Drain,
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 Ownership,
                 TimeProvider.System,
@@ -1310,6 +1380,10 @@ public sealed class CovenantErasureCoordinatorTests
                 Transition,
                 DisclosureWriter,
                 Phases,
+                Admission,
+                MaintenanceConnections,
+                Ledger,
+                Drain,
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 Ownership,
                 TimeProvider.System,
@@ -1672,7 +1746,7 @@ public sealed class CovenantErasureCoordinatorTests
         public async Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -1685,23 +1759,21 @@ public sealed class CovenantErasureCoordinatorTests
         }
 
         public Task<Result> CloseHandlesAsync(
-
-            CovenantV3MaintenanceCapability capability,
-
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) => Step("close-handles");
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) => Step("truncate-wal");
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) => Step("truncate-wal");
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) => Step("compact");
+        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) => Step("compact");
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Step("initialize-accelerator");
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Step("verify-sidecar-absence");
 
         public async Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -1915,6 +1987,7 @@ public sealed class CovenantErasureCoordinatorTests
         public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -1943,7 +2016,9 @@ public sealed class CovenantErasureCoordinatorTests
 
         }
 
-        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken)
+        public Task<Result> PreflightRemainingManagedAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
         {
 
             RemainingManagedPreflightCalls++;
@@ -1955,6 +2030,7 @@ public sealed class CovenantErasureCoordinatorTests
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
             Guid datasetGeneration,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -1992,6 +2068,7 @@ public sealed class CovenantErasureCoordinatorTests
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
             Guid operationId,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -2015,6 +2092,7 @@ public sealed class CovenantErasureCoordinatorTests
         }
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 

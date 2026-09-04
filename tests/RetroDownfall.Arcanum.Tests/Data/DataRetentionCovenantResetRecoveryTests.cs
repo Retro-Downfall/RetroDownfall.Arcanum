@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -801,6 +802,10 @@ public sealed partial class DataRetentionServiceTests
 
         TimeProvider clock = timeProvider ?? TimeProvider.System;
 
+        CovenantConnectionDrain drain = new();
+
+        ScratchLedgerConnection ledger = new();
+
         return new CovenantErasureCoordinator(
             new LongRunningOperationCoordinator(operations, clock),
             operations,
@@ -811,6 +816,14 @@ public sealed partial class DataRetentionServiceTests
             new RecoveryTransition(disposition),
             new RecoveryWriterLifecycle(),
             phases ?? new LocalOfflineTransitionPhaseAuthority(operations),
+            // A real gate over scratch paths, because closing the Grimoire is the coordinator's own
+            // work now and a recovery run has to be able to re-enter a closed period. Nothing in this
+            // file ever opens a maintenance connection — the transition and the inventory are doubles
+            // — so the factory is the unreachable one and the paths are never touched.
+            new GrimoireConnectionAdmissionGate(clock, drain, new ScratchMaintenancePaths()),
+            new UnreachableMaintenanceFactory(),
+            ledger,
+            drain,
             new GrimoireOfflineTransitionDatabaseReconciler(operations, clock),
             ownership ?? new LongRunningOperationOwnership(),
             clock,
@@ -841,6 +854,7 @@ public sealed partial class DataRetentionServiceTests
         public async Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -864,12 +878,15 @@ public sealed partial class DataRetentionServiceTests
 
         }
 
-        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
+        public Task<Result> PreflightRemainingManagedAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
             Guid datasetGeneration,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantDatabaseErasureBatch>.Success(
@@ -878,12 +895,14 @@ public sealed partial class DataRetentionServiceTests
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
             Guid operationId,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantManagedFileErasureBatch>.Success(
                     new CovenantManagedFileErasureBatch(afterLabelId, true, [])));
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantDisclosureExposure>.Success(
@@ -935,7 +954,7 @@ public sealed partial class DataRetentionServiceTests
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 disposition == RecoveryDisposition.KeepClosed
@@ -946,26 +965,24 @@ public sealed partial class DataRetentionServiceTests
                     : Result<Guid>.Success(Guid.Parse("99999999-9999-4999-8999-999999999999")));
 
         public Task<Result> CloseHandlesAsync(
-
-            CovenantV3MaintenanceCapability capability,
-
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
+        public Task<Result> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<CovenantVerifiedCandidateState>.Success(Candidate()));
 

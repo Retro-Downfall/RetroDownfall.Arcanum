@@ -3,6 +3,7 @@ using System.Globalization;
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
@@ -203,8 +204,62 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
         ?? _attachedConnections
         ?? throw new ObjectDisposedException(nameof(CovenantCanonicalErasureFixture));
 
-    internal CovenantV3MaintenanceTestConnectionFactory V3Connections() =>
-        new(Connections(), _attachedInitializer ?? CovenantSqliteConnectionInitializer.Instance);
+    /// <summary>The connection initializer every handle onto this fixture's file is prepared with.</summary>
+    internal ICovenantSqliteConnectionInitializer Initializer =>
+        _attachedInitializer ?? CovenantSqliteConnectionInitializer.Instance;
+
+    /// <summary>
+    /// Closes a real admission gate over this fixture's own file and hands back the authority the
+    /// erasure kernels open through.
+    /// </summary>
+    /// <remarks>
+    /// The predecessor handed out a maintenance connection factory, and a caller then minted itself
+    /// whatever capability it wanted to pass alongside. There is no longer a way to do that, and the
+    /// loss is the improvement: a capability now only exists because a generation was actually
+    /// closed, so a kernel that opens the database in these suites is proving it can do so under the
+    /// same authority production gives it, rather than under one the test wrote for it.
+    ///
+    /// <para>Every caller owns what it gets back and must dispose it, because the closed period is a
+    /// real one — it holds the process-wide maintenance lane, and a suite that leaked one would hang
+    /// the next test that tried to close a gate rather than fail in the one that dropped it.</para>
+    /// </remarks>
+    internal Task<CovenantClosedPeriodTestAuthority> ClosedPeriodAsync(
+        Func<IGrimoireMaintenanceConnectionFactory, IGrimoireMaintenanceConnectionFactory>? decorate = null,
+        ICovenantSqliteConnectionInitializer? initializer = null,
+        ICovenantConnectionDrain? drain = null) =>
+        CovenantClosedPeriodTestAuthority.CloseAsync(
+            DatabasePath,
+            CovenantSchemaScratchDatabase.ScratchPassphrase,
+            initializer ?? Initializer,
+            drain ?? Drain,
+            decorate);
+
+    /// <summary>
+    /// Runs one body inside a closed period and reopens admission afterwards, however it ends.
+    /// </summary>
+    /// <remarks>
+    /// Two things have to happen in the right order around a body like this, and both are easy to
+    /// forget once per call site rather than once here. Admission closes before the body — which
+    /// drains this fixture's own seeded handle, so anything the body needs to read through
+    /// <see cref="Connection"/> has to be read before the call, not inside it. And admission reopens
+    /// after it even when the body throws, because the maintenance lane is process-wide: a suite that
+    /// left one held would not fail here, it would hang whichever test happened to run next.
+    /// </remarks>
+    internal async Task<T> InClosedPeriodAsync<T>(
+        Func<CovenantClosedPeriodAuthority, Task<T>> body,
+        Func<IGrimoireMaintenanceConnectionFactory, IGrimoireMaintenanceConnectionFactory>? decorate = null,
+        ICovenantSqliteConnectionInitializer? initializer = null,
+        ICovenantConnectionDrain? drain = null)
+    {
+
+        ArgumentNullException.ThrowIfNull(body);
+
+        await using CovenantClosedPeriodTestAuthority period =
+            await ClosedPeriodAsync(decorate, initializer, drain);
+
+        return await body(period.Authority);
+
+    }
 
     /// <summary>
     /// Seeds one of everything the erasure must remove, and one of everything it must not.
