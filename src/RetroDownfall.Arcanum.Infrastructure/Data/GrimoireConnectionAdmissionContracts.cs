@@ -38,6 +38,36 @@ internal interface IGrimoireMaintenanceConnectionFactory
         IGrimoireMaintenanceIoLane lane,
         CancellationToken cancellationToken);
 
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAcceleratorInitializationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCandidateReopenAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
 }
 
 internal interface IGrimoireMaintenanceConnectionLease : IAsyncDisposable
@@ -317,9 +347,16 @@ internal interface IGrimoireExclusiveClosedLease : IAsyncDisposable
     Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket(
         IGrimoireMaintenanceIoLane lane);
 
+    /// <summary>
+    /// Issues one capability for one purpose, with the path and mode that purpose implies.
+    /// </summary>
+    /// <remarks>
+    /// Neither a path nor a mode is a parameter, and that is the point. A caller that could name the
+    /// file could name a different one, and the gate's own comparison on the way back in would then
+    /// be comparing a caller's value with the same caller's value - which proves nothing. The purpose
+    /// is the only thing a caller supplies, and the gate decides everything that follows from it.
+    /// </remarks>
     Result<IGrimoireMaintenanceConnectionCapability> IssueMaintenanceConnectionCapability(
-        string canonicalPath,
-        CovenantMaintenanceConnectionMode mode,
         CovenantMaintenanceConnectionPurpose purpose,
         IGrimoireMaintenanceIoLane lane);
 
@@ -367,11 +404,18 @@ internal interface IGrimoireMaintenanceRenewalTicket : IAsyncDisposable
 internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 {
 
+    /// <summary>The path the gate bound to this capability's purpose, which no caller chose.</summary>
+    string CanonicalPath { get; }
+
+    /// <summary>The mode the gate bound to this capability's purpose.</summary>
+    CovenantMaintenanceConnectionMode Mode { get; }
+
+    /// <summary>The one purpose this capability may be spent on.</summary>
+    CovenantMaintenanceConnectionPurpose Purpose { get; }
+
     Result<IGrimoireTrackedMaintenanceHandle> Consume(
         CovenantExclusiveRecoveryOwner owner,
         long generation,
-        string canonicalPath,
-        CovenantMaintenanceConnectionMode mode,
         CovenantMaintenanceConnectionPurpose purpose,
         IGrimoireMaintenanceIoLane lane);
 
@@ -461,6 +505,38 @@ internal enum CovenantMaintenanceConnectionPurpose : byte
     SidecarProof = 4,
 
     ReopenVerification = 5,
+
+    WalTruncation = 6,
+
+    AcceleratorInitialization = 7,
+
+    InventorySnapshot = 8,
+
+}
+
+/// <summary>
+/// Where a maintenance purpose's connection actually points, resolved once for the process.
+/// </summary>
+/// <remarks>
+/// An injected authority rather than a literal read of <c>ArcanumPaths</c> inside the gate, and the
+/// reason is a safety one rather than a stylistic one. A suite that exercises a real erasure against
+/// a scratch database has to be able to say which file that is; a gate that resolved the
+/// installation's own path from a static would point every one of those tests at the developer's
+/// real Grimoire and then prove the bytes were gone. The composition root supplies the real one, and
+/// nothing else can.
+///
+/// <para>It answers for the process, not for a caller. A capability still carries no path a caller
+/// chose - the purpose decides which of these two the gate binds, and the caller has no way to say
+/// otherwise.</para>
+/// </remarks>
+internal interface IGrimoireMaintenancePathAuthority
+{
+
+    /// <summary>The installation's canonical Grimoire database.</summary>
+    string CanonicalDatabasePath { get; }
+
+    /// <summary>The candidate database a verified export is written to and proven on.</summary>
+    string ExportStagingDatabasePath { get; }
 
 }
 

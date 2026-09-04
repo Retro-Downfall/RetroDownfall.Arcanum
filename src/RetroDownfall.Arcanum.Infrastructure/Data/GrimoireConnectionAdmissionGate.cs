@@ -44,6 +44,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     /// </remarks>
     private readonly TimeSpan _workDrainCheckpoint;
 
+    private readonly IGrimoireMaintenancePathAuthority _paths;
+
     private readonly Func<CancellationToken, ValueTask> _afterSuccessfulDrainTestSeam;
 
     private readonly HashSet<OpenTicket> _unresolvedOpens = [];
@@ -72,6 +74,21 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             new CovenantConnectionDrain(),
             ProductionOpeningAttemptTimeout,
             AfterSuccessfulDrainNoOpAsync)
+    {
+    }
+
+    /// <summary>The composed gate, told where its maintenance purposes point.</summary>
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        IGrimoireMaintenancePathAuthority paths)
+        : this(
+            timeProvider,
+            drain,
+            ProductionOpeningAttemptTimeout,
+            ProductionOpeningAttemptTimeout,
+            AfterSuccessfulDrainNoOpAsync,
+            paths)
     {
     }
 
@@ -119,7 +136,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             drain,
             openingAttemptTimeout,
             workDrainCheckpoint,
-            AfterSuccessfulDrainNoOpAsync)
+            AfterSuccessfulDrainNoOpAsync,
+            GrimoireInstallationMaintenancePaths.Instance)
     {
     }
 
@@ -133,7 +151,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             drain,
             openingAttemptTimeout,
             openingAttemptTimeout,
-            afterSuccessfulDrainTestSeam)
+            afterSuccessfulDrainTestSeam,
+            GrimoireInstallationMaintenancePaths.Instance)
     {
     }
 
@@ -142,7 +161,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         ICovenantConnectionDrain drain,
         TimeSpan openingAttemptTimeout,
         TimeSpan workDrainCheckpoint,
-        Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam)
+        Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam,
+        IGrimoireMaintenancePathAuthority paths)
     {
 
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -150,6 +170,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         ArgumentNullException.ThrowIfNull(drain);
 
         ArgumentNullException.ThrowIfNull(afterSuccessfulDrainTestSeam);
+
+        ArgumentNullException.ThrowIfNull(paths);
 
         if (openingAttemptTimeout <= TimeSpan.Zero)
         {
@@ -172,6 +194,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         _openingAttemptTimeout = openingAttemptTimeout;
 
         _workDrainCheckpoint = workDrainCheckpoint;
+
+        _paths = paths;
 
         _afterSuccessfulDrainTestSeam = afterSuccessfulDrainTestSeam;
 
@@ -1353,34 +1377,37 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private Result<IGrimoireMaintenanceConnectionCapability>
         IssueMaintenanceConnectionCapability(
             ClosedLease lease,
-            string canonicalPath,
-            CovenantMaintenanceConnectionMode mode,
             CovenantMaintenanceConnectionPurpose purpose,
             IGrimoireMaintenanceIoLane lane)
     {
 
-        ArgumentException.ThrowIfNullOrWhiteSpace(canonicalPath);
-
         ArgumentNullException.ThrowIfNull(lane);
 
-        if (mode is not CovenantMaintenanceConnectionMode.ReadOnly
-            and not CovenantMaintenanceConnectionMode.ReadWrite)
-        {
-
-            throw new ArgumentOutOfRangeException(nameof(mode));
-
-        }
-
-        if (purpose is not CovenantMaintenanceConnectionPurpose.CanonicalErasure
-            and not CovenantMaintenanceConnectionPurpose.Compaction
-            and not CovenantMaintenanceConnectionPurpose.IntegrityVerification
-            and not CovenantMaintenanceConnectionPurpose.SidecarProof
-            and not CovenantMaintenanceConnectionPurpose.ReopenVerification)
+        if (!Enum.IsDefined(purpose))
         {
 
             throw new ArgumentOutOfRangeException(nameof(purpose));
 
         }
+
+        // Derived here and nowhere else. A caller that could name the file could name a different
+        // one, and the comparison this gate makes on the way back in would then be comparing a
+        // caller's value with the same caller's value.
+        string canonicalPath = purpose is CovenantMaintenanceConnectionPurpose.IntegrityVerification
+            ? _paths.ExportStagingDatabasePath
+            : _paths.CanonicalDatabasePath;
+
+        CovenantMaintenanceConnectionMode mode = purpose switch
+        {
+
+            CovenantMaintenanceConnectionPurpose.IntegrityVerification
+                or CovenantMaintenanceConnectionPurpose.ReopenVerification
+                or CovenantMaintenanceConnectionPurpose.InventorySnapshot =>
+                CovenantMaintenanceConnectionMode.ReadOnly,
+
+            _ => CovenantMaintenanceConnectionMode.ReadWrite,
+
+        };
 
         lock (_sync)
         {
@@ -1661,8 +1688,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         MaintenanceConnectionCapability capability,
         CovenantExclusiveRecoveryOwner owner,
         long generation,
-        string canonicalPath,
-        CovenantMaintenanceConnectionMode mode,
         CovenantMaintenanceConnectionPurpose purpose,
         IGrimoireMaintenanceIoLane lane)
     {
@@ -1687,14 +1712,12 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 || !ReferenceEquals(exactLane.Closure, capability.Closure)
                 || capability.Owner != owner
                 || capability.Generation != generation
-                || !StringComparer.Ordinal.Equals(capability.CanonicalPath, canonicalPath)
-                || capability.Mode != mode
                 || capability.Purpose != purpose)
             {
 
                 return Result<IGrimoireTrackedMaintenanceHandle>.Failure(
                     LifecycleConflict(
-                        "The maintenance-open capability did not match its exact owner, generation, canonical path, mode, purpose, and lane."));
+                        "The maintenance-open capability did not match its exact owner, generation, purpose, and lane."));
 
             }
 
@@ -2675,25 +2698,21 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         IGrimoireMaintenanceConnectionCapability
     {
 
-        internal string CanonicalPath { get; } = canonicalPath;
+        public string CanonicalPath { get; } = canonicalPath;
 
-        internal CovenantMaintenanceConnectionMode Mode { get; } = mode;
+        public CovenantMaintenanceConnectionMode Mode { get; } = mode;
 
-        internal CovenantMaintenanceConnectionPurpose Purpose { get; } = purpose;
+        public CovenantMaintenanceConnectionPurpose Purpose { get; } = purpose;
 
         public Result<IGrimoireTrackedMaintenanceHandle> Consume(
             CovenantExclusiveRecoveryOwner owner,
             long generation,
-            string canonicalPath,
-            CovenantMaintenanceConnectionMode mode,
             CovenantMaintenanceConnectionPurpose purpose,
             IGrimoireMaintenanceIoLane lane) =>
             Gate.ConsumeMaintenanceConnectionCapability(
                 this,
                 owner,
                 generation,
-                canonicalPath,
-                mode,
                 purpose,
                 lane);
 
@@ -2898,16 +2917,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         public Result<IGrimoireMaintenanceConnectionCapability>
             IssueMaintenanceConnectionCapability(
-                string canonicalPath,
-                CovenantMaintenanceConnectionMode mode,
                 CovenantMaintenanceConnectionPurpose purpose,
                 IGrimoireMaintenanceIoLane lane) =>
-            gate.IssueMaintenanceConnectionCapability(
-                this,
-                canonicalPath,
-                mode,
-                purpose,
-                lane);
+            gate.IssueMaintenanceConnectionCapability(this, purpose, lane);
 
         public ValueTask<Result<IGrimoireMaintenanceIoLane>> AcquireMaintenanceIoLaneAsync(
             Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>

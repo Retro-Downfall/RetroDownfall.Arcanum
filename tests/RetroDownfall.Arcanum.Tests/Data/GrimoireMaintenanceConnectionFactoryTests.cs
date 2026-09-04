@@ -50,8 +50,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
     [InlineData(CapabilityMismatch.ForeignOwner)]
     [InlineData(CapabilityMismatch.ForeignGeneration)]
     [InlineData(CapabilityMismatch.WrongLaneInstance)]
-    [InlineData(CapabilityMismatch.WrongCanonicalPath)]
-    [InlineData(CapabilityMismatch.WrongMode)]
     [InlineData(CapabilityMismatch.WrongPurpose)]
     [InlineData(CapabilityMismatch.Reused)]
     [InlineData(CapabilityMismatch.Disposed)]
@@ -70,24 +68,12 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
                 static (_, _, _) => ValueTask.FromResult(true),
                 CancellationToken.None)).Value;
 
-        string capabilityPath = mismatch == CapabilityMismatch.WrongCanonicalPath
-            ? ArcanumPaths.GrimoireDatabaseFile + ".foreign"
-            : ArcanumPaths.GrimoireDatabaseFile;
-
-        CovenantMaintenanceConnectionMode capabilityMode = mismatch == CapabilityMismatch.WrongMode
-            ? CovenantMaintenanceConnectionMode.ReadOnly
-            : CovenantMaintenanceConnectionMode.ReadWrite;
-
         CovenantMaintenanceConnectionPurpose capabilityPurpose = mismatch == CapabilityMismatch.WrongPurpose
             ? CovenantMaintenanceConnectionPurpose.Compaction
             : CovenantMaintenanceConnectionPurpose.CanonicalErasure;
 
         IGrimoireMaintenanceConnectionCapability capability =
-            closed.IssueMaintenanceConnectionCapability(
-                capabilityPath,
-                capabilityMode,
-                capabilityPurpose,
-                exactLane).Value;
+            closed.IssueMaintenanceConnectionCapability(capabilityPurpose, exactLane).Value;
 
         IGrimoireMaintenanceIoLane suppliedLane = mismatch switch
         {
@@ -112,8 +98,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             Result<IGrimoireTrackedMaintenanceHandle> first = capability.Consume(
                 exactLane.Owner,
                 exactLane.Generation,
-                ArcanumPaths.GrimoireDatabaseFile,
-                CovenantMaintenanceConnectionMode.ReadWrite,
                 CovenantMaintenanceConnectionPurpose.CanonicalErasure,
                 exactLane);
 
@@ -188,8 +172,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                ArcanumPaths.GrimoireDatabaseFile,
-                CovenantMaintenanceConnectionMode.ReadWrite,
                 CovenantMaintenanceConnectionPurpose.CanonicalErasure,
                 retiredLane).Value;
 
@@ -575,8 +557,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                ArcanumPaths.GrimoireDatabaseFile,
-                CovenantMaintenanceConnectionMode.ReadWrite,
                 CovenantMaintenanceConnectionPurpose.CanonicalErasure,
                 lane).Value;
 
@@ -699,10 +679,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         WrongLaneInstance = 3,
 
-        WrongCanonicalPath = 4,
-
-        WrongMode = 5,
-
         WrongPurpose = 6,
 
         Reused = 7,
@@ -720,11 +696,17 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         internal int ConsumeCount { get; private set; }
 
+        public string CanonicalPath { get; init; } = ArcanumPaths.GrimoireDatabaseFile;
+
+        public CovenantMaintenanceConnectionMode Mode { get; init; } =
+            CovenantMaintenanceConnectionMode.ReadWrite;
+
+        public CovenantMaintenanceConnectionPurpose Purpose { get; init; } =
+            CovenantMaintenanceConnectionPurpose.CanonicalErasure;
+
         public Result<IGrimoireTrackedMaintenanceHandle> Consume(
             CovenantExclusiveRecoveryOwner owner,
             long generation,
-            string canonicalPath,
-            CovenantMaintenanceConnectionMode mode,
             CovenantMaintenanceConnectionPurpose purpose,
             IGrimoireMaintenanceIoLane lane)
         {

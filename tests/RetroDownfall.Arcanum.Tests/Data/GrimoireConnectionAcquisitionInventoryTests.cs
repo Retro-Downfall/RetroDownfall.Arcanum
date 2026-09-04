@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 407;
+    private const int ExpectedProductionAcquisitionCount = 421;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -828,21 +828,41 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     public void Journal_maintenance_factory_contract_marker_and_inert_route_inventory_are_exact()
     {
 
-        MethodInfo contract = Assert.Single(
-            typeof(IGrimoireMaintenanceConnectionFactory).GetMethods(
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly));
-
-        Assert.Equal("OpenJournalCanonicalErasureAsync", contract.Name);
+        // One narrow member per maintenance purpose, and the set is closed. A single method taking a
+        // purpose would collapse seven distinguishable acquisitions into one catalogue line a
+        // reviewer cannot tell apart, which is the whole thing this inventory exists to prevent.
+        MethodInfo[] contract = [.. typeof(IGrimoireMaintenanceConnectionFactory)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+            .OrderBy(static method => method.Name, StringComparer.Ordinal)];
 
         Assert.Equal(
             [
-                typeof(IGrimoireMaintenanceConnectionCapability),
-                typeof(IGrimoireMaintenanceIoLane),
-                typeof(CancellationToken),
+                "OpenJournalAcceleratorInitializationAsync",
+                "OpenJournalCandidateReopenAsync",
+                "OpenJournalCanonicalErasureAsync",
+                "OpenJournalCompactionAsync",
+                "OpenJournalExportVerificationAsync",
+                "OpenJournalInventorySnapshotAsync",
+                "OpenJournalWalTruncationAsync",
             ],
-            contract.GetParameters().Select(static parameter => parameter.ParameterType));
+            contract.Select(static method => method.Name));
 
-        Assert.Empty(contract.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>());
+        Assert.All(
+            contract,
+            static method => Assert.Equal(
+                [
+                    typeof(IGrimoireMaintenanceConnectionCapability),
+                    typeof(IGrimoireMaintenanceIoLane),
+                    typeof(CancellationToken),
+                ],
+                method.GetParameters().Select(static parameter => parameter.ParameterType)));
+
+        // The interface stays inert. The marker belongs on the implementation, because a contract a
+        // test double also implements would otherwise catalogue the double as an acquisition route.
+        Assert.All(
+            contract,
+            static method =>
+                Assert.Empty(method.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>()));
 
         PropertyInfo leaseProperty = Assert.Single(
             typeof(IGrimoireMaintenanceConnectionLease).GetProperties(
@@ -852,13 +872,21 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
 
         Assert.Equal(typeof(Microsoft.Data.Sqlite.SqliteConnection), leaseProperty.PropertyType);
 
-        MethodInfo implementation = typeof(GrimoireMaintenanceConnectionFactory).GetMethod(
-            "OpenJournalCanonicalErasureAsync",
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
-            ?? throw new InvalidOperationException("The journal maintenance acquisition route is missing.");
+        Assert.All(
+            contract,
+            static declared =>
+            {
 
-        _ = Assert.Single(
-            implementation.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>());
+                MethodInfo implementation = typeof(GrimoireMaintenanceConnectionFactory).GetMethod(
+                    declared.Name,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                    ?? throw new InvalidOperationException(
+                        $"The journal maintenance acquisition route {declared.Name} is missing.");
+
+                _ = Assert.Single(
+                    implementation.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>());
+
+            });
 
         IReadOnlyList<AcquisitionSource> sources = ProductionSources();
 

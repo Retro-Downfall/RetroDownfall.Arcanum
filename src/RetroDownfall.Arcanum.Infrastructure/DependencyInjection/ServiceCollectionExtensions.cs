@@ -1669,10 +1669,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
+        // Where the maintenance purposes point is resolved by an injected authority rather than read
+        // from a static inside the gate. A suite that drives a real erasure has to be able to say
+        // which database that is, and a gate that answered from the installation's own paths would
+        // point every one of those tests at the developer's Grimoire and then prove the bytes gone.
+        services.TryAddSingleton<IGrimoireMaintenancePathAuthority>(
+            static _ => GrimoireInstallationMaintenancePaths.Instance);
+
         services.AddSingleton(
             static sp => new GrimoireConnectionAdmissionGate(
                 sp.GetRequiredService<TimeProvider>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()));
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>()));
 
         services.AddSingleton<IGrimoireConnectionAdmissionGate>(
             static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());

@@ -2967,14 +2967,112 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCanonicalErasureAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "newSqliteConnection(builder.ToString())"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCanonicalErasureAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.CanonicalErasure,lane,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.JournalMaintenance,
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCanonicalErasureAsync(3)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalWalTruncationAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalWalTruncationAsync", 3, "OpenJournalWalTruncationAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalWalTruncationAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.WalTruncation,lane,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCompactionAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalCompactionAsync", 3, "OpenJournalCompactionAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCompactionAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.Compaction,lane,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalExportVerificationAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalExportVerificationAsync", 3, "OpenJournalExportVerificationAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalExportVerificationAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.IntegrityVerification,lane,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalAcceleratorInitializationAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalAcceleratorInitializationAsync", 3, "OpenJournalAcceleratorInitializationAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalAcceleratorInitializationAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.AcceleratorInitialization,lane,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCandidateReopenAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalCandidateReopenAsync", 3, "OpenJournalCandidateReopenAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCandidateReopenAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.ReopenVerification,lane,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalInventorySnapshotAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalInventorySnapshotAsync", 3, "OpenJournalInventorySnapshotAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalInventorySnapshotAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.InventorySnapshot,lane,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalAsync(4)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalAsync", 4, "OpenJournalAsync(4)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalAsync(4)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "newSqliteConnection(builder.ToString())"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalAsync(4)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.JournalMaintenance,
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,

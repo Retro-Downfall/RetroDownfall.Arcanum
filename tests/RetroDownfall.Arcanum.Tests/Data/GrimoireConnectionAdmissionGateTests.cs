@@ -1987,8 +1987,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     public async Task Leaked_maintenance_handle_cannot_stall_lane_release_or_later_adoption()
     {
 
-        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -2004,16 +2002,12 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                CanonicalPath,
-                CovenantMaintenanceConnectionMode.ReadOnly,
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
                 lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> leaked = capability.Consume(
             owner,
             closed.Generation,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane);
 
@@ -2058,8 +2052,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     public async Task Disposing_a_never_opened_maintenance_handle_completes_its_lifetime()
     {
 
-        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -2075,16 +2067,12 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                CanonicalPath,
-                CovenantMaintenanceConnectionMode.ReadOnly,
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
                 lane).Value;
 
         IGrimoireTrackedMaintenanceHandle handle = capability.Consume(
             owner,
             closed.Generation,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane).Value;
 
@@ -2120,8 +2108,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     public async Task Disposing_an_open_maintenance_handle_leaves_the_lease_undispositionable()
     {
 
-        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -2137,16 +2123,12 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                CanonicalPath,
-                CovenantMaintenanceConnectionMode.ReadWrite,
                 CovenantMaintenanceConnectionPurpose.Compaction,
                 lane).Value;
 
         IGrimoireTrackedMaintenanceHandle handle = capability.Consume(
             owner,
             closed.Generation,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadWrite,
             CovenantMaintenanceConnectionPurpose.Compaction,
             lane).Value;
 
@@ -2202,49 +2184,43 @@ public sealed class GrimoireConnectionAdmissionGateTests
                 static (_, _, _) => ValueTask.FromResult(true),
                 CancellationToken.None)).Value;
 
-        IGrimoireMaintenanceConnectionCapability widenedPath =
+        // The path and the mode are no longer things a caller can widen, because they are no longer
+        // things a caller supplies: the gate derives both from the purpose and hands them back on the
+        // capability. What a caller can still get wrong is the purpose, and that is asserted below.
+        IGrimoireMaintenanceConnectionCapability staging =
             closed.IssueMaintenanceConnectionCapability(
-                CanonicalPath,
-                CovenantMaintenanceConnectionMode.ReadOnly,
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
                 lane).Value;
 
-        Result<IGrimoireTrackedMaintenanceHandle> wrongPath = widenedPath.Consume(
-            owner,
-            closed.Generation,
-            CanonicalPath + ".copy",
-            CovenantMaintenanceConnectionMode.ReadOnly,
-            CovenantMaintenanceConnectionPurpose.IntegrityVerification,
-            lane);
+        Assert.Equal(CovenantMaintenanceConnectionMode.ReadOnly, staging.Mode);
 
-        Result<IGrimoireTrackedMaintenanceHandle> spentAfterWrongPath = widenedPath.Consume(
-            owner,
-            closed.Generation,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
-            CovenantMaintenanceConnectionPurpose.IntegrityVerification,
-            lane);
+        Assert.Equal(CovenantMaintenanceConnectionPurpose.IntegrityVerification, staging.Purpose);
 
-        Assert.True(wrongPath.IsFailure);
+        Assert.EndsWith(
+            CovenantResidualArtifacts.ExportStagingPath(string.Empty),
+            staging.CanonicalPath,
+            StringComparison.Ordinal);
 
-        Assert.True(spentAfterWrongPath.IsFailure);
+        await staging.DisposeAsync();
 
-        await widenedPath.DisposeAsync();
+        IGrimoireMaintenanceConnectionCapability canonical =
+            closed.IssueMaintenanceConnectionCapability(
+                CovenantMaintenanceConnectionPurpose.CanonicalErasure,
+                lane).Value;
 
-        await AssertCapabilityMismatchConsumesAsync(
-            closed,
-            lane,
-            owner,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadWrite,
-            CovenantMaintenanceConnectionPurpose.IntegrityVerification);
+        Assert.Equal(CovenantMaintenanceConnectionMode.ReadWrite, canonical.Mode);
+
+        Assert.DoesNotContain(
+            CovenantResidualArtifacts.ExportStagingPath(string.Empty),
+            canonical.CanonicalPath,
+            StringComparison.Ordinal);
+
+        await canonical.DisposeAsync();
 
         await AssertCapabilityMismatchConsumesAsync(
             closed,
             lane,
             owner,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.SidecarProof);
 
         await AssertCapabilityIdentityMismatchConsumesAsync(
@@ -2263,8 +2239,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         IGrimoireMaintenanceConnectionCapability disposedCapability =
             closed.IssueMaintenanceConnectionCapability(
-                CanonicalPath,
-                CovenantMaintenanceConnectionMode.ReadOnly,
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
                 lane).Value;
 
@@ -2273,8 +2247,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result<IGrimoireTrackedMaintenanceHandle> disposed = disposedCapability.Consume(
             owner,
             closed.Generation,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane);
 
@@ -2282,24 +2254,18 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                CanonicalPath,
-                CovenantMaintenanceConnectionMode.ReadOnly,
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
                 lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> consumed = capability.Consume(
             owner,
             closed.Generation,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane);
 
         Result<IGrimoireTrackedMaintenanceHandle> reused = capability.Consume(
             owner,
             closed.Generation,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane);
 
@@ -2549,8 +2515,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     public async Task Lane_release_retires_unconsumed_one_shot_authorities_before_another_lane()
     {
 
-        const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(35);
@@ -2567,8 +2531,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                CanonicalPath,
-                CovenantMaintenanceConnectionMode.ReadOnly,
                 CovenantMaintenanceConnectionPurpose.SidecarProof,
                 firstLane).Value;
 
@@ -2587,8 +2549,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result<IGrimoireTrackedMaintenanceHandle> lateFactoryOpen = capability.Consume(
             owner,
             closed.Generation,
-            CanonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.SidecarProof,
             secondLane);
 
@@ -2952,31 +2912,23 @@ public sealed class GrimoireConnectionAdmissionGateTests
         IGrimoireExclusiveClosedLease closed,
         IGrimoireMaintenanceIoLane lane,
         CovenantExclusiveRecoveryOwner owner,
-        string canonicalPath,
-        CovenantMaintenanceConnectionMode actualMode,
         CovenantMaintenanceConnectionPurpose actualPurpose)
     {
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                canonicalPath,
-                CovenantMaintenanceConnectionMode.ReadOnly,
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
                 lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> mismatch = capability.Consume(
             owner,
             closed.Generation,
-            canonicalPath,
-            actualMode,
             actualPurpose,
             lane);
 
         Result<IGrimoireTrackedMaintenanceHandle> spent = capability.Consume(
             owner,
             closed.Generation,
-            canonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane);
 
@@ -2996,24 +2948,18 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
-                canonicalPath,
-                CovenantMaintenanceConnectionMode.ReadOnly,
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
                 lane).Value;
 
         Result<IGrimoireTrackedMaintenanceHandle> mismatch = capability.Consume(
             actualOwner,
             actualGeneration,
-            canonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane);
 
         Result<IGrimoireTrackedMaintenanceHandle> spent = capability.Consume(
             closed.Owner,
             closed.Generation,
-            canonicalPath,
-            CovenantMaintenanceConnectionMode.ReadOnly,
             CovenantMaintenanceConnectionPurpose.IntegrityVerification,
             lane);
 
