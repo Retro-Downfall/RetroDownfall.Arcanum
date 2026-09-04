@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 
 using Microsoft.Data.Sqlite;
@@ -362,6 +363,12 @@ internal sealed class UnreachableMaintenanceFactory : IGrimoireMaintenanceConnec
         CancellationToken cancellationToken) =>
         throw Unreachable();
 
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        throw Unreachable();
+
     public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
         IGrimoireMaintenanceConnectionCapability capability,
         IGrimoireMaintenanceIoLane lane,
@@ -436,6 +443,61 @@ internal sealed class ScratchLedgerConnection : ICovenantClosedPeriodLedgerConne
             }.ToString());
 
     public DbConnection Connection => _connection;
+
+    /// <summary>How many times a ledger window opened this connection, and with what result.</summary>
+    /// <remarks>
+    /// Recorded rather than ignored because the coordinator must reach its ledger through here: an
+    /// open it performed on <see cref="Connection"/> itself would run none of this installation's
+    /// connection policy, and a harness that could not tell the two apart would let that regression
+    /// back in unnoticed.
+    /// </remarks>
+    internal int Opens { get; private set; }
+
+    /// <summary>Whether every open this harness saw came back with the erasure pragmas applied.</summary>
+    internal bool EveryOpenCarriedThePolicy { get; private set; } = true;
+
+    public async Task OpenAsync(CancellationToken cancellationToken)
+    {
+
+        Opens++;
+
+        if (_connection.State is System.Data.ConnectionState.Open)
+        {
+
+            return;
+
+        }
+
+        await _connection.OpenAsync(cancellationToken);
+
+        // A plain SQLite file with no SQLCipher key, so the real initializer's cipher steps have
+        // nothing to work on here. What this harness can still do is apply and read back the two
+        // pragmas an erasure's own deletions depend on, which is the property the production ledger
+        // exists to guarantee.
+        await using (SqliteCommand apply = _connection.CreateCommand())
+        {
+
+            apply.CommandText = "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;";
+
+            _ = await apply.ExecuteNonQueryAsync(cancellationToken);
+
+        }
+
+        EveryOpenCarriedThePolicy &= await ReadsOneAsync("foreign_keys", cancellationToken)
+            && await ReadsOneAsync("secure_delete", cancellationToken);
+
+    }
+
+    private async Task<bool> ReadsOneAsync(string pragma, CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand read = _connection.CreateCommand();
+
+        read.CommandText = $"PRAGMA {pragma};";
+
+        return Convert.ToInt64(await read.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+
+    }
 
     public void Dispose()
     {

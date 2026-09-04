@@ -727,6 +727,7 @@ public sealed class CovenantErasureTransitionTests
             CovenantClosedPeriodAuthority authority,
             CovenantDigest stagingIdentity,
             CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
             CancellationToken cancellationToken) =>
             Record(authority, () => InstallCalls++);
 

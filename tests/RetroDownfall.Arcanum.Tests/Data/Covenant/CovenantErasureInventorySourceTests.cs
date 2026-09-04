@@ -1108,6 +1108,12 @@ public sealed class CovenantErasureInventorySourceTests
                 CancellationToken cancellationToken) =>
                 throw new NotSupportedException("The inventory compacts nothing.");
 
+            public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken) =>
+                throw new NotSupportedException("The inventory compacts nothing.");
+
             public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
                 IGrimoireMaintenanceConnectionCapability capability,
                 IGrimoireMaintenanceIoLane lane,

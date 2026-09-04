@@ -82,11 +82,13 @@ internal sealed class CovenantErasureTransition(
         CovenantClosedPeriodAuthority authority,
         CovenantDigest stagingIdentity,
         CovenantDigest stagedContent,
+        CovenantDigest destinationIdentity,
         CancellationToken cancellationToken) =>
         _storage.InstallCompactionReplacementAsync(
             authority,
             stagingIdentity,
             stagedContent,
+            destinationIdentity,
             cancellationToken);
 
     public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(

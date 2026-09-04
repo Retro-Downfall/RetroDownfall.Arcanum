@@ -2912,11 +2912,13 @@ public sealed class CovenantErasureSameProcessTests
             CovenantClosedPeriodAuthority authority,
             CovenantDigest stagingIdentity,
             CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
             CancellationToken cancellationToken) =>
             inner.InstallCompactionReplacementAsync(
                 authority,
                 stagingIdentity,
                 stagedContent,
+                destinationIdentity,
                 cancellationToken);
 
         public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
@@ -3105,6 +3107,7 @@ public sealed class CovenantErasureSameProcessTests
             CovenantClosedPeriodAuthority authority,
             CovenantDigest stagingIdentity,
             CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException(NoReplacement);
 
@@ -3183,6 +3186,7 @@ public sealed class CovenantErasureSameProcessTests
             CovenantClosedPeriodAuthority authority,
             CovenantDigest stagingIdentity,
             CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException(NoReplacement);
 

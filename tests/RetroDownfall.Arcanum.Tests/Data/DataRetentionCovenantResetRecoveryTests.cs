@@ -995,6 +995,7 @@ public sealed partial class DataRetentionServiceTests
             CovenantClosedPeriodAuthority authority,
             CovenantDigest stagingIdentity,
             CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException(NoReplacement);
 

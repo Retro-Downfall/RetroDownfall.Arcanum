@@ -96,6 +96,7 @@ internal interface ICovenantErasureTransition
         CovenantClosedPeriodAuthority authority,
         CovenantDigest stagingIdentity,
         CovenantDigest stagedContent,
+        CovenantDigest destinationIdentity,
         CancellationToken cancellationToken);
 
     /// <summary>Establishes which file the installation's database currently is.</summary>
@@ -697,7 +698,7 @@ internal sealed class CovenantErasureCoordinator(
         IGrimoireExclusiveClosedLease closed,
         IGrimoireMaintenanceIoLane lane,
         IGrimoireScopedConnectionPermit ledger,
-        SqliteConnection ledgerConnection,
+        ICovenantClosedPeriodLedgerConnection ledgerConnection,
         ICovenantConnectionDrain drain)
     {
 
@@ -710,10 +711,13 @@ internal sealed class CovenantErasureCoordinator(
         internal IGrimoireMaintenanceIoLane Lane => lane;
 
         /// <summary>The permit that keeps the durable ledger's own connection usable while closed.</summary>
-        internal IGrimoireScopedConnectionPermit Ledger => ledger;
+        internal IGrimoireScopedConnectionPermit Permit => ledger;
+
+        /// <summary>The ledger this closed period opens its durable windows through.</summary>
+        internal ICovenantClosedPeriodLedgerConnection Ledger => ledgerConnection;
 
         /// <summary>The exact connection object the permit was bound to.</summary>
-        internal SqliteConnection LedgerConnection => ledgerConnection;
+        internal SqliteConnection LedgerConnection => (SqliteConnection)ledgerConnection.Connection;
 
         /// <summary>The drain whose pool clear follows every ledger close.</summary>
         internal ICovenantConnectionDrain Drain => drain;
@@ -865,7 +869,7 @@ internal sealed class CovenantErasureCoordinator(
                 closed.Value,
                 lane.Value,
                 ledger.Value,
-                ledgerConnection,
+                _ledgerConnection,
                 _drain));
 
     }
@@ -906,7 +910,7 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        Result<IGrimoireTrackedMaintenanceHandle> admitted = closure.Ledger.AcquireOpen(
+        Result<IGrimoireTrackedMaintenanceHandle> admitted = closure.Permit.AcquireOpen(
             closure.LedgerConnection,
             closure.Closed.Owner,
             closure.Closed.Generation,
@@ -933,12 +937,11 @@ internal sealed class CovenantErasureCoordinator(
         try
         {
 
-            if (closure.LedgerConnection.State is not System.Data.ConnectionState.Open)
-            {
-
-                await closure.LedgerConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-            }
+            // Through the ledger rather than on the connection object. A bare open here would run
+            // none of this installation's connection policy, and the two pragmas it would silently
+            // drop - secure_delete and foreign_keys - are the difference between an erasure that
+            // removes the bytes and cascades, and one that leaves both behind while reporting success.
+            await closure.Ledger.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             return await work(cancellationToken).ConfigureAwait(false);
 
@@ -2553,6 +2556,7 @@ internal sealed class CovenantErasureCoordinator(
                 maintenance,
                 stagingIdentity,
                 stagedContent,
+                replacement.DestinationPhysicalIdentityDigest,
                 cancellationToken),
 
             // A replacement that reached the phase without its proof is one the publication sequence

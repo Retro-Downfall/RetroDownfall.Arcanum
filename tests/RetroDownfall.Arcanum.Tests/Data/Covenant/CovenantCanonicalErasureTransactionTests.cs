@@ -1172,6 +1172,12 @@ public sealed class CovenantCanonicalErasureTransactionTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("The canonical erasure transaction compacts nothing.");
 
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction compacts nothing.");
+
         public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
             IGrimoireMaintenanceConnectionCapability capability,
             IGrimoireMaintenanceIoLane lane,
@@ -1289,6 +1295,12 @@ public sealed class CovenantCanonicalErasureTransactionTests
             IGrimoireMaintenanceIoLane lane,
             CancellationToken cancellationToken) =>
             inner.OpenJournalCompactionAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalPostReplaceRestoreAsync(capability, lane, cancellationToken);
 
         public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
             IGrimoireMaintenanceConnectionCapability capability,

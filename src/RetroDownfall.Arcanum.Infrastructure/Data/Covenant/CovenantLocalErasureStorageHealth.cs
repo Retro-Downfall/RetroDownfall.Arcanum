@@ -219,6 +219,7 @@ internal interface ICovenantLocalErasureStorageHealth
         CovenantClosedPeriodAuthority authority,
         CovenantDigest stagingIdentity,
         CovenantDigest stagedContent,
+        CovenantDigest destinationIdentity,
         CancellationToken cancellationToken);
 
     /// <summary>Establishes which file the installation's database currently is.</summary>
@@ -572,9 +573,20 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         Result exported = await ExportAsync(authority, cancellationToken).ConfigureAwait(false);
 
-        return exported.IsFailure
-            ? Result<CovenantDigest>.Failure(exported.Error)
-            : CovenantFileWitness.IdentityOf(authority.ExportStagingDatabasePath);
+        if (exported.IsFailure)
+        {
+
+            // The attach creates the file before the export writes a byte into it, so a failed export
+            // leaves a partial - and possibly complete - encrypted copy of the database this erasure
+            // is removing. Nothing has been recorded about it, so nothing can ever come back for it,
+            // and a full copy of the data with no owner is precisely what this path exists to prevent.
+            _ = CovenantResidualArtifacts.RemoveOwnStaging(authority.CanonicalDatabasePath);
+
+            return Result<CovenantDigest>.Failure(exported.Error);
+
+        }
+
+        return CovenantFileWitness.IdentityOf(authority.ExportStagingDatabasePath);
 
     }
 
@@ -609,20 +621,31 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         }
 
-        Result<CovenantVerifiedExport> verified =
-            await VerifyExportAsync(authority, cancellationToken).ConfigureAwait(false);
+        CovenantCandidateExamination examined =
+            await ExamineExportAsync(authority, cancellationToken).ConfigureAwait(false);
 
-        if (verified.IsFailure)
+        if (examined.Outcome.IsFailure)
         {
 
-            // Destroyed rather than kept. This transition has just established that the candidate is
-            // not installable, so nothing will ever install it — and what would be kept is a complete
-            // encrypted copy of the database an erasure is in the middle of removing. The journal
-            // still names its identity, so the resumed run finds the file gone and refuses rather
-            // than quietly proving a fresh one under evidence written about the old.
-            _ = CovenantResidualArtifacts.RemoveOwnStaging(authority.CanonicalDatabasePath);
+            // Destroyed only when the candidate was actually examined and found wanting. Then nothing
+            // will ever install it, and what would be kept is a complete encrypted copy of the
+            // database an erasure is in the middle of removing; the journal still names its identity,
+            // so the resumed run finds the file gone and refuses rather than quietly proving a fresh
+            // one under evidence written about the old.
+            //
+            // A candidate nobody could look at is a different answer entirely. A refused capability,
+            // an unavailable provider, a busy database or a transient read error say nothing about the
+            // file - and destroying it would convert a stop this transition could still recover from
+            // into one it never can, because the journal already names an identity that no later run
+            // may replace.
+            if (examined.Examined)
+            {
 
-            return Result<CovenantDigest>.Failure(verified.Error);
+                _ = CovenantResidualArtifacts.RemoveOwnStaging(authority.CanonicalDatabasePath);
+
+            }
+
+            return Result<CovenantDigest>.Failure(examined.Outcome.Error);
 
         }
 
@@ -655,6 +678,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         CovenantClosedPeriodAuthority authority,
         CovenantDigest stagingIdentity,
         CovenantDigest stagedContent,
+        CovenantDigest destinationIdentity,
         CancellationToken cancellationToken)
     {
 
@@ -664,29 +688,27 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         // No candidate under the recorded identity is not, by itself, a refusal. An install that
         // completed and then cleared its staging file and an install that never started look the same
-        // from the directory; they do not look the same from the destination's own contents, and that
-        // is the question the recorded content digest exists to answer.
+        // from the directory, and the destination is asked which of the two it is.
+        //
+        // Asked by identity rather than by contents. The install replaces the destination by renaming
+        // a new file over it, so the destination that survives an install is a different file from
+        // the one the plan named - and it stays a different file however its bytes change afterwards.
+        // The contents cannot answer this: the very next step of a successful install reopens the
+        // database to put write-ahead logging back, which rewrites the header, so a resumed run
+        // comparing bytes would conclude its own completed install had never happened.
         if (!CovenantFileWitness.HasIdentity(stagingPath, stagingIdentity))
         {
 
-            Result<CovenantDigest> installed = await CovenantFileWitness.ContentAsync(
+            return CovenantFileWitness.HasIdentity(
                 authority.CanonicalDatabasePath,
-                cancellationToken).ConfigureAwait(false);
-
-            if (installed.IsFailure)
-            {
-
-                return installed.Error;
-
-            }
-
-            return installed.Value == stagedContent
-                ? Result.Success()
-                : new Error(
+                destinationIdentity)
+                ? new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "A Covenant erasure cannot resume its compaction: the candidate it proved is no "
-                    + "longer there and the database in place is not the one it proved. An operator "
-                    + "has to establish which database is in place before anything else runs.");
+                    + "longer there and the database in place is still the one it was going to "
+                    + "replace. An operator has to establish which database is in place before "
+                    + "anything else runs.")
+                : Result.Success();
 
         }
 
@@ -707,21 +729,30 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         }
 
-        try
-        {
+        Result replaced = await ReplaceAsync(
+            new CovenantVerifiedExport(stagingPath),
+            authority,
+            cancellationToken).ConfigureAwait(false);
 
-            return await ReplaceAsync(
-                new CovenantVerifiedExport(stagingPath),
-                authority,
-                cancellationToken).ConfigureAwait(false);
-
-        }
-        finally
+        // Swept only when the candidate has been consumed, never when the install refused. The arms
+        // that report the original is still in place leave a world a later run can finish from: the
+        // journal's identity and content digest still describe the file on disk, so the resumed
+        // install re-establishes both and converges. Sweeping there would delete the one file that
+        // could finish the job while leaving evidence the graph will not let anything replace - a
+        // benign, retryable refusal turned into an installation that can never be erased.
+        //
+        // That leaves a full encrypted copy beside a parked transition, which is the same thing a
+        // crash at this point already leaves and the same thing the resume path already knows how to
+        // use. It does not survive indefinitely: this operation's next run sweeps it on its way to
+        // installing, and any later transition's staging step sweeps the whole class before it exports.
+        if (replaced.IsSuccess)
         {
 
             _ = CovenantResidualArtifacts.RemoveOwnStaging(authority.CanonicalDatabasePath);
 
         }
+
+        return replaced;
 
     }
 
@@ -835,15 +866,36 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// </summary>
     internal async Task<Result<CovenantVerifiedExport>> VerifyExportAsync(
         CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
+        (await ExamineExportAsync(authority, cancellationToken).ConfigureAwait(false)).Outcome;
+
+    /// <summary>
+    /// Verifies the candidate and reports whether the answer is about the candidate at all.
+    /// </summary>
+    /// <remarks>
+    /// Two different failures wear the same result shape, and a caller that acts on the candidate has
+    /// to tell them apart. A check that ran and said no is a verdict: the candidate is not
+    /// installable and nothing will ever install it. A capability that would not issue, a provider
+    /// that would not open, a busy database, a transient read error — none of those examined
+    /// anything, and treating them as a verdict destroys a candidate that was probably fine and
+    /// strands a transition whose journal names an identity no later run may replace.
+    ///
+    /// <para>So the split is exactly "did a check run and return an answer". Every explicit negative
+    /// below is examined; every failure to reach one is not.</para>
+    /// </remarks>
+    internal async Task<CovenantCandidateExamination> ExamineExportAsync(
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
+
+        ArgumentNullException.ThrowIfNull(authority);
 
         string stagingPath = authority.ExportStagingDatabasePath;
 
         if (!File.Exists(stagingPath))
         {
 
-            return Unverified("the export wrote no candidate database");
+            return Unexamined("the export wrote no candidate database");
 
         }
 
@@ -852,7 +904,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         if (opened.IsFailure)
         {
 
-            return Unverified(opened.Error.Message);
+            return Unexamined(opened.Error.Message);
 
         }
 
@@ -870,7 +922,9 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                 if (intact.IsFailure)
                 {
 
-                    return Result<CovenantVerifiedExport>.Failure(intact.Error);
+                    return new CovenantCandidateExamination(
+                        Result<CovenantVerifiedExport>.Failure(intact.Error),
+                        Examined: true);
 
                 }
 
@@ -882,7 +936,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                 if (!string.Equals(structural, "ok", StringComparison.Ordinal))
                 {
 
-                    return Unverified("the exported database did not report structural integrity");
+                    return Examined("the exported database did not report structural integrity");
 
                 }
 
@@ -894,7 +948,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                 if (!measured.IsProven)
                 {
 
-                    return Unverified("the exported database is not exactly the pages it accounts for");
+                    return Examined("the exported database is not exactly the pages it accounts for");
 
                 }
 
@@ -907,20 +961,29 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                     cancellationToken).ConfigureAwait(false);
 
                 return singletons == 1
-                    ? Result<CovenantVerifiedExport>.Success(new CovenantVerifiedExport(stagingPath))
-                    : Unverified("the exported database carries no Covenant canonical singleton");
+                    ? new CovenantCandidateExamination(
+                        Result<CovenantVerifiedExport>.Success(new CovenantVerifiedExport(stagingPath)),
+                        Examined: true)
+                    : Examined("the exported database carries no Covenant canonical singleton");
 
             }
             catch (SqliteException failed)
             {
 
-                return Unverified(failed.Message);
+                // Only the two codes that are statements about the file itself count as a verdict.
+                // SQLITE_NOTADB and SQLITE_CORRUPT say this candidate cannot be opened or read under
+                // this installation's key, which nothing will ever fix; a busy database, a locked one
+                // and an I/O error say the engine could not look right now, and destroying a candidate
+                // on those would strand a transition whose journal already names its identity.
+                return failed.SqliteErrorCode is NotADatabase or Corrupt
+                    ? Examined(failed.Message)
+                    : Unexamined(failed.Message);
 
             }
             catch (InvalidOperationException failed)
             {
 
-                return Unverified(failed.Message);
+                return Unexamined(failed.Message);
 
             }
 
@@ -1016,7 +1079,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         // an owner, and the read-back is the whole value of having one.
         return await WithMaintenanceConnectionAsync(
             "restore write-ahead logging on the replaced Covenant database",
-            authority.OpenCompactionAsync,
+            authority.OpenPostReplaceRestoreAsync,
             static (_, _) => Task.FromResult(Result.Success()),
             cancellationToken).ConfigureAwait(false);
 
@@ -1867,6 +1930,20 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     private static Result<CovenantVerifiedExport> Unverified(string detail) =>
         Result<CovenantVerifiedExport>.Failure(Unverifiable(detail));
 
+    /// <summary>SQLITE_NOTADB: the file is not a database this installation's key can open.</summary>
+    private const int NotADatabase = 26;
+
+    /// <summary>SQLITE_CORRUPT: the file is a database and its contents are damaged.</summary>
+    private const int Corrupt = 11;
+
+    /// <summary>A refusal the candidate itself earned.</summary>
+    private static CovenantCandidateExamination Examined(string detail) =>
+        new(Unverified(detail), Examined: true);
+
+    /// <summary>A refusal that says nothing about the candidate, because nothing looked at it.</summary>
+    private static CovenantCandidateExamination Unexamined(string detail) =>
+        new(Unverified(detail), Examined: false);
+
     private static Error Unverifiable(string detail) =>
         new(
             ErrorCodes.Covenant.ErasureIncomplete,
@@ -2011,3 +2088,15 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             $"A Covenant erasure could not {step}: {detail}");
 
 }
+
+/// <summary>
+/// What a verification of an exported candidate concluded, and whether it concluded anything.
+/// </summary>
+/// <remarks>
+/// The second field is the whole reason this type exists. Destroying a candidate is the right answer
+/// to "this file is not installable" and the wrong answer to "nobody could look at this file", and
+/// those two arrive as the same failed result unless something carries the distinction.
+/// </remarks>
+internal readonly record struct CovenantCandidateExamination(
+    Result<CovenantVerifiedExport> Outcome,
+    bool Examined);

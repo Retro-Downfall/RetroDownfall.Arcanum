@@ -347,6 +347,45 @@ public sealed class CovenantErasureCoordinatorTests
     }
 
     /// <summary>
+    /// Every durable window of the closed period is opened under this installation's connection
+    /// policy, not by opening the connection object.
+    /// </summary>
+    /// <remarks>
+    /// The pragmas are the point, and they are not a nicety. <c>secure_delete</c> and
+    /// <c>foreign_keys</c> are applied and read back in exactly one place, and Entity Framework's
+    /// connection interceptors fire for connections Entity Framework opens — not for one an erasure
+    /// opens itself under a scoped permit while ordinary admission is shut. An erasure that opened it
+    /// raw would delete Covenant rows into pages that still hold the erased bytes, and leave every
+    /// cascade-only child row behind, while reporting a proven erasure.
+    ///
+    /// <para>Asserted through the ledger's own opener rather than by inspecting a connection, because
+    /// what has to be true is that the coordinator goes through the component that owns the policy.
+    /// A count of zero says it found another way in.</para>
+    /// </remarks>
+    [Fact]
+    public async Task Every_closed_period_ledger_window_opens_under_the_installation_connection_policy()
+    {
+
+        CoordinatorHarness harness = new();
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.True(
+            harness.Ledger.Opens > 0,
+            "The erasure opened no ledger window through the component that owns connection policy.");
+
+        Assert.True(
+            harness.Ledger.EveryOpenCarriedThePolicy,
+            "A ledger window was opened without the pragmas an erasure's own deletions depend on.");
+
+    }
+
+    /// <summary>
     /// The arm a compaction takes when it cannot prove itself publishes everything it is about to do
     /// before it does any of it.
     /// </summary>
@@ -2020,6 +2059,7 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantClosedPeriodAuthority authority,
             CovenantDigest stagingIdentity,
             CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
             CancellationToken cancellationToken)
         {
 

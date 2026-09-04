@@ -2987,6 +2987,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantClosedPeriodAuthority.cs", "CovenantClosedPeriodAuthority", "OpenPostReplaceRestoreAsync(1)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 3, "OpenAsync(CovenantMaintenanceConnectionPurpose.PostReplaceJournalRestore,_factory.OpenJournalPostReplaceRestoreAsync,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantClosedPeriodAuthority.cs", "CovenantClosedPeriodAuthority", "OpenExportVerificationAsync(1)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 3, "OpenAsync(CovenantMaintenanceConnectionPurpose.IntegrityVerification,_factory.OpenJournalExportVerificationAsync,cancellationToken)"),
             GrimoirePathAuthority.RestoreOrCompactionStaging,
             GrimoireAcquisitionKind.JournalMaintenance,
@@ -3078,7 +3085,21 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantClosedPeriodAuthority.cs", "CovenantClosedPeriodAuthority", "OpenPostReplaceRestoreAsync(1)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenPostReplaceRestoreAsync", 1, "OpenPostReplaceRestoreAsync(1)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantClosedPeriodAuthority.cs", "CovenantClosedPeriodAuthority", "OpenCompactionAsync(1)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenAsync", 3, "OpenAsync(CovenantMaintenanceConnectionPurpose.Compaction,_factory.OpenJournalCompactionAsync,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantClosedPeriodAuthority.cs", "CovenantClosedPeriodAuthority", "OpenPostReplaceRestoreAsync(1)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenAsync", 3, "OpenAsync(CovenantMaintenanceConnectionPurpose.PostReplaceJournalRestore,_factory.OpenJournalPostReplaceRestoreAsync,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.JournalMaintenance,
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
@@ -3140,6 +3161,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
             null),
 
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "ReadAndVerifyCandidateAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenCandidateReopenAsync", 1, "authority.OpenCandidateReopenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
@@ -3148,14 +3170,21 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "VerifyExportAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenExportVerificationAsync", 1, "authority.OpenExportVerificationAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "ExamineExportAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenExportVerificationAsync", 1, "authority.OpenExportVerificationAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.JournalMaintenance,
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/CovenantErasureCoordinator.cs", "CovenantErasureCoordinator", "WithLedgerAsync(3)", AcquisitionConstructKind.ProviderOpen, "closure.LedgerConnection.OpenAsync", 1, "closure.LedgerConnection.OpenAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/CovenantErasureCoordinator.cs", "CovenantErasureCoordinator", "WithLedgerAsync(3)", AcquisitionConstructKind.ProviderOpen, "closure.Ledger.OpenAsync", 1, "closure.Ledger.OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantClosedPeriodLedgerConnection.cs", "CovenantClosedPeriodLedgerConnection", "OpenAsync(1)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.JournalMaintenance,
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
@@ -3197,7 +3226,21 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalPostReplaceRestoreAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenJournalPostReplaceRestoreAsync", 3, "OpenJournalPostReplaceRestoreAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalCompactionAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.Compaction,lane,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.JournalMaintenance,
+            GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireMaintenanceConnectionFactory.cs", "GrimoireMaintenanceConnectionFactory", "OpenJournalPostReplaceRestoreAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenJournalAsync", 4, "OpenJournalAsync(capability,CovenantMaintenanceConnectionPurpose.PostReplaceJournalRestore,lane,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.JournalMaintenance,
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,

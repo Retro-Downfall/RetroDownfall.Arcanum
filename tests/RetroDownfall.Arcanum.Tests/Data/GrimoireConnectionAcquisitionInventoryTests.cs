@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
 
-    private const int ExpectedProductionAcquisitionCount = 421;
+    private const int ExpectedProductionAcquisitionCount = 427;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -849,6 +849,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 "OpenJournalCompactionAsync",
                 "OpenJournalExportVerificationAsync",
                 "OpenJournalInventorySnapshotAsync",
+                "OpenJournalPostReplaceRestoreAsync",
                 "OpenJournalWalTruncationAsync",
             ],
             contract.Select(static method => method.Name));

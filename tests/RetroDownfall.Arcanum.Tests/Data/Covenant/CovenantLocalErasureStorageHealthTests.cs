@@ -1047,6 +1047,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
                 erased.Authority,
                 staged.Value,
                 proven.Value,
+                CovenantFileWitness.IdentityOf(erased.DatabasePath).Value,
                 cancellationToken);
 
     }
@@ -1081,9 +1082,139 @@ public sealed class CovenantLocalErasureStorageHealthTests
         // sqlcipher_export writes a rollback-journalled database, and the installation opens its
         // Grimoire in write-ahead logging. A replace that left the other mode behind would change how
         // every later connection journals, underneath a proof that had already been made.
-        Assert.Equal("wal", await erased.ScalarStringAsync("PRAGMA journal_mode;", Token));
+        //
+        // Read on a handle that applies no policy of its own. The fixture's ordinary reopen runs the
+        // connection initializer, whose read-write arm issues PRAGMA journal_mode=WAL - so asking it
+        // would measure the pragma this assertion had just set for itself, and would pass whatever
+        // the replace did or did not restore.
+        Assert.Equal("wal", await erased.ReadInstalledJournalModeAsync(Token));
 
         await erased.AssertFileIsExactlyItsPagesAsync(Token);
+
+    }
+
+    /// <summary>
+    /// An install that refuses without touching the destination keeps the candidate it could not
+    /// install, so a later attempt can finish the job.
+    /// </summary>
+    /// <remarks>
+    /// The failure this arranges is benign by construction: the atomic primitive cannot create its
+    /// own temporary file, so it never reaches the move and the original database is exactly where it
+    /// was. What made that failure fatal was the cleanup — the candidate went with it, and the
+    /// journal's replacement evidence names an identity the lifecycle graph will not let any later
+    /// run replace. A retryable refusal became an installation that could never be erased.
+    /// </remarks>
+    [Fact]
+    public async Task An_install_that_leaves_the_original_in_place_keeps_the_candidate_for_the_next_attempt()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
+
+        byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
+
+        // A directory exactly where the atomic replace writes its own temporary file, so the create
+        // fails before the move and the destination is never touched.
+        string obstruction = CovenantResidualArtifacts.ReplacementStagingPath(erased.DatabasePath);
+
+        Directory.CreateDirectory(obstruction);
+
+        CovenantDigest destination = CovenantFileWitness.IdentityOf(erased.DatabasePath).Value;
+
+        Result refused = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            destination,
+            Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+
+        // The point of the test: the candidate is still there, still the file the journal named.
+        Assert.True(
+            File.Exists(erased.Authority.ExportStagingDatabasePath),
+            "A refused install destroyed the candidate it did not install.");
+
+        Directory.Delete(obstruction, recursive: true);
+
+        Result installed = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            destination,
+            Token);
+
+        Assert.True(installed.IsSuccess, installed.IsFailure ? installed.Error.Message : null);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+
+    }
+
+    /// <summary>
+    /// A candidate nobody could examine is kept rather than destroyed.
+    /// </summary>
+    /// <remarks>
+    /// "This file is not installable" and "nobody could look at this file" arrive as the same failed
+    /// result, and acting on the wrong one is unrecoverable in exactly one direction. A refused
+    /// capability, an unavailable provider or a busy database says nothing about the candidate — and
+    /// once it is gone the journal names a staging identity that the lifecycle graph will not let any
+    /// later run replace, so the transition can never finish. Keeping a candidate that turns out to be
+    /// worthless costs one sweep by the next transition's staging step; destroying one that was fine
+    /// costs the installation its ability to be erased.
+    ///
+    /// <para>The destruction half of the rule is covered by
+    /// <see cref="A_candidate_that_fails_its_proof_is_destroyed_rather_than_left_behind"/>, which
+    /// reaches a real verdict — a candidate that exports cleanly and carries no canonical
+    /// singleton.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_candidate_nobody_could_examine_is_kept_rather_than_destroyed()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        // Nothing examined the candidate: the identity the caller offers is not the one on disk, so
+        // the proof refuses before it opens anything.
+        Result<CovenantDigest> unexamined = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            new CovenantDigest(Enumerable.Repeat((byte)0x3C, CovenantLimits.DigestBytes).ToArray()),
+            Token);
+
+        Assert.True(unexamined.IsFailure);
+
+        Assert.True(
+            File.Exists(erased.Authority.ExportStagingDatabasePath),
+            "A candidate nobody examined was destroyed.");
+
+        // And the candidate is still usable: the transition that recorded it can still finish.
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
 
     }
 
@@ -1118,10 +1249,13 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
 
+        CovenantDigest destination = CovenantFileWitness.IdentityOf(erased.DatabasePath).Value;
+
         Result first = await erased.Health.InstallCompactionReplacementAsync(
             erased.Authority,
             staged.Value,
             proven.Value,
+            destination,
             Token);
 
         Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
@@ -1135,11 +1269,15 @@ public sealed class CovenantLocalErasureStorageHealthTests
             erased.Authority,
             staged.Value,
             proven.Value,
+            destination,
             Token);
 
         Assert.True(second.IsSuccess, second.IsFailure ? second.Error.Message : null);
 
-        Assert.Equal(installed, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+        // Identical bytes are not asserted: a successful install reopens the database to put
+        // write-ahead logging back, and that rewrites the header. What must hold is that the second
+        // install recognised the first rather than refusing or replacing again.
+        Assert.Equal(installed.Length, new FileInfo(erased.DatabasePath).Length);
 
     }
 
@@ -1176,10 +1314,13 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         File.Delete(erased.Authority.ExportStagingDatabasePath);
 
+        CovenantDigest destination = CovenantFileWitness.IdentityOf(erased.DatabasePath).Value;
+
         Result refused = await erased.Health.InstallCompactionReplacementAsync(
             erased.Authority,
             staged.Value,
             proven.Value,
+            destination,
             Token);
 
         Assert.True(refused.IsFailure);
@@ -2012,6 +2153,47 @@ public sealed class CovenantLocalErasureStorageHealthTests
             await ReopenAsync(cancellationToken);
 
             return await _fixture.ScalarLongAsync(sql, cancellationToken);
+
+        }
+
+        /// <summary>
+        /// Reads the journal mode the installed file actually carries, applying no policy to it.
+        /// </summary>
+        /// <remarks>
+        /// Journal mode is a persistent property of the database file, and every ordinary route into
+        /// this fixture runs the connection initializer, whose read-write arm sets it. So a test that
+        /// asked through one of those would set the value it then asserted, and would keep passing if
+        /// the step under test stopped restoring anything at all - which is exactly what happened.
+        /// </remarks>
+        internal async Task<string?> ReadInstalledJournalModeAsync(CancellationToken cancellationToken)
+        {
+
+            await using SqliteConnection bare = new(
+                new SqliteConnectionStringBuilder
+                {
+                    DataSource = DatabasePath,
+                    Pooling = false,
+                }.ToString());
+
+            await bare.OpenAsync(cancellationToken);
+
+            await using (SqliteCommand key = bare.CreateCommand())
+            {
+
+                // A pragma takes no parameters, so the key is quoted into the statement. It is this
+                // fixture's own generated passphrase rather than anything an installation holds.
+                key.CommandText =
+                    $"PRAGMA key = '{_period.Passphrase.Passphrase.Replace("'", "''", StringComparison.Ordinal)}';";
+
+                _ = await key.ExecuteNonQueryAsync(cancellationToken);
+
+            }
+
+            await using SqliteCommand read = bare.CreateCommand();
+
+            read.CommandText = "PRAGMA journal_mode;";
+
+            return (await read.ExecuteScalarAsync(cancellationToken))?.ToString();
 
         }
 

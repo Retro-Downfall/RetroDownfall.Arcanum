@@ -43,6 +43,12 @@ internal interface IGrimoireMaintenanceConnectionFactory
         IGrimoireMaintenanceIoLane lane,
         CancellationToken cancellationToken);
 
+    /// <summary>Opens the ordinary read-write handle that puts write-ahead logging back after a replace.</summary>
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
     Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
         IGrimoireMaintenanceConnectionCapability capability,
         IGrimoireMaintenanceIoLane lane,
@@ -511,6 +517,18 @@ internal enum CovenantMaintenanceConnectionPurpose : byte
     AcceleratorInitialization = 7,
 
     InventorySnapshot = 8,
+
+    /// <summary>
+    /// The one reopen that puts write-ahead logging back on a database an export just replaced.
+    /// </summary>
+    /// <remarks>
+    /// A purpose of its own rather than a second use of <see cref="Compaction"/>, because the two
+    /// need opposite engine configurations and the purpose is what decides it. Compaction opens an
+    /// exclusive maintenance handle, and the initializer applies a journal mode only to the ordinary
+    /// read-write one — so restoring the mode through the compaction purpose sets nothing and proves
+    /// nothing, which is exactly the silence a step whose whole job is a read-back must not have.
+    /// </remarks>
+    PostReplaceJournalRestore = 9,
 
 }
 

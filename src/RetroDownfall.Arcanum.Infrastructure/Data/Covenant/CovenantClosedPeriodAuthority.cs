@@ -118,6 +118,24 @@ internal sealed class CovenantClosedPeriodAuthority(
 
     }
 
+    /// <summary>
+    /// Opens the ordinary read-write handle that puts write-ahead logging back after a replace.
+    /// </summary>
+    /// <remarks>
+    /// Its own purpose, because the mode is derived from the purpose and this one needs the mode the
+    /// installation actually opens its Grimoire in. Reusing the compaction purpose would open an
+    /// exclusive maintenance handle, which the initializer applies no journal mode to at all - so the
+    /// step would set nothing, read nothing back, and leave the installed database in the rollback
+    /// journalling an export writes.
+    /// </remarks>
+    [GrimoireConnectionAcquisitionRoute]
+    internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenPostReplaceRestoreAsync(
+        CancellationToken cancellationToken) =>
+        OpenAsync(
+            CovenantMaintenanceConnectionPurpose.PostReplaceJournalRestore,
+            _factory.OpenJournalPostReplaceRestoreAsync,
+            cancellationToken);
+
     /// <summary>Opens the exported candidate, read-only, before the destination is touched.</summary>
     [GrimoireConnectionAcquisitionRoute]
     internal Task<Result<IGrimoireMaintenanceConnectionLease>> OpenExportVerificationAsync(

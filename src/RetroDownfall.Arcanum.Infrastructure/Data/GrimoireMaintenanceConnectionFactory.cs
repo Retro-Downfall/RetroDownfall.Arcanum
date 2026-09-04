@@ -63,7 +63,19 @@ internal sealed class GrimoireMaintenanceConnectionFactory
             lane,
             cancellationToken);
 
-    /// <summary>Opens the closed period's connection for vacuuming, exporting, and restoring the journal mode after a replace.</summary>
+    /// <summary>Opens the ordinary read-write handle that puts write-ahead logging back after a replace.</summary>
+    [GrimoireConnectionAcquisitionRoute]
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.PostReplaceJournalRestore,
+            lane,
+            cancellationToken);
+
+    /// <summary>Opens the closed period's connection for vacuuming and exporting.</summary>
     [GrimoireConnectionAcquisitionRoute]
     public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
         IGrimoireMaintenanceConnectionCapability capability,
@@ -303,7 +315,8 @@ internal sealed class GrimoireMaintenanceConnectionFactory
                 or CovenantMaintenanceConnectionPurpose.InventorySnapshot =>
                 CovenantSqliteConnectionMode.ReadOnly,
 
-            CovenantMaintenanceConnectionPurpose.SidecarProof =>
+            CovenantMaintenanceConnectionPurpose.SidecarProof
+                or CovenantMaintenanceConnectionPurpose.PostReplaceJournalRestore =>
                 CovenantSqliteConnectionMode.ReadWrite,
 
             _ => CovenantSqliteConnectionMode.ExclusiveMaintenance,
