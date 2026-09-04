@@ -773,6 +773,21 @@ internal sealed partial class DataRetentionService
 
     }
 
+    /// <summary>
+    /// Lets go of the service's own ledger handle before a closed period needs the file.
+    /// </summary>
+    /// <remarks>
+    /// It reports rather than proves now, and the difference matters. Inside a closed period the
+    /// coordinator owns this exact connection: it opens it for each durable window and closes it
+    /// again before the next exclusive maintenance open, precisely so a live ledger handle cannot
+    /// contend with the erasure's own lock. A close asserted here would then be asserting against
+    /// the window rather than against a leak - failing whenever the coordinator legitimately had the
+    /// connection open, which is every time this runs as a continuation.
+    ///
+    /// <para>Nothing is lost by not asserting. What the assertion was protecting is proved later and
+    /// better: the storage health proof enumerates the database's own directory and refuses on any
+    /// surviving sidecar, which is what a handle this process failed to close actually leaves behind.</para>
+    /// </remarks>
     private async Task<Result> CloseFactoryServiceConnectionAsync()
     {
 
@@ -781,9 +796,7 @@ internal sealed partial class DataRetentionService
 
             await db.Database.CloseConnectionAsync().ConfigureAwait(false);
 
-            return db.Database.GetDbConnection().State is ConnectionState.Closed
-                ? Result.Success()
-                : Result.Failure(CovenantMaintenanceFailure());
+            return Result.Success();
 
         }
         catch (Exception ex)

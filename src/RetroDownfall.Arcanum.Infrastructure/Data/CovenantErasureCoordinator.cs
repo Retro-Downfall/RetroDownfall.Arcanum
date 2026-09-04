@@ -919,6 +919,27 @@ internal sealed class CovenantErasureCoordinator(
 
     }
 
+    /// <summary>
+    /// How the Grimoire's closure ends, given how the Covenant scope ended.
+    /// </summary>
+    /// <remarks>
+    /// It always reopens, and that is not the same decision as the Covenant disposition beside it.
+    /// The Grimoire closure is the mechanism this erasure used to get exclusive access to a file; the
+    /// Covenant scope is the durable statement about whether the installation may be used. Leaving
+    /// ordinary connection admission shut after a parked erasure would not keep anything safe that
+    /// the Covenant scope is not already keeping safe — it would make the database unopenable, so an
+    /// operator could not even read the operation row that says what to do next, and no later process
+    /// could reach the journal's own terminal reconciliation.
+    ///
+    /// <para>Which reopening disposition still matters, because the gate records it: a commit and a
+    /// rollback leave the same open gate but a different account of why.</para>
+    /// </remarks>
+    private static CovenantExclusiveLeaseDisposition GrimoireDispositionFor(
+        CovenantExclusiveLeaseDisposition covenant) =>
+        covenant is CovenantExclusiveLeaseDisposition.CommitAndReopen
+            ? CovenantExclusiveLeaseDisposition.CommitAndReopen
+            : CovenantExclusiveLeaseDisposition.RollbackAndReopen;
+
     /// <summary>Answers the lane's revalidation from the lease that closed the scope, and nothing else.</summary>
     private static async ValueTask<bool> RevalidateAsync(
         CovenantExclusiveLease lease,
@@ -1145,7 +1166,9 @@ internal sealed class CovenantErasureCoordinator(
             {
 
                 _ = await unspent
-                    .ReleaseAsync(CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None)
+                    .ReleaseAsync(
+                        CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                        CancellationToken.None)
                     .ConfigureAwait(false);
 
             }
@@ -1442,7 +1465,13 @@ internal sealed class CovenantErasureCoordinator(
             if (factoryContinuation is not null && !phases.OrdinaryFactoryContinuationCompleted)
             {
 
-                Result continued = await factoryContinuation(cancellationToken).ConfigureAwait(false);
+                // The continuation is ordinary database work - it rebuilds a retention plan and
+                // deletes through the ordinary store - so it needs the same admitted ledger window
+                // every other durable step of this closed period runs in.
+                Result continued = await WithLedgerAsync(
+                    closure,
+                    factoryContinuation,
+                    cancellationToken).ConfigureAwait(false);
 
                 if (continued.IsSuccess)
                 {
@@ -2395,7 +2424,8 @@ internal sealed class CovenantErasureCoordinator(
         if (closure is not null)
         {
 
-            Result reopened = await closure.ReleaseAsync(disposition, lifecycle.Token)
+            Result reopened = await closure
+                .ReleaseAsync(GrimoireDispositionFor(disposition), lifecycle.Token)
                 .ConfigureAwait(false);
 
             if (reopened.IsFailure)
