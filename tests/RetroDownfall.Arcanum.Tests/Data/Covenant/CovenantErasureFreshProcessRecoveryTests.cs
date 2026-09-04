@@ -17,8 +17,10 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -273,6 +275,15 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
         builder.Services.AddSingleton<IModelTokenEstimator>(static _ => null!);
 
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
+
+        // The production authority borrows the installation lock the database hosted service holds,
+        // and this fresh process is a bare container with no hosted services in it - so nothing has
+        // attached one and every journal it tried to open would refuse. The substitute is the real
+        // authority over a temporary guarded root with its own lock: what changes is where the journal
+        // lives, not what is allowed to be written into it.
+        builder.Services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
+            static sp => new LocalOfflineTransitionPhaseAuthority(
+                sp.GetRequiredService<ILongRunningOperationStore>()));
 
         ServiceProvider provider = builder.Services.BuildServiceProvider(
             new ServiceProviderOptions
