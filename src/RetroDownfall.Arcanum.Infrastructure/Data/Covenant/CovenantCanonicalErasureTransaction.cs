@@ -11,6 +11,44 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
+/// The exact source state a canonical erasure may run against, and the one target it may stamp.
+/// </summary>
+/// <remarks>
+/// Both halves travel together because the transaction needs both: the source to refuse a database
+/// that is not the one the plan was made against, and the target to stamp something a later pass can
+/// recognize as its own. A transaction that generated its own target could not be asked afterwards
+/// whether it had committed — a replaced family looks the same whether this operation replaced it or
+/// something else did — and one that took a target without a source could stamp it over a database
+/// nobody established the state of.
+///
+/// <para>Each target epoch is the successor of its own source rather than of some source. Compared as
+/// a set, a launch whose accelerator and envelope targets were transposed would satisfy the rule and
+/// then verify a replaced family against a counter it does not belong to.</para>
+/// </remarks>
+internal readonly record struct CovenantCanonicalDatasetTransition(
+    Guid SourceDatasetGeneration,
+    CovenantOfflineTransitionEpochsV1 SourceEpochs,
+    Guid TargetDatasetGeneration,
+    CovenantOfflineTransitionEpochsV1 TargetEpochs)
+{
+
+    /// <summary>Whether this pair is one a launch could have committed to.</summary>
+    internal bool IsCoherent =>
+        SourceDatasetGeneration != Guid.Empty
+        && TargetDatasetGeneration != Guid.Empty
+        && SourceDatasetGeneration != TargetDatasetGeneration
+        && SourceEpochs is not null
+        && TargetEpochs is not null
+        && IsSuccessor(SourceEpochs.AcceleratorEpoch, TargetEpochs.AcceleratorEpoch)
+        && IsSuccessor(SourceEpochs.KeyReclamationEpoch, TargetEpochs.KeyReclamationEpoch)
+        && IsSuccessor(SourceEpochs.EnvelopeKeyEpoch, TargetEpochs.EnvelopeKeyEpoch);
+
+    private static bool IsSuccessor(ulong source, ulong target) =>
+        source is > 0 and < long.MaxValue && target == source + 1;
+
+}
+
+/// <summary>
 /// Erases the canonical Covenant family in one exclusive initialized secure-delete transaction, and
 /// reads back the generation of the single dataset that transaction created.
 /// </summary>
@@ -32,7 +70,8 @@ internal interface ICovenantCanonicalErasure
     /// </param>
     Task<Result<Guid>> ApplyAsync(
         CovenantExclusiveOperation operation,
-        CovenantV3MaintenanceCapability capability,
+        CovenantCanonicalDatasetTransition dataset,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
 
 }
@@ -103,11 +142,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     internal static IReadOnlyList<string> FamilyTables { get; } =
         Array.AsReadOnly(FamilyTablesInDeletionOrder);
 
-    private readonly ICovenantV3MaintenanceConnectionFactory _connections;
-
     private readonly ICovenantSqliteConnectionInitializer _initializer;
-
-    private readonly ICovenantConnectionDrain _drain;
 
     private readonly TimeProvider _timeProvider;
 
@@ -119,17 +154,11 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     internal Func<int, Exception, CancellationToken, ValueTask>? RetryingForTesting { get; set; }
 
     internal CovenantCanonicalErasureTransaction(
-        ICovenantV3MaintenanceConnectionFactory connections,
         ICovenantSqliteConnectionInitializer initializer,
-        ICovenantConnectionDrain drain,
         TimeProvider timeProvider)
     {
 
-        _connections = connections ?? throw new ArgumentNullException(nameof(connections));
-
         _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
-
-        _drain = drain ?? throw new ArgumentNullException(nameof(drain));
 
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
@@ -137,9 +166,22 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
     public async Task<Result<Guid>> ApplyAsync(
         CovenantExclusiveOperation operation,
-        CovenantV3MaintenanceCapability capability,
+        CovenantCanonicalDatasetTransition dataset,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
+
+        // Refused before the drain, not after: an incoherent pair cannot become coherent by closing
+        // handles, and the cheapest place to answer is the one where nothing has been let go of yet.
+        if (!dataset.IsCoherent)
+        {
+
+            return Result<Guid>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.IntegrityFailure,
+                    "The canonical dataset transition is not one a launch could have committed to."));
+
+        }
 
         if (operation is not CovenantExclusiveOperation.CovenantReset
             and not CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
@@ -152,20 +194,13 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         }
 
-        // Before the connection, never after. An exclusive maintenance handle cannot take its lock
-        // while any other handle holds the same database open, so draining afterwards would mean
-        // failing on a lock whose holder this component had just declined to close.
-        Result drained = await _drain.DrainAsync(cancellationToken).ConfigureAwait(false);
-
-        if (drained.IsFailure)
-        {
-
-            return Result<Guid>.Failure(drained.Error);
-
-        }
-
-        Result<ICovenantV3MaintenanceConnectionLease> opened =
-            await _connections.OpenV3CanonicalErasureAsync(capability, cancellationToken).ConfigureAwait(false);
+        // No drain here any more. The closed period this runs inside was entered through the
+        // admission gate's own stage two, which resolved every outstanding native open, waited for
+        // the enrolled handles to close, and cleared the pools before it issued the closed lease this
+        // authority was minted from. A second drain would be re-proving what the gate refuses to
+        // issue an authority without.
+        Result<IGrimoireMaintenanceConnectionLease> opened =
+            await authority.OpenCanonicalErasureAsync(cancellationToken).ConfigureAwait(false);
 
         if (opened.IsFailure)
         {
@@ -177,7 +212,11 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         await using (opened.Value.ConfigureAwait(false))
         {
 
-            return await ApplyOnConnectionAsync(opened.Value.Connection, operation, cancellationToken).ConfigureAwait(false);
+            return await ApplyOnConnectionAsync(
+                opened.Value.Connection,
+                operation,
+                dataset,
+                cancellationToken).ConfigureAwait(false);
 
         }
 
@@ -195,6 +234,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     private async Task<Result<Guid>> ApplyOnConnectionAsync(
         SqliteConnection connection,
         CovenantExclusiveOperation operation,
+        CovenantCanonicalDatasetTransition dataset,
         CancellationToken cancellationToken)
     {
 
@@ -202,7 +242,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         {
 
             return await SqliteBusyRetry.ExecuteAsync(
-                () => ApplyWithinTransactionAsync(connection, operation, cancellationToken),
+                () => ApplyWithinTransactionAsync(connection, operation, dataset, cancellationToken),
                 cancellationToken,
                 RetryingForTesting).ConfigureAwait(false);
 
@@ -219,6 +259,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     private async Task<Result<Guid>> ApplyWithinTransactionAsync(
         SqliteConnection connection,
         CovenantExclusiveOperation operation,
+        CovenantCanonicalDatasetTransition dataset,
         CancellationToken cancellationToken)
     {
 
@@ -240,7 +281,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
-            Result<Guid> erased = await EraseAsync(connection, transaction, operation, cancellationToken)
+            Result<Guid> erased = await EraseAsync(connection, transaction, operation, dataset, cancellationToken)
                 .ConfigureAwait(false);
 
             if (erased.IsFailure)
@@ -274,6 +315,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         SqliteConnection connection,
         SqliteTransaction transaction,
         CovenantExclusiveOperation operation,
+        CovenantCanonicalDatasetTransition dataset,
         CancellationToken cancellationToken)
     {
 
@@ -328,6 +370,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         Result<Guid> generation = await StampDatasetAsync(
             connection,
             transaction,
+            dataset,
             factoryErasure,
             campaignSequence,
             sessionSequence,
@@ -381,6 +424,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     private static async Task<Result<Guid>> StampDatasetAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        CovenantCanonicalDatasetTransition dataset,
         bool factoryErasure,
         long campaignSequence,
         long sessionSequence,
@@ -388,10 +432,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         CancellationToken cancellationToken)
     {
 
-        // Cryptographic random rather than a sequential identity, matching the canonical installer:
-        // this value is compared by equality across processes and snapshots, and a generation that
-        // could be predicted from the last one would let a stale reader guess its way past a check.
-        Guid generation = new(RandomNumberGenerator.GetBytes(16));
+        Guid generation = dataset.TargetDatasetGeneration;
 
         int updated = await ExecuteAsync(
             connection,
@@ -404,18 +445,29 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
                 AppliedSearchSequence = NULL,
                 AppliedCampaignDeletionSequence = $campaignSequence,
                 AppliedSessionDeletionSequence = $sessionSequence,
-                AcceleratorEpoch = AcceleratorEpoch + 1,
-                KeyReclamationEpoch = KeyReclamationEpoch + 1,
-                EnvelopeKeyEpoch = EnvelopeKeyEpoch + 1,
+                AcceleratorEpoch = $targetAcceleratorEpoch,
+                KeyReclamationEpoch = $targetKeyReclamationEpoch,
+                EnvelopeKeyEpoch = $targetEnvelopeKeyEpoch,
                 NextSearchRowId = 1,
                 RebuildStateCode = $rebuildStateCode,
                 RebuildTargetSequence = NULL,
                 RebuildCursor = NULL,
                 UpdatedAtUtc = $updatedAtUtc
-            WHERE StateKey = 1;
+            WHERE StateKey = 1
+              AND DatasetGeneration = $sourceGeneration
+              AND AcceleratorEpoch = $sourceAcceleratorEpoch
+              AND KeyReclamationEpoch = $sourceKeyReclamationEpoch
+              AND EnvelopeKeyEpoch = $sourceEnvelopeKeyEpoch;
             """,
             cancellationToken,
             ("$generation", generation.ToByteArray()),
+            ("$sourceGeneration", dataset.SourceDatasetGeneration.ToByteArray()),
+            ("$sourceAcceleratorEpoch", checked((long)dataset.SourceEpochs.AcceleratorEpoch)),
+            ("$sourceKeyReclamationEpoch", checked((long)dataset.SourceEpochs.KeyReclamationEpoch)),
+            ("$sourceEnvelopeKeyEpoch", checked((long)dataset.SourceEpochs.EnvelopeKeyEpoch)),
+            ("$targetAcceleratorEpoch", checked((long)dataset.TargetEpochs.AcceleratorEpoch)),
+            ("$targetKeyReclamationEpoch", checked((long)dataset.TargetEpochs.KeyReclamationEpoch)),
+            ("$targetEnvelopeKeyEpoch", checked((long)dataset.TargetEpochs.EnvelopeKeyEpoch)),
             ("$campaignSequence", campaignSequence),
             ("$sessionSequence", sessionSequence),
             ("$rebuildStateCode", (long)CovenantFtsRebuildState.FullRebuildRequired),
@@ -424,16 +476,54 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         if (updated == 1)
         {
 
-            return Result<Guid>.Success(generation);
+            // Read back inside the same transaction. The caller is owed the generation the committed
+            // row carries rather than the one this method was handed: those are the same value only if
+            // the statement did what it was asked, and "did it" is exactly the question.
+            return await ReadStampedGenerationAsync(connection, transaction, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        // Zero rows has three causes and they are three different answers.
+        //
+        // A singleton carrying the exact target tuple is this operation's own commit, replayed.
+        // Nothing else in the installation could have chosen that generation - it was drawn at random
+        // and written down before the effect - so the transition has already happened and converging
+        // on it is the only correct outcome. Refusing here instead would park an erasure whose
+        // database is already in exactly the state the plan asked for.
+        //
+        // A singleton carrying anything else is a database this plan was not made against, and
+        // running the deletion would erase a family under a generation nobody committed to replacing.
+        //
+        // No singleton at all is schema damage, which no offline transition can have been launched
+        // against, because a launch records a source epoch above zero for all three counters.
+        if (await CountAsync(connection, transaction, "covenant_state", cancellationToken)
+                .ConfigureAwait(false) == 1)
+        {
+
+            Result<Guid> observed = await ReadStampedGenerationAsync(
+                connection,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
+
+            return observed.IsSuccess && await CarriesExactTargetAsync(
+                    connection,
+                    transaction,
+                    dataset,
+                    observed.Value,
+                    cancellationToken).ConfigureAwait(false)
+                ? observed
+                : Result<Guid>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "The Covenant canonical source state is not the one this transition was "
+                            + "launched against."));
 
         }
 
         if (!factoryErasure)
         {
 
-            // A reset reseeds nothing. Minting a singleton for a catalog that lost one would answer
-            // schema damage by inventing a dataset identity nothing else in the installation agrees
-            // with, and the operator would never be told the catalog was damaged at all.
             return Result<Guid>.Failure(
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
@@ -441,67 +531,99 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         }
 
-        _ = await ExecuteAsync(
-            connection,
-            transaction,
-            """
-            INSERT INTO covenant_state (
-                StateKey,
-                DatasetGeneration,
-                CanonicalSearchSequence,
-                AppliedDatasetGeneration,
-                AppliedSearchSequence,
-                AppliedCampaignDeletionSequence,
-                AppliedSessionDeletionSequence,
-                AcceleratorEpoch,
-                KeyReclamationEpoch,
-                EnvelopeMasterKeyVersion,
-                EnvelopeMasterKeyFingerprint,
-                EnvelopeKeyEpoch,
-                NextSearchRowId,
-                RebuildStateCode,
-                RebuildTargetSequence,
-                RebuildCursor,
-                UpdatedAtUtc)
-            SELECT
-                1,
-                $generation,
-                0,
-                NULL,
-                NULL,
-                $campaignSequence,
-                $sessionSequence,
-                1,
-                1,
-                CurrentMasterKeyVersion,
-                CurrentMasterKeyFingerprint,
-                1,
-                1,
-                $rebuildStateCode,
-                NULL,
-                NULL,
-                $updatedAtUtc
-            FROM covenant_authority_state
-            WHERE StateKey = 1;
-            """,
-            cancellationToken,
-            ("$generation", generation.ToByteArray()),
-            ("$campaignSequence", campaignSequence),
-            ("$sessionSequence", sessionSequence),
-            ("$rebuildStateCode", (long)CovenantFtsRebuildState.FullRebuildRequired),
-            ("$updatedAtUtc", updatedAtUtc)).ConfigureAwait(false);
+        // An offline transition's launch records a source epoch above zero for all three counters, so
+        // a launch structurally cannot describe a database with no singleton at all. Reseeding one
+        // here would stamp epochs no launch committed to, against a catalog whose damage the operator
+        // would never be told about.
+        return Result<Guid>.Failure(
+            new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "The Covenant canonical singleton is absent, so no offline transition can have been "
+                    + "launched against it."));
 
-        // The envelope columns are copied from the core authority row rather than invented, so a
-        // reseeded singleton describes the key this installation actually holds. No row there means
-        // the insert selected nothing: there is no installation identity to reseed against, and
-        // guessing one would be worse than refusing.
-        return await CountAsync(connection, transaction, "covenant_state", cancellationToken)
-                .ConfigureAwait(false) == 1
-            ? Result<Guid>.Success(generation)
+    }
+
+    /// <summary>
+    /// Whether the singleton carries this transition's exact preselected target, in full.
+    /// </summary>
+    /// <remarks>
+    /// Both halves have to match together. A target generation beside a source epoch, or a generation
+    /// with one epoch advanced, is the shape a partly committed transaction would leave - and calling
+    /// either of those applied would accept a database this transition never produced. The generation
+    /// alone is not enough either: it is the epochs that a second, unnoticed advance would move.
+    /// </remarks>
+    private static async Task<bool> CarriesExactTargetAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CovenantCanonicalDatasetTransition dataset,
+        Guid observedGeneration,
+        CancellationToken cancellationToken)
+    {
+
+        if (observedGeneration != dataset.TargetDatasetGeneration)
+        {
+
+            return false;
+
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM covenant_state
+            WHERE StateKey = 1
+              AND AcceleratorEpoch = $accelerator
+              AND KeyReclamationEpoch = $keyReclamation
+              AND EnvelopeKeyEpoch = $envelopeKey;
+            """;
+
+        _ = command.Parameters.AddWithValue(
+            "$accelerator",
+            checked((long)dataset.TargetEpochs.AcceleratorEpoch));
+
+        _ = command.Parameters.AddWithValue(
+            "$keyReclamation",
+            checked((long)dataset.TargetEpochs.KeyReclamationEpoch));
+
+        _ = command.Parameters.AddWithValue(
+            "$envelopeKey",
+            checked((long)dataset.TargetEpochs.EnvelopeKeyEpoch));
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L;
+
+    }
+
+    /// <summary>
+    /// The generation the committed row carries, read through the transaction that wrote it.
+    /// </summary>
+    private static async Task<Result<Guid>> ReadStampedGenerationAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT DatasetGeneration
+            FROM covenant_state
+            WHERE StateKey = 1
+              AND typeof(DatasetGeneration) = 'blob'
+              AND length(DatasetGeneration) = 16;
+            """;
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+                is byte[] { Length: 16 } bytes
+            ? Result<Guid>.Success(new Guid(bytes))
             : Result<Guid>.Failure(
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
-                    "The Covenant canonical singleton could not be reseeded from the core authority row."));
+                    "The stamped Covenant dataset generation could not be read back."));
 
     }
 

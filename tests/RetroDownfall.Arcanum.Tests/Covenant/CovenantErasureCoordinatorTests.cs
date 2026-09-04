@@ -1,5 +1,7 @@
+using System.Data.Common;
 using System.Reflection;
 
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -13,6 +15,12 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Operations;
+
+using RetroDownfall.Arcanum.Tests.Support;
+
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -38,7 +46,37 @@ public sealed class CovenantErasureCoordinatorTests
 
     private static readonly Guid OperationId = new("55555555-5555-4555-8555-555555555555");
 
+    /// <summary>
+    /// The source and target pair the seeded launch row commits to.
+    /// </summary>
+    /// <remarks>
+    /// Built from the same four values <c>Operation()</c> encodes into the row rather than from
+    /// literals of its own. The coordinator rereads that row to decide whether the checkpoint it was
+    /// handed still describes the operation it is about to disposition, so a pair that differed here
+    /// would make every recoverability case fail as a checkpoint mismatch — which is a real refusal,
+    /// and would look exactly like the defect these tests exist to catch.
+    /// </remarks>
+    private static CovenantCanonicalDatasetTransition PreselectedDataset => new(
+        CovenantOperationGateFixture.DatasetGeneration,
+        SourceEpochs,
+        CandidateGeneration,
+        TargetEpochs);
+
     private static readonly Guid CandidateGeneration = new("99999999-9999-4999-8999-999999999999");
+
+    /// <summary>
+    /// The epoch tuple every launch in this suite was planned against, and the successor tuple it
+    /// preselected.
+    /// </summary>
+    /// <remarks>
+    /// Each target epoch is its own source plus one, which is the only relation the codec accepts. A
+    /// harness that committed a launch the decoder refuses would prove nothing at all about resuming
+    /// one: every resume assertion below would pass through the same "unresumable" arm no matter what
+    /// the coordinator did with it.
+    /// </remarks>
+    private static CovenantOfflineTransitionEpochsV1 SourceEpochs => new(1, 1, 1);
+
+    private static CovenantOfflineTransitionEpochsV1 TargetEpochs => new(2, 2, 2);
 
     /// <summary>
     /// The full ordered step log of a clean erasure, and the only place the whole sequence is written
@@ -82,16 +120,32 @@ public sealed class CovenantErasureCoordinatorTests
 
     }
 
+    /// <summary>
+    /// Whether the ordinary continuation runs again is decided by the journal's own sub-state, not by
+    /// how far the phase ladder got.
+    /// </summary>
+    /// <remarks>
+    /// The two rules agree everywhere except one durable state, and that state is the whole reason the
+    /// sub-state exists: a run that completed the continuation and died before the next phase
+    /// completed sits at exactly the phase a run that never started it sits at. The last case below is
+    /// that state, and a coordinator comparing phases instead of reading the journal reruns ordinary
+    /// deletion that has already happened.
+    /// </remarks>
     [Theory]
-    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed, 1)]
-    [InlineData(CovenantResetPhase.HandlesClosed, 0)]
-    [InlineData(CovenantResetPhase.SidecarsVerified, 0)]
-    public async Task Factory_recovery_reruns_continuation_only_before_HandlesClosed_is_durable(
+    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed, null, 1)]
+    [InlineData(CovenantResetPhase.HandlesClosed, null, 0)]
+    [InlineData(CovenantResetPhase.SidecarsVerified, null, 0)]
+    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed, true, 0)]
+    public async Task Factory_recovery_reruns_the_continuation_only_when_the_journal_does_not_record_it(
         CovenantResetPhase phase,
+        bool? continuationRecorded,
         int expectedCalls)
     {
 
-        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
+        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
+        {
+            ContinuationRecorded = continuationRecorded,
+        };
 
         await harness.CloseAndAdoptAsync();
 
@@ -104,7 +158,7 @@ public sealed class CovenantErasureCoordinatorTests
     }
 
     [Fact]
-    public async Task Factory_continuation_failure_keeps_admission_closed_at_ManagedArtifactsProcessed()
+    public async Task Factory_continuation_failure_keeps_admission_closed_and_the_launch_intact()
     {
 
         CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
@@ -129,12 +183,20 @@ public sealed class CovenantErasureCoordinatorTests
 
         LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
 
-        Assert.Equal(
-            CovenantResetPhase.ManagedArtifactsProcessed,
-            CovenantRecoveryCheckpointCodec
-                .DecodeDataRetentionFactoryReset(durable.CheckpointPayload!)
-                .Value
-                .Phase);
+        // The row still carries the launch exactly as it was committed. Where the run stopped is
+        // reported by the disposition and the blocking code above; the row's job is to say what was
+        // launched, and a failed continuation changes nothing about that.
+        Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, durable.CheckpointVersion);
+
+        DataRetentionFactoryTransitionLaunchV2 launch = CovenantRecoveryCheckpointCodec
+            .DecodeDataRetentionFactoryTransitionLaunch(durable.CheckpointPayload!)
+            .Value;
+
+        Assert.Equal(OperationId, launch.OperationId);
+
+        Assert.Equal(CovenantOperationGateFixture.DatasetGeneration, launch.SourceDatasetGeneration);
+
+        Assert.Equal(CandidateGeneration, launch.TargetDatasetGeneration);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
 
@@ -299,6 +361,196 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(await harness.AdmissionIsOpenAsync());
 
     }
+
+    /// <summary>
+    /// Every durable window of the closed period is opened under this installation's connection
+    /// policy, not by opening the connection object.
+    /// </summary>
+    /// <remarks>
+    /// The pragmas are the point, and they are not a nicety. <c>secure_delete</c> and
+    /// <c>foreign_keys</c> are applied and read back in exactly one place, and Entity Framework's
+    /// connection interceptors fire for connections Entity Framework opens — not for one an erasure
+    /// opens itself under a scoped permit while ordinary admission is shut. An erasure that opened it
+    /// raw would delete Covenant rows into pages that still hold the erased bytes, and leave every
+    /// cascade-only child row behind, while reporting a proven erasure.
+    ///
+    /// <para>Asserted through the ledger's own opener rather than by inspecting a connection, because
+    /// what has to be true is that the coordinator goes through the component that owns the policy.
+    /// A count of zero says it found another way in.</para>
+    /// </remarks>
+    [Fact]
+    public async Task Every_closed_period_ledger_window_opens_under_the_installation_connection_policy()
+    {
+
+        CoordinatorHarness harness = new();
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.True(
+            harness.Ledger.Opens > 0,
+            "The erasure opened no ledger window through the component that owns connection policy.");
+
+        Assert.True(
+            harness.Ledger.EveryOpenCarriedThePolicy,
+            "A ledger window was opened without the pragmas an erasure's own deletions depend on.");
+
+    }
+
+    /// <summary>
+    /// The arm a compaction takes when it cannot prove itself publishes everything it is about to do
+    /// before it does any of it.
+    /// </summary>
+    /// <remarks>
+    /// The ordering is the whole property. The transition graph admits a replacement advance only from
+    /// a completed write-ahead-log truncation with nothing in flight, so a coordinator that began the
+    /// compaction phase first would have given up the ability to record what it was replacing, with
+    /// what, at all — and the one irreversible act in the ladder would be bracketed by a phase whose
+    /// before-state named none of it.
+    /// </remarks>
+    [Fact]
+    public async Task A_compaction_that_cannot_prove_itself_stages_and_proves_before_its_phase_begins()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.ReplacementNeeded = true;
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.WalTruncated);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(
+            ["compact", "stage-candidate", "prove-candidate", "install-replacement"],
+            harness.Steps.Where(static step => Compaction.Contains(step)).ToArray());
+
+        // The proof is made over the file the staging step reported, and the install acts on the pair
+        // the proof was made over. A sequence that re-observed either would be proving one file and
+        // installing whatever happened to be there afterwards.
+        Assert.Equal(
+            [RecordingErasureTransition.StagedIdentity],
+            harness.Transition.ProvenIdentities);
+
+        Assert.Equal(
+            [(RecordingErasureTransition.StagedIdentity, RecordingErasureTransition.StagedContent)],
+            harness.Transition.Installed);
+
+    }
+
+    /// <summary>
+    /// A run whose journal already carries a proven candidate installs it and stages nothing.
+    /// </summary>
+    /// <remarks>
+    /// The measurement is skipped too, and deliberately. A journal that carries a replacement is a
+    /// journal that has already answered the question the measurement asks, and asking it again would
+    /// rewrite the database the recorded candidate was exported from — under evidence describing the
+    /// file as it was before.
+    /// </remarks>
+    [Fact]
+    public async Task A_resumed_replacement_that_was_already_proven_only_installs()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.ReplacementNeeded = true;
+
+        harness.Replacement = harness.ProvedReplacement();
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.WalTruncated);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(["install-replacement"], harness.Steps.Where(Compaction.Contains).ToArray());
+
+    }
+
+    /// <summary>
+    /// A run whose journal carries only the plan builds the candidate the plan named, and does not
+    /// plan again.
+    /// </summary>
+    [Fact]
+    public async Task A_resumed_replacement_that_reached_only_its_plan_stages_without_replanning()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.ReplacementNeeded = true;
+
+        harness.Replacement = harness.PlannedReplacement();
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.WalTruncated);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(
+            ["stage-candidate", "prove-candidate", "install-replacement"],
+            harness.Steps.Where(Compaction.Contains).ToArray());
+
+    }
+
+    /// <summary>
+    /// A replacement planned against a database that is no longer the one in place is refused rather
+    /// than continued.
+    /// </summary>
+    /// <remarks>
+    /// The candidate a resumed run would export is exported from whatever file is there now, and the
+    /// evidence it would be installed under describes the file that was there before. Nothing in the
+    /// journal can reconcile those, which is why this parks with admission closed rather than choosing
+    /// one of them.
+    /// </remarks>
+    [Fact]
+    public async Task A_replacement_planned_against_a_different_database_parks_rather_than_continuing()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.ReplacementNeeded = true;
+
+        harness.Replacement = harness.PlannedReplacement();
+
+        // The plan is seeded against the identity the double reported when it was made, and the world
+        // then reports a different one.
+        harness.Transition.CanonicalIdentity = CovenantOperationGateFixture.Digest(9);
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.WalTruncated);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        Assert.DoesNotContain("stage-candidate", harness.Steps);
+
+        Assert.DoesNotContain("install-replacement", harness.Steps);
+
+        Assert.False(await harness.AdmissionIsOpenAsync());
+
+    }
+
+    /// <summary>The four steps a compaction replacement is made of, in the order they must happen.</summary>
+    private static IReadOnlySet<string> Compaction { get; } =
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "compact",
+            "stage-candidate",
+            "prove-candidate",
+            "install-replacement",
+        };
 
     [Theory]
     [InlineData(CovenantResetPhase.CanonicalApplied, "erase-artifacts")]
@@ -498,7 +750,7 @@ public sealed class CovenantErasureCoordinatorTests
     [InlineData(DispositionFailureMode.ReturnedFailure)]
     [InlineData(DispositionFailureMode.Cancelled)]
     [InlineData(DispositionFailureMode.Thrown)]
-    public async Task A_failed_one_shot_commit_records_recoverability_without_a_fallback_disposition(
+    public async Task A_failed_one_shot_commit_retains_its_journal_without_a_fallback_disposition(
         DispositionFailureMode failureMode)
     {
 
@@ -526,11 +778,18 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.False(await harness.AdmissionIsOpenAsync());
 
+        // No database status describes the failure. The row carries the terminal answer the reconciler
+        // already committed to, and what went wrong afterwards is the journal's to say — it records
+        // the disposition as in flight and unverified, which is both more precise than a status column
+        // and readable by a process that cannot open the database at all.
         LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
 
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, durable.State);
+        Assert.Equal(LongRunningOperationState.Completed, durable.State);
 
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, durable.TerminalErrorCode);
+        Assert.Null(durable.TerminalErrorCode);
+
+        // The journal is retained rather than retired, which is what keeps the operation adoptable.
+        Assert.True(File.Exists(harness.Phases.JournalPath));
 
     }
 
@@ -544,170 +803,6 @@ public sealed class CovenantErasureCoordinatorTests
         Cancelled,
 
         Thrown,
-
-    }
-
-    public enum LifecycleFailureRaceMode
-    {
-
-        TransientMissing,
-
-        WrongAttentionCode,
-
-        ChangedCheckpoint,
-
-        NonActiveCheckpoint,
-
-        ValidWinner,
-
-    }
-
-    [Theory]
-    [InlineData(LifecycleFailureRaceMode.TransientMissing)]
-    [InlineData(LifecycleFailureRaceMode.WrongAttentionCode)]
-    [InlineData(LifecycleFailureRaceMode.ChangedCheckpoint)]
-    [InlineData(LifecycleFailureRaceMode.NonActiveCheckpoint)]
-    [InlineData(LifecycleFailureRaceMode.ValidWinner)]
-    public async Task A_failed_disposition_retries_until_a_fresh_read_proves_recoverability(
-        LifecycleFailureRaceMode raceMode)
-    {
-
-        CoordinatorHarness harness = new(dispositionFailure: DispositionFailureMode.ReturnedFailure);
-
-        int reads = 0;
-
-        int invalidTransitions = 0;
-
-        bool nonActiveReadOutstanding = false;
-
-        harness.Gate.OnDispositionAttempt = () =>
-        {
-
-            if (raceMode == LifecycleFailureRaceMode.WrongAttentionCode)
-            {
-
-                LongRunningOperation current = Assert.Single(
-                    harness.Store.Operations,
-                    static operation => operation.Id == OperationId);
-
-                harness.Store.Add(
-                    current with
-                    {
-                        State = LongRunningOperationState.ReconciliationRequired,
-                        LeaseOwner = null,
-                        LeaseExpiresAt = null,
-                        TerminalErrorCode = "Covenant.UnrecognizedAttention",
-                        Revision = current.Revision + 1,
-                    });
-
-            }
-
-            harness.Store.GetOverride = current =>
-            {
-
-                int read = Interlocked.Increment(ref reads);
-
-                if (raceMode == LifecycleFailureRaceMode.TransientMissing && read == 1)
-                {
-
-                    return null;
-
-                }
-
-                if (raceMode == LifecycleFailureRaceMode.ChangedCheckpoint && read == 1)
-                {
-
-                    return current! with { CheckpointPayload = [0] };
-
-                }
-
-                if (raceMode == LifecycleFailureRaceMode.NonActiveCheckpoint && read == 1)
-                {
-
-                    nonActiveReadOutstanding = true;
-
-                    return current! with
-                    {
-                        State = LongRunningOperationState.Completed,
-                        CompletedAt = DateTimeOffset.UtcNow,
-                        LeaseOwner = null,
-                        LeaseExpiresAt = null,
-                    };
-
-                }
-
-                nonActiveReadOutstanding = false;
-
-                return current;
-
-            };
-
-            if (raceMode == LifecycleFailureRaceMode.ValidWinner)
-            {
-
-                harness.Store.TryTransitionOverride = current =>
-                {
-
-                    Assert.NotNull(current);
-
-                    harness.Store.Add(
-                        current with
-                        {
-                            State = LongRunningOperationState.ReconciliationRequired,
-                            LeaseOwner = null,
-                            LeaseExpiresAt = null,
-                            TerminalErrorCode = ErrorCodes.Covenant.MaintenanceFailed,
-                            Revision = current.Revision + 1,
-                        });
-
-                    return false;
-
-                };
-
-            }
-            else if (raceMode == LifecycleFailureRaceMode.NonActiveCheckpoint)
-            {
-
-                harness.Store.TryTransitionOverride = current =>
-                {
-
-                    _ = current;
-
-                    if (!nonActiveReadOutstanding)
-                    {
-
-                        return null;
-
-                    }
-
-                    _ = Interlocked.Increment(ref invalidTransitions);
-
-                    return false;
-
-                };
-
-            }
-
-        };
-
-        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
-            CovenantResetPhase.InventoryPrepared);
-
-        Assert.True(completion.IsFailure);
-
-        Assert.Equal(1, harness.Gate.DispositionAttempts);
-
-        Assert.Equal(0, harness.Gate.KeepClosedAttempts);
-
-        Assert.Equal(0, invalidTransitions);
-
-        Assert.True(reads >= 2);
-
-        LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
-
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, durable.State);
-
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, durable.TerminalErrorCode);
 
     }
 
@@ -837,7 +932,7 @@ public sealed class CovenantErasureCoordinatorTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public async Task A_database_replay_read_failure_before_the_first_kernel_restores_then_rolls_back(
+    public async Task A_database_replay_read_failure_after_its_phase_began_parks_with_its_journal(
         int failureKind)
     {
 
@@ -861,13 +956,23 @@ public sealed class CovenantErasureCoordinatorTests
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
             CovenantResetPhase.InventoryPrepared);
 
-        Assert.True(completion.IsSuccess);
+        Assert.True(
+            completion.IsSuccess,
+            completion.IsFailure ? completion.Error.Code + ": " + completion.Error.Message : null);
 
-        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
+        // The read failed after the phase was already published in flight, and a published phase is
+        // not something a later process can be told to disbelieve: the journal records that the step
+        // began, and whether its effect happened is a question only that step's own resolver can
+        // answer. So the transition parks with its journal retained rather than reopening on the
+        // strength of an in-memory flag that no longer exists once the process does not.
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
 
+        // Nothing was erased, which is what makes the park recoverable rather than damaging.
         Assert.Equal(0, harness.Artifacts.Calls);
 
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
+        Assert.True(File.Exists(harness.Phases.JournalPath));
 
     }
 
@@ -885,9 +990,14 @@ public sealed class CovenantErasureCoordinatorTests
 
         await fixture.CorruptManagedProducerEvidenceAsync(corruptDurableLocation);
 
+        // The database as well as the inventory, because the coordinator reads that inventory inside
+        // its own closed period now: the gate has to resolve its purposes to this fixture's file and
+        // the maintenance factory has to be able to open it. Supplying one without the other would
+        // leave the real source reading through an authority pointed somewhere else.
         CoordinatorHarness harness = new(
             inventory: fixture.CreateSource(),
-            datasetGeneration: await fixture.ReadDatasetGenerationAsync());
+            datasetGeneration: await fixture.ReadDatasetGenerationAsync(),
+            databasePath: fixture.DatabasePath);
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
             CovenantResetPhase.InventoryPrepared);
@@ -1203,6 +1313,82 @@ public sealed class CovenantErasureCoordinatorTests
     private sealed class CoordinatorHarness
     {
 
+        /// <summary>
+        /// The maintenance factory the coordinator hands to its closed-period authority.
+        /// </summary>
+        /// <remarks>
+        /// Usually never called, and unreachable when so. The transition and the inventory this
+        /// harness supplies are ordinarily doubles, so no phase of the erasure opens a database; the
+        /// coordinator still needs a factory because it is what the closed-period authority is built
+        /// over, and one that throws keeps "nothing opened anything" an assertion rather than a hope.
+        ///
+        /// <para>A suite that supplies a <em>real</em> inventory is the exception, and it passes the
+        /// scratch database that inventory reads. Then this is the production factory over that file,
+        /// because the read happens inside the closed period like every other one.</para>
+        /// </remarks>
+        internal IGrimoireMaintenanceConnectionFactory MaintenanceConnections { get; }
+
+        /// <summary>The scratch file every maintenance purpose in this harness resolves to.</summary>
+        internal IGrimoireMaintenancePathAuthority MaintenancePaths { get; }
+
+        internal IGrimoireDbPassphraseSource MaintenancePassphrase { get; }
+
+        /// <summary>
+        /// A real journal over this harness's own temporary root, not a stand-in.
+        /// </summary>
+        /// <remarks>
+        /// The phases a coordinator publishes have to form a legal ladder, and only the real
+        /// lifecycle validator can say whether they do. A double would accept whatever it was handed,
+        /// and the first illegal sequence would reach an operator instead of this suite.
+        /// </remarks>
+        internal LocalOfflineTransitionPhaseAuthority Phases { get; }
+
+        internal LongRunningOperationOwnership Ownership { get; } = new();
+
+        /// <summary>
+        /// The real effect table, not a double.
+        /// </summary>
+        /// <remarks>
+        /// What it decides — which operation a journal kind is, and whether that kind owes ordinary
+        /// work — is exactly what several assertions here are about, and a double would answer yes to
+        /// whatever this harness happened to arrange.
+        /// </remarks>
+        internal GrimoireOfflineTransitionEffectHandlerRegistry Effects { get; } =
+            GrimoireOfflineTransitionEffectHandlerRegistry
+                .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                .Value;
+
+        /// <summary>
+        /// The real admission gate the coordinator closes, over this harness's own scratch paths.
+        /// </summary>
+        /// <remarks>
+        /// Real rather than a double because closing the Grimoire is now the coordinator's own work
+        /// rather than something it delegates: it begins the exclusive scope, drains, closes
+        /// admission, takes the maintenance lane and takes a scoped permit over the ledger, and the
+        /// ordering and failure handling of those five steps is exactly what this suite asserts. A
+        /// gate double would answer yes to all of them and the phase ladder would look correct
+        /// whatever the coordinator did.
+        ///
+        /// <para>The paths are scratch ones, and nothing in this suite ever opens them — the
+        /// transition and the inventory are doubles, so no maintenance connection is ever made. They
+        /// exist because the gate derives a path per purpose and refuses to be built without one.</para>
+        /// </remarks>
+        internal GrimoireConnectionAdmissionGate Admission { get; }
+
+        internal CovenantConnectionDrain Drain { get; } = new();
+
+        /// <summary>
+        /// A real connection object for the gate's scoped permit, over a scratch file nothing reads.
+        /// </summary>
+        /// <remarks>
+        /// The coordinator terminalizes its operation row while admission is closed, and the gate
+        /// admits exactly one connection object for it. The permit is taken over whatever object this
+        /// hands back, and the ledger step opens and closes it — so it has to be a real
+        /// <see cref="SqliteConnection"/> rather than a stand-in, or the coordinator takes its
+        /// no-closure fallback and this suite would never exercise the admitted route at all.
+        /// </remarks>
+        internal ScratchLedgerConnection Ledger { get; } = new();
+
         private readonly CovenantExclusiveOperation _operation;
 
         private readonly ICovenantErasureInventorySource _inventory;
@@ -1239,12 +1425,31 @@ public sealed class CovenantErasureCoordinatorTests
             DispositionFailureMode dispositionFailure = DispositionFailureMode.None,
             bool emptyLeaseDataset = false,
             ICovenantErasureInventorySource? inventory = null,
-            Guid? datasetGeneration = null)
+            Guid? datasetGeneration = null,
+            string? databasePath = null)
         {
 
             _operation = operation;
 
+            MaintenanceConnections = databasePath is null
+                ? new UnreachableMaintenanceFactory()
+                : new GrimoireMaintenanceConnectionFactory(
+                    new ScratchPassphraseSource(),
+                    CovenantSqliteConnectionInitializer.Instance,
+                    SqliteNativeRuntime.Instance);
+
+            MaintenancePaths = new ScratchMaintenancePaths(databasePath);
+
+            MaintenancePassphrase = new ScratchPassphraseSource();
+
+            Admission = new GrimoireConnectionAdmissionGate(
+                TimeProvider.System,
+                Drain,
+                MaintenancePaths);
+
             Operations = new RecordingOperationCoordinator(Store);
+
+            Phases = new LocalOfflineTransitionPhaseAuthority(Store);
 
             FakeCovenantAvailability? availability = null;
 
@@ -1321,15 +1526,64 @@ public sealed class CovenantErasureCoordinatorTests
 
         }
 
+        /// <summary>The candidate leaf this harness's operation owns, as the coordinator derives it.</summary>
+        internal string StagingLeaf =>
+            CovenantResidualArtifacts.ExportStagingLeaf(
+                MaintenancePaths.CanonicalDatabasePath,
+                OperationId);
+
+        /// <summary>How far a resumed run's journal has already carried its replacement.</summary>
+        internal SeededReplacement? Replacement { get; set; }
+
+        /// <summary>
+        /// Whether the seeded journal records the ordinary continuation as done, independently of the
+        /// phase it is seeded at.
+        /// </summary>
+        /// <remarks>
+        /// Independent on purpose. The default derives it from the phase, which is convenient and
+        /// makes every assertion about the sub-state pass under a phase-window rule as well — so the
+        /// one durable state the sub-state exists for, a crash after the continuation ran and before
+        /// the next phase completed, has to be arranged explicitly.
+        /// </remarks>
+        internal bool? ContinuationRecorded { get; set; }
+
+        /// <summary>A journal that has recorded the plan and nothing after it.</summary>
+        internal SeededReplacement PlannedReplacement() =>
+            new(
+                StagingLeaf,
+                Transition.CanonicalIdentity,
+                StagingIdentity: null,
+                StagedContent: null);
+
+        /// <summary>A journal that has recorded all three, which is a candidate ready to install.</summary>
+        internal SeededReplacement ProvedReplacement() =>
+            PlannedReplacement() with
+            {
+                StagingIdentity = RecordingErasureTransition.StagedIdentity,
+                StagedContent = RecordingErasureTransition.StagedContent,
+            };
+
         internal async Task<Result<CovenantErasureCompletion>> RunAsync(
             CovenantResetPhase phase,
             CancellationToken? cancellationToken = null,
             Guid? checkpointOperationId = null)
         {
 
-            LongRunningOperation operation = Operation(phase);
+            LongRunningOperation operation = Operation();
 
             Store.Add(operation);
+
+            // A resumed run is one whose journal already records progress. The journal is the phase
+            // authority now, so the arrangement has to produce that journal rather than hand the
+            // coordinator a phase the durable evidence does not support.
+            await Phases.SeedAsync(
+                operation,
+                phase,
+                ContinuationRecorded
+                    ?? (_operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
+                        && phase >= CovenantResetPhase.HandlesClosed),
+                Replacement,
+                cancellationToken ?? Token);
 
             CovenantErasureCoordinator coordinator = new(
                 Operations,
@@ -1340,6 +1594,16 @@ public sealed class CovenantErasureCoordinatorTests
                 _inventory,
                 Transition,
                 DisclosureWriter,
+                Phases,
+                Effects,
+                Admission,
+                MaintenanceConnections,
+                MaintenancePaths,
+                MaintenancePassphrase,
+                Ledger,
+                Drain,
+                new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
+                Ownership,
                 TimeProvider.System,
                 NullLogger<CovenantErasureCoordinator>.Instance);
 
@@ -1347,7 +1611,8 @@ public sealed class CovenantErasureCoordinatorTests
                 checkpointOperationId ?? OperationId,
                 _operation,
                 CovenantOperationGateFixture.Digest(7),
-                phase);
+                phase,
+                PreselectedDataset);
 
             if (_operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
             {
@@ -1373,7 +1638,7 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantResetPhase phase)
         {
 
-            LongRunningOperation operation = Operation(phase);
+            LongRunningOperation operation = Operation();
 
             Store.Add(operation);
 
@@ -1386,6 +1651,16 @@ public sealed class CovenantErasureCoordinatorTests
                 _inventory,
                 Transition,
                 DisclosureWriter,
+                Phases,
+                Effects,
+                Admission,
+                MaintenanceConnections,
+                MaintenancePaths,
+                MaintenancePassphrase,
+                Ledger,
+                Drain,
+                new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
+                Ownership,
                 TimeProvider.System,
                 NullLogger<CovenantErasureCoordinator>.Instance);
 
@@ -1395,7 +1670,8 @@ public sealed class CovenantErasureCoordinatorTests
                     OperationId,
                     _operation,
                     CovenantOperationGateFixture.Digest(7),
-                    phase),
+                    phase,
+                    PreselectedDataset),
                 "owner",
                 Token);
 
@@ -1420,43 +1696,58 @@ public sealed class CovenantErasureCoordinatorTests
         private CovenantExclusiveRecoveryOwner Owner =>
             new(OperationId, _operation, CovenantOperationGateFixture.Digest(7));
 
-        private LongRunningOperation Operation(CovenantResetPhase phase)
+        /// <summary>
+        /// The durable row an erasure resumes from: one committed launch, and nothing about progress.
+        /// </summary>
+        /// <remarks>
+        /// The phase a run re-enters at is handed to the coordinator rather than encoded here, because
+        /// a launch records only what was committed to. A row that also carried the phase would be a
+        /// second authority for a fact the authenticated journal now owns, and the coordinator would
+        /// have two answers to choose between on the first occasion they disagreed.
+        ///
+        /// <para>The preselected target is the very generation the faked transition goes on to stamp,
+        /// so the row and the run describe one plan rather than two that happen to run together.</para>
+        /// </remarks>
+        private LongRunningOperation Operation()
         {
 
-            CovenantErasureCheckpointState checkpoint = new(
-                OperationId,
-                _operation,
-                CovenantOperationGateFixture.Digest(7),
-                phase);
+            string effectDigest = CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
+                CovenantOperationGateFixture.Digest(7));
 
             (int version, byte[] payload, string kind, LongRunningOperationRecoveryPolicy policy) =
                 _operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
                     ? (
-                        DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+                        DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
                         CovenantRecoveryCheckpointCodec.Encode(
-                            new DataRetentionFactoryResetCheckpointV1(
-                                DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                                checkpoint.OperationId,
-                                CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
-                                    checkpoint.EffectDigest),
-                                checkpoint.Operation,
-                                checkpoint.Phase)),
+                            new DataRetentionFactoryTransitionLaunchV2(
+                                DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                                OperationId,
+                                LongRunningOperationKinds.DataRetentionFactoryReset,
+                                nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
+                                _operation,
+                                effectDigest,
+                                CovenantOperationGateFixture.DatasetGeneration,
+                                CandidateGeneration,
+                                SourceEpochs,
+                                TargetEpochs,
+                                StartingRevision: 0)),
                         LongRunningOperationKinds.DataRetentionFactoryReset,
                         LongRunningOperationRecoveryPolicy.RestartIdempotently)
                     : (
-                        DataRetentionMutationCheckpointV3.CurrentVersion,
+                        CovenantOfflineTransitionLaunchV4.CurrentVersion,
                         CovenantRecoveryCheckpointCodec.Encode(
-                            new DataRetentionMutationCheckpointV3(
-                                DataRetentionMutationCheckpointV3.CurrentVersion,
-                                "reset-memory",
-                                ((int)MemoryResetScope.Covenant).ToString(
-                                    System.Globalization.CultureInfo.InvariantCulture),
-                                new CovenantResetEffectArmV1(
-                                    checkpoint.OperationId,
-                                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
-                                        checkpoint.EffectDigest),
-                                    checkpoint.Operation,
-                                    checkpoint.Phase))),
+                            new CovenantOfflineTransitionLaunchV4(
+                                CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                                OperationId,
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+                                _operation,
+                                effectDigest,
+                                CovenantOperationGateFixture.DatasetGeneration,
+                                CandidateGeneration,
+                                SourceEpochs,
+                                TargetEpochs,
+                                StartingRevision: 0)),
                         LongRunningOperationKinds.DataRetentionMutation,
                         LongRunningOperationRecoveryPolicy.ReconcileAndComplete);
 
@@ -1729,7 +2020,8 @@ public sealed class CovenantErasureCoordinatorTests
 
         public async Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
-            CovenantV3MaintenanceCapability capability,
+            CovenantCanonicalDatasetTransition dataset,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -1741,20 +2033,112 @@ public sealed class CovenantErasureCoordinatorTests
 
         }
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) => Step("close-handles");
+        public Task<Result> CloseHandlesAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) => Step("close-handles");
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) => Step("truncate-wal");
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) => Step("truncate-wal");
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) => Step("compact");
+        public async Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken)
+        {
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+            Result stepped = await Step("compact");
+
+            return stepped.IsFailure
+                ? Result<bool>.Failure(stepped.Error)
+                : Result<bool>.Success(ReplacementNeeded);
+
+        }
+
+        public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<CovenantDigest>.Success(CanonicalIdentity));
+
+        public async Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
+        {
+
+            Result stepped = await Step("stage-candidate");
+
+            return stepped.IsFailure
+                ? Result<CovenantDigest>.Failure(stepped.Error)
+                : Result<CovenantDigest>.Success(StagedIdentity);
+
+        }
+
+        public async Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken)
+        {
+
+            ProvenIdentities.Add(stagingIdentity);
+
+            Result stepped = await Step("prove-candidate");
+
+            return stepped.IsFailure
+                ? Result<CovenantDigest>.Failure(stepped.Error)
+                : Result<CovenantDigest>.Success(StagedContent);
+
+        }
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
+            CancellationToken cancellationToken)
+        {
+
+            Installed.Add((stagingIdentity, stagedContent));
+
+            return Step("install-replacement");
+
+        }
+
+        /// <summary>
+        /// Whether this double reports a compaction that could not prove itself.
+        /// </summary>
+        /// <remarks>
+        /// False by default, because that is the arm a healthy engine takes and the one every other
+        /// assertion in this suite is written against. Setting it selects the replacement sequence,
+        /// which is the only way a suite can reach it: the arm is chosen by a measurement of the
+        /// engine's own accounting, so nothing a test does to the data selects it.
+        /// </remarks>
+        internal bool ReplacementNeeded { get; set; }
+
+        /// <summary>The identity this double reports for the installation's database.</summary>
+        /// <remarks>
+        /// Settable so a suite can make the file the plan was recorded against stop being the file in
+        /// place, which is the ambiguity a resumed replacement has to refuse rather than act on.
+        /// </remarks>
+        internal CovenantDigest CanonicalIdentity { get; set; } = FixedDigest(0x11);
+
+        /// <summary>Every staging identity a proof was asked to be made over, in order.</summary>
+        internal List<CovenantDigest> ProvenIdentities { get; } = [];
+
+        /// <summary>Every pair an install was asked to act on, in order.</summary>
+        internal List<(CovenantDigest Staging, CovenantDigest Content)> Installed { get; } = [];
+
+        internal static CovenantDigest StagedIdentity { get; } = FixedDigest(0x22);
+
+        internal static CovenantDigest StagedContent { get; } = FixedDigest(0x33);
+
+        private static CovenantDigest FixedDigest(byte fill) =>
+            new(Enumerable.Repeat(fill, CovenantLimits.DigestBytes).ToArray());
+
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Step("initialize-accelerator");
 
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Step("verify-sidecar-absence");
 
         public async Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -1814,7 +2198,8 @@ public sealed class CovenantErasureCoordinatorTests
                     CovenantFtsRebuildState.FullRebuildRequired,
                     EnvelopeMasterKeyVersion: 1,
                     new byte[32],
-                    EnvelopeKeyEpoch: 1),
+                    EnvelopeKeyEpoch: 1,
+                    KeyReclamationEpoch: 1),
                 new CovenantCandidateAuthorityState(
                     InstallationIdentity: "coordinator-test",
                     AuthorityEpoch: 1,
@@ -1967,6 +2352,7 @@ public sealed class CovenantErasureCoordinatorTests
         public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -1995,7 +2381,9 @@ public sealed class CovenantErasureCoordinatorTests
 
         }
 
-        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken)
+        public Task<Result> PreflightRemainingManagedAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
         {
 
             RemainingManagedPreflightCalls++;
@@ -2007,6 +2395,7 @@ public sealed class CovenantErasureCoordinatorTests
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
             Guid datasetGeneration,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -2044,6 +2433,7 @@ public sealed class CovenantErasureCoordinatorTests
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
             Guid operationId,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -2067,6 +2457,7 @@ public sealed class CovenantErasureCoordinatorTests
         }
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -2075,6 +2466,26 @@ public sealed class CovenantErasureCoordinatorTests
             return Task.FromResult(Result<CovenantDisclosureExposure>.Success(CurrentExposure()));
 
         }
+
+        /// <summary>
+        /// The canonical source tuple a launch binds to, answered as the one this harness's durable
+        /// launch already names.
+        /// </summary>
+        /// <remarks>
+        /// A double that invented a fresh generation per call would describe an installation whose
+        /// canonical state moved between the plan and the row it was written into — the one condition
+        /// an offline transition may never be resumed across — and every test here would then be
+        /// exercising a launch no live installation could have produced.
+        /// </remarks>
+        public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<CovenantOfflineTransitionSourceState>.Success(
+                    new CovenantOfflineTransitionSourceState(
+                        CovenantOperationGateFixture.DatasetGeneration,
+                        SourceEpochs.AcceleratorEpoch,
+                        SourceEpochs.KeyReclamationEpoch,
+                        SourceEpochs.EnvelopeKeyEpoch)));
 
         private CovenantDisclosureExposure CurrentExposure() =>
             ExternalDisclosuresNotRevocable

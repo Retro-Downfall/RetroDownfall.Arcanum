@@ -38,6 +38,42 @@ internal interface IGrimoireMaintenanceConnectionFactory
         IGrimoireMaintenanceIoLane lane,
         CancellationToken cancellationToken);
 
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    /// <summary>Opens the ordinary read-write handle that puts write-ahead logging back after a replace.</summary>
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAcceleratorInitializationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCandidateReopenAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
+    Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken);
+
 }
 
 internal interface IGrimoireMaintenanceConnectionLease : IAsyncDisposable
@@ -317,9 +353,16 @@ internal interface IGrimoireExclusiveClosedLease : IAsyncDisposable
     Result<IGrimoireMaintenanceRenewalTicket> IssueMaintenanceRenewalTicket(
         IGrimoireMaintenanceIoLane lane);
 
+    /// <summary>
+    /// Issues one capability for one purpose, with the path and mode that purpose implies.
+    /// </summary>
+    /// <remarks>
+    /// Neither a path nor a mode is a parameter, and that is the point. A caller that could name the
+    /// file could name a different one, and the gate's own comparison on the way back in would then
+    /// be comparing a caller's value with the same caller's value - which proves nothing. The purpose
+    /// is the only thing a caller supplies, and the gate decides everything that follows from it.
+    /// </remarks>
     Result<IGrimoireMaintenanceConnectionCapability> IssueMaintenanceConnectionCapability(
-        string canonicalPath,
-        CovenantMaintenanceConnectionMode mode,
         CovenantMaintenanceConnectionPurpose purpose,
         IGrimoireMaintenanceIoLane lane);
 
@@ -367,11 +410,18 @@ internal interface IGrimoireMaintenanceRenewalTicket : IAsyncDisposable
 internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 {
 
+    /// <summary>The path the gate bound to this capability's purpose, which no caller chose.</summary>
+    string CanonicalPath { get; }
+
+    /// <summary>The mode the gate bound to this capability's purpose.</summary>
+    CovenantMaintenanceConnectionMode Mode { get; }
+
+    /// <summary>The one purpose this capability may be spent on.</summary>
+    CovenantMaintenanceConnectionPurpose Purpose { get; }
+
     Result<IGrimoireTrackedMaintenanceHandle> Consume(
         CovenantExclusiveRecoveryOwner owner,
         long generation,
-        string canonicalPath,
-        CovenantMaintenanceConnectionMode mode,
         CovenantMaintenanceConnectionPurpose purpose,
         IGrimoireMaintenanceIoLane lane);
 
@@ -461,6 +511,59 @@ internal enum CovenantMaintenanceConnectionPurpose : byte
     SidecarProof = 4,
 
     ReopenVerification = 5,
+
+    WalTruncation = 6,
+
+    AcceleratorInitialization = 7,
+
+    InventorySnapshot = 8,
+
+    /// <summary>
+    /// The one reopen that puts write-ahead logging back on a database an export just replaced.
+    /// </summary>
+    /// <remarks>
+    /// A purpose of its own rather than a second use of <see cref="Compaction"/>, because the two
+    /// need opposite engine configurations and the purpose is what decides it. Compaction opens an
+    /// exclusive maintenance handle, and the initializer applies a journal mode only to the ordinary
+    /// read-write one — so restoring the mode through the compaction purpose sets nothing and proves
+    /// nothing, which is exactly the silence a step whose whole job is a read-back must not have.
+    /// </remarks>
+    PostReplaceJournalRestore = 9,
+
+}
+
+/// <summary>
+/// Where a maintenance purpose's connection actually points, resolved once for the process.
+/// </summary>
+/// <remarks>
+/// An injected authority rather than a literal read of <c>ArcanumPaths</c> inside the gate, and the
+/// reason is a safety one rather than a stylistic one. A suite that exercises a real erasure against
+/// a scratch database has to be able to say which file that is; a gate that resolved the
+/// installation's own path from a static would point every one of those tests at the developer's
+/// real Grimoire and then prove the bytes were gone. The composition root supplies the real one, and
+/// nothing else can.
+///
+/// <para>It answers for the process, not for a caller. A capability still carries no path a caller
+/// chose - the purpose decides which of these two the gate binds, and the caller has no way to say
+/// otherwise.</para>
+/// </remarks>
+internal interface IGrimoireMaintenancePathAuthority
+{
+
+    /// <summary>The installation's canonical Grimoire database.</summary>
+    string CanonicalDatabasePath { get; }
+
+    /// <summary>
+    /// The candidate database one transition's verified export is written to and proven on.
+    /// </summary>
+    /// <remarks>
+    /// Bound to the operation rather than fixed, so the file a resumed run finds is one it can claim
+    /// or disown by name before it opens anything. It is derived here rather than accepted from a
+    /// caller for the same reason the canonical path is: a caller that could name the file could name
+    /// a different one, and the comparison made on the way back in would be comparing a caller's value
+    /// with the same caller's value.
+    /// </remarks>
+    string ExportStagingDatabasePath(Guid operationId);
 
 }
 

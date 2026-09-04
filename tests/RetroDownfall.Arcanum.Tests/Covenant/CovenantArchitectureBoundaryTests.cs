@@ -17,6 +17,8 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 /// <summary>
@@ -237,11 +239,18 @@ public sealed class CovenantArchitectureBoundaryTests
             services,
             ServiceLifetime.Singleton);
 
-        AssertSingleRegistration<CovenantV3MaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
+        AssertSingleRegistration<IGrimoireMaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
 
-        AssertSingleRegistration<ICovenantV3MaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
+        // Where every closed-period path comes from. A singleton because the installation's canonical
+        // and staging files do not change while the process runs, and because two of these would be
+        // two answers to "which file is the Grimoire" — the question the gate exists to settle once.
+        AssertSingleRegistration<IGrimoireMaintenancePathAuthority>(services, ServiceLifetime.Singleton);
 
-        AssertSingleRegistration<ICovenantV3MaintenancePathAuthority>(services, ServiceLifetime.Singleton);
+        // Scoped, unlike everything around it, and deliberately so. This names the exact connection
+        // object the operation store issues its statements on, and that object belongs to the scoped
+        // database context — a singleton here would hand the coordinator a connection some other
+        // scope owns, which is the one thing the scoped permit it feeds cannot tolerate.
+        AssertSingleRegistration<ICovenantClosedPeriodLedgerConnection>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<CovenantHealthyCatalogErasureGuard>(services, ServiceLifetime.Singleton);
 
@@ -250,6 +259,25 @@ public sealed class CovenantArchitectureBoundaryTests
         AssertSingleRegistration<CovenantDisclosureExposureReader>(services, ServiceLifetime.Singleton);
 
         AssertSingleRegistration<CovenantErasureStartupRecoveryOwnerAdopter>(services, ServiceLifetime.Singleton);
+
+        // The journal's slot is one per profile, so its store is a singleton; the authority above it
+        // reads this installation's identity, which is scoped.
+        AssertSingleRegistration<IGrimoireOfflineTransitionJournalStore>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<GrimoireOfflineTransitionHandlerRegistry>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<GrimoireOfflineTransitionLifecycleStore>(services, ServiceLifetime.Singleton);
+
+        // Scoped, unlike the payload table above it. Decoding a journal depends on nothing but the
+        // bytes; deciding what a transition of that kind owes is reached through the same scope its
+        // session and operation store are, and a singleton would let a handler capture one it outlives.
+        AssertSingleRegistration<GrimoireOfflineTransitionEffectHandlerRegistry>(
+            services,
+            ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<IGrimoireOfflineTransitionPhaseAuthority>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<GrimoireOfflineTransitionDatabaseReconciler>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<ICovenantCanonicalErasure>(services, ServiceLifetime.Singleton);
 
@@ -545,12 +573,12 @@ public sealed class CovenantArchitectureBoundaryTests
                 .GetRequiredService<IStoppedHostGrimoireConnectionFactory>());
 
         Assert.Same(
-            provider.GetRequiredService<CovenantV3MaintenanceConnectionFactory>(),
-            provider.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>());
+            provider.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+            firstScope.ServiceProvider.GetRequiredService<IGrimoireMaintenanceConnectionFactory>());
 
         Assert.Same(
-            provider.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
-            firstScope.ServiceProvider.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>());
+            provider.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+            firstScope.ServiceProvider.GetRequiredService<IGrimoireMaintenancePathAuthority>());
 
         Assert.Same(
             provider.GetRequiredService<ICovenantCanonicalErasure>(),

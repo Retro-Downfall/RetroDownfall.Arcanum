@@ -1,146 +1,208 @@
 using System.Text;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
-/// Issue #118 — the V3 data-retention mutation checkpoint and the V1 factory-reset checkpoint.
+/// The V4 Covenant offline-transition launch and the V2 factory transition launch, as the codec
+/// writes them and reads them back.
 /// </summary>
 /// <remarks>
-/// Both carry the only durable record of an interrupted Covenant erasure: the immutable server
-/// operation identity, the canonical 32-byte effect digest, the exact operation code, and the phase.
-/// Recovery reconstructs its exclusive owner from these three fields and nothing else, so a payload
-/// that decoded with one of them altered would adopt a closed scope that belongs to a different
-/// operation. Every failure is one code, because an operator told "wrong operation code" and one
-/// told "unknown phase" does the same thing: look at the operation, not at the bytes.
+/// A launch is the only durable record an interrupted Covenant erasure leaves in its ledger row, and
+/// three of its fields are the identity: the immutable server operation identity, the canonical
+/// 32-byte effect digest, and the exact operation code. Recovery reconstructs its exclusive owner
+/// from those three and nothing else, so a payload that decoded with one of them altered would adopt
+/// a closed scope belonging to a different operation. Everything else the launch carries — the ledger
+/// kind, the recovery policy, the source and target generations, the preselected epochs — is the
+/// plan, and no part of the plan may reach the owner.
+///
+/// <para>The phase these shapes used to carry is gone. A launch records what was committed to, and an
+/// offline transition's progress past that point is the authenticated journal's to state, so the
+/// durable enum this file has to keep honest is now the operation code rather than the phase.</para>
+///
+/// <para>Every failure is one code, because an operator told "wrong operation code" and one told
+/// "unknown recovery policy" does the same thing: look at the operation, not at the bytes.</para>
 /// </remarks>
 public sealed class DataRetentionRecoveryCheckpointTests
 {
 
     private static readonly Guid Operation = Guid.Parse("55555555-5555-5555-5555-555555555555");
 
+    private static readonly Guid SourceGeneration = Guid.Parse("66666666-6666-6666-6666-666666666666");
+
+    private static readonly Guid TargetGeneration = Guid.Parse("77777777-7777-7777-7777-777777777777");
+
     private static readonly string Effect = new('a', 64);
 
-    private static CovenantResetEffectArmV1 Arm(
-        CovenantResetPhase phase = CovenantResetPhase.InventoryPrepared) =>
+    private static readonly CovenantOfflineTransitionEpochsV1 SourceEpochs = new(11, 22, 33);
+
+    /// <summary>The widest epoch tuple a launch may preselect a successor for.</summary>
+    private static readonly CovenantOfflineTransitionEpochsV1 WidestEpochs =
+        new((ulong)long.MaxValue - 3, (ulong)long.MaxValue - 2, (ulong)long.MaxValue - 1);
+
+    private static CovenantOfflineTransitionEpochsV1 Successor(
+        CovenantOfflineTransitionEpochsV1 source) =>
         new(
+            source.AcceleratorEpoch + 1,
+            source.KeyReclamationEpoch + 1,
+            source.EnvelopeKeyEpoch + 1);
+
+    private static CovenantOfflineTransitionLaunchV4 Reset(
+        CovenantOfflineTransitionEpochsV1? source = null)
+    {
+
+        CovenantOfflineTransitionEpochsV1 epochs = source ?? SourceEpochs;
+
+        return new CovenantOfflineTransitionLaunchV4(
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
             Operation,
-            Effect,
+            LongRunningOperationKinds.DataRetentionMutation,
+            nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
             CovenantExclusiveOperation.CovenantReset,
-            phase);
-
-    private static DataRetentionMutationCheckpointV3 Mutation(
-        CovenantResetPhase phase = CovenantResetPhase.InventoryPrepared) =>
-        new(
-            DataRetentionMutationCheckpointV3.CurrentVersion,
-            Subtype: "reset-memory",
-            Target: "5",
-            Arm(phase));
-
-    private static DataRetentionFactoryResetCheckpointV1 FactoryReset(
-        CovenantResetPhase phase = CovenantResetPhase.InventoryPrepared) =>
-        new(
-            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-            Operation,
             Effect,
+            SourceGeneration,
+            TargetGeneration,
+            epochs,
+            Successor(epochs),
+            StartingRevision: 7);
+
+    }
+
+    private static DataRetentionFactoryTransitionLaunchV2 FactoryReset(
+        CovenantOfflineTransitionEpochsV1? source = null)
+    {
+
+        CovenantOfflineTransitionEpochsV1 epochs = source ?? SourceEpochs;
+
+        return new DataRetentionFactoryTransitionLaunchV2(
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+            Operation,
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+            nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
             CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-            phase);
-
-    [Fact]
-    public void The_two_checkpoint_versions_are_the_ones_the_registry_pins()
-    {
-
-        Assert.Equal(3, DataRetentionMutationCheckpointV3.CurrentVersion);
-
-        Assert.Equal(1, DataRetentionFactoryResetCheckpointV1.CurrentVersion);
-
-    }
-
-    [Theory]
-    [InlineData(CovenantResetPhase.InventoryPrepared)]
-    [InlineData(CovenantResetPhase.CanonicalApplied)]
-    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed)]
-    [InlineData(CovenantResetPhase.HandlesClosed)]
-    [InlineData(CovenantResetPhase.WalTruncated)]
-    [InlineData(CovenantResetPhase.DatabaseCompacted)]
-    [InlineData(CovenantResetPhase.AcceleratorInitialized)]
-    [InlineData(CovenantResetPhase.FinalWalTruncated)]
-    [InlineData(CovenantResetPhase.SidecarsVerified)]
-    [InlineData(CovenantResetPhase.ReopenedVerified)]
-    public void A_v3_mutation_checkpoint_round_trips_from_every_phase(CovenantResetPhase phase)
-    {
-
-        Result<DataRetentionMutationCheckpointV3> decoded =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionMutation(
-                CovenantRecoveryCheckpointCodec.Encode(Mutation(phase)));
-
-        Assert.True(decoded.IsSuccess);
-
-        Assert.Equal(Mutation(phase), decoded.Value);
-
-    }
-
-    [Theory]
-    [InlineData(CovenantResetPhase.InventoryPrepared)]
-    [InlineData(CovenantResetPhase.CanonicalApplied)]
-    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed)]
-    [InlineData(CovenantResetPhase.HandlesClosed)]
-    [InlineData(CovenantResetPhase.WalTruncated)]
-    [InlineData(CovenantResetPhase.DatabaseCompacted)]
-    [InlineData(CovenantResetPhase.AcceleratorInitialized)]
-    [InlineData(CovenantResetPhase.FinalWalTruncated)]
-    [InlineData(CovenantResetPhase.SidecarsVerified)]
-    [InlineData(CovenantResetPhase.ReopenedVerified)]
-    public void A_v1_factory_reset_checkpoint_round_trips_from_every_phase(CovenantResetPhase phase)
-    {
-
-        Result<DataRetentionFactoryResetCheckpointV1> decoded =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset(
-                CovenantRecoveryCheckpointCodec.Encode(FactoryReset(phase)));
-
-        Assert.True(decoded.IsSuccess);
-
-        Assert.Equal(FactoryReset(phase), decoded.Value);
+            Effect,
+            SourceGeneration,
+            TargetGeneration,
+            epochs,
+            Successor(epochs),
+            StartingRevision: 7);
 
     }
 
     /// <summary>
-    /// The arm is optional, and its absence is an ordinary retention mutation rather than a defect.
+    /// The version each shape writes is the version the recovery matrix admits for its kind.
     /// </summary>
+    /// <remarks>
+    /// Asserted against the registry rather than only against a literal, because the two are the same
+    /// promise made in two places. A build that raised one without the other would either write rows
+    /// its own recovery pass refuses, or admit a payload no code in it can read.
+    /// </remarks>
     [Fact]
-    public void A_v3_checkpoint_without_a_covenant_arm_decodes_as_an_ordinary_mutation()
+    public void The_two_checkpoint_versions_are_the_ones_the_registry_pins()
     {
 
-        DataRetentionMutationCheckpointV3 ordinary = Mutation() with
-        {
-            Subtype = "delete-session",
-            Target = "b9f0f0f0f0f04f0f8f0f0f0f0f0f0f0f",
-            Covenant = null,
-        };
+        Assert.Equal(4, CovenantOfflineTransitionLaunchV4.CurrentVersion);
 
-        Result<DataRetentionMutationCheckpointV3> decoded =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionMutation(
-                CovenantRecoveryCheckpointCodec.Encode(ordinary));
+        Assert.Equal(2, DataRetentionFactoryTransitionLaunchV2.CurrentVersion);
 
-        Assert.True(decoded.IsSuccess);
+        Assert.Equal(
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
+            LongRunningOperationRecoveryRegistry
+                .Descriptors[LongRunningOperationKinds.DataRetentionMutation]
+                .MaxCheckpointVersion);
 
-        Assert.Null(decoded.Value.Covenant);
+        Assert.Equal(
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+            LongRunningOperationRecoveryRegistry
+                .Descriptors[LongRunningOperationKinds.DataRetentionFactoryReset]
+                .MaxCheckpointVersion);
 
     }
 
-    [Fact]
-    public void Phases_travel_as_names_so_a_reordered_enum_cannot_silently_change_a_resume_point()
+    /// <summary>
+    /// The epoch tuple is the one part of a launch whose value varies across the whole admissible
+    /// range, so the round trip is asserted across that range rather than at one convenient point.
+    /// </summary>
+    /// <remarks>
+    /// The tuple at 2^53 and above is the case a round trip through a floating-point number would
+    /// silently corrupt: the decoded epoch would still be a plausible epoch, one or two off, and the
+    /// transition would then verify a replaced family against a counter value it never committed to.
+    /// The top row is the highest tuple a launch may preselect a successor for at all.
+    /// </remarks>
+    [Theory]
+    [InlineData(1UL, 2UL, 3UL)]
+    [InlineData(11UL, 22UL, 33UL)]
+    [InlineData(9_007_199_254_740_993UL, 9_007_199_254_740_994UL, 9_007_199_254_740_995UL)]
+    [InlineData((ulong)long.MaxValue - 3, (ulong)long.MaxValue - 2, (ulong)long.MaxValue - 1)]
+    public void A_v4_covenant_launch_round_trips_from_every_admissible_epoch_tuple(
+        ulong accelerator,
+        ulong reclamation,
+        ulong envelope)
     {
 
-        string json = Encoding.UTF8.GetString(
-            CovenantRecoveryCheckpointCodec.Encode(Mutation(CovenantResetPhase.WalTruncated)));
+        CovenantOfflineTransitionEpochsV1 epochs =
+            new(accelerator, reclamation, envelope);
 
-        Assert.Contains("\"phase\":\"WalTruncated\"", json, StringComparison.Ordinal);
+        Result<CovenantOfflineTransitionLaunchV4> decoded =
+            CovenantRecoveryCheckpointCodec.DecodeCovenantOfflineTransitionLaunch(
+                CovenantRecoveryCheckpointCodec.Encode(Reset(epochs)));
 
-        Assert.DoesNotContain("\"phase\":5", json, StringComparison.Ordinal);
+        Assert.True(decoded.IsSuccess);
+
+        Assert.Equal(Reset(epochs), decoded.Value);
+
+    }
+
+    [Theory]
+    [InlineData(1UL, 2UL, 3UL)]
+    [InlineData(11UL, 22UL, 33UL)]
+    [InlineData(9_007_199_254_740_993UL, 9_007_199_254_740_994UL, 9_007_199_254_740_995UL)]
+    [InlineData((ulong)long.MaxValue - 3, (ulong)long.MaxValue - 2, (ulong)long.MaxValue - 1)]
+    public void A_v2_factory_launch_round_trips_from_every_admissible_epoch_tuple(
+        ulong accelerator,
+        ulong reclamation,
+        ulong envelope)
+    {
+
+        CovenantOfflineTransitionEpochsV1 epochs =
+            new(accelerator, reclamation, envelope);
+
+        Result<DataRetentionFactoryTransitionLaunchV2> decoded =
+            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(
+                CovenantRecoveryCheckpointCodec.Encode(FactoryReset(epochs)));
+
+        Assert.True(decoded.IsSuccess);
+
+        Assert.Equal(FactoryReset(epochs), decoded.Value);
+
+    }
+
+    /// <summary>
+    /// The recovery policy travels as its declared name, so a renumbered enum cannot silently change
+    /// how an already-committed transition is recovered.
+    /// </summary>
+    /// <remarks>
+    /// The numeric code is also a public operator-API value governed by a different compatibility
+    /// promise. A durable payload that borrowed it would let a wire renumbering decide whether an
+    /// interrupted destructive transition is reconciled or restarted, and that is the one decision no
+    /// wire change may make.
+    /// </remarks>
+    [Fact]
+    public void Recovery_policies_travel_as_names_so_a_renumbered_enum_cannot_silently_change_a_recovery_class()
+    {
+
+        string json = Encoding.UTF8.GetString(CovenantRecoveryCheckpointCodec.Encode(Reset()));
+
+        Assert.Contains(
+            "\"recoveryPolicy\":\"ReconcileAndComplete\"",
+            json,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("\"recoveryPolicy\":2", json, StringComparison.Ordinal);
 
     }
 
@@ -148,38 +210,64 @@ public sealed class DataRetentionRecoveryCheckpointTests
     public void The_operation_code_travels_as_a_name_too()
     {
 
-        string json = Encoding.UTF8.GetString(CovenantRecoveryCheckpointCodec.Encode(Mutation()));
+        string json = Encoding.UTF8.GetString(CovenantRecoveryCheckpointCodec.Encode(Reset()));
 
         Assert.Contains("\"operation\":\"CovenantReset\"", json, StringComparison.Ordinal);
 
-    }
-
-    [Fact]
-    public void A_numeric_phase_is_refused()
-    {
-
-        byte[] payload = Encoding.UTF8.GetBytes(
-            Encoding.UTF8
-                .GetString(CovenantRecoveryCheckpointCodec.Encode(Mutation()))
-                .Replace("\"phase\":\"InventoryPrepared\"", "\"phase\":1", StringComparison.Ordinal));
-
-        AssertUnrecoverableMutation(payload);
+        Assert.DoesNotContain("\"operation\":7", json, StringComparison.Ordinal);
 
     }
 
     [Fact]
-    public void An_unknown_phase_name_is_refused()
+    public void A_numeric_operation_code_is_refused()
     {
 
         byte[] payload = Encoding.UTF8.GetBytes(
             Encoding.UTF8
-                .GetString(CovenantRecoveryCheckpointCodec.Encode(Mutation()))
+                .GetString(CovenantRecoveryCheckpointCodec.Encode(Reset()))
+                .Replace("\"operation\":\"CovenantReset\"", "\"operation\":7", StringComparison.Ordinal));
+
+        AssertUnrecoverableCovenantLaunch(payload);
+
+    }
+
+    [Fact]
+    public void An_unknown_operation_code_name_is_refused()
+    {
+
+        byte[] payload = Encoding.UTF8.GetBytes(
+            Encoding.UTF8
+                .GetString(CovenantRecoveryCheckpointCodec.Encode(Reset()))
                 .Replace(
-                    "\"phase\":\"InventoryPrepared\"",
-                    "\"phase\":\"CanonicalErased\"",
+                    "\"operation\":\"CovenantReset\"",
+                    "\"operation\":\"CovenantErased\"",
                     StringComparison.Ordinal));
 
-        AssertUnrecoverableMutation(payload);
+        AssertUnrecoverableCovenantLaunch(payload);
+
+    }
+
+    /// <summary>
+    /// A recovery policy spelled as its numeric code is refused even though the enum would parse it.
+    /// </summary>
+    /// <remarks>
+    /// <c>Enum.TryParse</c> accepts <c>"2"</c> as readily as it accepts the member name, so a payload
+    /// spelling the policy numerically would be admitted under a name it never wrote — which is
+    /// exactly the coupling to the wire code the field exists to avoid.
+    /// </remarks>
+    [Fact]
+    public void A_recovery_policy_spelled_as_its_numeric_code_is_refused()
+    {
+
+        byte[] payload = Encoding.UTF8.GetBytes(
+            Encoding.UTF8
+                .GetString(CovenantRecoveryCheckpointCodec.Encode(Reset()))
+                .Replace(
+                    "\"recoveryPolicy\":\"ReconcileAndComplete\"",
+                    "\"recoveryPolicy\":\"2\"",
+                    StringComparison.Ordinal));
+
+        AssertUnrecoverableCovenantLaunch(payload);
 
     }
 
@@ -187,9 +275,9 @@ public sealed class DataRetentionRecoveryCheckpointTests
     public void An_unknown_field_fails_recovery_rather_than_being_dropped()
     {
 
-        string json = Encoding.UTF8.GetString(CovenantRecoveryCheckpointCodec.Encode(Mutation()));
+        string json = Encoding.UTF8.GetString(CovenantRecoveryCheckpointCodec.Encode(Reset()));
 
-        AssertUnrecoverableMutation(
+        AssertUnrecoverableCovenantLaunch(
             Encoding.UTF8.GetBytes(json.Insert(1, "\"unmappedInvariant\":true,")));
 
     }
@@ -198,38 +286,35 @@ public sealed class DataRetentionRecoveryCheckpointTests
     public void A_future_version_discriminator_fails_recovery()
     {
 
-        AssertUnrecoverableMutation(
-            CovenantRecoveryCheckpointCodec.Encode(Mutation() with { Version = 4 }));
+        AssertUnrecoverableCovenantLaunch(
+            CovenantRecoveryCheckpointCodec.Encode(Reset() with { Version = 5 }));
 
-        Result<DataRetentionFactoryResetCheckpointV1> factory =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset(
-                CovenantRecoveryCheckpointCodec.Encode(FactoryReset() with { Version = 2 }));
+        Result<DataRetentionFactoryTransitionLaunchV2> factory =
+            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(
+                CovenantRecoveryCheckpointCodec.Encode(FactoryReset() with { Version = 3 }));
 
         Assert.True(factory.IsFailure);
 
     }
 
     /// <summary>
-    /// A reset arm may name only <see cref="CovenantExclusiveOperation.CovenantReset"/>, and a
-    /// factory-reset checkpoint only <see cref="CovenantExclusiveOperation.HealthyCatalogFactoryErasure"/>.
+    /// A Covenant launch may name only <see cref="CovenantExclusiveOperation.CovenantReset"/>, and a
+    /// factory launch only <see cref="CovenantExclusiveOperation.HealthyCatalogFactoryErasure"/>.
     /// Anything else would mint an exclusive owner for an operation that never closed admission.
     /// </summary>
     [Fact]
-    public void A_foreign_operation_code_is_refused_on_both_checkpoints()
+    public void A_foreign_operation_code_is_refused_on_both_launches()
     {
 
-        AssertUnrecoverableMutation(
+        AssertUnrecoverableCovenantLaunch(
             CovenantRecoveryCheckpointCodec.Encode(
-                Mutation() with
+                Reset() with
                 {
-                    Covenant = Arm() with
-                    {
-                        Operation = CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                    },
+                    Operation = CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
                 }));
 
-        Result<DataRetentionFactoryResetCheckpointV1> factory =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset(
+        Result<DataRetentionFactoryTransitionLaunchV2> factory =
+            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(
                 CovenantRecoveryCheckpointCodec.Encode(
                     FactoryReset() with { Operation = CovenantExclusiveOperation.CovenantReset }));
 
@@ -243,9 +328,8 @@ public sealed class DataRetentionRecoveryCheckpointTests
     public void An_empty_operation_identity_is_refused()
     {
 
-        AssertUnrecoverableMutation(
-            CovenantRecoveryCheckpointCodec.Encode(
-                Mutation() with { Covenant = Arm() with { OperationId = Guid.Empty } }));
+        AssertUnrecoverableCovenantLaunch(
+            CovenantRecoveryCheckpointCodec.Encode(Reset() with { OperationId = Guid.Empty }));
 
     }
 
@@ -256,9 +340,8 @@ public sealed class DataRetentionRecoveryCheckpointTests
     public void An_effect_digest_that_is_not_thirty_two_canonical_bytes_is_refused(string digest)
     {
 
-        AssertUnrecoverableMutation(
-            CovenantRecoveryCheckpointCodec.Encode(
-                Mutation() with { Covenant = Arm() with { EffectDigest = digest } }));
+        AssertUnrecoverableCovenantLaunch(
+            CovenantRecoveryCheckpointCodec.Encode(Reset() with { EffectDigest = digest }));
 
     }
 
@@ -266,9 +349,9 @@ public sealed class DataRetentionRecoveryCheckpointTests
     public void An_uppercase_effect_digest_is_refused_so_one_effect_has_one_encoding()
     {
 
-        AssertUnrecoverableMutation(
+        AssertUnrecoverableCovenantLaunch(
             CovenantRecoveryCheckpointCodec.Encode(
-                Mutation() with { Covenant = Arm() with { EffectDigest = new string('A', 64) } }));
+                Reset() with { EffectDigest = new string('A', 64) }));
 
     }
 
@@ -280,35 +363,41 @@ public sealed class DataRetentionRecoveryCheckpointTests
     /// A blob of NUL bytes would fail JSON parsing whether or not the bound existed, which proves
     /// nothing about the bound. Recovery runs before readiness, so the one thing that must be true
     /// is that a hostile or corrupt payload cannot make it allocate in proportion to itself.
+    ///
+    /// <para>Every field of a launch is either fixed-width or pinned to a declared constant, so there
+    /// is no field left to pad. Insignificant whitespace is the only way to build a payload that is
+    /// oversized and would otherwise decode exactly as the unpadded bytes do.</para>
     /// </remarks>
     [Fact]
     public void An_oversized_but_otherwise_valid_payload_is_refused_before_it_is_parsed()
     {
 
-        byte[] oversized = CovenantRecoveryCheckpointCodec.Encode(
-            Mutation() with
-            {
-                Target = new string('7', CovenantRecoveryJsonContext.MaxCheckpointBytes),
-                Covenant = null,
-            });
+        byte[] encoded = CovenantRecoveryCheckpointCodec.Encode(Reset());
+
+        string json = Encoding.UTF8.GetString(encoded);
+
+        byte[] oversized = Encoding.UTF8.GetBytes(
+            json.Insert(
+                1,
+                new string(' ', CovenantRecoveryJsonContext.MaxCheckpointBytes + 1 - encoded.Length)));
 
         Assert.True(oversized.Length > CovenantRecoveryJsonContext.MaxCheckpointBytes);
 
-        AssertUnrecoverableMutation(oversized);
+        AssertUnrecoverableCovenantLaunch(oversized);
 
         // The same payload one byte under the cap decodes, so the refusal above is the bound and
-        // not some other validation rejecting a long target.
-        byte[] admissible = CovenantRecoveryCheckpointCodec.Encode(
-            Mutation() with
-            {
-                Target = new string('7', 64),
-                Covenant = null,
-            });
+        // not some other validation rejecting the padding.
+        byte[] admissible = Encoding.UTF8.GetBytes(
+            json.Insert(
+                1,
+                new string(' ', CovenantRecoveryJsonContext.MaxCheckpointBytes - encoded.Length)));
 
         Assert.True(admissible.Length <= CovenantRecoveryJsonContext.MaxCheckpointBytes);
 
         Assert.True(
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionMutation(admissible).IsSuccess);
+            CovenantRecoveryCheckpointCodec
+                .DecodeCovenantOfflineTransitionLaunch(admissible)
+                .IsSuccess);
 
     }
 
@@ -316,7 +405,7 @@ public sealed class DataRetentionRecoveryCheckpointTests
     public void An_empty_payload_is_refused()
     {
 
-        AssertUnrecoverableMutation([]);
+        AssertUnrecoverableCovenantLaunch([]);
 
     }
 
@@ -324,25 +413,30 @@ public sealed class DataRetentionRecoveryCheckpointTests
     public void Malformed_bytes_fail_as_a_typed_result_rather_than_an_escaping_exception()
     {
 
-        AssertUnrecoverableMutation("not json"u8.ToArray());
+        AssertUnrecoverableCovenantLaunch("not json"u8.ToArray());
 
-        Result<DataRetentionFactoryResetCheckpointV1> factory =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset("not json"u8.ToArray());
+        Result<DataRetentionFactoryTransitionLaunchV2> factory =
+            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(
+                "not json"u8.ToArray());
 
         Assert.True(factory.IsFailure);
 
     }
 
+    /// <summary>
+    /// The widest launch either shape can legitimately write — the highest preselectable epoch tuple
+    /// and the highest possible starting revision — still leaves the cap most of its headroom.
+    /// </summary>
     [Fact]
     public void The_largest_legitimate_checkpoint_fits_well_inside_the_cap()
     {
 
         int mutation = CovenantRecoveryCheckpointCodec
-            .Encode(Mutation(CovenantResetPhase.ManagedArtifactsProcessed))
+            .Encode(Reset(WidestEpochs) with { StartingRevision = long.MaxValue })
             .Length;
 
         int factory = CovenantRecoveryCheckpointCodec
-            .Encode(FactoryReset(CovenantResetPhase.ManagedArtifactsProcessed))
+            .Encode(FactoryReset(WidestEpochs) with { StartingRevision = long.MaxValue })
             .Length;
 
         Assert.True(mutation * 2 < CovenantRecoveryJsonContext.MaxCheckpointBytes);
@@ -352,24 +446,29 @@ public sealed class DataRetentionRecoveryCheckpointTests
     }
 
     /// <summary>
-    /// Recovery reconstructs the identical owner from the checkpoint and nothing else.
+    /// Recovery reconstructs the identical owner from the launch's identity fields and nothing else.
     /// </summary>
+    /// <remarks>
+    /// The plan the launch also carries is varied across its whole admissible range here, and the
+    /// owner has to come out the same every time. An owner that moved with the plan would let a
+    /// retry whose plan had changed rebuild an owner matching the closed scope it has no right to
+    /// adopt — the same defect the retired per-phase arm was written to prevent, now that the plan
+    /// rather than the phase is what varies between two launches of one operation.
+    /// </remarks>
     [Theory]
-    [InlineData(CovenantResetPhase.InventoryPrepared)]
-    [InlineData(CovenantResetPhase.CanonicalApplied)]
-    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed)]
-    [InlineData(CovenantResetPhase.HandlesClosed)]
-    [InlineData(CovenantResetPhase.WalTruncated)]
-    [InlineData(CovenantResetPhase.DatabaseCompacted)]
-    [InlineData(CovenantResetPhase.AcceleratorInitialized)]
-    [InlineData(CovenantResetPhase.FinalWalTruncated)]
-    [InlineData(CovenantResetPhase.SidecarsVerified)]
-    [InlineData(CovenantResetPhase.ReopenedVerified)]
-    public void Every_phase_reconstructs_the_same_exclusive_owner(CovenantResetPhase phase)
+    [InlineData(1UL, 2UL, 3UL)]
+    [InlineData(11UL, 22UL, 33UL)]
+    [InlineData(9_007_199_254_740_993UL, 9_007_199_254_740_994UL, 9_007_199_254_740_995UL)]
+    [InlineData((ulong)long.MaxValue - 3, (ulong)long.MaxValue - 2, (ulong)long.MaxValue - 1)]
+    public void Every_admissible_plan_reconstructs_the_same_exclusive_owner(
+        ulong accelerator,
+        ulong reclamation,
+        ulong envelope)
     {
 
         Result<CovenantExclusiveRecoveryOwner> owner =
-            CovenantRecoveryCheckpointCodec.RecoveryOwner(Arm(phase));
+            CovenantRecoveryCheckpointCodec.RecoveryOwner(
+                Reset(new CovenantOfflineTransitionEpochsV1(accelerator, reclamation, envelope)));
 
         Assert.True(owner.IsSuccess);
 
@@ -379,12 +478,12 @@ public sealed class DataRetentionRecoveryCheckpointTests
 
         Assert.Equal(new CovenantDigest(Convert.FromHexString(Effect)), owner.Value.EffectDigest);
 
-        Assert.Equal(CovenantRecoveryCheckpointCodec.RecoveryOwner(Arm()).Value, owner.Value);
+        Assert.Equal(CovenantRecoveryCheckpointCodec.RecoveryOwner(Reset()).Value, owner.Value);
 
     }
 
     [Fact]
-    public void A_factory_reset_checkpoint_reconstructs_its_own_exclusive_owner()
+    public void A_factory_transition_launch_reconstructs_its_own_exclusive_owner()
     {
 
         Result<CovenantExclusiveRecoveryOwner> owner =
@@ -398,11 +497,11 @@ public sealed class DataRetentionRecoveryCheckpointTests
 
     }
 
-    private static void AssertUnrecoverableMutation(byte[] payload)
+    private static void AssertUnrecoverableCovenantLaunch(byte[] payload)
     {
 
-        Result<DataRetentionMutationCheckpointV3> decoded =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionMutation(payload);
+        Result<CovenantOfflineTransitionLaunchV4> decoded =
+            CovenantRecoveryCheckpointCodec.DecodeCovenantOfflineTransitionLaunch(payload);
 
         Assert.True(decoded.IsFailure);
 

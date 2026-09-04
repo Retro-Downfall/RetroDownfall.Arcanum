@@ -1094,6 +1094,151 @@ public sealed class GrimoireOfflineTransitionLifecycleStoreTests : IDisposable
     private static GrimoireOfflineTransitionReplacementEvidence ReplacementContentProved() =>
         ReplacementStagingOwned() with { StagedContentDigest = Digest(0x85) };
 
+    /// <summary>
+    /// The opening payload is built against the epoch the slot actually allocated.
+    /// </summary>
+    /// <remarks>
+    /// The epoch is the successor of whatever closed anchor the raw store finds, and only the raw
+    /// store is in a position to know it. A caller that computed the number itself would be holding a
+    /// second copy of that arithmetic, correct right up until the first time the two disagreed — and
+    /// the disagreement would surface as a refused publication on an installation that had done
+    /// nothing wrong.
+    /// </remarks>
+    [Fact]
+    public async Task Bound_begin_hands_the_allocated_slot_epoch_to_the_payload_factory()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        ulong observed = 0;
+
+        GrimoireOfflineTransitionTypedPublication opened = Value(await lifecycle.BeginBoundAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            payloadVersion: 1,
+            slotEpoch =>
+            {
+
+                observed = slotEpoch;
+
+                return Result<IGrimoireOfflineTransitionPayload>.Success(
+                    PreparedPayload() with
+                    {
+                        Binding = PreparedPayload().Binding with { SlotEpoch = slotEpoch },
+                    });
+
+            },
+            CancellationToken.None));
+
+        Assert.Equal(1UL, observed);
+
+        Assert.Equal(1UL, opened.Raw.Envelope.SlotEpoch);
+
+        Assert.Equal(1UL, opened.Raw.Envelope.Revision);
+
+    }
+
+    /// <summary>
+    /// A factory that ignores the epoch it was handed publishes nothing at all.
+    /// </summary>
+    /// <remarks>
+    /// The refusal has to land before the canonical file exists, because an active anchor with no
+    /// file behind it is the one shape recovery cannot tell from a deletion and therefore has to fail
+    /// closed on forever. Refusing at the encode leaves the slot exactly as it was found.
+    /// </remarks>
+    [Fact]
+    public async Task Bound_begin_refuses_a_payload_bound_to_a_different_epoch_and_leaves_no_journal()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        Result<GrimoireOfflineTransitionTypedPublication> opened = await lifecycle.BeginBoundAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            payloadVersion: 1,
+            _ => Result<IGrimoireOfflineTransitionPayload>.Success(
+                PreparedPayload() with
+                {
+                    Binding = PreparedPayload().Binding with { SlotEpoch = 99 },
+                }),
+            CancellationToken.None);
+
+        Assert.True(opened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, opened.Error.Code);
+
+        Assert.False(
+            File.Exists(
+                Value(new GrimoireOfflineTransitionJournalFileStore().ResolveLocation(_guarded)).JournalPath));
+
+    }
+
+    /// <summary>
+    /// A slot cannot be opened part-way through a lifecycle it has not started.
+    /// </summary>
+    /// <remarks>
+    /// The opening publication is the one revision with no predecessor to be checked against, so
+    /// every later edge is only as trustworthy as the state this one established. A factory that
+    /// returned an <c>Applying</c> payload would mint a journal claiming phases had run that nothing
+    /// had published, and the graph would accept it because the graph only ever compares a revision
+    /// against the one before it.
+    /// </remarks>
+    [Fact]
+    public async Task Bound_begin_refuses_an_opening_payload_that_is_not_prepared()
+    {
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = LifecycleStore();
+
+        foreach (GrimoireOfflineTransitionState state in Enum.GetValues<GrimoireOfflineTransitionState>())
+        {
+
+            if (state is GrimoireOfflineTransitionState.Prepared)
+            {
+
+                continue;
+
+            }
+
+            await AssertOpeningRefusedAsync(lifecycle, state);
+
+        }
+
+    }
+
+    private async Task AssertOpeningRefusedAsync(
+        GrimoireOfflineTransitionLifecycleStore lifecycle,
+        GrimoireOfflineTransitionState state)
+    {
+
+        Result<GrimoireOfflineTransitionTypedPublication> opened = await lifecycle.BeginBoundAsync(
+            _lock,
+            _guarded,
+            Installation,
+            Operation,
+            GrimoireOfflineTransitionKind.CovenantReset,
+            payloadVersion: 1,
+            slotEpoch => Result<IGrimoireOfflineTransitionPayload>.Success(
+                PreparedPayload() with
+                {
+                    Binding = PreparedPayload().Binding with { SlotEpoch = slotEpoch },
+                    Lifecycle = PreparedPayload().Lifecycle with { State = state },
+                }),
+            CancellationToken.None);
+
+        Assert.True(opened.IsFailure, state.ToString());
+
+        Assert.False(
+            File.Exists(
+                Value(new GrimoireOfflineTransitionJournalFileStore().ResolveLocation(_guarded)).JournalPath));
+
+    }
+
     private CovenantResetOfflineTransitionPayloadV1 PreparedPayload() => new(
         new(
             Operation,

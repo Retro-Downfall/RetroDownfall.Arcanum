@@ -326,15 +326,6 @@ public static class CovenantPublicContractInventory
         new(InfrastructureNamespace + "CovenantFamilyReinitializeCheckpointV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
             "Closed phases and identity digests only: no path, key, content, handle, task, token, or service object."),
 
-        new(InfrastructureNamespace + "DataRetentionMutationCheckpointV3", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
-            "An interrupted retention mutation, plus the bounded optional Covenant arm that makes it an erasure."),
-
-        new(InfrastructureNamespace + "CovenantResetEffectArmV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
-            "The three fields recovery rebuilds a reset's exclusive owner from, and nothing else."),
-
-        new(InfrastructureNamespace + "DataRetentionFactoryResetCheckpointV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
-            "A healthy-catalog factory erasure's owner and the storage phase it reached."),
-
         new(InfrastructureNamespace + "CovenantOfflineTransitionEpochsV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",
             "The three persisted epochs as one value, so a source and a target compare as wholes."),
 

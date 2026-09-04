@@ -211,11 +211,17 @@ public sealed class CovenantOfflineTransitionLaunchTerminalStoreTests : IAsyncLi
     }
 
     /// <summary>
-    /// A real row whose revision has moved on — the lease maintainer renews on its own connection —
-    /// is left exactly as it was.
+    /// A real row whose revision has moved on since the launch is still the row this journal
+    /// terminalizes.
     /// </summary>
+    /// <remarks>
+    /// Recovery adopts the operation's lease before it resumes a transition, and that adoption moves
+    /// the row. The binding is authenticated, so a journal that demanded the exact revision its launch
+    /// recorded could never catch up - the first legitimate recovery would lock it out of the one row
+    /// it exists to terminalize, for good.
+    /// </remarks>
     [SkippableFact]
-    public async Task A_real_row_that_moved_since_the_journal_bound_it_is_not_overwritten()
+    public async Task A_real_row_that_moved_forward_since_the_journal_bound_it_is_still_terminalized()
     {
 
         RequireSqlCipher();
@@ -236,6 +242,41 @@ public sealed class CovenantOfflineTransitionLaunchTerminalStoreTests : IAsyncLi
         GrimoireOfflineTransitionDatabaseReconciliation reconciled = await ReconcileAsync(
             store,
             committed,
+            launched.Revision,
+            GrimoireOfflineTransitionTerminalDisposition.Completed,
+            CovenantResetPhaseMachine.Last);
+
+        Assert.Equal(GrimoireOfflineTransitionDatabaseOutcome.Terminalized, reconciled.Outcome);
+
+        Assert.True(reconciled.PermitsRetirement);
+
+        LongRunningOperation after = (await store.GetAsync(launched.Id))!;
+
+        Assert.Equal(LongRunningOperationState.Completed, after.State);
+
+    }
+
+    /// <summary>
+    /// A real row standing behind the revision the launch produced is not the row that launch created,
+    /// and is left exactly as it was.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_real_row_behind_the_launch_revision_is_not_overwritten()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store();
+
+        LongRunningOperation launched = await LaunchAsync(store);
+
+        LongRunningOperation committed = (await store.GetAsync(launched.Id))!;
+
+        // The journal is bound one revision ahead of the row it names, which is a row that cannot be
+        // the one this launch produced - a launch only ever moves a row forward.
+        GrimoireOfflineTransitionDatabaseReconciliation reconciled = await ReconcileAsync(
+            store,
+            committed with { Revision = committed.Revision + 1 },
             launched.Revision,
             GrimoireOfflineTransitionTerminalDisposition.Completed,
             CovenantResetPhaseMachine.Last);

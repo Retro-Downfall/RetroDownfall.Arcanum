@@ -71,6 +71,9 @@ internal enum GrimoireOfflineTransitionDatabaseOutcome : byte
     /// <summary>The journal payload carries no launch binding this reconciliation could use.</summary>
     JournalUnusable = 9,
 
+    /// <summary>The write kept being refused while the row stayed exactly where the journal left it.</summary>
+    WriteRefused = 10,
+
 }
 
 /// <summary>
@@ -128,6 +131,19 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
     /// </remarks>
     internal const string PreEffectFailureCode = "grimoire.offline_transition_not_applied";
 
+    /// <summary>
+    /// How many times the one terminal write may be repeated while the row has not moved.
+    /// </summary>
+    /// <remarks>
+    /// Bounded rather than patient. Every attempt is the identical compare-exchange against the same
+    /// expected revision, so repetition cannot produce a second write; but a refusal that keeps
+    /// repeating is a store that is not going to accept this write, and holding the closed period
+    /// open waiting for it is worse than parking and letting the next start try again.
+    /// </remarks>
+    private const int TerminalWriteAttempts = 8;
+
+    private static readonly TimeSpan TerminalWriteRetryDelay = TimeSpan.FromMilliseconds(20);
+
     private const string TerminalWinnerDomain = "arcanum.grimoire.offline-transition.terminal-winner.v1";
 
     private readonly ILongRunningOperationStore _operations =
@@ -157,24 +173,6 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
 
         }
 
-        LongRunningOperation? current = await _operations
-            .GetAsync(binding.OperationId, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (current is null)
-        {
-
-            return Outcome(GrimoireOfflineTransitionDatabaseOutcome.RowMissing);
-
-        }
-
-        if (!DescribesTheSameLaunch(current, binding))
-        {
-
-            return Outcome(GrimoireOfflineTransitionDatabaseOutcome.RowConflicting);
-
-        }
-
         LongRunningOperationState intended = disposition switch
         {
 
@@ -194,83 +192,132 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
 
         };
 
-        // Classified ahead of the revision check on purpose. A row that already reached the intended
-        // terminal has a revision past the one the journal recorded, and treating that as a mismatch
-        // would turn the idempotent case — a crash between the write and the publication recording
-        // it — into a permanent refusal.
-        if (IsTerminal(current))
+        for (int attempt = 1; ; attempt++)
         {
 
-            return IsExactly(current, intended, terminalErrorCode)
-                ? new GrimoireOfflineTransitionDatabaseReconciliation(
-                    GrimoireOfflineTransitionDatabaseOutcome.AlreadyTerminal,
-                    WinnerDigest(binding, current))
-                : Outcome(GrimoireOfflineTransitionDatabaseOutcome.TerminalConflict);
+            LongRunningOperation? current = await _operations
+                .GetAsync(binding.OperationId, cancellationToken)
+                .ConfigureAwait(false);
 
-        }
+            if (current is null)
+            {
 
-        if (current.Revision != (long)binding.ExpectedDatabaseOperationRevision)
-        {
+                return Outcome(GrimoireOfflineTransitionDatabaseOutcome.RowMissing);
 
-            return Outcome(GrimoireOfflineTransitionDatabaseOutcome.RevisionMismatch);
+            }
 
-        }
+            if (!DescribesTheSameLaunch(current, binding))
+            {
 
-        // The row cannot prove a pre-effect failure. An offline phase never rewrites the launch
-        // checkpoint, so a row whose family was replaced is byte-identical to one that was never
-        // touched; only the journal knows, and it knows by never having recorded a phase past the
-        // one that precedes every effect.
-        if (disposition is GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect
-            && (journal.LastCompletedPhase != CovenantResetPhaseMachine.First
-                || journal.InFlightPhase is not null))
-        {
+                return Outcome(GrimoireOfflineTransitionDatabaseOutcome.RowConflicting);
 
-            return Outcome(GrimoireOfflineTransitionDatabaseOutcome.EffectNotProvenAbsent);
+            }
 
-        }
+            // Classified before anything about revisions, because a row that already reached the
+            // intended terminal is the idempotent case - a crash between the write and the
+            // publication recording it - and reading it as a conflict would make that permanent.
+            if (IsTerminal(current))
+            {
 
-        bool won = await _operations.TryTransitionAsync(
-            binding.OperationId,
-            (long)binding.ExpectedDatabaseOperationRevision,
-            ownerId: null,
-            intended,
-            _timeProvider.GetUtcNow(),
-            terminalErrorCode,
-            cancellationToken).ConfigureAwait(false);
+                return IsExactly(current, intended, terminalErrorCode)
+                    ? new GrimoireOfflineTransitionDatabaseReconciliation(
+                        GrimoireOfflineTransitionDatabaseOutcome.AlreadyTerminal,
+                        WinnerDigest(binding, current))
+                    : Outcome(GrimoireOfflineTransitionDatabaseOutcome.TerminalConflict);
 
-        // A successful compare-exchange is not the proof. Reread so the same rules cover our own
-        // write and an indistinguishable competing winner.
-        LongRunningOperation? winner = await _operations
-            .GetAsync(binding.OperationId, cancellationToken)
-            .ConfigureAwait(false);
+            }
 
-        if (winner is null || !DescribesTheSameLaunch(winner, binding))
-        {
+            // The launch revision is a floor, not an equality. A row behind it is not the row this
+            // launch produced. A row ahead of it is ordinary: recovery adopts the lease before it
+            // resumes a transition, and that adoption is a revision of its own - so demanding equality
+            // would mean the first legitimate recovery permanently locked the journal out of the row
+            // it exists to terminalize. What equality was standing in for is asked directly instead,
+            // by the launch digest above and the terminal check before it.
+            if (current.Revision < (long)binding.ExpectedDatabaseOperationRevision)
+            {
 
-            return Outcome(
-                won
-                    ? GrimoireOfflineTransitionDatabaseOutcome.WinnerUnproven
-                    : GrimoireOfflineTransitionDatabaseOutcome.RowConflicting);
+                return Outcome(GrimoireOfflineTransitionDatabaseOutcome.RevisionMismatch);
 
-        }
+            }
 
-        if (!IsExactly(winner, intended, terminalErrorCode))
-        {
+            // The row cannot prove a pre-effect failure. An offline phase never rewrites the launch
+            // checkpoint, so a row whose family was replaced is byte-identical to one that was never
+            // touched; only the journal knows, and it knows by never having recorded a phase past the
+            // one that precedes every effect.
+            if (disposition is GrimoireOfflineTransitionTerminalDisposition.FailedBeforeEffect
+                && (journal.LastCompletedPhase != CovenantResetPhaseMachine.First
+                    || journal.InFlightPhase is not null))
+            {
 
-            return Outcome(
-                IsTerminal(winner)
-                    ? GrimoireOfflineTransitionDatabaseOutcome.TerminalConflict
-                    : won
+                return Outcome(GrimoireOfflineTransitionDatabaseOutcome.EffectNotProvenAbsent);
+
+            }
+
+            bool won = await _operations.TryTransitionAsync(
+                binding.OperationId,
+                current.Revision,
+                ownerId: null,
+                intended,
+                _timeProvider.GetUtcNow(),
+                terminalErrorCode,
+                cancellationToken).ConfigureAwait(false);
+
+            // A successful compare-exchange is not the proof. Reread so the same rules cover our own
+            // write and an indistinguishable competing winner.
+            LongRunningOperation? winner = await _operations
+                .GetAsync(binding.OperationId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (winner is null || !DescribesTheSameLaunch(winner, binding))
+            {
+
+                return Outcome(
+                    won
                         ? GrimoireOfflineTransitionDatabaseOutcome.WinnerUnproven
-                        : GrimoireOfflineTransitionDatabaseOutcome.RevisionMismatch);
+                        : GrimoireOfflineTransitionDatabaseOutcome.RowConflicting);
+
+            }
+
+            if (IsExactly(winner, intended, terminalErrorCode))
+            {
+
+                return new GrimoireOfflineTransitionDatabaseReconciliation(
+                    won
+                        ? GrimoireOfflineTransitionDatabaseOutcome.Terminalized
+                        : GrimoireOfflineTransitionDatabaseOutcome.AlreadyTerminal,
+                    WinnerDigest(binding, winner));
+
+            }
+
+            if (IsTerminal(winner))
+            {
+
+                return Outcome(GrimoireOfflineTransitionDatabaseOutcome.TerminalConflict);
+
+            }
+
+            if (won)
+            {
+
+                return Outcome(GrimoireOfflineTransitionDatabaseOutcome.WinnerUnproven);
+
+            }
+
+            // A refusal is not an answer. Either the row moved between the read and the write, in
+            // which case the next pass reads where it moved to, or the write simply did not take, in
+            // which case repeating it is safe: every attempt is the same compare-exchange against the
+            // revision it just read, so none of them can land twice.
+            if (attempt >= TerminalWriteAttempts)
+            {
+
+                return Outcome(GrimoireOfflineTransitionDatabaseOutcome.WriteRefused);
+
+            }
+
+            await Task.Delay(TerminalWriteRetryDelay, _timeProvider, cancellationToken)
+                .ConfigureAwait(false);
 
         }
-
-        return new GrimoireOfflineTransitionDatabaseReconciliation(
-            won
-                ? GrimoireOfflineTransitionDatabaseOutcome.Terminalized
-                : GrimoireOfflineTransitionDatabaseOutcome.AlreadyTerminal,
-            WinnerDigest(binding, winner));
 
     }
 

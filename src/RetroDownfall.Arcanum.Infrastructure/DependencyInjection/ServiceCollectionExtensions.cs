@@ -49,6 +49,7 @@ using RetroDownfall.Arcanum.Infrastructure.Chronosync;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -1668,10 +1669,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
+        // Where the maintenance purposes point is resolved by an injected authority rather than read
+        // from a static inside the gate. A suite that drives a real erasure has to be able to say
+        // which database that is, and a gate that answered from the installation's own paths would
+        // point every one of those tests at the developer's Grimoire and then prove the bytes gone.
+        services.TryAddSingleton<IGrimoireMaintenancePathAuthority>(
+            static _ => GrimoireInstallationMaintenancePaths.Instance);
+
         services.AddSingleton(
             static sp => new GrimoireConnectionAdmissionGate(
                 sp.GetRequiredService<TimeProvider>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()));
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>()));
 
         services.AddSingleton<IGrimoireConnectionAdmissionGate>(
             static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());
@@ -1803,18 +1812,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IStoppedHostGrimoireConnectionFactory>(static sp =>
             sp.GetRequiredService<StoppedHostGrimoireConnectionFactory>());
 
-        services.AddSingleton<CovenantV3MaintenanceConnectionFactory>(
-            static sp => new CovenantV3MaintenanceConnectionFactory(
-                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
-                sp.GetRequiredService<ISqliteNativeRuntime>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
-
-        services.AddSingleton<ICovenantV3MaintenanceConnectionFactory>(
-            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
-
-        services.AddSingleton<ICovenantV3MaintenancePathAuthority>(
-            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
-
         services.AddSingleton(
             static sp => new CovenantHealthyCatalogErasureGuard(
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
@@ -1830,9 +1827,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantCanonicalErasureTransaction(
-                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<TimeProvider>()));
 
         services.AddSingleton<ICovenantCanonicalErasure>(
@@ -1840,10 +1835,10 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantLocalErasureStorageHealth(
-                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantV3MaintenancePathAuthority>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<TimeProvider>()));
 
         services.AddSingleton<ICovenantLocalErasureStorageHealth>(
@@ -1991,6 +1986,74 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IManagedFileOwnershipVerifier>(),
                 sp.GetRequiredService<TimeProvider>()));
 
+        // The offline-transition journal is the durable phase authority of a Covenant reset or a
+        // healthy-catalog factory erasure. Its store is a singleton because the slot it owns is one
+        // per profile; the authority above it is scoped because reading this installation's identity
+        // is.
+        services.AddSingleton<IGrimoireOfflineTransitionJournalStore>(
+            static sp => new GrimoireOfflineTransitionJournalStore(
+                sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.AddSingleton(static _ => GrimoireOfflineTransitionHandlerRegistry.Production);
+
+        // Scoped and composed, unlike the payload table above. Decoding a journal depends on nothing
+        // but the bytes and can be a process-wide constant; deciding what a transition of that kind
+        // owes is reached through the same scope its journal session and operation store are, and a
+        // process-wide instance would invite one of its handlers to capture a scope it outlives.
+        services.AddScoped(
+            static _ => GrimoireOfflineTransitionEffectHandlerRegistry
+                .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                .Value);
+
+        services.AddSingleton(
+            static sp => new GrimoireOfflineTransitionLifecycleStore(
+                sp.GetRequiredService<IGrimoireOfflineTransitionJournalStore>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionHandlerRegistry>()));
+
+        // Scoped rather than singleton: the terminal compare-exchange it performs goes through the
+        // scoped operation store, and a singleton holding one would capture a scope it outlives.
+        services.AddScoped(
+            static sp => new GrimoireOfflineTransitionDatabaseReconciler(
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        // The CLI graph composes the erasure coordinator without the host services around it, so the
+        // accessor may not exist yet. It is added rather than assumed because a CLI holds no
+        // installation lock and must therefore refuse to open a journal — which is the correct answer
+        // for a process that cannot run an offline transition, and a clearer one than a missing
+        // registration.
+        services.TryAddSingleton<InstallationResetMaintenanceLockAccessor>();
+
+        services.TryAddSingleton<IInstallationResetMaintenanceLockAccessor>(
+            static sp => sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>());
+
+        // The concrete reader only, never the interface. The installation-reset graph registers its
+        // own implementation of that interface with TryAdd, and this block composes ahead of it in the
+        // CLI stack - so claiming the interface here would silently take the reset service's reader
+        // away from it and hand it one that opens the database, which is exactly what a reset must not
+        // do while it is deciding whether a database is there at all.
+        services.TryAddScoped<InstallationResetDatabaseIdentityReader>();
+
+        // The claim the coordinator takes for the length of a run, so generic reconciliation leaves a
+        // row alone whose lease this process deliberately stopped renewing.
+        services.TryAddSingleton<LongRunningOperationOwnership>();
+
+        // Scoped, because it names the scoped database context's own connection - the exact object
+        // the operation store issues its statements on, which is what makes a scoped permit over it
+        // keep the terminal compare-exchange working while ordinary admission is shut.
+        services.TryAddScoped<ICovenantClosedPeriodLedgerConnection,
+            CovenantClosedPeriodLedgerConnection>();
+
+        services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
+            static sp => new GrimoireOfflineTransitionPhaseAuthority(
+                sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
+                sp.GetRequiredService<IInstallationResetMaintenanceLockAccessor>(),
+                sp.GetService<IInstallationResetDatabaseIdentityReader>()
+                    ?? sp.GetRequiredService<InstallationResetDatabaseIdentityReader>(),
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<IOsCredentialStore>(),
+                ArcanumPaths.GrimoireDirectory));
+
         services.AddScoped(
             static sp => new CovenantErasureInventorySource(
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
@@ -2021,6 +2084,16 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantErasureInventorySource>(),
                 sp.GetRequiredService<ICovenantErasureTransition>(),
                 sp.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionEffectHandlerRegistry>(),
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                sp.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
+                sp.GetRequiredService<LongRunningOperationOwnership>(),
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ILogger<CovenantErasureCoordinator>>()));
 

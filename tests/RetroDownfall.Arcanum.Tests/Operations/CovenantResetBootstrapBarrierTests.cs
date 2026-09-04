@@ -24,16 +24,16 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
 /// <summary>
-/// Issue #118 — nothing ordinary and durable runs ahead of an active V3 Covenant reset checkpoint.
+/// Issue #118 — nothing ordinary and durable runs ahead of an active Covenant reset launch.
 /// </summary>
 /// <remarks>
-/// A V3 checkpoint means a reset was interrupted somewhere between canonical erasure and the
-/// verified reopen, so the state root it is about to replace or roll back is exactly the tree an
-/// ordinary writer would append to. The ordering is enforced in two places and both are asserted
-/// here: the descriptor's <see cref="LongRunningOperationStartupPriority.BeforeStateWrites"/> phase
-/// inside one reconciliation pass, and the hosted-service registration order that puts the whole
-/// pass ahead of every durable workload, optional initializer, worker, and ready-state publication
-/// (§10.20.3).
+/// An offline-transition launch row means a reset was interrupted somewhere between canonical
+/// erasure and the verified reopen, so the state root it is about to replace or roll back is
+/// exactly the tree an ordinary writer would append to. The ordering is enforced in two places and
+/// both are asserted here: the descriptor's
+/// <see cref="LongRunningOperationStartupPriority.BeforeStateWrites"/> phase inside one
+/// reconciliation pass, and the hosted-service registration order that puts the whole pass ahead of
+/// every durable workload, optional initializer, worker, and ready-state publication (§10.20.3).
 /// </remarks>
 public sealed class CovenantResetBootstrapBarrierTests
 {
@@ -500,11 +500,11 @@ public sealed class CovenantResetBootstrapBarrierTests
     }
 
     /// <summary>
-    /// Within one pass, an active V3 Covenant reset is claimed before any ordinary readiness-phase
-    /// operation, even when the ordinary work was discovered first.
+    /// Within one pass, an active Covenant reset launch is claimed before any ordinary
+    /// readiness-phase operation, even when the ordinary work was discovered first.
     /// </summary>
     [Fact]
-    public async Task An_active_v3_checkpoint_is_settled_before_any_ordinary_operation()
+    public async Task An_active_offline_transition_launch_is_settled_before_any_ordinary_operation()
     {
 
         FakeTimeProvider clock = new();
@@ -524,7 +524,7 @@ public sealed class CovenantResetBootstrapBarrierTests
         LongRunningOperation reset = store.Seed(
             LongRunningOperationKinds.DataRetentionMutation,
             LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            checkpointVersion: DataRetentionMutationCheckpointV3.CurrentVersion,
+            checkpointVersion: CovenantOfflineTransitionLaunchV4.CurrentVersion,
             leaseExpiresAt: clock.GetUtcNow().AddMinutes(-5));
 
         List<string> settled = [];
@@ -543,7 +543,7 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         RecordingRecoveryHandler resetHandler = new(
             LongRunningOperationKinds.DataRetentionMutation,
-            DataRetentionMutationCheckpointV3.CurrentVersion,
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
             _ =>
             {
 
@@ -557,7 +557,8 @@ public sealed class CovenantResetBootstrapBarrierTests
             store,
             [ordinaryHandler, resetHandler],
             clock,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("barrier", maxConcurrency: 1);
 
@@ -583,11 +584,20 @@ public sealed class CovenantResetBootstrapBarrierTests
     }
 
     /// <summary>
-    /// A V3 payload is inside the kind's declared window, so the reconciler hands it to the owning
-    /// handler rather than stranding it as <c>operation.checkpoint_version_unsupported</c>.
+    /// A launch payload is inside its kind's declared window, so the reconciler hands it to the
+    /// owning handler rather than stranding it as <c>operation.checkpoint_version_unsupported</c>.
     /// </summary>
+    /// <remarks>
+    /// The window and the payload shape are raised in two separate files, so a build that moved the
+    /// reset to an offline-transition launch without widening the registry would still write rows
+    /// the reconciler then refused to admit. That refusal is silent to the writer and permanent to
+    /// the row: an interrupted reset that closed admission would sit unrecoverable behind a version
+    /// number, which is the one failure this barrier exists to prevent. Asserting both ends against
+    /// the launch constants themselves is what keeps a future version bump from splitting them
+    /// again — a literal here would let the window drift while the test kept passing.
+    /// </remarks>
     [Fact]
-    public void The_v3_window_admits_the_checkpoint_the_reset_writes()
+    public void The_launch_window_admits_the_binding_the_reset_writes()
     {
 
         LongRunningOperationRecoveryDescriptor mutation =
@@ -596,10 +606,10 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         Assert.Equal(0, mutation.MinCheckpointVersion);
 
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, mutation.MaxCheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, mutation.MaxCheckpointVersion);
 
         Assert.Equal(
-            DataRetentionMutationCheckpointV3.CurrentVersion,
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
             new DataRetentionMutationRecoveryHandler(null!).SupportedCheckpointVersion);
 
         LongRunningOperationRecoveryDescriptor factory =
@@ -608,10 +618,10 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         Assert.Equal(0, factory.MinCheckpointVersion);
 
-        Assert.Equal(DataRetentionFactoryResetCheckpointV1.CurrentVersion, factory.MaxCheckpointVersion);
+        Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, factory.MaxCheckpointVersion);
 
         Assert.Equal(
-            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
             new DataRetentionFactoryResetRecoveryHandler(null!).SupportedCheckpointVersion);
 
     }

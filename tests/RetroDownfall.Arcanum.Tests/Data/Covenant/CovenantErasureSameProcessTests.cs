@@ -29,6 +29,10 @@ using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Secrets.Security;
+
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -87,6 +91,7 @@ public sealed class CovenantErasureSameProcessTests
         Result<CovenantErasureCheckpointState> checkpoint =
             CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!);
 
         Assert.True(
@@ -322,7 +327,7 @@ public sealed class CovenantErasureSameProcessTests
 
         LongRunningOperation operation = await harness.ReadFactoryOperationAsync();
 
-        Assert.Equal(DataRetentionFactoryResetCheckpointV1.CurrentVersion, operation.CheckpointVersion);
+        Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, operation.CheckpointVersion);
 
         Assert.Equal(LongRunningOperationState.Completed, operation.State);
 
@@ -984,11 +989,12 @@ public sealed class CovenantErasureSameProcessTests
 
             LongRunningOperation active = await harness.ReadResetOperationAsync();
 
-            Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, active.CheckpointVersion);
+            Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, active.CheckpointVersion);
 
             Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
                 .FromMutationCheckpoint(
                     active.Id,
+                    active.CheckpointVersion,
                     active.CheckpointPayload!,
                     out bool describesCovenantErasure);
 
@@ -1071,25 +1077,37 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, operation.TerminalErrorCode);
 
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, operation.CheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
 
         await before.ReadLease.DisposeAsync();
 
     }
 
+    /// <remarks>
+    /// The caller's code and the row's code are asked separately because they stopped being the same
+    /// answer. A rollback is provably pre-effect, so the transition terminalizes its own row from the
+    /// journal and writes the code that says so - which is what a later reader needs, since it is the
+    /// difference between an operation that is safe to simply run again and one that is not. The
+    /// specific reason the erasure refused still reaches the caller. A disposition the journal cannot
+    /// prove pre-effect is not terminalized there at all, so that arm still carries its Covenant code
+    /// on the row.
+    /// </remarks>
     [SkippableTheory]
     [InlineData(
         RouteFailure.Rollback,
         LongRunningOperationState.Failed,
-        ErrorCodes.Covenant.IntegrityFailure)]
+        ErrorCodes.Covenant.IntegrityFailure,
+        "grimoire.offline_transition_not_applied")]
     [InlineData(
         RouteFailure.KeepClosed,
         LongRunningOperationState.ReconciliationRequired,
+        ErrorCodes.Covenant.ErasureIncomplete,
         ErrorCodes.Covenant.ErasureIncomplete)]
     public async Task Direct_retention_reset_maps_noncommit_dispositions_to_typed_failure_and_durable_state(
         RouteFailure failure,
         LongRunningOperationState expectedState,
-        string expectedError)
+        string expectedError,
+        string expectedDurableError)
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -1112,13 +1130,14 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(expectedState, operation.State);
 
-        Assert.Equal(expectedError, operation.TerminalErrorCode);
+        Assert.Equal(expectedDurableError, operation.TerminalErrorCode);
 
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, operation.CheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
 
         Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
             .FromMutationCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!,
                 out bool describesCovenantErasure);
 
@@ -1205,17 +1224,20 @@ public sealed class CovenantErasureSameProcessTests
     }
 
     [SkippableFact]
-    public async Task Direct_retention_reset_renews_its_durable_lease_while_the_coordinator_is_running()
+    public async Task Direct_retention_reset_stops_renewing_its_durable_lease_once_the_journal_opens()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CoordinatorPause pause = new();
 
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
             routeFailure: RouteFailure.Rollback,
             coordinatorPause: pause,
-            fastLeaseHeartbeat: true);
+            fastLeaseHeartbeat: true,
+            storeFaults: faults);
 
         DataRetentionPlan confirmed = await harness.PlanResetAsync();
 
@@ -1223,14 +1245,24 @@ public sealed class CovenantErasureSameProcessTests
 
         await pause.WaitUntilPausedAsync();
 
-        LongRunningOperation before = await harness.ReadResetOperationAsync();
+        int planning = faults.RenewalAttempts;
 
         try
         {
 
-            LongRunningOperation renewed = await harness.WaitForResetRevisionAfterAsync(before.Revision);
+            // Deliberately given time to renew, and asserted not to have. The heartbeat used to run
+            // for the whole erasure; it stops before the journal opens now, because a renewal advances
+            // the row's revision and the journal binds itself to the exact revision the launch
+            // produced. Advancing it would make the terminal compare-exchange refuse the very row the
+            // transition exists to terminalize.
+            //
+            // The count is what is asserted rather than the row, and not only because it is sharper.
+            // The pause is inside the closed period, where ordinary connection admission is shut, so
+            // reading the row here is refused outright - which is itself the stronger statement: a
+            // heartbeat could not reach the row from in here even if something still wanted to.
+            await Task.Delay(TimeSpan.FromMilliseconds(600), TimeProvider.System);
 
-            Assert.True(renewed.LeaseExpiresAt > before.LeaseExpiresAt);
+            Assert.Equal(planning, faults.RenewalAttempts);
 
         }
         finally
@@ -1276,7 +1308,7 @@ public sealed class CovenantErasureSameProcessTests
     [InlineData(
         RouteStoreFault.ThrowAfterCheckpoint,
         LongRunningOperationState.ReconciliationRequired,
-        DataRetentionMutationCheckpointV3.CurrentVersion)]
+        CovenantOfflineTransitionLaunchV4.CurrentVersion)]
     public async Task Direct_retention_reset_normalizes_unexpected_exceptions_by_durable_effect_boundary(
         RouteStoreFault fault,
         LongRunningOperationState expectedState,
@@ -1330,7 +1362,7 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
 
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, operation.CheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
 
     }
 
@@ -1385,6 +1417,7 @@ public sealed class CovenantErasureSameProcessTests
         Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
             .FromMutationCheckpoint(
                 parked.Id,
+                parked.CheckpointVersion,
                 parked.CheckpointPayload!,
                 out bool describesCovenantErasure);
 
@@ -1392,29 +1425,49 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.True(checkpoint.IsSuccess, checkpoint.Error.Message);
 
-        Assert.Equal(CovenantResetPhase.ReopenedVerified, checkpoint.Value.Phase);
+        // The row is a launch rather than a progress record, so it projects the first phase however
+        // far the run got: what the finalizer failed after is the journal's to say, and asserting a
+        // later phase here would be asserting that the row still answers a question it no longer owns.
+        Assert.Equal(CovenantResetPhase.InventoryPrepared, checkpoint.Value.Phase);
+
+        // The refusal is lifted before recovery runs. A row the store will never terminalize is a
+        // transition that is genuinely not over, and recovery reporting completion for one would be
+        // announcing an answer nothing durable carries. What this test is about is the pass after the
+        // finalizer failed: the gate it finds is already reopened, and it has to adopt that rather
+        // than treat it as somebody else's scope.
+        faults.DisarmCompletedTransitionFailures();
 
         LongRunningOperationRecoveryResult recovered = await harness.AdoptAndRecoverResetAsync();
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
 
+        LongRunningOperation finished = await harness.ReadResetOperationAsync();
+
+        Assert.Equal(LongRunningOperationState.Completed, finished.State);
+
     }
 
+    /// <summary>
+    /// A direct reset attempts no lease renewal at all once the coordinator has the operation.
+    /// </summary>
+    /// <remarks>
+    /// This replaces a test that drained an in-flight heartbeat racing the terminal write. That race
+    /// is gone rather than handled: the closed period runs outside the lease maintainer entirely, so
+    /// there is no renewal left to arrive late. The count is asserted rather than the row, because a
+    /// renewal that was attempted and refused would leave the row looking untouched while still being
+    /// exactly the thing that must not happen - it is what advances the revision the journal bound.
+    /// </remarks>
     [SkippableFact]
-    public async Task Direct_retention_reset_drains_an_inflight_heartbeat_before_completed_releases_the_lease()
+    public async Task Direct_retention_reset_attempts_no_lease_renewal_once_the_coordinator_runs()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using CancellationTokenSource proofSignal = new();
-
         CoordinatorPause pause = new();
 
-        RouteStoreFaults faults = new(RouteStoreFault.TerminalHeartbeatRace);
+        RouteStoreFaults faults = new(RouteStoreFault.None);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
-            routeFailure: RouteFailure.CancelAfterProof,
-            cancelAfterProof: proofSignal,
             coordinatorPause: pause,
             fastLeaseHeartbeat: true,
             storeFaults: faults);
@@ -1425,32 +1478,25 @@ public sealed class CovenantErasureSameProcessTests
 
         await pause.WaitUntilPausedAsync();
 
-        await faults.WaitUntilRenewalStartedAsync();
+        int planning = faults.RenewalAttempts;
 
-        pause.Release();
-
-        Task firstTerminalSignal = await Task.WhenAny(
-            faults.CompletedTransitionStarted,
-            faults.ExclusiveLeaseReleased);
-
-        if (ReferenceEquals(firstTerminalSignal, faults.CompletedTransitionStarted))
+        try
         {
 
-            faults.AllowCompletedTransition();
+            // Several heartbeat intervals of the fast maintainer, deliberately given the chance.
+            await Task.Delay(TimeSpan.FromMilliseconds(600), TimeProvider.System);
 
-            await faults.WaitUntilCompletedTransitionCommittedAsync();
+            Assert.Equal(planning, faults.RenewalAttempts);
 
         }
-        else
+        finally
         {
 
-            faults.AllowCompletedTransition();
+            pause.Release();
 
         }
 
-        faults.AllowRenewal();
-
-        Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(10));
+        Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(45));
 
         Assert.True(
             reset.IsSuccess,
@@ -1458,9 +1504,147 @@ public sealed class CovenantErasureSameProcessTests
                 ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
                 : null);
 
+        Assert.Equal(planning, faults.RenewalAttempts);
+
         LongRunningOperation operation = await harness.ReadResetOperationAsync();
 
         Assert.Equal(LongRunningOperationState.Completed, operation.State);
+
+    }
+
+    /// <summary>
+    /// Every point inside every phase a crash can fall between, resumed to the same one ending.
+    /// </summary>
+    /// <remarks>
+    /// The matrix exists because "idempotent" is a claim about the boundaries, not about the steps.
+    /// A phase publishes in flight, performs its effect, and publishes complete, and each of the four
+    /// gaps between and around those leaves a different durable record: nothing said yet, an effect
+    /// that may have begun, an effect that certainly happened but is unrecorded, and a phase that is
+    /// finished. Only the third is subtle, and only interrupting the real thing at the real boundary
+    /// proves it.
+    ///
+    /// <para>The fault fires once. That is what a crash is: the process that stopped is gone, and the
+    /// one that comes back has no fault in it. Recovery adopts the row exactly as a startup pass
+    /// would, and has to reach the same ending the uninterrupted erasure reaches - the same one, not
+    /// merely a successful-looking one, which is why the emptied route is asserted rather than the
+    /// operation state alone.</para>
+    ///
+    /// <para>The boundary and phase are the assertion message on purpose. A matrix that failed
+    /// without naming its case would send a reader back to count theory rows. The boundary travels as
+    /// its name because the enum is internal to the build under test and a public theory signature
+    /// cannot carry it - which also makes the case names in a test list readable.</para>
+    /// </remarks>
+    [SkippableTheory]
+    [MemberData(nameof(PhaseCrashBoundaries))]
+    public async Task Every_phase_boundary_a_crash_can_fall_between_resumes_to_the_same_ending(
+        CovenantResetPhase phase,
+        string boundaryName)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CovenantErasureFaultBoundary boundary =
+            Enum.Parse<CovenantErasureFaultBoundary>(boundaryName);
+
+        OneShotPhaseFault fault = new(phase, boundary);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            faultSeam: fault.RaiseAsync);
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        string at = $"{phase} / {boundary}";
+
+        DataRetentionPlan confirmed = await harness.PlanResetAsync();
+
+        Result<DataRetentionApplyResult> interrupted = await harness
+            .ApplyResetAsync(confirmed.PlanId)
+            .WaitAsync(TimeSpan.FromSeconds(45));
+
+        Assert.True(interrupted.IsFailure, at);
+
+        Assert.True(fault.Fired, at);
+
+        LongRunningOperationRecoveryResult recovered = await harness.AdoptAndRecoverResetAsync();
+
+        Assert.True(
+            recovered.State == LongRunningOperationState.Completed,
+            $"{at}: {recovered.ErrorCode}{harness.CoordinatorDiagnostics()}");
+
+        LongRunningOperation settled = await harness.ReadResetOperationAsync();
+
+        Assert.True(settled.State == LongRunningOperationState.Completed, at);
+
+        Assert.Equal(ErasedRoute, await harness.CaptureRouteStateAsync());
+
+    }
+
+    public static TheoryData<CovenantResetPhase, string> PhaseCrashBoundaries
+    {
+        get
+        {
+
+            TheoryData<CovenantResetPhase, string> cases = [];
+
+            foreach (CovenantResetPhase phase in Enum.GetValues<CovenantResetPhase>())
+            {
+
+                // The launch phase is committed by the initiator before this coordinator runs, and
+                // the reopen verification happens after the ladder; neither passes through the phase
+                // publication protocol these boundaries live in.
+                if (phase is CovenantResetPhase.InventoryPrepared
+                    or CovenantResetPhase.ReopenedVerified)
+                {
+
+                    continue;
+
+                }
+
+                foreach (CovenantErasureFaultBoundary boundary
+                    in Enum.GetValues<CovenantErasureFaultBoundary>())
+                {
+
+                    cases.Add(phase, boundary.ToString());
+
+                }
+
+            }
+
+            return cases;
+
+        }
+    }
+
+    /// <summary>A fault that fires exactly once, at one boundary of one phase.</summary>
+    /// <remarks>
+    /// Once, because the process that crashed does not come back. A fault that fired again in the
+    /// recovering coordinator would be testing a second crash, and would never let the matrix prove
+    /// the first one was survivable.
+    /// </remarks>
+    private sealed class OneShotPhaseFault(
+        CovenantResetPhase phase,
+        CovenantErasureFaultBoundary boundary)
+    {
+
+        private int _fired;
+
+        internal bool Fired => Volatile.Read(ref _fired) != 0;
+
+        internal Task<Result> RaiseAsync(
+            CovenantErasureFaultBoundary raised,
+            CovenantResetPhase raisedPhase,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                raised == boundary
+                && raisedPhase == phase
+                && Interlocked.Exchange(ref _fired, 1) == 0
+                    ? Result.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.MaintenanceFailed,
+                            $"Injected crash at {boundary} of {phase}."))
+                    : Result.Success());
 
     }
 
@@ -1509,6 +1693,8 @@ public sealed class CovenantErasureSameProcessTests
             reset.IsFailure
                 ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
                 : null);
+
+        Assert.Equal(ErasedRoute, await harness.CaptureRouteStateAsync());
 
         Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, reset.Value.Disposition);
 
@@ -1617,6 +1803,7 @@ public sealed class CovenantErasureSameProcessTests
             ConnectionStateObserver? connectionObserver = null,
             bool fastLeaseHeartbeat = false,
             RouteStoreFaults? storeFaults = null,
+            CovenantErasureFaultSeam? faultSeam = null,
             Action<IServiceCollection>? serviceOverrides = null)
         {
 
@@ -1643,6 +1830,48 @@ public sealed class CovenantErasureSameProcessTests
                 services.AddSingleton(coordinatorLog);
 
                 services.AddSingleton<ILogger<CovenantErasureCoordinator>>(coordinatorLog);
+
+                // The offline-transition journal keeps its key and anchor in the credential store, and
+                // the real one is the developer's login keychain. Every other suite that reaches the
+                // credential layer substitutes this for the same reason: a test has no business
+                // leaving credentials behind on the machine that ran it.
+                services.RemoveAll<IOsCredentialStore>();
+
+                services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+                if (faultSeam is not null)
+                {
+
+                    // The whole coordinator is re-registered rather than a seam being injected into
+                    // the composed one, because the seam is a constructor argument: production has no
+                    // way to set one after the fact, and a test that invented one would be exercising
+                    // a path production does not have.
+                    services.AddScoped(
+                        provider => new CovenantErasureCoordinator(
+                            provider.GetRequiredService<ILongRunningOperationCoordinator>(),
+                            provider.GetRequiredService<ILongRunningOperationStore>(),
+                            provider.GetRequiredService<ICovenantOperationGate>(),
+                            provider.GetRequiredService<ICovenantProtectedArtifactErasureKernel>(),
+                            provider.GetRequiredService<ICovenantManagedFileErasureKernel>(),
+                            provider.GetRequiredService<ICovenantErasureInventorySource>(),
+                            provider.GetRequiredService<ICovenantErasureTransition>(),
+                            provider.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
+                            provider.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                            provider.GetRequiredService<GrimoireOfflineTransitionEffectHandlerRegistry>(),
+                            provider.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                            provider.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+                            provider.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                            provider.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                            provider.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                            provider.GetRequiredService<ICovenantConnectionDrain>(),
+                            provider.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
+                            provider.GetRequiredService<LongRunningOperationOwnership>(),
+                            provider.GetRequiredService<TimeProvider>(),
+                            provider.GetRequiredService<
+                                TestCapturingLogger<CovenantErasureCoordinator>>(),
+                            faultSeam));
+
+                }
 
                 if (storeFaults is not null)
                 {
@@ -1674,8 +1903,7 @@ public sealed class CovenantErasureSameProcessTests
 
                 services.AddSingleton(
                     provider => new RecordingRouteGate(
-                        provider.GetRequiredService<CovenantOperationGate>(),
-                        storeFaults));
+                        provider.GetRequiredService<CovenantOperationGate>()));
 
                 services.AddSingleton<ICovenantOperationGate>(
                     static provider => provider.GetRequiredService<RecordingRouteGate>());
@@ -1701,7 +1929,9 @@ public sealed class CovenantErasureSameProcessTests
                         provider => new PausingRouteInventory(
                             coordinatorPause,
                             routeFailure is RouteFailure.Rollback
-                                ? new RouteFailureInventory(routeFailure)
+                                ? new RouteFailureInventory(
+                                    routeFailure,
+                                    provider.GetRequiredService<CovenantErasureInventorySource>())
                                 : provider.GetRequiredService<CovenantErasureInventorySource>()));
 
                 }
@@ -1715,7 +1945,9 @@ public sealed class CovenantErasureSameProcessTests
                     services.RemoveAll<ICovenantErasureInventorySource>();
 
                     services.AddScoped<ICovenantErasureInventorySource>(
-                        _ => new RouteFailureInventory(routeFailure));
+                        provider => new RouteFailureInventory(
+                            routeFailure,
+                            provider.GetRequiredService<CovenantErasureInventorySource>()));
 
                 }
 
@@ -2210,6 +2442,7 @@ public sealed class CovenantErasureSameProcessTests
             Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
                 .FromMutationCheckpoint(
                     operation.Id,
+                    operation.CheckpointVersion,
                     operation.CheckpointPayload!,
                     out bool describesCovenantErasure);
 
@@ -2544,6 +2777,22 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    /// <summary>
+    /// What the route holds once an erasure has finished, however many times it was interrupted.
+    /// </summary>
+    /// <remarks>
+    /// The surviving protected artifact is the point of the value rather than an untidiness in it:
+    /// one seeded artifact is outside the Covenant family and a reset must not touch it. So this is
+    /// both halves of the claim at once - everything the erasure owns is gone, and everything it does
+    /// not own is still there - which is what makes it worth asserting after a resumed run rather
+    /// than only asserting that the operation reported success.
+    ///
+    /// <para>The uninterrupted erasure asserts the same value, so the two cannot drift apart: a
+    /// change to what a reset leaves behind has to be made here once, deliberately, rather than
+    /// showing up as a crash-matrix failure nobody can place.</para>
+    /// </remarks>
+    private static readonly CovenantRouteState ErasedRoute = new(0, 1, 0);
+
     private sealed record CovenantRouteState(
         long CovenantRows,
         long ProtectedArtifacts,
@@ -2626,35 +2875,69 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
-            CovenantV3MaintenanceCapability capability,
+            CovenantCanonicalDatasetTransition dataset,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.ApplyCanonicalErasureAsync(operation, capability, cancellationToken);
+            inner.ApplyCanonicalErasureAsync(operation, dataset, authority, cancellationToken);
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken)
+        public Task<Result> CloseHandlesAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
         {
 
             observer.StateAtHandleProof = database.Database.GetDbConnection().State;
 
-            return inner.CloseHandlesAsync(cancellationToken);
+            return inner.CloseHandlesAsync(authority, cancellationToken);
 
         }
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.TruncateWalAsync(capability, cancellationToken);
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            inner.TruncateWalAsync(authority, cancellationToken);
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
-            inner.CompactAsync(capabilities, cancellationToken);
+        public Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            inner.CompactAsync(authority, cancellationToken);
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.InitializeAcceleratorAsync(capability, cancellationToken);
+        public Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            inner.StageCandidateAsync(authority, cancellationToken);
 
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
-            inner.VerifySidecarAbsenceAsync(cancellationToken);
+        public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken) =>
+            inner.ProveStagedCandidateAsync(authority, stagingIdentity, cancellationToken);
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
+            CancellationToken cancellationToken) =>
+            inner.InstallCompactionReplacementAsync(
+                authority,
+                stagingIdentity,
+                stagedContent,
+                destinationIdentity,
+                cancellationToken);
+
+        public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            inner.ReadCanonicalIdentityAsync(authority, cancellationToken);
+
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            inner.InitializeAcceleratorAsync(authority, cancellationToken);
+
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            inner.VerifySidecarAbsenceAsync(authority, cancellationToken);
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.VerifyReopenAsync(capability, cancellationToken);
+            inner.VerifyReopenAsync(authority, cancellationToken);
 
         public Task<Result> PublishCommittedAsync(
             ICovenantExclusiveOperationLease lease,
@@ -2669,47 +2952,74 @@ public sealed class CovenantErasureSameProcessTests
         ICovenantErasureInventorySource inner) : ICovenantErasureInventorySource
     {
 
+        public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+            CancellationToken cancellationToken) =>
+            inner.ReadOfflineTransitionSourceStateAsync(cancellationToken);
+
         public async Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
             await pause.WaitForReleaseAsync(cancellationToken);
 
             return await inner
-                .PreflightBeforeCanonicalAsync(operation, datasetGeneration, cancellationToken)
+                .PreflightBeforeCanonicalAsync(operation, datasetGeneration, authority, cancellationToken)
                 .ConfigureAwait(false);
 
         }
 
-        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
-            inner.PreflightRemainingManagedAsync(cancellationToken);
+        public Task<Result> PreflightRemainingManagedAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            inner.PreflightRemainingManagedAsync(authority, cancellationToken);
 
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
             Guid datasetGeneration,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.ReadNextDatabaseBatchAsync(datasetGeneration, afterLabelId, cancellationToken);
+            inner.ReadNextDatabaseBatchAsync(datasetGeneration, afterLabelId, authority, cancellationToken);
 
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
             Guid operationId,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.ReadNextManagedFileBatchAsync(operationId, afterLabelId, cancellationToken);
+            inner.ReadNextManagedFileBatchAsync(operationId, afterLabelId, authority, cancellationToken);
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
-            inner.ReadDisclosureExposureAsync(cancellationToken);
+            inner.ReadDisclosureExposureAsync(authority, cancellationToken);
 
     }
 
-    private sealed class RouteFailureInventory(RouteFailure failure) : ICovenantErasureInventorySource
+    /// <summary>
+    /// An inventory that refuses or empties the erasure itself while the launch stays real.
+    /// </summary>
+    /// <remarks>
+    /// The canonical source tuple is read through the real source rather than invented here, because
+    /// the initiator refuses a plan whose source generation differs from the one its effect digest
+    /// was computed over. A double that answered with a generation of its own would fail every one of
+    /// these runs at <c>Covenant.IntegrityFailure</c> before the disposition under test was reached,
+    /// and each would then be passing its own refusal off as the refusal it meant to prove.
+    /// </remarks>
+    private sealed class RouteFailureInventory(
+        RouteFailure failure,
+        ICovenantErasureInventorySource inner) : ICovenantErasureInventorySource
     {
+
+        public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
+            CancellationToken cancellationToken) =>
+            inner.ReadOfflineTransitionSourceStateAsync(cancellationToken);
 
         public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 failure is RouteFailure.Rollback
@@ -2725,12 +3035,15 @@ public sealed class CovenantErasureSameProcessTests
                                 0,
                                 CovenantDisclosureCountKind.Exact))));
 
-        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
+        public Task<Result> PreflightRemainingManagedAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
             Guid datasetGeneration,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantDatabaseErasureBatch>.Success(
@@ -2739,12 +3052,14 @@ public sealed class CovenantErasureSameProcessTests
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
             Guid operationId,
             Guid? afterLabelId,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantManagedFileErasureBatch>.Success(
                     new CovenantManagedFileErasureBatch(afterLabelId, true, [])));
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CovenantDisclosureExposure>.Success(
@@ -2757,7 +3072,8 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
-            CovenantV3MaintenanceCapability capability,
+            CovenantCanonicalDatasetTransition dataset,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<Guid>.Failure(
@@ -2765,23 +3081,63 @@ public sealed class CovenantErasureSameProcessTests
                         ErrorCodes.Covenant.ErasureIncomplete,
                         "The direct reset transition was refused.")));
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CloseHandlesAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
+        public Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<bool>.Success(false));
+
+        public Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        /// <summary>
+        /// Why the four members above throw rather than answer.
+        /// </summary>
+        /// <remarks>
+        /// This double reports that compaction proved itself, and the coordinator only reaches the
+        /// replacement members when it did not. Answering them anyway would let a coordinator that
+        /// staged a replacement it should never have staged still pass, which is the one thing a
+        /// double standing in for the storage layer must not do.
+        /// </remarks>
+        private const string NoReplacement =
+            "This double reports a compaction that proved itself, so no replacement is ever staged.";
+
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
-
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
@@ -2799,27 +3155,68 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
-            CovenantV3MaintenanceCapability capability,
+            CovenantCanonicalDatasetTransition dataset,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<Guid>.Success(Guid.Parse("99999999-9999-4999-8999-999999999999")));
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
+        public Task<Result> CloseHandlesAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
+        public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
+        public Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<bool>.Success(false));
+
+        public Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException(NoReplacement);
+
+        /// <summary>
+        /// Why the four members above throw rather than answer.
+        /// </summary>
+        /// <remarks>
+        /// This double reports that compaction proved itself, and the coordinator only reaches the
+        /// replacement members when it did not. Answering them anyway would let a coordinator that
+        /// staged a replacement it should never have staged still pass, which is the one thing a
+        /// double standing in for the storage layer must not do.
+        /// </remarks>
+        private const string NoReplacement =
+            "This double reports a compaction that proved itself, so no replacement is ever staged.";
+
+        public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
-
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
@@ -2840,6 +3237,7 @@ public sealed class CovenantErasureSameProcessTests
                             CovenantFtsRebuildState.FullRebuildRequired,
                             1,
                             new byte[32],
+                            1,
                             1),
                         new CovenantCandidateAuthorityState(
                             "direct-route-cancellation-test",
@@ -2861,9 +3259,7 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
-    private sealed class RecordingRouteGate(
-        CovenantOperationGate inner,
-        RouteStoreFaults? storeFaults = null) : ICovenantOperationGate
+    private sealed class RecordingRouteGate(CovenantOperationGate inner) : ICovenantOperationGate
     {
 
         private int _installationReadAcquisitions;
@@ -2927,11 +3323,7 @@ public sealed class CovenantErasureSameProcessTests
             Result<CovenantExclusiveLease> acquired = await inner
                 .ResumeOrAcquireExclusiveAsync(owner, cancellationToken);
 
-            return acquired.IsFailure || storeFaults?.Fault is not RouteStoreFault.TerminalHeartbeatRace
-                ? acquired
-                : Result<CovenantExclusiveLease>.Success(
-                    new CovenantExclusiveLease(
-                        new RecordingExclusiveRegistration(acquired.Value, storeFaults)));
+            return acquired;
 
         }
 
@@ -3042,36 +3434,6 @@ public sealed class CovenantErasureSameProcessTests
 
         }
 
-        private sealed class RecordingExclusiveRegistration(
-            CovenantExclusiveLease inner,
-            RouteStoreFaults faults) : ICovenantExclusiveLeaseRegistration
-        {
-
-            public CovenantOperationLeaseSnapshot Snapshot => inner.Snapshot;
-
-            public CancellationToken Revocation => inner.Revocation;
-
-            public Result ExecuteWhileHeld(Func<Result> callback) => inner.ExecuteWhileHeld(callback);
-
-            public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
-                inner.RevalidateAsync(cancellationToken);
-
-            public ValueTask<Result> CompleteAsync(
-                CovenantExclusiveLeaseDisposition disposition,
-                CancellationToken cancellationToken) =>
-                inner.CompleteAsync(disposition, cancellationToken);
-
-            public async ValueTask ReleaseAsync()
-            {
-
-                await inner.DisposeAsync();
-
-                faults.SignalExclusiveLeaseReleased();
-
-            }
-
-        }
-
     }
 
     public enum RouteStoreFault
@@ -3089,8 +3451,6 @@ public sealed class CovenantErasureSameProcessTests
 
         FailAllCompletedTransitions,
 
-        TerminalHeartbeatRace,
-
     }
 
     internal sealed class RouteStoreFaults(RouteStoreFault fault)
@@ -3100,27 +3460,18 @@ public sealed class CovenantErasureSameProcessTests
 
         private int _completedTransitionAttempts;
 
+        private int _renewalAttempts;
+
         private int _throwNextGet;
 
-        private readonly TaskCompletionSource _renewalStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _allowRenewal = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _completedTransitionStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _allowCompletedTransition = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _completedTransitionCommitted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _exclusiveLeaseReleased = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _completedTransitionsDisarmed;
 
         internal int CompletedTransitionAttempts => Volatile.Read(ref _completedTransitionAttempts);
+
+        /// <summary>Every durable lease renewal this store was asked for, whether or not it took.</summary>
+        internal int RenewalAttempts => Volatile.Read(ref _renewalAttempts);
+
+        internal int RecordRenewalAttempt() => Interlocked.Increment(ref _renewalAttempts);
 
         internal Func<CancellationToken, Task>? AfterFactoryStarted { get; set; }
 
@@ -3128,42 +3479,19 @@ public sealed class CovenantErasureSameProcessTests
 
         internal RouteStoreFault Fault { get; } = fault;
 
-        internal Task CompletedTransitionStarted => _completedTransitionStarted.Task;
-
-        internal Task ExclusiveLeaseReleased => _exclusiveLeaseReleased.Task;
-
         internal bool TakeThrowNextGet() => Interlocked.Exchange(ref _throwNextGet, 0) != 0;
 
         internal void ArmThrowNextGet() => _ = Interlocked.Exchange(ref _throwNextGet, 1);
 
+        internal bool CompletedTransitionsDisarmed =>
+            Volatile.Read(ref _completedTransitionsDisarmed) != 0;
+
+        /// <summary>Stops refusing terminal writes, so a later pass can finish what this one could not.</summary>
+        internal void DisarmCompletedTransitionFailures() =>
+            _ = Interlocked.Exchange(ref _completedTransitionsDisarmed, 1);
+
         internal int RecordCompletedTransitionAttempt() =>
             Interlocked.Increment(ref _completedTransitionAttempts);
-
-        internal void AllowCompletedTransition() => _allowCompletedTransition.TrySetResult();
-
-        internal void AllowRenewal() => _allowRenewal.TrySetResult();
-
-        internal void SignalCompletedTransitionCommitted() =>
-            _completedTransitionCommitted.TrySetResult();
-
-        internal void SignalCompletedTransitionStarted() =>
-            _completedTransitionStarted.TrySetResult();
-
-        internal void SignalExclusiveLeaseReleased() => _exclusiveLeaseReleased.TrySetResult();
-
-        internal void SignalRenewalStarted() => _renewalStarted.TrySetResult();
-
-        internal Task WaitForCompletedTransitionAsync(CancellationToken cancellationToken) =>
-            _allowCompletedTransition.Task.WaitAsync(cancellationToken);
-
-        internal Task WaitForRenewalAsync(CancellationToken cancellationToken) =>
-            _allowRenewal.Task.WaitAsync(cancellationToken);
-
-        internal Task WaitUntilCompletedTransitionCommittedAsync() =>
-            _completedTransitionCommitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        internal Task WaitUntilRenewalStartedAsync() =>
-            _renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
     }
 
@@ -3269,14 +3597,7 @@ public sealed class CovenantErasureSameProcessTests
             CancellationToken cancellationToken = default)
         {
 
-            if (faults.Fault is RouteStoreFault.TerminalHeartbeatRace)
-            {
-
-                faults.SignalRenewalStarted();
-
-                await faults.WaitForRenewalAsync(cancellationToken);
-
-            }
+            _ = faults.RecordRenewalAttempt();
 
             return await inner.RenewLeaseAsync(
                 operationId,
@@ -3300,7 +3621,7 @@ public sealed class CovenantErasureSameProcessTests
         {
 
             if (expectedCheckpointVersion == 0
-                && checkpointVersion == DataRetentionFactoryResetCheckpointV1.CurrentVersion
+                && checkpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion
                 && faults.FactoryCheckpointPause is { } factoryCheckpointPause)
             {
 
@@ -3309,7 +3630,7 @@ public sealed class CovenantErasureSameProcessTests
             }
 
             if (expectedCheckpointVersion == 0
-                && checkpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion)
+                && checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
             {
 
                 if (faults.Fault is RouteStoreFault.ThrowBeforeCheckpoint)
@@ -3362,7 +3683,7 @@ public sealed class CovenantErasureSameProcessTests
 
             if (saved
                 && expectedCheckpointVersion == 0
-                && checkpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion
+                && checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion
                 && faults.Fault is RouteStoreFault.ThrowAfterCheckpoint)
             {
 
@@ -3385,6 +3706,7 @@ public sealed class CovenantErasureSameProcessTests
         {
 
             if (state is LongRunningOperationState.Completed
+                && !faults.CompletedTransitionsDisarmed
                 && (faults.Fault is RouteStoreFault.FailAllCompletedTransitions
                     || faults.Fault is RouteStoreFault.FailFirstCompletedTransition
                         && faults.RecordCompletedTransitionAttempt() == 1))
@@ -3398,16 +3720,6 @@ public sealed class CovenantErasureSameProcessTests
                 }
 
                 return false;
-
-            }
-
-            if (state is LongRunningOperationState.Completed
-                && faults.Fault is RouteStoreFault.TerminalHeartbeatRace)
-            {
-
-                faults.SignalCompletedTransitionStarted();
-
-                await faults.WaitForCompletedTransitionAsync(cancellationToken);
 
             }
 
@@ -3426,15 +3738,6 @@ public sealed class CovenantErasureSameProcessTests
                 utcNow,
                 terminalErrorCode,
                 cancellationToken);
-
-            if (transitioned
-                && state is LongRunningOperationState.Completed
-                && faults.Fault is RouteStoreFault.TerminalHeartbeatRace)
-            {
-
-                faults.SignalCompletedTransitionCommitted();
-
-            }
 
             return transitioned;
 

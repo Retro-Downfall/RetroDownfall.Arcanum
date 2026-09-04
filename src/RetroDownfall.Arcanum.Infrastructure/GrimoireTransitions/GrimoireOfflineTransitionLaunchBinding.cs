@@ -83,6 +83,56 @@ internal static class GrimoireOfflineTransitionLaunch
 
     private const string LaunchBindingDomain = "arcanum.grimoire.offline-transition.launch-binding.v1";
 
+    /// <summary>
+    /// Projects the launch a committed checkpoint row carries, or refuses the row.
+    /// </summary>
+    /// <remarks>
+    /// One reader rather than a copy at each call site. Two of them could only ever differ in the
+    /// case that decides authority — which versions carry a launch — and the version window, the
+    /// journal's resume check, and the admission an initiator issues all have to agree about that
+    /// exactly. Refusal is content-free and decided by the version before a payload is projected, so
+    /// a retired shape is refused for being retired rather than for how it happens to be spelled.
+    /// </remarks>
+    internal static Result<GrimoireOfflineTransitionLaunchBinding> FromCommittedCheckpoint(
+        int checkpointVersion,
+        ReadOnlySpan<byte> payload)
+    {
+
+        if (payload.Length == 0)
+        {
+
+            return Unlaunchable();
+
+        }
+
+        if (checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
+        {
+
+            Result<CovenantOfflineTransitionLaunchV4> reset =
+                CovenantRecoveryCheckpointCodec.DecodeCovenantOfflineTransitionLaunch(payload);
+
+            return reset.IsFailure
+                ? Result<GrimoireOfflineTransitionLaunchBinding>.Failure(reset.Error)
+                : FromLaunch(reset.Value);
+
+        }
+
+        if (checkpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion)
+        {
+
+            Result<DataRetentionFactoryTransitionLaunchV2> factory =
+                CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(payload);
+
+            return factory.IsFailure
+                ? Result<GrimoireOfflineTransitionLaunchBinding>.Failure(factory.Error)
+                : FromLaunch(factory.Value);
+
+        }
+
+        return Unlaunchable();
+
+    }
+
     /// <summary>Projects a version-4 Covenant offline-transition launch.</summary>
     internal static Result<GrimoireOfflineTransitionLaunchBinding> FromLaunch(
         CovenantOfflineTransitionLaunchV4 launch) =>
@@ -118,27 +168,6 @@ internal static class GrimoireOfflineTransitionLaunch
             : Unlaunchable();
 
     /// <summary>
-    /// A legacy version-3 retention-mutation checkpoint is never a launch.
-    /// </summary>
-    /// <remarks>
-    /// The legacy shapes record an owner and the phase they reached, and no target at all. Filling
-    /// the missing target in — from the live database, from a plan, from a default — would authorize
-    /// an offline transition against a generation nobody committed to replacing, and the evidence
-    /// that it had happened would be gone by the time the family was already replaced. The refusal is
-    /// unconditional rather than conditional on the payload being malformed: a perfectly valid legacy
-    /// row still says nothing about a target, and a rule that only refused broken ones would be a
-    /// rule about parsing rather than about authority.
-    /// </remarks>
-    internal static Result<GrimoireOfflineTransitionLaunchBinding> FromLegacy(
-        DataRetentionMutationCheckpointV3 checkpoint) =>
-        Unlaunchable();
-
-    /// <summary>A legacy version-1 factory-erasure checkpoint is never a launch, for the same reason.</summary>
-    internal static Result<GrimoireOfflineTransitionLaunchBinding> FromLegacy(
-        DataRetentionFactoryResetCheckpointV1 checkpoint) =>
-        Unlaunchable();
-
-    /// <summary>
     /// Builds the journal binding this launch may be published under.
     /// </summary>
     /// <remarks>
@@ -147,9 +176,9 @@ internal static class GrimoireOfflineTransitionLaunch
     /// supply it could publish a journal bound to a launch it is not.
     ///
     /// <para><paramref name="expectedDatabaseOperationRevision"/> cannot be derived and stays the
-    /// caller's to read back: committing the launch checkpoint advances the row, and a lease renewal
-    /// before the opening publication may advance it again, so only a reread immediately before
-    /// publishing knows the value. What is enforced here is the one thing that is knowable — it must
+    /// caller's to read back: committing the launch checkpoint advances the row, and a recovery pass
+    /// adopting the operation advances it again, so only a reread immediately before publishing knows
+    /// the value. What is enforced here is the one thing that is knowable — it must
     /// be past the revision the launch itself recorded, because an expected revision at or below that
     /// one names a row state from before the checkpoint existed.</para>
     /// </remarks>

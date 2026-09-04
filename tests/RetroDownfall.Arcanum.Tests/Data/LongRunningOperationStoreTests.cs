@@ -960,7 +960,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             store,
             [handler],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
             now,
@@ -1008,7 +1009,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             store,
             [handler],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
             now,
@@ -1050,7 +1052,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             store,
             [handler],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary unsupportedSummary = await reconciler.ReconcileAsync(
             now,
@@ -1076,7 +1079,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             store,
             [corruptHandler],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary corruptSummary = await corruptReconciler.ReconcileAsync(
             now,

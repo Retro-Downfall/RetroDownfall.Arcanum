@@ -67,7 +67,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
         // MATCH that found something first proves the later zero meant anything.
         Assert.Equal(1, await fixture.ScalarLongAsync(IndexedTokenQuery, Token));
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -97,7 +104,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         Guid? before = await fixture.ReadDatasetGenerationAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -139,6 +153,272 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
+    /// <summary>
+    /// The stamped dataset is the one the launch preselected, not one this transaction chose.
+    /// </summary>
+    /// <remarks>
+    /// A transaction that minted its own generation could not be asked afterwards whether it had
+    /// committed: a replaced family looks identical whether this operation replaced it or something
+    /// else did, so a recovery pass would have to guess — and the guess it would be forced into is
+    /// "run the destructive statement again". Committing to the target first is what turns that into
+    /// a comparison.
+    /// </remarks>
+    [Fact]
+    public async Task A_reset_stamps_the_preselected_target_rather_than_a_generation_of_its_own()
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        await fixture.ExecuteAsync(
+            """
+            UPDATE covenant_state
+            SET AcceleratorEpoch = 7, KeyReclamationEpoch = 11, EnvelopeKeyEpoch = 13
+            WHERE StateKey = 1;
+            """,
+            Token);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        await fixture.ReopenAsync(Token);
+
+        Assert.Equal(preselected.TargetDatasetGeneration, await fixture.ReadDatasetGenerationAsync(Token));
+
+        // Read back rather than returned from memory: the value the caller gets has to be the one the
+        // committed row carries, or it is a claim about the transaction rather than about the database.
+        Assert.Equal(preselected.TargetDatasetGeneration, applied.Value);
+
+        Assert.Equal(8, await fixture.ScalarLongAsync("SELECT AcceleratorEpoch FROM covenant_state;", Token));
+
+        Assert.Equal(12, await fixture.ScalarLongAsync("SELECT KeyReclamationEpoch FROM covenant_state;", Token));
+
+        Assert.Equal(14, await fixture.ScalarLongAsync("SELECT EnvelopeKeyEpoch FROM covenant_state;", Token));
+
+    }
+
+    /// <summary>
+    /// Replaying the exact transition this database already carries is success, not a refusal.
+    /// </summary>
+    /// <remarks>
+    /// The canonical transaction is the one step in an erasure that is not blindly repeatable: it
+    /// stamps a generation and advances three epochs, so a second attempt cannot simply run again.
+    /// Preselecting the target is what makes the question decidable — a database carrying the exact
+    /// target tuple carries the commit this operation itself made, because nothing else in the
+    /// installation could have chosen that generation.
+    ///
+    /// <para>Without this the source guard is correct but useless to a resumed run: it refuses, the
+    /// erasure parks, and an operator is asked to reconcile a database that is already in exactly the
+    /// state the plan asked for. The refusal has to distinguish "somebody else moved this" from "I
+    /// moved this", and the preselected target is the only thing that can tell them apart.</para>
+    /// </remarks>
+    [Theory]
+    [InlineData(CovenantExclusiveOperation.CovenantReset)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)]
+    public async Task Replaying_the_exact_committed_transition_converges(
+        CovenantExclusiveOperation operation)
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        // Both applies run inside one closed period, which is the same relationship the retired
+        // capabilities had to their single lease: a replay is the erasure re-entering a phase it may
+        // already have completed, not a second erasure. That the period issues a fresh capability for
+        // each of the two opens is the gate's business, and it is exercised rather than mocked here.
+        (Result<Guid> first, Result<Guid> replayed) = await fixture.InClosedPeriodAsync(
+            async authority =>
+            {
+
+                CovenantCanonicalErasureTransaction service = CreateService();
+
+                Result<Guid> once = await service.ApplyAsync(operation, preselected, authority, Token);
+
+                Result<Guid> again = await service.ApplyAsync(operation, preselected, authority, Token);
+
+                return (once, again);
+
+            });
+
+        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? replayed.Error.Message : null);
+
+        Assert.Equal(preselected.TargetDatasetGeneration, replayed.Value);
+
+        await fixture.ReopenAsync(Token);
+
+        // The epochs moved once, not twice. A replay that advanced them again would hand a turn
+        // holding an epoch captured after the first commit a value that no longer validates.
+        Assert.Equal(
+            (long)preselected.TargetEpochs.AcceleratorEpoch,
+            await fixture.ScalarLongAsync("SELECT AcceleratorEpoch FROM covenant_state;", Token));
+
+        Assert.Equal(
+            (long)preselected.TargetEpochs.KeyReclamationEpoch,
+            await fixture.ScalarLongAsync("SELECT KeyReclamationEpoch FROM covenant_state;", Token));
+
+        Assert.Equal(
+            (long)preselected.TargetEpochs.EnvelopeKeyEpoch,
+            await fixture.ScalarLongAsync("SELECT EnvelopeKeyEpoch FROM covenant_state;", Token));
+
+    }
+
+    /// <summary>
+    /// A database that is not the one the plan was made against is refused, and nothing is deleted.
+    /// </summary>
+    /// <remarks>
+    /// The refusal is a zero-row update rather than a read-then-compare, because a comparison made
+    /// before the statement leaves a window the statement itself does not close. Deleting the family
+    /// and then discovering the singleton had moved would already have destroyed the evidence that
+    /// said so.
+    /// </remarks>
+    [Theory]
+    [InlineData("generation")]
+    [InlineData("accelerator")]
+    [InlineData("keyReclamation")]
+    [InlineData("envelopeKey")]
+    public async Task A_canonical_erasure_refuses_a_source_this_database_does_not_carry(string moved)
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        CovenantCanonicalDatasetTransition stale = moved switch
+        {
+
+            "generation" => preselected with { SourceDatasetGeneration = Guid.NewGuid() },
+
+            "accelerator" => preselected with
+            {
+                SourceEpochs = preselected.SourceEpochs with
+                {
+                    AcceleratorEpoch = preselected.SourceEpochs.AcceleratorEpoch + 5,
+                },
+                TargetEpochs = preselected.TargetEpochs with
+                {
+                    AcceleratorEpoch = preselected.SourceEpochs.AcceleratorEpoch + 6,
+                },
+            },
+
+            "keyReclamation" => preselected with
+            {
+                SourceEpochs = preselected.SourceEpochs with
+                {
+                    KeyReclamationEpoch = preselected.SourceEpochs.KeyReclamationEpoch + 5,
+                },
+                TargetEpochs = preselected.TargetEpochs with
+                {
+                    KeyReclamationEpoch = preselected.SourceEpochs.KeyReclamationEpoch + 6,
+                },
+            },
+
+            _ => preselected with
+            {
+                SourceEpochs = preselected.SourceEpochs with
+                {
+                    EnvelopeKeyEpoch = preselected.SourceEpochs.EnvelopeKeyEpoch + 5,
+                },
+                TargetEpochs = preselected.TargetEpochs with
+                {
+                    EnvelopeKeyEpoch = preselected.SourceEpochs.EnvelopeKeyEpoch + 6,
+                },
+            },
+
+        };
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                stale,
+                authority,
+                Token));
+
+        Assert.True(applied.IsFailure, moved);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, applied.Error.Code);
+
+        await fixture.ReopenAsync(Token);
+
+        // The whole statement is one transaction, so a refused stamp takes every deletion with it.
+        Assert.Equal(
+            preselected.SourceDatasetGeneration,
+            await fixture.ReadDatasetGenerationAsync(Token));
+
+    }
+
+    /// <summary>
+    /// A pair no launch could have committed to is refused before anything is opened or drained.
+    /// </summary>
+    /// <remarks>
+    /// Transposed target epochs are the case worth naming. Compared as a set they look correct — every
+    /// target is one more than some source — and a family replaced under them would then be verified
+    /// against a counter it does not belong to.
+    /// </remarks>
+    [Fact]
+    public async Task A_canonical_erasure_refuses_a_transition_whose_targets_are_transposed()
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        await fixture.ExecuteAsync(
+            """
+            UPDATE covenant_state
+            SET AcceleratorEpoch = 7, KeyReclamationEpoch = 11, EnvelopeKeyEpoch = 13
+            WHERE StateKey = 1;
+            """,
+            Token);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        CovenantCanonicalDatasetTransition transposed = preselected with
+        {
+            TargetEpochs = new CovenantOfflineTransitionEpochsV1(
+                preselected.TargetEpochs.EnvelopeKeyEpoch,
+                preselected.TargetEpochs.KeyReclamationEpoch,
+                preselected.TargetEpochs.AcceleratorEpoch),
+        };
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                transposed,
+                authority,
+                Token));
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, applied.Error.Code);
+
+        // The refusal still lands before the transaction opens anything — that has not changed, and
+        // the untouched singleton below is what says so. What has changed is that "before the drain"
+        // is no longer a way to say it: the drain is the gate's, it happened on the way into the
+        // closed period, and this fixture's handle has to be reopened before it can be read from.
+        await fixture.ReopenAsync(Token);
+
+        Assert.Equal(
+            preselected.SourceDatasetGeneration,
+            await fixture.ReadDatasetGenerationAsync(Token));
+
+    }
+
     [Fact]
     public async Task A_reset_advances_the_accelerator_and_envelope_epochs_rather_than_restarting_them()
     {
@@ -157,7 +437,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
             """,
             Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -186,7 +473,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -232,7 +526,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -274,7 +575,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         CovenantRetainedEvidenceSnapshot before = await fixture.CaptureRetainedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -294,8 +602,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         CovenantRetainedEvidenceSnapshot before = await fixture.CaptureRetainedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -320,8 +634,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -346,8 +666,19 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
+    /// <summary>
+    /// An absent canonical singleton is refused rather than reseeded, on both arms.
+    /// </summary>
+    /// <remarks>
+    /// The factory arm used to mint a singleton when it found none, which was right while the erasure
+    /// discovered its own state: a catalog whose optional tier had been reinstalled underneath it
+    /// still had to be resettable. An offline transition cannot be in that position. Its launch
+    /// records a source epoch above zero for all three counters, so a launch structurally cannot
+    /// describe a database with no singleton — and an arm that reseeded anyway would stamp epochs no
+    /// launch committed to, against a catalog whose damage the operator would never be told about.
+    /// </remarks>
     [Fact]
-    public async Task A_healthy_catalog_factory_erasure_reseeds_a_canonical_singleton_that_is_absent()
+    public async Task A_healthy_catalog_factory_erasure_refuses_a_canonical_singleton_that_is_absent()
     {
 
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
@@ -356,25 +687,29 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.ExecuteAsync("DELETE FROM covenant_search_documents;", Token);
 
+        // Preselected while the singleton is still there, so the pair handed to the transaction is a
+        // coherent one and the refusal below is attributable to the missing row rather than to it.
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
         await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
 
-        Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+                authority => CreateService().ApplyAsync(
+                    CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                    preselected,
+                    authority,
+                    Token));
 
-        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, applied.Error.Code);
 
         await fixture.ReopenAsync(Token);
 
-        Assert.Equal(1, await fixture.CountAsync("covenant_state", Token));
+        // Nothing was reseeded, and nothing was erased on the way to deciding not to.
+        Assert.Equal(0, await fixture.CountAsync("covenant_state", Token));
 
-        Assert.Equal(applied.Value, await fixture.ReadDatasetGenerationAsync(Token));
-
-        // A reseeded singleton starts where a fresh installation starts.
-        Assert.Equal(1, await fixture.ScalarLongAsync("SELECT AcceleratorEpoch FROM covenant_state;", Token));
-
-        Assert.Equal(
-            4,
-            await fixture.ScalarLongAsync("SELECT AppliedCampaignDeletionSequence FROM covenant_state;", Token));
+        Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
 
     }
 
@@ -403,7 +738,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
     /// SQLite's own native busy-handler. <c>Microsoft.Data.Sqlite</c> layers a second, longer wait on
     /// top, bounded by <see cref="SqliteConnection.DefaultTimeout"/> (30 s by default), so a real
     /// racing holder can take up to 30 real seconds to surface as SQLITE_BUSY at all. Waiting that out
-    /// on every test run would make this suite unusable, so <see cref="ThrottledV3ConnectionFactory"/>
+    /// on every test run would make this suite unusable, so <see cref="ThrottledMaintenanceConnectionFactory"/>
     /// lowers both bounds - the same two settings <c>CampaignRepository.AddAsync</c> already lowers
     /// for its own <c>BEGIN IMMEDIATE</c> - on the erasure's connection only, and only after the real
     /// factory's <c>InitializeAsync</c> has already verified the production 5000 ms policy.
@@ -430,11 +765,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await using SqliteTransaction holderTransaction = holder.BeginTransaction(deferred: false);
 
-        CovenantCanonicalErasureTransaction service = new(
-            new ThrottledV3ConnectionFactory(fixture.V3Connections()),
-            CovenantSqliteConnectionInitializer.Instance,
-            fixture.Drain,
-            TimeProvider.System);
+        CovenantCanonicalErasureTransaction service = CreateService();
 
         // IsSuccess alone cannot tell a genuine retry from a holder that happened to
         // release before the erasure's first attempt ever ran - this suite would pass vacuously
@@ -460,19 +791,28 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         };
 
-        // Task.Run, not a bare call: ApplyAsync's prefix (drain, connection open, the secure-delete
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        // The holder is deliberately not enrolled in the fixture's drain, so the gate's stage-two
+        // close cannot close it. That is the whole setup: the closed period is established, every
+        // handle the process admits to owning is gone, and a racing holder is still on the file.
+        await using CovenantClosedPeriodTestAuthority period = await fixture.ClosedPeriodAsync(
+            decorate: inner => new ThrottledMaintenanceConnectionFactory(inner));
+
+        // Task.Run, not a bare call: ApplyAsync's prefix (the connection open and the secure-delete
         // read-back) can complete synchronously all the way into the blocking BeginTransaction call,
         // which would otherwise run inline on this thread and only return control here after the
         // whole throttled busy wait had already elapsed - starving the Task.Delay below of any chance
         // to race it at all.
         Task<Result<Guid>> applying = Task.Run(() => service.ApplyAsync(
             CovenantExclusiveOperation.CovenantReset,
-            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            preselected,
+            period.Authority,
             Token));
 
-        // The throttled per-attempt bound is ~1s (ThrottledV3ConnectionFactory); holding past it
-        // before closing the holder proves the C# retry - not the first attempt's own wait - is what
-        // makes a later attempt succeed.
+        // The throttled per-attempt bound is ~1s (ThrottledMaintenanceConnectionFactory); holding
+        // past it before closing the holder proves the C# retry - not the first attempt's own wait -
+        // is what makes a later attempt succeed.
         await Task.Delay(TimeSpan.FromMilliseconds(1_800), Token);
 
         await holderTransaction.RollbackAsync(Token);
@@ -501,7 +841,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         // A reset reseeds nothing. Minting a singleton for a catalog that lost one would answer schema
         // damage by inventing a dataset identity nothing else in the installation agrees with.
@@ -527,8 +874,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
             "INSERT INTO covenant_fts(covenant_fts, rank) VALUES('secure-delete', 0);",
             Token);
 
-        Result<Guid> applied = await CreateService(fixture)
-            .ApplyAsync(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -554,11 +907,24 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(operation, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                operation,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.InvalidScope, applied.Error.Code);
+
+        // Reopened before reading, which it did not used to need. The refusal still happens before
+        // the transaction touches anything, but the handle this fixture reads through is now closed
+        // by the time the refusal is returned — the gate drained it on the way into the closed
+        // period, which happens whatever answer the transaction goes on to give.
+        await fixture.ReopenAsync(Token);
 
         Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
 
@@ -572,13 +938,21 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        CovenantCanonicalErasureTransaction service = new(
-            new CovenantV3MaintenanceTestConnectionFactory(fixture.Connections(), new UnprovenSecureDeleteInitializer()),
-            new UnprovenSecureDeleteInitializer(),
-            fixture.Drain,
-            TimeProvider.System);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        // The unproven initializer goes to the closed period as well as to the transaction, because
+        // the maintenance connection is now prepared by the factory the authority opens through
+        // rather than by the transaction itself. Giving it only to the transaction would leave the
+        // erasure running on a properly initialized connection and prove nothing.
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => new CovenantCanonicalErasureTransaction(
+                new UnprovenSecureDeleteInitializer(),
+                TimeProvider.System).ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token),
+            initializer: new UnprovenSecureDeleteInitializer());
 
         Assert.True(applied.IsFailure);
 
@@ -594,6 +968,22 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
+    /// <summary>
+    /// The family is still drained before the exclusive connection opens — by the gate, not here.
+    /// </summary>
+    /// <remarks>
+    /// The guarantee is unchanged and the assertion is the same two-element sequence; what moved is
+    /// whose behaviour establishes it. The transaction used to drain and then open, so the ordering
+    /// was a fact about one method. The drain is now the admission gate's stage-two close, which
+    /// happens before a closed lease exists at all, and no capability — therefore no open — can be
+    /// issued until it has succeeded. Asserting it over the closed period rather than over the
+    /// transaction is what keeps the test pointed at the code that now decides the answer.
+    ///
+    /// <para>Worth keeping here rather than leaving to the gate's own suite, which proves the
+    /// ordering against its own doubles. This one proves it against a real seeded database, where
+    /// "the drain ran too late" shows up as the exclusive acquisition contending with this fixture's
+    /// own handle — the failure the ordering exists to prevent.</para>
+    /// </remarks>
     [Fact]
     public async Task The_family_is_drained_before_the_exclusive_connection_is_opened()
     {
@@ -604,15 +994,16 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         List<string> steps = [];
 
-        CovenantCanonicalErasureTransaction service = new(
-            new CovenantV3MaintenanceTestConnectionFactory(
-                new RecordingConnectionFactory(fixture.Connections(), steps),
-                CovenantSqliteConnectionInitializer.Instance),
-            CovenantSqliteConnectionInitializer.Instance,
-            new RecordingConnectionDrain(fixture.Drain, steps),
-            TimeProvider.System);
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token),
+            decorate: inner => new RecordingMaintenanceConnectionFactory(inner, steps),
+            drain: new RecordingConnectionDrain(fixture.Drain, steps));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
@@ -625,6 +1016,21 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
+    /// <summary>
+    /// A drain that cannot close a handle stops the erasure before an authority to run it exists.
+    /// </summary>
+    /// <remarks>
+    /// The assertion has changed shape, and the reason is worth stating. The transaction used to
+    /// drain, so a failing drain came back as its refusal and this test read the error off the
+    /// erasure's own result. The gate now drains during the close that issues the closed lease, and a
+    /// drain failure means no lease, no capability and no authority — so there is nothing left to
+    /// call <c>ApplyAsync</c> with, and the refusal has to be read where it is now raised.
+    ///
+    /// <para>This is a stronger guarantee rather than a weaker one. Previously the erasure could be
+    /// invoked and was trusted to refuse; now it cannot be invoked at all, because the argument it
+    /// requires is exactly the thing the failed drain prevents from existing. The family being
+    /// untouched afterwards is still asserted, and is now true by construction.</para>
+    /// </remarks>
     [Fact]
     public async Task A_drain_that_cannot_close_a_handle_refuses_without_touching_the_family()
     {
@@ -633,17 +1039,13 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        CovenantCanonicalErasureTransaction service = new(
-            fixture.V3Connections(),
-            CovenantSqliteConnectionInitializer.Instance,
-            new FailingConnectionDrain(),
-            TimeProvider.System);
+        Result closed = await CovenantClosedPeriodTestAuthority.TryCloseAsync(
+            fixture.DatabasePath,
+            new FailingConnectionDrain());
 
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Assert.True(closed.IsFailure);
 
-        Assert.True(applied.IsFailure);
-
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, applied.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, closed.Error.Code);
 
         Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
 
@@ -657,18 +1059,26 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         await fixture.SeedAsync(Token);
 
-        // A saturated accelerator epoch is refused by the singleton's own update trigger, which fires
-        // after every delete in the same transaction has already run. Nothing else in this suite can
-        // prove the deletes and the state write are one transaction rather than nine.
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        // The source guard is a zero-row update, which is evaluated after every delete in the same
+        // transaction has already run. Nothing else in this suite can prove the deletes and the state
+        // write are one transaction rather than nine — and a source that moved between the plan and
+        // the effect is the exact condition the guard exists for, so the two facts are proved together.
         await fixture.ExecuteAsync(
-            "UPDATE covenant_state SET AcceleratorEpoch = 9223372036854775807 WHERE StateKey = 1;",
+            "UPDATE covenant_state SET AcceleratorEpoch = AcceleratorEpoch + 3 WHERE StateKey = 1;",
             Token);
 
-        Result<Guid> applied = await CreateService(fixture).ApplyAsync(CovenantExclusiveOperation.CovenantReset, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure), Token);
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
 
         Assert.True(applied.IsFailure);
 
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, applied.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, applied.Error.Code);
 
         await fixture.ReopenAsync(Token);
 
@@ -681,11 +1091,9 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
-    private static CovenantCanonicalErasureTransaction CreateService(CovenantCanonicalErasureFixture fixture) =>
+    private static CovenantCanonicalErasureTransaction CreateService() =>
         new(
-            fixture.V3Connections(),
             CovenantSqliteConnectionInitializer.Instance,
-            fixture.Drain,
             TimeProvider.System);
 
     /// <summary>
@@ -726,41 +1134,73 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
-    private sealed class RecordingConnectionFactory(
-        IDesignTimeGrimoireConnectionFactory inner,
-        List<string> steps) : IDesignTimeGrimoireConnectionFactory
+    /// <summary>
+    /// Logs the one maintenance open the canonical erasure performs, so its position relative to the
+    /// gate's drain can be asserted.
+    /// </summary>
+    /// <remarks>
+    /// Every other purpose throws rather than delegating. The canonical transaction opens exactly one
+    /// connection, and a decorator that quietly forwarded the rest would let it grow a second
+    /// acquisition without this suite's ordering log ever mentioning it.
+    /// </remarks>
+    private sealed class RecordingMaintenanceConnectionFactory(
+        IGrimoireMaintenanceConnectionFactory inner,
+        List<string> steps) : IGrimoireMaintenanceConnectionFactory
     {
 
-        public string DatabasePath => inner.DatabasePath;
-
-        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken)
         {
 
             steps.Add("open");
 
-            return inner.OpenAsync(cancellationToken);
+            return inner.OpenJournalCanonicalErasureAsync(capability, lane, cancellationToken);
 
         }
 
-        public Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException(
-                "The canonical erasure transaction opens no read-only handle.");
-
-        // The canonical transaction opens no side file and no read-only handle. Delegating rather
-        // than throwing would let it grow one without this suite's ordering log noticing.
-        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
-            throw new NotSupportedException(
-                "The canonical erasure transaction opens no sidecar-free read-only handle.");
-
-        public Task<SqliteConnection> OpenSideFileAsync(string path, CancellationToken cancellationToken) =>
-            throw new NotSupportedException("The canonical erasure transaction opens no side file.");
-
-        public Task AttachSideFileAsync(
-            SqliteConnection connection,
-            string alias,
-            string path,
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
             CancellationToken cancellationToken) =>
-            throw new NotSupportedException("The canonical erasure transaction attaches no side file.");
+            throw new NotSupportedException("The canonical erasure transaction truncates no journal.");
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction compacts nothing.");
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction compacts nothing.");
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction verifies no export.");
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAcceleratorInitializationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction initializes no accelerator.");
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCandidateReopenAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction reopens no candidate.");
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction snapshots no inventory.");
 
     }
 
@@ -809,17 +1249,19 @@ public sealed class CovenantCanonicalErasureTransactionTests
     /// <see cref="ApplyAsync_retries_a_racing_exclusive_acquisition_rather_than_failing_on_the_first_busy"/>
     /// would otherwise have to wait out.
     /// </summary>
-    private sealed class ThrottledV3ConnectionFactory(ICovenantV3MaintenanceConnectionFactory inner)
-        : ICovenantV3MaintenanceConnectionFactory
+    private sealed class ThrottledMaintenanceConnectionFactory(IGrimoireMaintenanceConnectionFactory inner)
+        : IGrimoireMaintenanceConnectionFactory
     {
 
-        public async Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3CanonicalErasureAsync(
-            CovenantV3MaintenanceCapability capability,
+        public async Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
             CancellationToken cancellationToken)
         {
 
-            Result<ICovenantV3MaintenanceConnectionLease> opened =
-                await inner.OpenV3CanonicalErasureAsync(capability, cancellationToken).ConfigureAwait(false);
+            Result<IGrimoireMaintenanceConnectionLease> opened = await inner
+                .OpenJournalCanonicalErasureAsync(capability, lane, cancellationToken)
+                .ConfigureAwait(false);
 
             if (opened.IsFailure)
             {
@@ -842,29 +1284,47 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         }
 
-        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3WalTruncationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.OpenV3WalTruncationAsync(capability, cancellationToken);
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalWalTruncationAsync(capability, lane, cancellationToken);
 
-        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3VacuumAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.OpenV3VacuumAsync(capability, cancellationToken);
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalCompactionAsync(capability, lane, cancellationToken);
 
-        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3ExportSourceAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.OpenV3ExportSourceAsync(capability, cancellationToken);
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalPostReplaceRestoreAsync(capability, lane, cancellationToken);
 
-        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3ExportVerificationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.OpenV3ExportVerificationAsync(capability, cancellationToken);
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalExportVerificationAsync(capability, lane, cancellationToken);
 
-        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3PostReplaceJournalRestoreAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.OpenV3PostReplaceJournalRestoreAsync(capability, cancellationToken);
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAcceleratorInitializationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalAcceleratorInitializationAsync(capability, lane, cancellationToken);
 
-        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3AcceleratorInitializationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.OpenV3AcceleratorInitializationAsync(capability, cancellationToken);
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCandidateReopenAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalCandidateReopenAsync(capability, lane, cancellationToken);
 
-        public Task<Result<ICovenantV3MaintenanceConnectionLease>> OpenV3CandidateReopenVerificationAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            inner.OpenV3CandidateReopenVerificationAsync(capability, cancellationToken);
-
-        public Task<Result> AttachV3ExportStagingAsync(ICovenantV3MaintenanceConnectionLease exportLease, CancellationToken cancellationToken) =>
-            inner.AttachV3ExportStagingAsync(exportLease, cancellationToken);
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalInventorySnapshotAsync(capability, lane, cancellationToken);
 
     }
 

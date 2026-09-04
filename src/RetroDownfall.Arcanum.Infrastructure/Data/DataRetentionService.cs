@@ -43,6 +43,8 @@ using RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
@@ -1387,12 +1389,23 @@ internal sealed partial class DataRetentionService(
             Result<CovenantErasureCheckpointState> checkpoint =
                 CovenantErasureCheckpointState.FromMutationCheckpoint(
                     committed.Id,
+                    committed.CheckpointVersion,
                     payload,
                     out bool describesCovenantErasure);
 
+            // The reread row is compared as a whole launch rather than as the three fields an owner
+            // is made of. The owner is a projection of the launch, so a row that preserved the owner
+            // while its target generation or an epoch moved would pass an owner comparison and still
+            // be a different destructive plan from the one that was admitted.
+            Result<GrimoireOfflineTransitionLaunchBinding> relaunched =
+                GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                    committed.CheckpointVersion,
+                    payload);
+
             if (!describesCovenantErasure
                 || checkpoint.IsFailure
-                || checkpoint.Value.Owner != prepared.Value.Owner)
+                || relaunched.IsFailure
+                || relaunched.Value.Digest != prepared.Value.Launch.Digest)
             {
 
                 Error invalid = checkpoint.IsFailure
@@ -1425,27 +1438,19 @@ internal sealed partial class DataRetentionService(
 
             }
 
-            Result<CovenantErasureCompletion> erased = await _leaseMaintainer.RunAsync(
-                operation.Id,
-                ownerId,
-                async maintainedToken =>
-                {
-
-                    using CancellationTokenSource coordinatorCancellation =
-                        CancellationTokenSource.CreateLinkedTokenSource(
-                            cancellationToken,
-                            maintainedToken);
-
-                    return await _covenantErasureCoordinator
-                        .RunAsync(
-                            committed,
-                            checkpoint.Value,
-                            ownerId,
-                            coordinatorCancellation.Token)
-                        .ConfigureAwait(false);
-
-                },
-                CancellationToken.None).ConfigureAwait(false);
+            // No durable lease is renewed across the closed period. A renewal advances the row's
+            // revision, and the journal has bound itself to the exact revision the launch produced -
+            // so a heartbeat would invalidate the terminal compare-exchange the transition has to
+            // make before it can retire. What the lease was protecting against is instead held by the
+            // installation maintenance lock, the journal's own slot, and the process-local ownership
+            // the coordinator claims for the length of the run.
+            Result<CovenantErasureCompletion> erased = await _covenantErasureCoordinator
+                .RunAsync(
+                    committed,
+                    checkpoint.Value,
+                    ownerId,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             if (erased.IsFailure)
             {
@@ -1601,8 +1606,14 @@ internal sealed partial class DataRetentionService(
                 error.Code,
                 CancellationToken.None).ConfigureAwait(false);
 
+            // A row that already carries the state this was going to write needs nothing written. The
+            // offline transition terminalizes its own row from the journal now, under the launch it
+            // bound itself to, and it does so before the journal retires - so by the time a
+            // disposition comes back here the answer can already be durable. Insisting on making the
+            // write ourselves would report a maintenance failure for a reset that ended exactly as
+            // intended, and would replace the specific reason with a generic one.
             return Result<DataRetentionApplyResult>.Failure(
-                transitioned
+                transitioned || await AlreadyRecordedAsync(operation.Id, state).ConfigureAwait(false)
                     ? error
                     : CovenantMaintenanceFailure());
 
@@ -1618,6 +1629,25 @@ internal sealed partial class DataRetentionService(
             return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
 
         }
+
+    }
+
+    /// <summary>
+    /// Whether the operation row already stands in the terminal state a failure was about to write.
+    /// </summary>
+    /// <remarks>
+    /// Read after the compare-exchange rather than before it, so the ordinary path costs nothing and
+    /// the question is only asked when the answer changes what is reported. A row that moved for some
+    /// other reason answers no, which keeps a genuine lost race a maintenance failure.
+    /// </remarks>
+    private async Task<bool> AlreadyRecordedAsync(Guid operationId, LongRunningOperationState state)
+    {
+
+        LongRunningOperation? current = await operations
+            .GetAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        return current is not null && current.State == state;
 
     }
 
@@ -6842,12 +6872,11 @@ internal sealed partial class DataRetentionService(
 
         }
 
-        // A version-3 row is the only one that can carry a Covenant arm, and it is decoded by its own
-        // source-generated codec rather than by the version-2 text journal. Version 2 is untouched:
-        // an ordinary retention mutation still writes and resumes exactly the payload it always did,
-        // so a checkpoint written before this build reconciles without a second dataset replacement
-        // (§10.20.3).
-        if (operation.CheckpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion)
+        // A version-4 row is an offline-transition launch, decoded by its own source-generated codec
+        // rather than by the version-2 text journal. Version 2 is untouched: an ordinary retention
+        // mutation still writes and resumes exactly the payload it always did, so an ordinary
+        // checkpoint reconciles without a second dataset replacement (§10.20.3).
+        if (operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
         {
 
             return await RecoverCovenantResetMutationAsync(
@@ -7000,6 +7029,7 @@ internal sealed partial class DataRetentionService(
         Result<CovenantErasureCheckpointState> state =
             CovenantErasureCheckpointState.FromMutationCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!,
                 out bool describesCovenantErasure);
 
@@ -7042,14 +7072,15 @@ internal sealed partial class DataRetentionService(
         try
         {
 
-            recovered = await _leaseMaintainer.RunAsync(
-                operation.Id,
+            // No lease is renewed across the closed period, on recovery for the same reason as on a
+            // fresh apply: a renewal advances the row's revision, and the journal binds itself to the
+            // exact revision the launch produced. What the renewal was guarding - a second recovery
+            // starting beside this one - is guarded by the process-local claim the coordinator takes
+            // and by the journal's one active slot per profile.
+            recovered = await _covenantErasureCoordinator.RunAsync(
+                operation,
+                state.Value,
                 operation.LeaseOwner,
-                maintainedToken => _covenantErasureCoordinator.RunAsync(
-                    operation,
-                    state.Value,
-                    operation.LeaseOwner,
-                    maintainedToken),
                 cancellationToken).ConfigureAwait(false);
 
         }

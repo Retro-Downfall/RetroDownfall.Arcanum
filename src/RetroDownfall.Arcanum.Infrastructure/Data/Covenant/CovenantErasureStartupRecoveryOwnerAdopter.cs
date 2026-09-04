@@ -25,6 +25,19 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
     private const int MaximumPayloadBytes = 4096;
 
+    /// <summary>
+    /// The highest checkpoint version an ordinary retention mutation writes.
+    /// </summary>
+    /// <remarks>
+    /// An ordinary mutation closed no admission, so a row at or below this version is left to
+    /// ordinary reconciliation rather than adopted as an erasure owner. The bound is stated as a
+    /// literal rather than as "one less than the launch version" because the two are not adjacent:
+    /// the version between them belonged to the retired same-database reset checkpoint, and a row
+    /// still carrying it is an erasure this build cannot read — which has to refuse, not be waved
+    /// through as ordinary work.
+    /// </remarks>
+    private const int LastOrdinaryMutationCheckpointVersion = 2;
+
     private readonly CovenantOperationGate _gate =
         gate ?? throw new ArgumentNullException(nameof(gate));
 
@@ -85,9 +98,9 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
                 Add(command, "@factory", LongRunningOperationKinds.DataRetentionFactoryReset);
 
-                Add(command, "@mutationVersion", DataRetentionMutationCheckpointV3.CurrentVersion);
+                Add(command, "@mutationVersion", CovenantOfflineTransitionLaunchV4.CurrentVersion);
 
-                Add(command, "@factoryVersion", DataRetentionFactoryResetCheckpointV1.CurrentVersion);
+                Add(command, "@factoryVersion", DataRetentionFactoryTransitionLaunchV2.CurrentVersion);
 
                 Add(command, "@maximumPayload", MaximumPayloadBytes);
 
@@ -225,7 +238,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
         }
 
-        if (mutation && version is >= 0 and < DataRetentionMutationCheckpointV3.CurrentVersion
+        if (mutation && version is >= 0 and <= LastOrdinaryMutationCheckpointVersion
             || factory && version == 0)
         {
 
@@ -244,8 +257,8 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
         }
 
         int expectedVersion = mutation
-            ? DataRetentionMutationCheckpointV3.CurrentVersion
-            : DataRetentionFactoryResetCheckpointV1.CurrentVersion;
+            ? CovenantOfflineTransitionLaunchV4.CurrentVersion
+            : DataRetentionFactoryTransitionLaunchV2.CurrentVersion;
 
         if (version != expectedVersion
             || reader.GetValue(5) is not string reference
@@ -272,6 +285,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
             checkpoint = CovenantErasureCheckpointState.FromMutationCheckpoint(
                 operationId,
+                version,
                 payload,
                 out bool describesCovenantErasure);
 
@@ -288,6 +302,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
             checkpoint = CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 operationId,
+                version,
                 payload);
 
         }

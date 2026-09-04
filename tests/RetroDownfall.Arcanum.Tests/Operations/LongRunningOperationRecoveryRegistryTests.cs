@@ -1,5 +1,6 @@
 using System.Reflection;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
@@ -94,13 +95,23 @@ public sealed class LongRunningOperationRecoveryRegistryTests
     }
 
     /// <summary>
-    /// Issue #118: a V3 data-retention mutation is a Covenant reset caught between canonical erasure
-    /// and its verified reopen, so it cannot share a startup phase with everyday reconciliation. The
-    /// priority belongs to the kind rather than to a checkpoint version, so the legacy V0 and V2
-    /// arms move with it and stay compatible.
+    /// Issue #118: a data-retention mutation carrying an offline-transition launch is a Covenant
+    /// reset caught between canonical erasure and its verified reopen, so it cannot share a startup
+    /// phase with everyday reconciliation. The priority belongs to the kind rather than to a
+    /// checkpoint version, so the legacy V0 arm and every retired payload shape move with it and
+    /// stay compatible.
     /// </summary>
+    /// <remarks>
+    /// The window's upper bound is asserted against the launch record's own constant rather than a
+    /// literal, because the defect worth guarding is the two drifting apart. The registry and the
+    /// payload shape live in different projects, so a build that raised the launch version without
+    /// widening the admitted window would write rows it then refused to read back at startup: an
+    /// interrupted reset would be parked as unrecognised — admission left closed behind it — rather
+    /// than reconciled. A hand-maintained literal here would go on passing through exactly that
+    /// mistake, because the literal is the half a careless edit updates.
+    /// </remarks>
     [Fact]
-    public void Data_retention_mutation_runs_v3_recovery_before_ordinary_state_writes()
+    public void Data_retention_mutation_runs_launch_recovery_before_ordinary_state_writes()
     {
         LongRunningOperationRecoveryDescriptor[] mutation =
         [
@@ -115,17 +126,26 @@ public sealed class LongRunningOperationRecoveryRegistryTests
 
         Assert.Equal(0, single.MinCheckpointVersion);
 
-        Assert.Equal(3, single.MaxCheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, single.MaxCheckpointVersion);
 
         Assert.Equal(LongRunningOperationRecoveryPolicy.ReconcileAndComplete, single.Policy);
     }
 
     /// <summary>
-    /// Issue #118: the factory-reset kind gains its own V1 erasure checkpoint while keeping the
-    /// documented legacy V0 arm, whose rows carry no payload and are restarted idempotently.
+    /// Issue #118: the factory-reset kind admits its own healthy-catalog erasure launch while
+    /// keeping the documented legacy V0 arm, whose rows carry no payload and are restarted
+    /// idempotently.
     /// </summary>
+    /// <remarks>
+    /// The upper bound is pinned to the launch record's constant for the same reason as the
+    /// mutation window, and the consequence of drift is worse here: a factory reset whose launch
+    /// version fell outside the admitted window would leave a half-erased state root sitting behind
+    /// a row startup declines to read, presented to nobody and restarted by nothing. The lower bound
+    /// is held at zero just as deliberately — raising it to exclude the retired shapes would strand
+    /// the payload-free legacy rows this kind is still obliged to restart.
+    /// </remarks>
     [Fact]
-    public void Data_retention_factory_reset_pins_its_v1_checkpoint_and_keeps_the_legacy_v0_arm()
+    public void Data_retention_factory_reset_pins_its_launch_checkpoint_and_keeps_the_legacy_v0_arm()
     {
         LongRunningOperationRecoveryDescriptor factory =
             LongRunningOperationRecoveryRegistry.Descriptors[
@@ -133,7 +153,7 @@ public sealed class LongRunningOperationRecoveryRegistryTests
 
         Assert.Equal(0, factory.MinCheckpointVersion);
 
-        Assert.Equal(1, factory.MaxCheckpointVersion);
+        Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, factory.MaxCheckpointVersion);
 
         Assert.Equal(LongRunningOperationStartupPriority.BeforeStateWrites, factory.StartupPriority);
 

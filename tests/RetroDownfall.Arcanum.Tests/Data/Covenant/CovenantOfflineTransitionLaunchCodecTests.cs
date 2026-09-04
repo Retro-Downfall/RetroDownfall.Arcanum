@@ -5,6 +5,8 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -376,46 +378,25 @@ public sealed class CovenantOfflineTransitionLaunchCodecTests
     }
 
     /// <summary>
-    /// The legacy decoders never gain launch authority, and the launch decoders never adopt a legacy
-    /// row. Both directions are asserted, because either one alone would let a build that knows only
-    /// one shape act on the other.
+    /// The bytes a retired shape left behind are refused by the launch decoders, on their own terms.
     /// </summary>
+    /// <remarks>
+    /// The payloads are written out rather than built from a record, because the records are gone -
+    /// what is not gone is the rows an interrupted installation is still carrying. They are also
+    /// deliberately well-formed for what they claim to be: a refusal that only fired on malformed
+    /// input would be a rule about parsing rather than about which shapes carry launch authority.
+    /// </remarks>
     [Fact]
-    public void The_legacy_and_launch_decoders_refuse_each_other_s_payloads()
+    public void A_retired_checkpoint_payload_is_never_read_as_a_launch()
     {
 
-        byte[] resetLaunch = CovenantRecoveryCheckpointCodec.Encode(Reset());
+        AssertUnrecoverableReset(RetiredCovenantCheckpoints.Mutation(Operation, Effect));
 
-        byte[] factoryLaunch = CovenantRecoveryCheckpointCodec.Encode(Factory());
+        AssertUnrecoverableFactory(RetiredCovenantCheckpoints.FactoryReset(Operation, Effect));
 
-        byte[] legacyMutation = CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionMutationCheckpointV3(
-                DataRetentionMutationCheckpointV3.CurrentVersion,
-                Subtype: "reset-memory",
-                Target: "5",
-                new CovenantResetEffectArmV1(
-                    Operation,
-                    Effect,
-                    CovenantExclusiveOperation.CovenantReset,
-                    CovenantResetPhaseMachine.First)));
+        AssertUnrecoverableFactory(RetiredCovenantCheckpoints.Mutation(Operation, Effect));
 
-        byte[] legacyFactory = CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionFactoryResetCheckpointV1(
-                DataRetentionFactoryResetCheckpointV1.CurrentVersion,
-                Operation,
-                Effect,
-                CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                CovenantResetPhaseMachine.First));
-
-        Assert.True(
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionMutation(resetLaunch).IsFailure);
-
-        Assert.True(
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset(factoryLaunch).IsFailure);
-
-        AssertUnrecoverableReset(legacyMutation);
-
-        AssertUnrecoverableFactory(legacyFactory);
+        AssertUnrecoverableReset(RetiredCovenantCheckpoints.FactoryReset(Operation, Effect));
 
     }
 
