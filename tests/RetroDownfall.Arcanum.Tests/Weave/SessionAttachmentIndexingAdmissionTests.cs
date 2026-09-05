@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 using System.Text;
 
 using System.Threading.Channels;
@@ -473,7 +475,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ProcessOneAsync_ClosedBetweenBatches_KeepsTheCompletedBatchAndRebillsNothing()
+    public async Task ProcessOneAsync_ClosedBetweenBatches_ResumesTheCheckpointAfterExactReopen()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -515,8 +517,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentIndexingService service = CreateService(scopes, gate);
 
+        SessionAttachmentIndexRequest request = Dequeue(
+            service,
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 1));
+
         SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
-            new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 1),
+            request,
             CancellationToken.None);
 
         Assert.Equal(SessionAttachmentIndexDisposition.DeferredForMaintenance, outcome.Disposition);
@@ -527,26 +533,79 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         // The first batch's chunks are durable, which is what "defer having completed batches 1..N"
         // means and what makes the resumed run free.
-        Assert.NotEmpty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+        SessionAttachmentIndexedChunk[] partialChunks = await _index!
+            .GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None);
+
+        Assert.Equal(64, partialChunks.Length);
 
         SessionAttachmentIndexState state = await _index.GetStateAsync(attachment.Id, CancellationToken.None);
 
         // The staged generation survives the deferral. MarkWithoutIndexAsync would have deleted it,
         // which is what makes a maintenance denial classified as a failure cost real money.
-        Assert.NotEqual(SessionAttachmentIndexStatus.Failed, state.Status);
+        Assert.Equal(SessionAttachmentIndexStatus.Pending, state.Status);
 
         Assert.Equal(1, state.AttemptCount);
+
+        Assert.NotNull(state.PendingGenerationId);
+
+        Assert.Equal(64, state.NextChunkIndex);
 
         SessionAttachmentIndexRequest held = Assert.Single(service.DeferredRequests);
 
         Assert.Equal(1, held.Attempt);
 
-        await closing!.DisposeAsync();
+        IGrimoireExclusiveClosedLease closed = await CloseAsync(gate, closing!);
+
+        // Entering Closed advances the generation, but is not a reopen. The request must stay held
+        // and the channel must stay empty until this exact lease restores ordinary admission.
+        Task<int> resignalling = service.WaitForReopenAndResignalDeferredRequestsAsync(
+            CancellationToken.None);
+
+        Assert.False(resignalling.IsCompleted);
+
+        Assert.Equal(0, service.QueueReader.Count);
+
+        await ReopenAsync(closed, closing!);
+
+        Assert.Equal(1, await resignalling);
+
+        Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? resignalled));
+
+        Assert.Same(request, resignalled);
+
+        SessionAttachmentIndexOutcome resumed = await service.ProcessOneAsync(
+            resignalled!,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexDisposition.Concluded, resumed.Disposition);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, resumed.Status);
+
+        Assert.Equal([64, 6], weave.BatchSizes);
+
+        SessionAttachmentIndexState completed = await _index.GetStateAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, completed.Status);
+
+        Assert.Equal(1, completed.AttemptCount);
+
+        Assert.Null(completed.PendingGenerationId);
+
+        Assert.Equal(0, completed.NextChunkIndex);
+
+        SessionAttachmentIndexedChunk[] finalChunks = await _index
+            .GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None);
+
+        Assert.Equal(70, finalChunks.Length);
+
+        Assert.Equal(Enumerable.Range(0, 70), finalChunks.Select(static chunk => chunk.ChunkIndex));
 
     }
 
     [SkippableFact]
-    public async Task DeferredRequest_IsResignalledExactlyOnceAfterTheGateReopens()
+    public async Task DeferredRequest_WaitsForTheExactClosedLeaseToReopenBeforeItIsResignalledOnce()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -571,16 +630,19 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             SessionAttachmentIndexDisposition.DeferredForMaintenance,
             (await service.ProcessOneAsync(request, CancellationToken.None)).Disposition);
 
-        // Still closed: nothing goes back on the queue, however many times the loop comes round.
-        Assert.Equal(0, service.ResignalRequestsDeferredBeforeReopen());
+        IGrimoireExclusiveClosedLease closed = await CloseAsync(gate, closing);
 
-        Assert.Equal(0, service.ResignalRequestsDeferredBeforeReopen());
+        // Entering Closed advances the generation, but the exact lease still owns admission.
+        Task<int> resignalling = service.WaitForReopenAndResignalDeferredRequestsAsync(
+            CancellationToken.None);
+
+        Assert.False(resignalling.IsCompleted);
 
         Assert.Equal(0, service.QueueReader.Count);
 
-        await ReopenAsync(gate, closing);
+        await ReopenAsync(closed, closing);
 
-        Assert.Equal(1, service.ResignalRequestsDeferredBeforeReopen());
+        Assert.Equal(1, await resignalling);
 
         Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? resignalled));
 
@@ -592,9 +654,103 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         // Once, not once per iteration.
         Assert.Empty(service.DeferredRequests);
 
-        Assert.Equal(0, service.ResignalRequestsDeferredBeforeReopen());
+        Assert.Equal(
+            0,
+            await service.WaitForReopenAndResignalDeferredRequestsAsync(CancellationToken.None));
 
         Assert.Equal(0, service.QueueReader.Count);
+
+    }
+
+    [SkippableFact]
+    public async Task ExecuteAsync_DeferralLeavesLaterIntakeBoundedAndProcessesItAfterTheOriginalRequest()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord first = await PersistAsync(sessionId, "first request must resume first");
+
+        SessionAttachmentRecord second = await PersistAsync(sessionId, "second request must stay second");
+
+        TaskCompletionSource<string[]> firstTwoProviderInputs = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        ConcurrentQueue<string> providerInputs = new();
+
+        FakeWeaveService weave = new()
+        {
+
+            OnEmbedInputs = (callNumber, inputs) =>
+            {
+
+                providerInputs.Enqueue(Assert.Single(inputs));
+
+                if (callNumber == 2)
+                {
+
+                    firstTwoProviderInputs.TrySetResult([.. providerInputs]);
+
+                }
+
+                return Task.CompletedTask;
+
+            },
+
+        };
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        RequestDeferralBarrierLogger logger = new(first.Id);
+
+        SessionAttachmentIndexingService service = CreateService(
+            BuildScopeFactory(weave),
+            gate,
+            logger);
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(first.Id, sessionId)));
+
+        IGrimoireClosingOwner closing = BeginClosing(gate, 69);
+
+        Microsoft.Extensions.Hosting.IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        await logger.RequestDeferred.WaitAsync(TimeSpan.FromSeconds(10));
+
+        int capacity = ArcanumRuntimeDefaults.Embeddings.Attachments.QueueCapacity;
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(second.Id, sessionId)));
+
+        for (int index = 1; index < capacity; index++)
+        {
+
+            Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), sessionId)));
+
+        }
+
+        Assert.Single(service.DeferredRequests);
+
+        Assert.Equal(capacity, service.QueueReader.Count);
+
+        IGrimoireExclusiveClosedLease closed = await CloseAsync(gate, closing);
+
+        // Full closure is a state-transition barrier: the hosted loop must still be parked on the
+        // actual reopen signal, with every later request in the bounded channel.
+        Assert.Single(service.DeferredRequests);
+
+        Assert.Equal(capacity, service.QueueReader.Count);
+
+        await ReopenAsync(closed, closing);
+
+        string[] observedOrder = await firstTwoProviderInputs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await hosted.StopAsync(CancellationToken.None);
+
+        Assert.Equal(
+            ["first request must resume first", "second request must stay second"],
+            observedOrder);
 
     }
 
@@ -785,8 +941,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
     }
 
-    /// <summary>Runs one closure to its end and reopens, which is what advances the generation.</summary>
-    private static async Task ReopenAsync(
+    /// <summary>Advances the exact closing owner through drain to a fully closed lease.</summary>
+    private static async Task<IGrimoireExclusiveClosedLease> CloseAsync(
         GrimoireConnectionAdmissionGate gate,
         IGrimoireClosingOwner closing)
     {
@@ -801,13 +957,23 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
-        Result completed = await closed.Value.CompleteAsync(
+        return closed.Value;
+
+    }
+
+    /// <summary>Uses the exact closed lease to restore ordinary admission.</summary>
+    private static async Task ReopenAsync(
+        IGrimoireExclusiveClosedLease closed,
+        IGrimoireClosingOwner closing)
+    {
+
+        Result completed = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.RollbackAndReopen,
             CancellationToken.None);
 
         Assert.True(completed.IsSuccess, completed.IsFailure ? completed.Error.Message : null);
 
-        await closed.Value.DisposeAsync();
+        await closed.DisposeAsync();
 
         await closing.DisposeAsync();
 
@@ -941,10 +1107,17 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         private int _embedBatchCallCount;
 
+        private readonly ConcurrentQueue<int> _batchSizes = new();
+
         internal int EmbedBatchCallCount => Volatile.Read(ref _embedBatchCallCount);
+
+        internal IReadOnlyList<int> BatchSizes => [.. _batchSizes];
 
         /// <summary>Receives the one-based batch number, so a test can act at a group boundary.</summary>
         internal Func<int, Task>? OnEmbed { get; init; }
+
+        /// <summary>Receives the exact provider inputs in request-processing order.</summary>
+        internal Func<int, IReadOnlyList<string>, Task>? OnEmbedInputs { get; init; }
 
         public bool IsAvailable => true;
 
@@ -960,10 +1133,19 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
             int batchNumber = Interlocked.Increment(ref _embedBatchCallCount);
 
+            _batchSizes.Enqueue(texts.Count);
+
             if (OnEmbed is not null)
             {
 
                 await OnEmbed(batchNumber);
+
+            }
+
+            if (OnEmbedInputs is not null)
+            {
+
+                await OnEmbedInputs(batchNumber, texts);
 
             }
 
@@ -976,6 +1158,44 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             string text,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+
+    }
+
+    /// <summary>A deterministic barrier reached when one exact request is held for maintenance.</summary>
+    private sealed class RequestDeferralBarrierLogger(Guid attachmentId) :
+        ILogger<SessionAttachmentIndexingService>
+    {
+
+        private readonly TaskCompletionSource<bool> _requestDeferred = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task RequestDeferred => _requestDeferred.Task;
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull =>
+            null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+
+            string message = formatter(state, exception);
+
+            if (message.Contains(attachmentId.ToString(), StringComparison.Ordinal)
+                && message.Contains("indexing deferred", StringComparison.Ordinal))
+            {
+
+                _requestDeferred.TrySetResult(true);
+
+            }
+
+        }
 
     }
 

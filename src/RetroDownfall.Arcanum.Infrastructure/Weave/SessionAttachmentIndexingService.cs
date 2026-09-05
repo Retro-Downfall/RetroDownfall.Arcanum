@@ -41,6 +41,8 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
     private readonly Channel<SessionAttachmentIndexRequest> _channel;
 
+    private readonly object _channelWriteSync = new();
+
     private readonly ConcurrentDictionary<Guid, byte> _pending = new();
 
     /// <summary>
@@ -51,10 +53,8 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
     /// producers reach <see cref="_pending"/> and <see cref="_channel"/> and never this.
     ///
     /// <para>Each entry carries the generation observed <em>before</em> its lease was refused rather
-    /// than after. Reading after the refusal would race a reopen that had already happened and record
-    /// the new generation as the one to wait past, which is a wakeup that never comes. Reading before
-    /// can only record a stale generation, whose worst case is one extra pass: the request goes back
-    /// on the queue, is refused again, and is held again with a fresher reading.</para>
+    /// than after. The next-open wait uses that value to distinguish the actual return to ordinary
+    /// admission from the generation increment that happens when admission becomes fully closed.</para>
     ///
     /// <para>Entries do not survive the process, and that is right rather than tolerated. The durable
     /// row still says pending, reconciliation re-selects it after a restart, and
@@ -62,6 +62,9 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
     /// with the thing it was protecting.</para>
     /// </remarks>
     private readonly List<DeferredRequest> _deferred = [];
+
+    /// <summary>Ordered channel tail that could not fit during reopen reordering.</summary>
+    private readonly Queue<SessionAttachmentIndexRequest> _resignalSuffix = new();
 
     public SessionAttachmentIndexingService(
         IServiceScopeFactory scopeFactory,
@@ -124,10 +127,17 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
             }
 
-            if (_channel.Writer.TryWrite(request))
+            lock (_channelWriteSync)
             {
 
-                return true;
+                FlushResignalSuffixWhileLocked();
+
+                if (_resignalSuffix.Count == 0 && _channel.Writer.TryWrite(request))
+                {
+
+                    return true;
+
+                }
 
             }
 
@@ -183,11 +193,11 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
                 }
 
-                // Before waiting on anything: put back whatever a window stood down, if that window
-                // has since ended. This is the whole of the reopen signal — no waiter is registered,
-                // for the reason DeferredRequest records — so it must run on every pass, including
-                // the ones a reconciliation period woke.
-                _ = ResignalRequestsDeferredBeforeReopen();
+                // A held identity is older than every request still in the channel. Wait here for
+                // actual ordinary admission rather than dequeuing later work or treating the close-
+                // generation increment as a reopen.
+                _ = await WaitForReopenAndResignalDeferredRequestsAsync(stoppingToken)
+                    .ConfigureAwait(false);
 
                 if (!wasEnabled)
                 {
@@ -478,55 +488,134 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
     }
 
-    /// <summary>
-    /// Puts every request back that was stood down in a generation admission has since left.
-    /// </summary>
+    /// <summary>Waits for ordinary admission, then puts eligible stood-down requests back.</summary>
     /// <remarks>
     /// The write is <see cref="ChannelWriter{T}.TryWrite"/> and never <c>WriteAsync</c>. The channel
     /// is bounded with <see cref="BoundedChannelFullMode.Wait"/> and this runs on the loop that is
     /// the channel's only reader, so awaiting a write on a full channel would deadlock the reader
-    /// against itself. A refused write leaves the request deferred and retries on the next pass,
-    /// which is guaranteed to come because the loop is about to drain the queue it could not write
-    /// to — and the request still enters the channel exactly once.
+    /// against itself. Existing later work is taken off only after admission actually reopens, then
+    /// written back behind the deferred prefix. A refused write leaves the ordered suffix in memory
+    /// and the next pass fills the room normal dequeue progress made.
     ///
     /// <para>It writes to the channel directly rather than through <see cref="TryEnqueue"/>. That
     /// path deduplicates on the pending set, which a deferral deliberately still holds, so it would
     /// report success and write nothing.</para>
     /// </remarks>
-    internal int ResignalRequestsDeferredBeforeReopen()
+    internal async Task<int> WaitForReopenAndResignalDeferredRequestsAsync(
+        CancellationToken cancellationToken)
     {
 
         if (_deferred.Count == 0)
         {
 
+            lock (_channelWriteSync)
+            {
+
+                FlushResignalSuffixWhileLocked();
+
+            }
+
             return 0;
 
         }
 
-        long generation = _admissionGate.CurrentGeneration;
+        long openGeneration = await _admissionGate.WaitForNextOpenGenerationAsync(
+            _deferred[^1].ObservedGeneration,
+            cancellationToken).ConfigureAwait(false);
 
-        int resignalled = 0;
-
-        for (int index = _deferred.Count - 1; index >= 0; index--)
+        lock (_channelWriteSync)
         {
 
-            DeferredRequest deferred = _deferred[index];
+            Queue<SessionAttachmentIndexRequest> ready = new();
 
-            if (deferred.ObservedGeneration >= generation
-                || !_channel.Writer.TryWrite(deferred.Request))
+            int eligibleCount = 0;
+
+            while (eligibleCount < _deferred.Count
+                && _deferred[eligibleCount].ObservedGeneration < openGeneration)
             {
 
-                continue;
+                ready.Enqueue(_deferred[eligibleCount].Request);
+
+                eligibleCount++;
 
             }
 
-            _deferred.RemoveAt(index);
+            if (eligibleCount == 0)
+            {
 
-            resignalled++;
+                return 0;
+
+            }
+
+            while (_channel.Reader.TryRead(out SessionAttachmentIndexRequest? later))
+            {
+
+                ready.Enqueue(later);
+
+            }
+
+            while (_resignalSuffix.TryDequeue(out SessionAttachmentIndexRequest? later))
+            {
+
+                ready.Enqueue(later);
+
+            }
+
+            _deferred.RemoveRange(0, eligibleCount);
+
+            int resignalled = 0;
+
+            int readyIndex = 0;
+
+            while (ready.TryDequeue(out SessionAttachmentIndexRequest? request))
+            {
+
+                if (_channel.Writer.TryWrite(request))
+                {
+
+                    if (readyIndex < eligibleCount)
+                    {
+
+                        resignalled++;
+
+                    }
+
+                    readyIndex++;
+
+                    continue;
+
+                }
+
+                _resignalSuffix.Enqueue(request);
+
+                while (ready.TryDequeue(out SessionAttachmentIndexRequest? unwritten))
+                {
+
+                    _resignalSuffix.Enqueue(unwritten);
+
+                }
+
+                break;
+
+            }
+
+            return resignalled;
 
         }
 
-        return resignalled;
+    }
+
+    /// <summary>Fills newly available channel space from the oldest retained suffix.</summary>
+    private void FlushResignalSuffixWhileLocked()
+    {
+
+        while (_resignalSuffix.TryPeek(out SessionAttachmentIndexRequest? request)
+            && _channel.Writer.TryWrite(request))
+        {
+
+            _ = _resignalSuffix.Dequeue();
+
+        }
 
     }
 

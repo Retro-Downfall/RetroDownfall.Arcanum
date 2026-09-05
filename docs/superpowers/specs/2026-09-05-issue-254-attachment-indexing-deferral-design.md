@@ -77,26 +77,19 @@ not raise the shared five-second work-drain checkpoint — that decision is #256
 
 ### 1.3 Deliberate departures
 
-**No next-open-generation waiter, again.** The parent's §9.2 says "Reopen writes that exact request
-directly to the bounded channel once", and the superseded #239 plan asked for a
-`WaitForNextOpenGenerationAsync` continuation in this task specifically — while deliberately not
-asking for one in Entry weaving. #253 then declined a waiter on general grounds. This child declines
-one too, and satisfies §9.2 a different way: it compares `IGrimoireConnectionAdmissionGate.CurrentGeneration`
-against the generation observed when each request was deferred, at the top of the loop the worker
-already runs, and re-signals on the edge.
+**The loop directly awaits the next open generation.** The parent's §9.2 says "Reopen writes that
+exact request directly to the bounded channel once." A generation comparison alone cannot identify
+that edge: the gate increments its generation when it enters `Closed` and does not increment again
+when the exact closed lease restores ordinary admission. Comparing `CurrentGeneration` can therefore
+write while admission is still closed, re-defer with the closed generation, and strand the request
+after reopen.
 
-The reason is that this worker makes the hazard #253 named strictly worse rather than better. A
-waiter parked under `KeepClosed` never completes; here it would be parked *holding the `_pending`
-key*, which suppresses every future `TryEnqueue` for that attachment and every reconciliation
-re-enqueue of it, for the life of the host. A generation comparison has no such tail: it is a read of
-a `long` on a loop that runs anyway, it cannot survive shutdown because it is not a task, and under
-`KeepClosed` it simply never fires — which is the same answer Entry weaving gives, in a process whose
-database is closed for good either way.
-
-What it costs is latency. A deferred request resumes at the next loop iteration after reopen, and the
-loop's longest park is the reconciliation period. For a background indexer whose completion is
-already surfaced by polling that same status, that is not a cost worth a waiter. §3.6 records what a
-producer with a stricter latency requirement would have to answer before taking one.
+The worker instead directly awaits
+`IGrimoireConnectionAdmissionGate.WaitForNextOpenGenerationAsync` with the generation observed before
+the refused lease attempt and the host stopping token. There is no detached continuation. Under
+`KeepClosed` the loop remains parked with the exact `_pending` identity until recovery reopens
+ordinary admission or host shutdown cancels the wait; it does not dequeue later work that the same
+closed gate would refuse.
 
 **The reconciliation scope is protected here, not deferred to #256.** The issue's bullets name only
 "one dequeued request". Reconciliation is not one, and on a strict reading belongs to the
@@ -294,22 +287,25 @@ exact `SessionAttachmentIndexRequest` instance and the generation observed at st
 key is deliberately *not* released, so it remains the identity token that suppresses duplicates while
 it waits.
 
-At the top of every loop iteration, before the worker waits for anything, each held entry whose
-observed generation is behind `CurrentGeneration` is written straight to `_channel.Writer`. Three
-details are load-bearing:
+At the top of every loop iteration, before the worker waits for channel work, a non-empty held list
+causes the loop to await `WaitForNextOpenGenerationAsync` directly. After that actual-open signal,
+eligible held entries are written straight to `_channel.Writer`, oldest first. Three details are
+load-bearing:
 
 - **The generation is read before the lease attempt, not after the refusal.** Reading after would
   race a reopen that had already happened and record the *new* generation as the one to wait past,
-  which is a lost wakeup. Reading before can only record a stale generation, whose worst case is one
-  extra loop iteration: the request is re-signalled, dequeued, refused again, and held again with a
-  fresh reading. A benign extra pass is a much better failure than a request that never resumes.
+  which is a lost wakeup. The gate's waiter atomically distinguishes an already-completed reopen
+  from the still-closing or fully-closed states.
 - **The write is `TryWrite`, not `WriteAsync`.** The channel is bounded with `FullMode.Wait`, and the
   re-signal runs on the loop that is the channel's only reader. Awaiting a write on a full channel
-  would deadlock the reader against itself. A refused `TryWrite` leaves the entry held and retries on
-  the next iteration, which is guaranteed to come because the loop is about to drain the channel it
-  could not write to. The request still enters the channel exactly once.
-- **It is once per reopen, not once per iteration.** The comparison is an edge, and a successful
-  write removes the entry from the held list.
+  would deadlock the reader against itself. Once reopen is observed, the reader temporarily removes
+  already-bounded later requests, writes the deferred prefix before them, and writes the later
+  requests back in their original order. If the channel fills, the unwritten suffix remains ordered
+  in service-owned memory and later `TryWrite` passes refill the room normal dequeue progress makes.
+- **It is once per reopen, not once per iteration.** A deferred entry leaves the held list when that
+  reopen pass writes it or retains it in the ordered unwritten suffix; it is never routed through
+  `TryEnqueue`. Producers share the channel-write critical section and cannot jump ahead of that
+  suffix.
 
 Held entries do not survive the process. That is correct rather than tolerated: the durable row still
 says `Pending`, reconciliation re-selects it after restart, and `_pending` is in-memory too, so the
@@ -318,13 +314,15 @@ already reaches the same conclusion for this operation kind — restart idempote
 
 ### 3.6 The loop, and the reconciliation scope
 
-`ExecuteAsync` gains a deferral arm and one guard, and nothing else. The channel-wait machinery,
-including its deliberate single-outstanding-waiter discipline, is untouched.
+`ExecuteAsync` gains a deferral arm and one guard. The existing channel/reconciliation wait retains
+its deliberate single-outstanding-waiter discipline; the actual-reopen wait is a separate direct
+await made only while the held list is non-empty.
 
 A deferred request logs once at `Debug` naming the attachment, and the batch loop stops dequeuing:
 once maintenance owns admission, every remaining request will be refused too, and continuing would
 convert the queue into the held list one refused lease at a time. The trailing reconciliation is
-skipped on that path for the same reason.
+skipped on that path for the same reason. Later intake remains bounded in the channel throughout the
+closed period, and the reopen reordering keeps the original deferred request ahead of it.
 
 `ReconcileAndEnqueueAsync` takes a work lease of the same kind before its own scope and returns
 `SessionAttachmentIndexDisposition`. Refused, it logs at `Debug` and does nothing — no scope, no
@@ -366,26 +364,27 @@ is pre-existing #45 behaviour — an ordinary provider failure leaves exactly th
 matters: the request keeps its identity and comes back, where today it would come back as a `Failed`
 row reconciliation never re-selects.
 
-**Draining a full queue into the held list costs one cheap iteration per request.** At the start of a
-window each queued request is dequeued once, refused a lease, and held. Each pass is a lock and a
-bool with no I/O, it is bounded by the channel's capacity, and it ends with the loop parked. It is
-recorded here so a reader does not mistake the pattern for a spin.
+**A full queue is reordered only after actual reopen.** During the closed period the first refused
+request is held and every later request remains in the bounded channel. After reopen the single
+reader drains those later requests only long enough to write the deferred prefix ahead of them. Any
+tail that does not fit stays service-owned and bounded by the work that was already admitted; normal
+dequeue progress creates the room later `TryWrite` passes use.
 
 ### 3.9 What a future migration inherits from this
 
 #253 recorded that the property making the weaving frontier reusable is a negative one: the worker
 never learns which transition is running. That holds here unchanged and is worth restating because
 this child had more opportunity to break it. Attachment indexing reads `TryAcquireWorkLease`,
-`TryBeginExternalEffectGroup` and `CurrentGeneration`, and nothing else. It does not read the
-transition kind, the operation id, the Covenant lease, the journal, or the phase; `CurrentGeneration`
-is a `long` that says *something changed*, not what. A migration closes the same gate through the same
-owner and this worker stands down for it exactly as written.
+`TryBeginExternalEffectGroup`, `CurrentGeneration`, and `WaitForNextOpenGenerationAsync`, and nothing
+else. It does not read the transition kind, the operation id, the Covenant lease, the journal, or the
+phase. A migration closes the same gate through the same owner and this worker stands down for it
+exactly as written.
 
 The one thing this child adds to that inheritance is the shape a producer with durable queue state
-uses: hold the exact work item, keep its identity token, compare generations on a loop you already
-run, and re-signal past the deduplicating intake. A migration whose reopen must be prompt rather than
-merely eventual is the case that would have to answer §1.3's `KeepClosed` hazard before taking a
-waiter instead.
+uses: hold the exact work item, keep its identity token, await the gate's actual-open signal with the
+host token on the worker loop, and re-signal past the deduplicating intake. `KeepClosed` parks that
+loop until recovery or host cancellation instead of turning a close-generation increment into a
+false reopen.
 
 ## 4. Testing strategy
 
@@ -416,7 +415,9 @@ existing `BeforeEmbedBatchAsync` hook, which receives the batch number.
 `AttemptCount` is unchanged, the durable status is not `Failed`, and the staged generation still
 exists. A `TryEnqueue` for that attachment during the deferral is still deduplicated. After the gate
 reopens, the exact request instance — same `SessionId`, same `Attempt` — appears on the channel
-exactly once, and a second loop iteration at the same generation does not write it again.
+exactly once, and a second loop iteration at the same generation does not write it again. Later
+requests remain bounded while admission is closed and retain FIFO processing order after reopen,
+including when the first re-signal pass fills the channel and retains an unwritten suffix.
 
 **Loop behaviour.** A repeatedly deferred worker logs nothing at `Error` or `Warning`, creates no
 scopes, calls no provider and increments nothing. A deferred reconciliation opens no scope. The
