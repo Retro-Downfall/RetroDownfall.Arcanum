@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
@@ -1963,7 +1964,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         InstallationResetActiveEnvelopeV2 ahead = SealEnvelope(
             guardedRoot,
             first,
-            InstallationResetActivePayloadV2.FromRecord(prepared),
+            InstallationResetActivePayloadV3.FromRecord(prepared),
             revision: 2);
 
         File.WriteAllBytes(
@@ -2401,7 +2402,12 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             new GrimoireDbPassphraseSource(),
             _tempDir,
             new InstallationResetMaintenanceLockAccessor(),
-            new InstallationResetStartupRecovery(_tempDir, store),
+            new InstallationResetStartupRecovery(
+                _tempDir,
+                store,
+                new GrimoireOfflineTransitionLifecycleStore(
+                    new GrimoireOfflineTransitionJournalStore(new InMemoryOsCredentialStore()),
+                    GrimoireOfflineTransitionHandlerRegistry.Production)),
             admission);
 
         GrimoireDatabaseUnavailableException error =
@@ -3192,7 +3198,12 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             new GrimoireDbPassphraseSource(),
             guardedRoot,
             accessor,
-            new InstallationResetStartupRecovery(guardedRoot, store));
+            new InstallationResetStartupRecovery(
+                guardedRoot,
+                store,
+                new GrimoireOfflineTransitionLifecycleStore(
+                    new GrimoireOfflineTransitionJournalStore(new InMemoryOsCredentialStore()),
+                    GrimoireOfflineTransitionHandlerRegistry.Production)));
 
     private static InstallationResetActiveRecord CreateResetActiveRecord(
         InstallationResetScope scope,
@@ -3252,7 +3263,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     private InstallationResetActiveEnvelopeV2 SealEnvelope(
         string guardedRoot,
         InstallationResetActivePublication publication,
-        InstallationResetActivePayloadV2 payload,
+        InstallationResetActivePayloadV3 payload,
         ulong revision)
     {
 

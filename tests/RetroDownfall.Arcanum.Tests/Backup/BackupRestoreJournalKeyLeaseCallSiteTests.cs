@@ -78,6 +78,14 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         // name. Without that proof it deletes nothing at all, which is what keeps every ordinary
         // cleanup, Covenant reset, family reinitialize, and restore retaining them byte-for-byte.
         FullResetRestoreCredentialRemover,
+
+        // The one path that may remove the offline-transition slot's anchor and key, and the only
+        // deleter of either. Like the entry above it removes nothing else, it removes them only in the
+        // anchor-then-key order, and only when each account's current value reproduces the digest its
+        // own terminal-state proof projected for that exact account name. It cannot name a
+        // restore-journal account, which is what keeps the two slots from authorizing each other's
+        // removal, and without a proof it deletes nothing at all.
+        FullResetTransitionCredentialRemover,
     ];
 
     /// <summary>
@@ -86,6 +94,13 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
     private const string FullResetRestoreCredentialRemover =
         "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
         + "InstallationResetRestoreCredentialCleanup.cs";
+
+    /// <summary>
+    /// The offline-transition slot's own remover, which is a different slot with a different proof.
+    /// </summary>
+    private const string FullResetTransitionCredentialRemover =
+        "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/"
+        + "GrimoireOfflineTransitionJournalAnchorStore.FullResetTerminal.cs";
 
     [Fact]
     public void The_authenticator_is_the_only_production_caller_that_takes_a_journal_key()
@@ -208,6 +223,20 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         Assert.True(remover.Names("BackupRestoreFullResetTerminalProjectionV1 terminal"));
 
         Assert.True(remover.Names("AccountValueDigest(account, value) != expected"));
+
+        // The same conditions for the transition slot's remover, and one more: it must not be able to
+        // name a restore-journal account at all, or a proof about one slot could authorize a removal
+        // in the other.
+        ProductionSource transitionRemover = ProductionSourceInventory.Sources()
+            .Single(source => source.IsExactOwner(FullResetTransitionCredentialRemover));
+
+        Assert.True(
+            transitionRemover.Names(
+                "GrimoireOfflineTransitionFullResetTerminalProjectionV1> ProveFullResetTerminal"));
+
+        Assert.True(transitionRemover.Names("before.Value != projectedValueDigest"));
+
+        Assert.False(transitionRemover.Names("ArcanumCredentialIdentity.BackupRestoreJournal"));
 
     }
 

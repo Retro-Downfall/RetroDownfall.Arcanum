@@ -46,6 +46,20 @@ internal interface IInstallationResetActiveWriter
         InstallationResetActiveRecord record,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Rereads the durable record and adopts it, so a collaborator's publication is not overwritten.
+    /// </summary>
+    /// <remarks>
+    /// The nested database transition publishes its completion receipt into this same record, under
+    /// this same lock, through its own store handle. A writer that carried on from the record it last
+    /// wrote would both conflict on the advanced envelope revision and try to publish a receipt state
+    /// earlier than the one already durable — which the store refuses, correctly, as unsaying a fact.
+    /// Rereading is how the outer workflow adopts what its nested transition published rather than
+    /// racing it.
+    /// </remarks>
+    Task<Result<InstallationResetActiveRecord?>> RereadAsync(
+        CancellationToken cancellationToken);
+
     Task<Result> RetireAsync(
         Guid operationId,
         CancellationToken cancellationToken);
@@ -1747,6 +1761,29 @@ internal sealed class InstallationResetService(
 
                 active = active with { PointOfNoReturn = true };
 
+                // The claim goes in the same publication as the point of no return, because it is the
+                // same fact from the other side: from here a nested database transition is about to
+                // exist, and a crash between this write and the launch has to read as "one was
+                // started" rather than as "none ever was". The workspace arm claims nothing — it does
+                // not run an offline transition, and a claim for a transition that never exists would
+                // block the ending forever.
+                if (onlineCompletion is null
+                    && active.Scope is not InstallationResetScope.Workspace
+                    && active.NestedTransitionReceipt is null)
+                {
+
+                    active = active with
+                    {
+                        NestedTransitionReceipt = new InstallationResetNestedTransitionReceiptV1(
+                            Version: 1,
+                            NestedOperationId: Guid.NewGuid(),
+                            InstallationResetNestedTransitionPhase.Claimed,
+                            NestedEffectDigest: null,
+                            TerminalWinnerDigest: null),
+                    };
+
+                }
+
                 progress.Active = active;
 
                 Result pointOfNoReturnCheckpoint = await writer.WriteAsync(
@@ -1785,9 +1822,13 @@ internal sealed class InstallationResetService(
                             Workspace: active.Workspace)
                         : new DataRetentionRequest(DataRetentionOperation.FactoryReset);
 
+                    // The nested apply runs under the identity the claim already published, so a
+                    // resumed reset replays the one nested operation rather than starting a second
+                    // one the outer record has never heard of.
                     DataRetentionApplyRequest dataApplyRequest = new(
                         dataRequest,
-                        dataPlanId);
+                        dataPlanId,
+                        active.NestedTransitionReceipt?.NestedOperationId);
 
                     Result<DataRetentionApplyResult> applied =
                         stoppedHostIssuer is null
@@ -1800,11 +1841,41 @@ internal sealed class InstallationResetService(
                                     stoppedHostIssuer,
                                     cancellationToken).ConfigureAwait(false);
 
+                    // Adopted whether the apply succeeded or not: a nested transition that reached its
+                    // terminal compare-exchange and then failed afterwards has still published its
+                    // receipt, and every write from here has to build on that rather than on the
+                    // claim this arm last wrote.
+                    Result<InstallationResetActiveRecord?> reread = await writer
+                        .RereadAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (reread.IsFailure)
+                    {
+
+                        return Resumable(active, reread.Error);
+
+                    }
+
+                    if (reread.Value?.NestedTransitionReceipt is { } publishedReceipt)
+                    {
+
+                        active = active with { NestedTransitionReceipt = publishedReceipt };
+
+                    }
+
                     if (applied.IsFailure)
                     {
 
+                        // A claim that has not reported keeps the record alive whatever the apply
+                        // returned. The nested transition may still hold a journal bound to this exact
+                        // record, and retiring it would delete the one piece of evidence that journal
+                        // needs to be resumed or retired - leaving a parked transition nothing can ever
+                        // finish, and a slot no future transition can open.
                         if (applied.Error.Code is ErrorCodes.Data.RecoveryRequired
-                                or ErrorCodes.Data.ReconciliationFailed)
+                                or ErrorCodes.Data.ReconciliationFailed
+                            || active.NestedTransitionReceipt is
+                            {
+                                Phase: InstallationResetNestedTransitionPhase.Claimed,
+                            })
                         {
 
                             active = active with
@@ -3128,6 +3199,43 @@ internal sealed class InstallationResetService(
             return written.IsSuccess
                 ? Result.Success()
                 : Result.Failure(written.Error);
+
+        }
+
+        public async Task<Result<InstallationResetActiveRecord?>> RereadAsync(
+            CancellationToken cancellationToken)
+        {
+
+            heldInstallationLock.AssertHeldFor(guardedRoot);
+
+            if (_publication is null)
+            {
+
+                return Result<InstallationResetActiveRecord?>.Success(null);
+
+            }
+
+            Result<InstallationResetActiveRecoveryState> recovered = await store
+                .RecoverAsync(heldInstallationLock, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (recovered.IsFailure)
+            {
+
+                return Result<InstallationResetActiveRecord?>.Failure(recovered.Error);
+
+            }
+
+            if (recovered.Value.Publication is not { } published)
+            {
+
+                return Result<InstallationResetActiveRecord?>.Success(null);
+
+            }
+
+            _publication = published;
+
+            return Result<InstallationResetActiveRecord?>.Success(published.Payload.ToRecord());
 
         }
 

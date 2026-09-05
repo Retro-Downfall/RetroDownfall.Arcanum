@@ -3040,7 +3040,43 @@ internal sealed class CovenantErasureCoordinator(
         if (step < GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied)
         {
 
-            Result receipt = await phases.RecordParentReceiptAsync(cancellationToken)
+            CovenantDigest? proved = null;
+
+            if (phases.ParentReceipt is { } sink)
+            {
+
+                // Published after the exact terminal winner is journaled and before the journal may
+                // record the step, so the two records cross only once and always in that order. The
+                // winner the outer record is told about is the one this transition already proved,
+                // not a value recomputed here from the same database it just closed.
+                if (phases.Current.Payload.Lifecycle.ReconciliationEvidence
+                        ?.DatabaseTerminalWinnerDigest is not { IsValid: true } winner)
+                {
+
+                    return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+
+                }
+
+                Result<CovenantDigest> published = await sink
+                    .PublishAndRereadAsync(winner, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (published.IsFailure)
+                {
+
+                    // The database is already terminal and no effect may repeat. A receipt that could
+                    // not be published, or that read back as something else, means the two records
+                    // disagree about what happened - which is a state to stay closed in, not one to
+                    // resolve by preferring either of them.
+                    return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+
+                }
+
+                proved = published.Value;
+
+            }
+
+            Result receipt = await phases.RecordParentReceiptAsync(proved, cancellationToken)
                 .ConfigureAwait(false);
 
             if (receipt.IsFailure)

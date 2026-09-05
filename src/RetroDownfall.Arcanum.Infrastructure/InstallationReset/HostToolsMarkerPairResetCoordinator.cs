@@ -2331,8 +2331,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         && DigestEquals(left.ActiveLocationDigest, right.ActiveLocationDigest);
 
     private static bool PayloadEquals(
-        InstallationResetActivePayloadV2 left,
-        InstallationResetActivePayloadV2 right) =>
+        InstallationResetActivePayloadV3 left,
+        InstallationResetActivePayloadV3 right) =>
         left.Version == right.Version
         && left.OperationId == right.OperationId
         && string.Equals(left.PlanId, right.PlanId, StringComparison.Ordinal)

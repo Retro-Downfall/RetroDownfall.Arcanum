@@ -464,6 +464,12 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<IInstallationResetActiveStore>(provider =>
             provider.GetRequiredService<InstallationResetActiveStore>());
 
+        // The one production resolver. A nested transition learns it is nested by reading the broader
+        // record, so the same registration serves a first entry and a recovery in a fresh process.
+        services.TryAddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(provider =>
+            new InstallationResetNestedTransitionReceiptResolver(
+                provider.GetRequiredService<IInstallationResetActiveStore>()));
+
         services.TryAddScoped<IInstallationResetDatabaseIdentityReader>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
@@ -572,6 +578,8 @@ public static class ServiceCollectionExtensions
                         provider.GetRequiredService<IOsCredentialStore>())),
                 provider.GetRequiredService<InstallationResetRestoreCredentialCleanup>(),
                 provider.GetRequiredService<IOsCredentialStore>(),
+                new GrimoireTransitions.GrimoireOfflineTransitionJournalAnchorStore(
+                    provider.GetRequiredService<IOsCredentialStore>()),
                 ArcanumPaths.GrimoireDatabaseFile));
 
         // A deferred resolution for the same reason the marker-pair coordinator is one: planning and
@@ -1053,7 +1061,11 @@ public static class ServiceCollectionExtensions
                 ArcanumPaths.GrimoireDirectory,
                 new InstallationResetActiveStore(
                     ArcanumPaths.GrimoireDirectory,
-                    sp.GetRequiredService<IOsCredentialStore>())));
+                    sp.GetRequiredService<IOsCredentialStore>()),
+                new GrimoireOfflineTransitionLifecycleStore(
+                    new GrimoireOfflineTransitionJournalStore(
+                        sp.GetRequiredService<IOsCredentialStore>()),
+                    GrimoireOfflineTransitionHandlerRegistry.Production)));
 
         services.AddSingleton(
             static sp => new GrimoireDatabaseHostedService(
@@ -2044,6 +2056,21 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<ICovenantClosedPeriodLedgerConnection,
             CovenantClosedPeriodLedgerConnection>();
 
+        // The one production resolver, registered beside the authority that needs it. A nested
+        // transition learns it is nested by reading the broader record, so this same registration
+        // serves a first entry and a recovery in a fresh process.
+        // The concrete store is tried as well as the interface. The composition that registers the
+        // phase authority registers `InstallationResetActiveStore` itself rather than the interface
+        // over it, so resolving only the interface would hand every daemon transition the unparented
+        // resolver — and a transition answering "no parent" while its reset record claimed it is
+        // exactly the standalone downgrade the evidence matrix fails closed on.
+        services.TryAddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(
+            static sp =>
+                (sp.GetService<IInstallationResetActiveStore>()
+                    ?? sp.GetService<InstallationResetActiveStore>()) is { } activeStore
+                        ? new InstallationResetNestedTransitionReceiptResolver(activeStore)
+                        : new GrimoireOfflineTransitionUnparentedReceiptResolver());
+
         services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
             static sp => new GrimoireOfflineTransitionPhaseAuthority(
                 sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
@@ -2052,6 +2079,7 @@ public static class ServiceCollectionExtensions
                     ?? sp.GetRequiredService<InstallationResetDatabaseIdentityReader>(),
                 sp.GetRequiredService<ILongRunningOperationStore>(),
                 sp.GetRequiredService<IOsCredentialStore>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionParentReceiptResolver>(),
                 ArcanumPaths.GrimoireDirectory));
 
         services.AddScoped(

@@ -91,7 +91,7 @@ public sealed partial class InstallationResetServiceTests
         // that carried its own older record forward would have written this straight back to null,
         // leaving an installation whose credentials are gone and whose record says they never were.
         Assert.Equal(
-            InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+            InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
             active.Writes[^1].HostToolsMarkerPairReset?.RestoreCredentialCleanup);
 
     }
@@ -340,7 +340,7 @@ public sealed partial class InstallationResetServiceTests
                         publication.Payload.HostToolsMarkerPairReset! with
                         {
                             RestoreCredentialCleanup =
-                                InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+                                InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
                         },
                 };
 
@@ -349,10 +349,10 @@ public sealed partial class InstallationResetServiceTests
             return Task.FromResult(
                 Result<FullInstallationResetTerminalOutcome>.Success(
                     new FullInstallationResetTerminalOutcome(
-                        InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+                        InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
                         publication with
                         {
-                            Payload = InstallationResetActivePayloadV2.FromRecord(published),
+                            Payload = InstallationResetActivePayloadV3.FromRecord(published),
                         })));
 
         }

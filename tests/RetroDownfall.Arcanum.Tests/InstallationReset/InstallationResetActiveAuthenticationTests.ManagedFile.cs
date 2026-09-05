@@ -26,14 +26,14 @@ public sealed partial class InstallationResetActiveAuthenticationTests
     public void A_managed_file_checkpoint_is_legal_only_beside_a_terminal_campaign_receipt()
     {
 
-        InstallationResetActivePayloadV2 valid = TerminalReceiptPayload();
+        InstallationResetActivePayloadV3 valid = TerminalReceiptPayload();
 
         Assert.True(
             InstallationResetActiveRecordAuthenticator.ValidatePayload(valid).IsSuccess);
 
         HostToolsMarkerPairResetCheckpointV1 marker = valid.HostToolsMarkerPairReset!;
 
-        InstallationResetActivePayloadV2 withManagedFile = valid with
+        InstallationResetActivePayloadV3 withManagedFile = valid with
         {
             HostToolsMarkerPairReset = marker with { ManagedFile = ManagedFile() },
         };
@@ -44,7 +44,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests
         // Managed-file reconciliation runs on an installation whose markers are provably gone and
         // whose Campaign cleanup is already accounted for. A record carrying its progress without that
         // behind it is claiming a position in the sequence it never reached.
-        InstallationResetActivePayloadV2[] invalid =
+        InstallationResetActivePayloadV3[] invalid =
         [
             withManagedFile with
             {
@@ -291,7 +291,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests
                     WithRestore(
                         ManagedFile(),
                         ClosedProjection(),
-                        InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent))
+                        InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent))
                 .IsFailure);
 
     }
@@ -354,15 +354,15 @@ public sealed partial class InstallationResetActiveAuthenticationTests
     public void The_projection_and_phase_survive_the_persistence_projection_intact()
     {
 
-        InstallationResetActivePayloadV2 payload = WithRestore(
+        InstallationResetActivePayloadV3 payload = WithRestore(
             TerminalManagedFile(),
             ClosedProjection(),
             InstallationResetRestoreCredentialCleanupPhase.JournalKeyRemoved);
 
         // Through ToRecord and back, which is the deep-copying projection every publication takes.
         // A field dropped here silently re-runs an irreversible removal on the next resume.
-        InstallationResetActivePayloadV2 round =
-            InstallationResetActivePayloadV2.FromRecord(payload.ToRecord());
+        InstallationResetActivePayloadV3 round =
+            InstallationResetActivePayloadV3.FromRecord(payload.ToRecord());
 
         HostToolsMarkerPairResetCheckpointV1 marker = round.HostToolsMarkerPairReset!;
 
@@ -416,13 +416,13 @@ public sealed partial class InstallationResetActiveAuthenticationTests
 
     }
 
-    private static InstallationResetActivePayloadV2 WithRestore(
+    private static InstallationResetActivePayloadV3 WithRestore(
         FullInstallationResetManagedFileCheckpointV1 managedFile,
         BackupRestoreFullResetTerminalProjectionV1? terminal,
         InstallationResetRestoreCredentialCleanupPhase? phase)
     {
 
-        InstallationResetActivePayloadV2 payload = TerminalReceiptPayload();
+        InstallationResetActivePayloadV3 payload = TerminalReceiptPayload();
 
         return payload with
         {
@@ -436,11 +436,11 @@ public sealed partial class InstallationResetActiveAuthenticationTests
 
     }
 
-    private static InstallationResetActivePayloadV2 WithManagedFile(
+    private static InstallationResetActivePayloadV3 WithManagedFile(
         FullInstallationResetManagedFileCheckpointV1 managedFile)
     {
 
-        InstallationResetActivePayloadV2 payload = TerminalReceiptPayload();
+        InstallationResetActivePayloadV3 payload = TerminalReceiptPayload();
 
         return payload with
         {
@@ -458,10 +458,10 @@ public sealed partial class InstallationResetActiveAuthenticationTests
     /// counts at zero, and the sum still has to close — which is exactly the predicate the nested
     /// checkpoint is gated on.
     /// </remarks>
-    private static InstallationResetActivePayloadV2 TerminalReceiptPayload()
+    private static InstallationResetActivePayloadV3 TerminalReceiptPayload()
     {
 
-        InstallationResetActivePayloadV2 payload = CheckpointPayload();
+        InstallationResetActivePayloadV3 payload = CheckpointPayload();
 
         ImmutableArray<Guid> intents = [];
 

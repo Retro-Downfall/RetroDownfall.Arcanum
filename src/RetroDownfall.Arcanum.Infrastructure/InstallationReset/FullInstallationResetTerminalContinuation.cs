@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 /// <summary>
@@ -78,9 +80,13 @@ internal sealed class FullInstallationResetTerminalContinuation(
     BackupRestoreJournalAnchorStore anchors,
     InstallationResetRestoreCredentialCleanup credentials,
     IOsCredentialStore credentialStore,
+    GrimoireOfflineTransitionJournalAnchorStore transitionAnchors,
     string grimoireDatabaseFile)
     : IFullInstallationResetTerminalContinuation
 {
+
+    private readonly GrimoireOfflineTransitionJournalAnchorStore _transitionAnchors =
+        transitionAnchors ?? throw new ArgumentNullException(nameof(transitionAnchors));
 
     private readonly IInstallationResetActiveStore _activeStore =
         activeStore ?? throw new ArgumentNullException(nameof(activeStore));
@@ -130,13 +136,16 @@ internal sealed class FullInstallationResetTerminalContinuation(
         AuthenticatedTerminalState current = state.Value;
 
         if (current.Marker.RestoreCredentialCleanup
-            is InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent)
+            is InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent)
         {
 
             // Already finished. A resumed operation reads this rather than removing anything again.
+            // The guard is the terminal phase of the whole cleanup rather than of its first half: a
+            // record resting at the restore trio's own verification still owes the transition pair.
             return Result<FullInstallationResetTerminalOutcome>.Success(
                 new FullInstallationResetTerminalOutcome(
-                    InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+                    InstallationResetRestoreCredentialCleanupPhase
+                        .TransitionCredentialsVerifiedAbsent,
                     current.Publication));
 
         }
@@ -233,18 +242,224 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         }
 
+        if (current.Marker.RestoreCredentialCleanup
+            is not InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent
+                and not InstallationResetRestoreCredentialCleanupPhase.TransitionAnchorRemoved
+                and not InstallationResetRestoreCredentialCleanupPhase.TransitionKeyRemoved)
+        {
+
+            Result<AuthenticatedTerminalState> restoreVerified = await PublishAsync(
+                heldInstallationLock,
+                current,
+                terminal,
+                InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent,
+                cancellationToken).ConfigureAwait(false);
+
+            if (restoreVerified.IsFailure)
+            {
+
+                return Result<FullInstallationResetTerminalOutcome>.Failure(restoreVerified.Error);
+
+            }
+
+            current = restoreVerified.Value;
+
+        }
+
+        return await CompleteTransitionPairAsync(
+            heldInstallationLock,
+            current,
+            terminal,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Removes the offline-transition slot's two accounts, after proving the slot is over.
+    /// </summary>
+    /// <remarks>
+    /// The last thing this reset takes, and the only path in the product that may take it. Every other
+    /// cleanup — ordinary credential deletion, a Covenant reset, a family reinitialize, an unattested
+    /// installation reset — retains both accounts byte for byte, because they are the only evidence
+    /// that could ever finish an interrupted database transition.
+    ///
+    /// <para>The nested receipt is checked here rather than at the proof, because it is a statement
+    /// about this reset rather than about the slot: a reset holding a claim it never saw completed has
+    /// not finished the transition it started, and the credentials that could finish it are exactly
+    /// what is about to go.</para>
+    /// </remarks>
+    private async Task<Result<FullInstallationResetTerminalOutcome>> CompleteTransitionPairAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        AuthenticatedTerminalState current,
+        BackupRestoreFullResetTerminalProjectionV1 terminal,
+        CancellationToken cancellationToken)
+    {
+
+        if (current.Publication.Payload.NestedTransitionReceipt is
+            { Phase: not InstallationResetNestedTransitionPhase.Completed })
+        {
+
+            return Result<FullInstallationResetTerminalOutcome>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "A nested database transition this reset claimed has not reported its completion."));
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalLocation> location =
+            new GrimoireOfflineTransitionJournalFileStore().ResolveLocation(
+                _activeStore.GuardedRoot);
+
+        if (location.IsFailure)
+        {
+
+            return Result<FullInstallationResetTerminalOutcome>.Failure(location.Error);
+
+        }
+
+        // Adopted rather than reproved when one is already persisted. Once the first account is gone
+        // the slot no longer has the shape the proof was made from, so a resumed pass compares each
+        // survivor against the digest projected while both were still there.
+        GrimoireOfflineTransitionFullResetTerminalProjectionV1? adopted =
+            current.Marker.TransitionTerminal;
+
+        if (adopted is null)
+        {
+
+            Result<GrimoireOfflineTransitionFullResetTerminalProjectionV1> proven =
+                _transitionAnchors.ProveFullResetTerminal(
+                    heldInstallationLock,
+                    location.Value,
+                    current.Publication.Envelope.InstallationId);
+
+            if (proven.IsFailure)
+            {
+
+                return Result<FullInstallationResetTerminalOutcome>.Failure(proven.Error);
+
+            }
+
+            adopted = proven.Value;
+
+            // Persisted only when there is something to compare it against later. A slot that was
+            // never opened has no account to remove and therefore nothing a resumed pass would need
+            // the projection for, and every publication costs an envelope revision that stales the
+            // authorities bound to the one it replaced.
+            if (adopted.Arm is GrimoireOfflineTransitionFullResetTerminalArm.ClosedAnchor)
+            {
+
+                Result<AuthenticatedTerminalState> persisted = await PublishAsync(
+                    heldInstallationLock,
+                    current,
+                    terminal,
+                    phase: null,
+                    cancellationToken,
+                    adopted).ConfigureAwait(false);
+
+                if (persisted.IsFailure)
+                {
+
+                    return Result<FullInstallationResetTerminalOutcome>.Failure(persisted.Error);
+
+                }
+
+                current = persisted.Value;
+
+            }
+
+        }
+
+        Result<ImmutableArray<InstallationResetRestoreCredentialStep>> steps =
+            InstallationResetRestoreCredentialCleanup.OrderedTransitionSteps(
+                adopted,
+                GrimoireOfflineTransitionJournalAnchorStore
+                    .TerminalAccounts(location.Value.ProfileNamespace).AnchorAccount,
+                GrimoireOfflineTransitionJournalAnchorStore
+                    .TerminalAccounts(location.Value.ProfileNamespace).KeyAccount);
+
+        if (steps.IsFailure)
+        {
+
+            return Result<FullInstallationResetTerminalOutcome>.Failure(steps.Error);
+
+        }
+
+        foreach (InstallationResetRestoreCredentialStep step in
+                 adopted.Arm is GrimoireOfflineTransitionFullResetTerminalArm.ClosedAnchor
+                     ? steps.Value
+                     : [])
+        {
+
+            if (current.Marker.RestoreCredentialCleanup is { } reached
+                && reached >= step.CompletedPhase)
+            {
+
+                continue;
+
+            }
+
+            Result removed = step.CompletedPhase
+                is InstallationResetRestoreCredentialCleanupPhase.TransitionAnchorRemoved
+                ? _transitionAnchors.RemoveAnchorForFullReset(
+                    heldInstallationLock,
+                    location.Value,
+                    step.ProjectedValueDigest ?? default)
+                : _transitionAnchors.RemoveJournalKeyForFullReset(
+                    heldInstallationLock,
+                    location.Value,
+                    step.ProjectedValueDigest ?? default);
+
+            if (removed.IsFailure)
+            {
+
+                return Result<FullInstallationResetTerminalOutcome>.Failure(removed.Error);
+
+            }
+
+            Result<AuthenticatedTerminalState> advanced = await PublishAsync(
+                heldInstallationLock,
+                current,
+                terminal,
+                step.CompletedPhase,
+                cancellationToken,
+                adopted).ConfigureAwait(false);
+
+            if (advanced.IsFailure)
+            {
+
+                return Result<FullInstallationResetTerminalOutcome>.Failure(advanced.Error);
+
+            }
+
+            current = advanced.Value;
+
+        }
+
+        Result absent = _transitionAnchors.VerifyTerminalPairAbsent(
+            heldInstallationLock,
+            location.Value);
+
+        if (absent.IsFailure)
+        {
+
+            return Result<FullInstallationResetTerminalOutcome>.Failure(absent.Error);
+
+        }
+
         Result<AuthenticatedTerminalState> published = await PublishAsync(
             heldInstallationLock,
             current,
             terminal,
-            InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
-            cancellationToken).ConfigureAwait(false);
+            InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
+            cancellationToken,
+            adopted).ConfigureAwait(false);
 
         return published.IsFailure
             ? Result<FullInstallationResetTerminalOutcome>.Failure(published.Error)
             : Result<FullInstallationResetTerminalOutcome>.Success(
                 new FullInstallationResetTerminalOutcome(
-                    InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+                    InstallationResetRestoreCredentialCleanupPhase
+                        .TransitionCredentialsVerifiedAbsent,
                     published.Value.Publication));
 
     }
@@ -340,7 +555,8 @@ internal sealed class FullInstallationResetTerminalContinuation(
         AuthenticatedTerminalState state,
         BackupRestoreFullResetTerminalProjectionV1 terminal,
         InstallationResetRestoreCredentialCleanupPhase? phase,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        GrimoireOfflineTransitionFullResetTerminalProjectionV1? transitionTerminal = null)
     {
 
         Result<InstallationResetActivePublication> published = await _activeStore.AdvanceAsync(
@@ -352,6 +568,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
                 {
                     RestoreTerminal = terminal,
                     RestoreCredentialCleanup = phase ?? state.Marker.RestoreCredentialCleanup,
+                    TransitionTerminal = transitionTerminal ?? state.Marker.TransitionTerminal,
                 },
             },
             cancellationToken).ConfigureAwait(false);

@@ -119,7 +119,8 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     internal GrimoireOfflineTransitionPhaseSession(
         GrimoireOfflineTransitionLifecycleStore lifecycle,
         ArcanumMaintenanceLock heldInstallationLock,
-        ClosingOwner admitted)
+        ClosingOwner admitted,
+        IGrimoireOfflineTransitionParentReceiptSink? parentReceipt)
     {
 
         _lifecycle = lifecycle ?? throw new ArgumentNullException(nameof(lifecycle));
@@ -133,7 +134,19 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
 
         _current = admitted.Publication;
 
+        ParentReceipt = parentReceipt;
+
     }
+
+    /// <summary>
+    /// The broader workflow this transition is the nested arm of, or <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// Resolved from durable evidence when the session was admitted, not supplied by whoever started
+    /// the work, so a resumed transition finds the same answer a first entry did. A session whose
+    /// binding names a parent always has one here: the authority refuses to admit the pair otherwise.
+    /// </remarks>
+    internal IGrimoireOfflineTransitionParentReceiptSink? ParentReceipt { get; }
 
     /// <summary>The committed launch every publication this session makes is bound to.</summary>
     internal GrimoireOfflineTransitionLaunchBinding Launch { get; }
@@ -434,14 +447,43 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     /// The absent case is stated rather than left blank. A step that simply carried no receipt would
     /// read identically whether none was required or one was owed and never published, and only the
     /// first of those may go on to retire the journal.
+    ///
+    /// <para><paramref name="provedReceiptDigest"/> is recomputed by the caller from the receipt it
+    /// read back out of the broader workflow's record. It is deliberately not derived here from the
+    /// binding this evidence is checked against: a value taken from the thing it is compared to
+    /// asserts equality with itself and proves nothing about the outer record at all. Supplying one
+    /// where no parent is bound, or omitting one where a parent is, is refused rather than
+    /// interpreted.</para>
     /// </remarks>
-    internal Task<Result> RecordParentReceiptAsync(CancellationToken cancellationToken) =>
-        AdvanceReconciliationAsync(
+    internal Task<Result> RecordParentReceiptAsync(
+        CovenantDigest? provedReceiptDigest,
+        CancellationToken cancellationToken)
+    {
+
+        bool bound = _current.Payload.Binding.ParentReceiptBindingDigest is not null;
+
+        if (bound != provedReceiptDigest is { IsValid: true })
+        {
+
+            return Task.FromResult(Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "The parent receipt step requires exactly the proof its binding calls for.")));
+
+        }
+
+        return AdvanceReconciliationAsync(
             GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied,
-            evidence => _current.Payload.Binding.ParentReceiptBindingDigest is { } parent
-                ? evidence with { ParentReceiptNotRequired = false, ParentReceiptDigest = parent }
+            evidence => bound
+                ? evidence with
+                {
+                    ParentReceiptNotRequired = false,
+                    ParentReceiptDigest = provedReceiptDigest,
+                }
                 : evidence with { ParentReceiptNotRequired = true, ParentReceiptDigest = null },
             cancellationToken);
+
+    }
 
     /// <summary>Records that every maintenance handle is physically closed and the lane is empty.</summary>
     internal Task<Result> RecordLaneClosedAsync(CancellationToken cancellationToken) =>

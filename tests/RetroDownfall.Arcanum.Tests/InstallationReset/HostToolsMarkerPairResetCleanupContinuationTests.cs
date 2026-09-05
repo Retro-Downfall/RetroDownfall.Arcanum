@@ -575,7 +575,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 PreviousEnvelopeDigest = claimPublication.EnvelopeDigest,
             },
             envelopeDigest,
-            InstallationResetActivePayloadV2.FromRecord(
+            InstallationResetActivePayloadV3.FromRecord(
                 claimPublication.Payload.ToRecord() with
                 {
                     HostToolsMarkerPairReset = checkpoint,

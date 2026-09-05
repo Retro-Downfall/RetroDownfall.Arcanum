@@ -990,6 +990,115 @@ public sealed partial class InstallationResetServiceTests
     }
 
     [Fact]
+    public async Task Apply_claims_the_nested_factory_erasure_before_it_launches_one()
+    {
+
+        // Mutation caught: launching the nested erasure without a durable claim leaves a crash mid
+        // erasure indistinguishable from one that never started it, which is the state the whole
+        // dual-record resolution exists to tell apart.
+        FakeDataService data = new(CreateDataPlan("global-data"));
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        data.BeforeApply = () => Assert.Contains(
+            active.Writes,
+            written => written.NestedTransitionReceipt is
+            {
+                Phase: InstallationResetNestedTransitionPhase.Claimed,
+            });
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        DataRetentionApplyRequest applied = Assert.Single(data.ApplyRequests);
+
+        InstallationResetActiveRecord claimed = Assert.Single(
+            active.Writes
+                .Where(written => written.NestedTransitionReceipt is not null)
+                .Take(1),
+            written => written.NestedTransitionReceipt is
+            {
+                Phase: InstallationResetNestedTransitionPhase.Claimed,
+            } receipt
+                && receipt.NestedEffectDigest is null
+                && receipt.TerminalWinnerDigest is null);
+
+        // The claim names the identity the nested apply is launched under, so the operation ledger
+        // and the outer record name the same work rather than two things that merely happened
+        // together.
+        Assert.Equal(
+            claimed.NestedTransitionReceipt!.NestedOperationId,
+            applied.RequestedOperationId);
+
+    }
+
+    [Fact]
+    public async Task Apply_claims_no_nested_transition_for_a_workspace_scope()
+    {
+
+        // A workspace reset routes to the workspace arm, which is not an offline database transition.
+        // A claim there would name a nested transition that never exists and would block the ending.
+        DataRetentionWorkspaceBinding workspace = new(
+            Guid.Parse("50505050-5050-5050-5050-505050505050"),
+            "/workspace");
+
+        FakeDataService data = new(CreateDataPlan("workspace-data"));
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: new FakeWorkspaceResolver(workspace));
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Workspace,
+            Path.Combine(workspace.WorkspaceRoot, "src"));
+
+        Result<InstallationResetPlan> planned = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.True(planned.IsSuccess, planned.IsFailure ? planned.Error.Message : null);
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(request, planned.Value.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.All(
+            active.Writes,
+            static written => Assert.Null(written.NestedTransitionReceipt));
+
+        Assert.All(
+            data.ApplyRequests,
+            static applied => Assert.Null(applied.RequestedOperationId));
+
+    }
+
+    [Fact]
     public async Task Apply_replans_before_active_publication_and_binds_the_expected_plan()
     {
 
@@ -4093,7 +4202,7 @@ public sealed partial class InstallationResetServiceTests
                 Location: null!,
                 Envelope: null!,
                 EnvelopeDigest: default,
-                InstallationResetActivePayloadV2.FromRecord(record),
+                InstallationResetActivePayloadV3.FromRecord(record),
                 Anchor: null!);
 
         private static Task<T> AuthenticatedSurfaceNotUsed<T>() =>

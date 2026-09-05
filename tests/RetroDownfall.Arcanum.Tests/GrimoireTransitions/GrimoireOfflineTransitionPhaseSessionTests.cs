@@ -412,6 +412,7 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             new FixedInstallationIdentity(Installation),
             _operations,
             _credentials,
+            new GrimoireOfflineTransitionUnparentedReceiptResolver(),
             _guarded);
 
     }
@@ -476,8 +477,13 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
     }
 
+    private Task<GrimoireOfflineTransitionPhaseSession> OpenAsync(
+        GrimoireOfflineTransitionKind kind) =>
+        OpenAsync(kind, parentReceipt: null);
+
     private async Task<GrimoireOfflineTransitionPhaseSession> OpenAsync(
-        GrimoireOfflineTransitionKind kind)
+        GrimoireOfflineTransitionKind kind,
+        IGrimoireOfflineTransitionParentReceiptSink? parentReceipt)
     {
 
         GrimoireOfflineTransitionLifecycleStore lifecycle = new(
@@ -491,7 +497,8 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             Operation,
             kind,
             payloadVersion: 1,
-            slotEpoch => Result<IGrimoireOfflineTransitionPayload>.Success(Prepared(kind, slotEpoch)),
+            slotEpoch => Result<IGrimoireOfflineTransitionPayload>.Success(
+                Prepared(kind, slotEpoch, parentReceipt?.BindingDigest)),
             CancellationToken.None));
 
         return new GrimoireOfflineTransitionPhaseSession(
@@ -500,7 +507,8 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             Value(
                 GrimoireOfflineTransitionPhaseSession.ClosingOwner.ForVerifiedPublication(
                     Launch(kind),
-                    opened)));
+                    opened)),
+            parentReceipt);
 
     }
 
@@ -607,6 +615,163 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task A_parent_bound_receipt_step_records_the_proof_and_refuses_every_other_value()
+    {
+
+        // Mutation caught: recording the binding instead of the proof would make the validator's
+        // comparison an identity — the journal would be checking a value against itself and would
+        // accept a transition whose outer record says nothing at all.
+        CovenantDigest binding = Digest(0x71);
+
+        StubParentReceipt parent = new(binding);
+
+        GrimoireOfflineTransitionPhaseSession session = await OpenAsync(
+            GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            parent);
+
+        Assert.Same(parent, session.ParentReceipt);
+
+        Assert.Equal(binding, session.Current.Payload.Binding.ParentReceiptBindingDigest);
+
+        await EnterApplyingAsync(session);
+
+        foreach (CovenantResetPhase phase in CovenantResetPhaseMachine.Ordered)
+        {
+
+            if (phase is CovenantResetPhase.InventoryPrepared)
+            {
+
+                continue;
+
+            }
+
+            if (phase is CovenantResetPhase.ReopenedVerified)
+            {
+
+                break;
+
+            }
+
+            if (phase is CovenantResetPhase.HandlesClosed)
+            {
+
+                Assert.True(
+                    (await session.RecordFactoryContinuationAsync(CancellationToken.None)).IsSuccess);
+
+            }
+
+            await RunPhaseAsync(session, phase);
+
+        }
+
+        Assert.True((await session.PrepareReopenAsync(
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.EnterVerifyingAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(true, false, false, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(true, true, false, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(true, true, true, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.BeginReconciliationAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordTerminalWinnerAsync(Digest(0x31), CancellationToken.None)).IsSuccess);
+
+        // A bound step owes a proof, and the proof it owes is this exact one. Omitting it, or bringing
+        // one that reproduces some other outer record, each leave the journal unable to say the two
+        // records describe the same work.
+        Assert.True(
+            (await session.RecordParentReceiptAsync(
+                provedReceiptDigest: null,
+                CancellationToken.None)).IsFailure);
+
+        Assert.True(
+            (await session.RecordParentReceiptAsync(
+                Digest(0x72),
+                CancellationToken.None)).IsFailure);
+
+        Assert.True(
+            (await session.RecordParentReceiptAsync(binding, CancellationToken.None)).IsSuccess);
+
+        Assert.False(
+            session.Current.Payload.Lifecycle.ReconciliationEvidence!.ParentReceiptNotRequired);
+
+        Assert.Equal(
+            binding,
+            session.Current.Payload.Lifecycle.ReconciliationEvidence.ParentReceiptDigest);
+
+    }
+
+    private sealed class StubParentReceipt(CovenantDigest bindingDigest)
+        : IGrimoireOfflineTransitionParentReceiptSink
+    {
+
+        public CovenantDigest BindingDigest { get; } = bindingDigest;
+
+        public Task<Result<CovenantDigest>> PublishAndRereadAsync(
+            CovenantDigest terminalWinnerDigest,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<CovenantDigest>.Success(BindingDigest));
+
+    }
+
+    [Fact]
+    public async Task An_unparented_receipt_step_refuses_a_proof_it_was_never_owed()
+    {
+
+        // Mutation caught: accepting a proof against an absent binding would let a transition record
+        // a satisfied parent receipt for a workflow that never launched it.
+        GrimoireOfflineTransitionPhaseSession session = await ReconcilingAsync();
+
+        Assert.True(
+            (await session.RecordParentReceiptAsync(
+                Digest(0x51),
+                CancellationToken.None)).IsFailure);
+
+        Assert.True(
+            (await session.RecordParentReceiptAsync(
+                provedReceiptDigest: null,
+                CancellationToken.None)).IsSuccess);
+
+        Assert.True(
+            session.Current.Payload.Lifecycle.ReconciliationEvidence!.ParentReceiptNotRequired);
+
+        Assert.Null(session.Current.Payload.Lifecycle.ReconciliationEvidence.ParentReceiptDigest);
+
+    }
+
+    private async Task<GrimoireOfflineTransitionPhaseSession> ReconcilingAsync()
+    {
+
+        GrimoireOfflineTransitionPhaseSession session = await OpenAsync(
+            GrimoireOfflineTransitionKind.CovenantReset);
+
+        await DriveToAppliedAsync(session, CovenantResetPhaseMachine.Ordered);
+
+        Assert.True((await session.PrepareReopenAsync(
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.EnterVerifyingAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(true, false, false, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(true, true, false, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(true, true, true, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.BeginReconciliationAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordTerminalWinnerAsync(Digest(0x31), CancellationToken.None)).IsSuccess);
+
+        return session;
+
+    }
+
     private static async Task CommitAndRetireAsync(GrimoireOfflineTransitionPhaseSession session)
     {
 
@@ -637,7 +802,10 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
         Assert.True((await session.RecordTerminalWinnerAsync(Digest(0x31), CancellationToken.None)).IsSuccess);
 
-        Assert.True((await session.RecordParentReceiptAsync(CancellationToken.None)).IsSuccess);
+        Assert.True(
+            (await session.RecordParentReceiptAsync(
+                provedReceiptDigest: null,
+                CancellationToken.None)).IsSuccess);
 
         Assert.True((await session.RecordLaneClosedAsync(CancellationToken.None)).IsSuccess);
 
@@ -757,7 +925,13 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
     private static IGrimoireOfflineTransitionPayload Prepared(
         GrimoireOfflineTransitionKind kind,
-        ulong slotEpoch)
+        ulong slotEpoch) =>
+        Prepared(kind, slotEpoch, parentReceiptBindingDigest: null);
+
+    private static IGrimoireOfflineTransitionPayload Prepared(
+        GrimoireOfflineTransitionKind kind,
+        ulong slotEpoch,
+        CovenantDigest? parentReceiptBindingDigest)
     {
 
         GrimoireOfflineTransitionBinding binding = new(
@@ -772,7 +946,7 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             new GrimoireOfflineTransitionEpochTuple(2, 3, 4),
             Launch(kind).Digest,
             ExpectedDatabaseOperationRevision: 4,
-            ParentReceiptBindingDigest: null);
+            parentReceiptBindingDigest);
 
         GrimoireOfflineTransitionLifecycle lifecycle = new(
             GrimoireOfflineTransitionState.Prepared,
