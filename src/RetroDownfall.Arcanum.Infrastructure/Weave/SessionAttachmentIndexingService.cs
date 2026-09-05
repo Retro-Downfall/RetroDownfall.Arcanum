@@ -52,9 +52,11 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
     /// Owned by the loop, which is the channel's only reader, so a plain list needs no lock —
     /// producers reach <see cref="_pending"/> and <see cref="_channel"/> and never this.
     ///
-    /// <para>Each entry carries the generation observed <em>before</em> its lease was refused rather
-    /// than after. The next-open wait uses that value to distinguish the actual return to ordinary
-    /// admission from the generation increment that happens when admission becomes fully closed.</para>
+    /// <para>Each entry carries the generation immediately before the one observed ahead of its
+    /// refused lease. The gate can refuse in either <c>Closing(G)</c> or <c>Closed(G)</c>, and reopening
+    /// from <c>Closed(G)</c> reports the same G. Waiting after G - 1 works for both without reading the
+    /// gate's private state: a nonordinary gate still parks the wait, while an already reopened
+    /// ordinary gate returns G immediately.</para>
     ///
     /// <para>Entries do not survive the process, and that is right rather than tolerated. The durable
     /// row still says pending, reconciliation re-selects it after a restart, and
@@ -480,7 +482,11 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
     private void Defer(SessionAttachmentIndexRequest request, long observedGeneration)
     {
 
-        _deferred.Add(new DeferredRequest(request, observedGeneration));
+        long waitAfterGeneration = observedGeneration > 0
+            ? observedGeneration - 1
+            : 0;
+
+        _deferred.Add(new DeferredRequest(request, waitAfterGeneration));
 
         _logger.LogDebug(
             "Session attachment {AttachmentId} indexing deferred: maintenance owns Grimoire admission.",
@@ -520,7 +526,7 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         }
 
         long openGeneration = await _admissionGate.WaitForNextOpenGenerationAsync(
-            _deferred[^1].ObservedGeneration,
+            _deferred[^1].WaitAfterGeneration,
             cancellationToken).ConfigureAwait(false);
 
         lock (_channelWriteSync)
@@ -531,7 +537,7 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
             int eligibleCount = 0;
 
             while (eligibleCount < _deferred.Count
-                && _deferred[eligibleCount].ObservedGeneration < openGeneration)
+                && _deferred[eligibleCount].WaitAfterGeneration < openGeneration)
             {
 
                 ready.Enqueue(_deferred[eligibleCount].Request);
@@ -619,10 +625,10 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
     }
 
-    /// <summary>One stood-down request and the admission generation it was refused in.</summary>
+    /// <summary>One stood-down request and the predecessor-generation floor its reopen must pass.</summary>
     private readonly record struct DeferredRequest(
         SessionAttachmentIndexRequest Request,
-        long ObservedGeneration);
+        long WaitAfterGeneration);
 
     internal static bool ShouldAutomaticallyRetry(
         SessionAttachmentIndexOutcome outcome,

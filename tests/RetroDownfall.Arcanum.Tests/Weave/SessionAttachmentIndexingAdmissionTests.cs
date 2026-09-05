@@ -548,6 +548,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         Assert.NotNull(state.PendingGenerationId);
 
+        Assert.NotEqual(string.Empty, state.PendingGenerationId);
+
         Assert.Equal(64, state.NextChunkIndex);
 
         SessionAttachmentIndexRequest held = Assert.Single(service.DeferredRequests);
@@ -663,7 +665,97 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ExecuteAsync_DeferralLeavesLaterIntakeBoundedAndProcessesItAfterTheOriginalRequest()
+    public async Task RequestDeferredDuringClosed_ResignalsWhenItsRegisteredWaitObservesReopen()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "request refused by already closed admission");
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        SessionAttachmentIndexingService service = CreateService(
+            BuildScopeFactory(new FakeWeaveService()),
+            gate);
+
+        IGrimoireClosingOwner closing = BeginClosing(gate, 70);
+
+        IGrimoireExclusiveClosedLease closed = await CloseAsync(gate, closing);
+
+        SessionAttachmentIndexRequest request = Dequeue(
+            service,
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 6));
+
+        Assert.Equal(
+            SessionAttachmentIndexDisposition.DeferredForMaintenance,
+            (await service.ProcessOneAsync(request, CancellationToken.None)).Disposition);
+
+        Task<int> resignalling = service.WaitForReopenAndResignalDeferredRequestsAsync(
+            CancellationToken.None);
+
+        Assert.False(resignalling.IsCompleted);
+
+        await ReopenAsync(closed, closing);
+
+        Assert.Equal(1, await resignalling);
+
+        Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? resignalled));
+
+        Assert.Same(request, resignalled);
+
+    }
+
+    [SkippableFact]
+    public async Task RequestDeferredDuringClosed_ResignalsWhenReopenPrecedesWaitRegistration()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "request whose reopen precedes its wait registration");
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        SessionAttachmentIndexingService service = CreateService(
+            BuildScopeFactory(new FakeWeaveService()),
+            gate);
+
+        IGrimoireClosingOwner closing = BeginClosing(gate, 71);
+
+        IGrimoireExclusiveClosedLease closed = await CloseAsync(gate, closing);
+
+        SessionAttachmentIndexRequest request = Dequeue(
+            service,
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 7));
+
+        Assert.Equal(
+            SessionAttachmentIndexDisposition.DeferredForMaintenance,
+            (await service.ProcessOneAsync(request, CancellationToken.None)).Disposition);
+
+        await ReopenAsync(closed, closing);
+
+        Task<int> resignalling = service.WaitForReopenAndResignalDeferredRequestsAsync(
+            CancellationToken.None);
+
+        Assert.True(resignalling.IsCompleted);
+
+        Assert.Equal(1, await resignalling);
+
+        Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? resignalled));
+
+        Assert.Same(request, resignalled);
+
+    }
+
+    [SkippableFact]
+    public async Task ExecuteAsync_FullReopenSuffixRestoresEveryRequestBeforeConcurrentNewerIntake()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -674,7 +766,17 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentRecord second = await PersistAsync(sessionId, "second request must stay second");
 
-        TaskCompletionSource<string[]> firstTwoProviderInputs = new(
+        SessionAttachmentRecord tail = await PersistAsync(sessionId, "retained suffix must stay third");
+
+        SessionAttachmentRecord newer = await PersistAsync(sessionId, "newer intake must stay fourth");
+
+        TaskCompletionSource<bool> secondProviderStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource<bool> continueSecondProvider = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource<bool> fourRequestsCompleted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         ConcurrentQueue<string> providerInputs = new();
@@ -682,7 +784,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         FakeWeaveService weave = new()
         {
 
-            OnEmbedInputs = (callNumber, inputs) =>
+            OnEmbedInputs = async (callNumber, inputs) =>
             {
 
                 providerInputs.Enqueue(Assert.Single(inputs));
@@ -690,11 +792,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
                 if (callNumber == 2)
                 {
 
-                    firstTwoProviderInputs.TrySetResult([.. providerInputs]);
+                    secondProviderStarted.TrySetResult(true);
+
+                    await continueSecondProvider.Task;
 
                 }
-
-                return Task.CompletedTask;
 
             },
 
@@ -704,8 +806,24 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         RequestDeferralBarrierLogger logger = new(first.Id);
 
+        ObservingScopeFactory scopes = BuildScopeFactory(weave);
+
+        scopes.OnScopeDisposed = () =>
+        {
+
+            if (weave.EmbedBatchCallCount == 4)
+            {
+
+                fourRequestsCompleted.TrySetResult(true);
+
+            }
+
+            return ValueTask.CompletedTask;
+
+        };
+
         SessionAttachmentIndexingService service = CreateService(
-            BuildScopeFactory(weave),
+            scopes,
             gate,
             logger);
 
@@ -723,12 +841,14 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(second.Id, sessionId)));
 
-        for (int index = 1; index < capacity; index++)
+        for (int index = 2; index < capacity; index++)
         {
 
             Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), sessionId)));
 
         }
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(tail.Id, sessionId)));
 
         Assert.Single(service.DeferredRequests);
 
@@ -744,13 +864,46 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         await ReopenAsync(closed, closing);
 
-        string[] observedOrder = await firstTwoProviderInputs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await secondProviderStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        try
+        {
+
+            Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(newer.Id, sessionId)));
+
+        }
+        finally
+        {
+
+            continueSecondProvider.TrySetResult(true);
+
+        }
+
+        await fourRequestsCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(0, service.QueueReader.Count);
 
         await hosted.StopAsync(CancellationToken.None);
 
+        IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus> statuses =
+            await _index!.GetStatusesAsync(
+                [first.Id, second.Id, tail.Id, newer.Id],
+                CancellationToken.None);
+
+        Assert.Equal(4, statuses.Count);
+
+        Assert.All(
+            statuses.Values,
+            static status => Assert.Equal(SessionAttachmentIndexStatus.Indexed, status));
+
         Assert.Equal(
-            ["first request must resume first", "second request must stay second"],
-            observedOrder);
+            [
+                "first request must resume first",
+                "second request must stay second",
+                "retained suffix must stay third",
+                "newer intake must stay fourth",
+            ],
+            providerInputs);
 
     }
 

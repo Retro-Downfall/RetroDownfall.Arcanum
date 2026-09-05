@@ -84,12 +84,16 @@ when the exact closed lease restores ordinary admission. Comparing `CurrentGener
 write while admission is still closed, re-defer with the closed generation, and strand the request
 after reopen.
 
-The worker instead directly awaits
-`IGrimoireConnectionAdmissionGate.WaitForNextOpenGenerationAsync` with the generation observed before
-the refused lease attempt and the host stopping token. There is no detached continuation. Under
-`KeepClosed` the loop remains parked with the exact `_pending` identity until recovery reopens
-ordinary admission or host shutdown cancels the wait; it does not dequeue later work that the same
-closed gate would refuse.
+The worker instead reads generation G before the refused lease attempt, retains G - 1 as the
+wait-after floor, and directly awaits
+`IGrimoireConnectionAdmissionGate.WaitForNextOpenGenerationAsync` with that floor and the host
+stopping token. The predecessor is load-bearing because a refusal can occur in either `Closing(G)`
+or `Closed(G)`, and reopening `Closed(G)` reports G rather than G + 1. The gate returns immediately
+only while ordinary, so the predecessor cannot turn a still-closing or closed gate into a false
+reopen; if reopen wins before waiter registration, ordinary generation G is already strictly beyond
+the floor and completes immediately. There is no detached continuation. Under `KeepClosed` the loop
+remains parked with the exact `_pending` identity until recovery reopens ordinary admission or host
+shutdown cancels the wait; it does not dequeue later work that the same closed gate would refuse.
 
 **The reconciliation scope is protected here, not deferred to #256.** The issue's bullets name only
 "one dequeued request". Reconciliation is not one, and on a strict reading belongs to the
@@ -283,19 +287,20 @@ designed for rather than discovered:
 ### 3.5 Retaining the identity, and re-signalling it once
 
 A deferred request is moved to a **held list** owned by the loop — the single reader — carrying the
-exact `SessionAttachmentIndexRequest` instance and the generation observed at step 1. Its `_pending`
-key is deliberately *not* released, so it remains the identity token that suppresses duplicates while
-it waits.
+exact `SessionAttachmentIndexRequest` instance and the predecessor of the generation observed at
+step 1. Its `_pending` key is deliberately *not* released, so it remains the identity token that
+suppresses duplicates while it waits.
 
 At the top of every loop iteration, before the worker waits for channel work, a non-empty held list
 causes the loop to await `WaitForNextOpenGenerationAsync` directly. After that actual-open signal,
 eligible held entries are written straight to `_channel.Writer`, oldest first. Three details are
 load-bearing:
 
-- **The generation is read before the lease attempt, not after the refusal.** Reading after would
-  race a reopen that had already happened and record the *new* generation as the one to wait past,
-  which is a lost wakeup. The gate's waiter atomically distinguishes an already-completed reopen
-  from the still-closing or fully-closed states.
+- **The generation is read before the lease attempt, and the retained wait floor is its predecessor.**
+  Reading after would race a reopen that had already happened and record the *new* generation as the
+  one to wait past, which is a lost wakeup. Retaining G itself also loses `Closed(G) → Ordinary(G)`,
+  whether the waiter registers before or after reopen. Waiting after G - 1 lets the gate's ordinary-
+  state check distinguish a completed reopen from the still-closing or fully-closed states.
 - **The write is `TryWrite`, not `WriteAsync`.** The channel is bounded with `FullMode.Wait`, and the
   re-signal runs on the loop that is the channel's only reader. Awaiting a write on a full channel
   would deadlock the reader against itself. Once reopen is observed, the reader temporarily removes
