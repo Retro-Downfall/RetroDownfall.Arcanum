@@ -847,10 +847,17 @@ public static class ApiBootstrapper
 
         }
 
-        // Finite is the only kind this stage takes. Marking the declared streaming routes
-        // quiesceable, so a transition can end them at a frame boundary, is a separate change; until
-        // it lands a live stream is drained through completion like any other finite request.
-        return admission.TryAdmit(GrimoireRequestKind.Finite);
+        // The kind comes from the route's own marker rather than from its path, so a route that moves
+        // or is renamed carries its classification with it. Only the declared quiesceable class takes
+        // a revocable lease; every other streaming class, and every unmarked route, takes a finite one
+        // and is drained through completion. Finite is the safe default on purpose — forgetting the
+        // marker on a new streaming route makes a transition slow rather than cutting a response
+        // mid-frame, and the streaming-route inventory is what stops it staying forgotten.
+        return admission.TryAdmit(
+            endpoint.Metadata.GetMetadata<GrimoireStreamRouteMetadata>() is
+                { Class: GrimoireStreamClass.GrimoireQuiesceableStream }
+                ? GrimoireRequestKind.QuiesceableStream
+                : GrimoireRequestKind.Finite);
 
     }
 

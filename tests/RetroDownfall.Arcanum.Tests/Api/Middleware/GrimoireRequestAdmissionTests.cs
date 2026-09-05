@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -335,6 +336,83 @@ public sealed class GrimoireRequestAdmissionTests
     }
 
     /// <summary>
+    /// The lease kind comes from the route's own marker, not from the path or the handler.
+    /// </summary>
+    /// <remarks>
+    /// Asserted through the lease the gate actually issued rather than through any downstream
+    /// behaviour, because the kind is the only thing that decides whether a transition revokes this
+    /// request at all. A test that inferred it from an observed refusal would pass equally well on a
+    /// stage that had guessed right for the wrong reason.
+    ///
+    /// <para>An unmarked route stays <see cref="GrimoireRequestKind.Finite"/> deliberately: a finite
+    /// lease is drained through completion, so a streaming route whose marker was forgotten makes a
+    /// transition slow rather than cutting a response mid-frame. The inventory is what stops the
+    /// marker staying forgotten.</para>
+    /// </remarks>
+    [Theory]
+    [InlineData("/api/quiesceable", true)]
+    [InlineData("/api/billable", false)]
+    [InlineData("/api/finite-stream", false)]
+    [InlineData("/api/probe", false)]
+    public async Task The_route_marker_decides_which_kind_of_lease_the_request_takes(
+        string path,
+        bool expectedQuiesceable)
+    {
+
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        using HttpResponseMessage response = await host.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(expectedQuiesceable, host.AdmittedQuiesceable);
+
+    }
+
+    /// <summary>
+    /// Beginning a transition revokes a quiesceable stream and leaves every finite request alone.
+    /// </summary>
+    /// <remarks>
+    /// This is the whole reason the kind exists. The gate collects revocation sources only from
+    /// <see cref="GrimoireRequestKind.QuiesceableStream"/> leases, so a route that took the wrong kind
+    /// is either never told to stop or is told to stop when it should have been drained — and neither
+    /// failure is visible from the request's own response.
+    /// </remarks>
+    [Theory]
+    [InlineData("/api/quiesceable", true)]
+    [InlineData("/api/billable", false)]
+    [InlineData("/api/finite-stream", false)]
+    [InlineData("/api/probe", false)]
+    public async Task Only_a_quiesceable_lease_is_revoked_when_a_transition_begins(
+        string path,
+        bool expectedRevoked)
+    {
+
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        host.Gate(entered, release);
+
+        Task<HttpResponseMessage> pending = host.GetAsync(path);
+
+        await entered.Task.WaitAsync(BoundedWait);
+
+        await using IGrimoireClosingOwner closing = host.BeginClosing();
+
+        Assert.Equal(expectedRevoked, host.RevocationSignalled);
+
+        release.SetResult();
+
+        using HttpResponseMessage response = await pending;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+    }
+
+    /// <summary>
     /// A request admitted before stage one holds the drain open until it is finished.
     /// </summary>
     [Fact]
@@ -391,6 +469,8 @@ public sealed class GrimoireRequestAdmissionTests
 
         private int _ordinaryOpenWhileClosing = -1;
 
+        private IGrimoireRequestLease? _admittedLease;
+
         private AdmissionProbeHost(WebApplication app, GrimoireConnectionAdmissionGate admission)
         {
 
@@ -410,6 +490,26 @@ public sealed class GrimoireRequestAdmissionTests
 
         internal bool OrdinaryOpenSucceededWhileClosing =>
             Volatile.Read(ref _ordinaryOpenWhileClosing) == 1;
+
+        /// <summary>
+        /// Whether the lease the admission stage took was the quiesceable kind, as the gate issued it.
+        /// </summary>
+        /// <remarks>
+        /// A bool rather than the kind itself only because <c>GrimoireRequestKind</c> is internal to
+        /// Infrastructure and a public xUnit theory cannot carry it as a parameter. The read is still
+        /// of the real lease.
+        /// </remarks>
+        internal bool AdmittedQuiesceable { get; private set; }
+
+        /// <summary>
+        /// Whether the admitted lease's maintenance revocation has fired.
+        /// </summary>
+        /// <remarks>
+        /// Read from the captured lease rather than from the endpoint, because the whole point is what
+        /// the gate did to a request that is still running when a transition began.
+        /// </remarks>
+        internal bool RevocationSignalled =>
+            _admittedLease?.MaintenanceRevocation.IsCancellationRequested ?? false;
 
         internal void RecordOrdinaryOpenWhileClosing(bool succeeded) =>
             Interlocked.Exchange(ref _ordinaryOpenWhileClosing, succeeded ? 1 : 0);
@@ -464,7 +564,10 @@ public sealed class GrimoireRequestAdmissionTests
 
             RouteGroupBuilder v1 = app.MapGroup("/v1").RequireArcanumApiKey();
 
-            _ = api.MapGet("/probe", () => host!.Ran());
+            _ = api.MapGet(
+                "/probe",
+                async (GrimoireRequestAdmissionScope admission) =>
+                    await host!.CaptureAndParkAsync(admission));
 
             _ = api.MapGet("/exempt", () => host!.Ran())
                 .WithMetadata(GrimoireAdmissionExemptRouteMetadata.Instance);
@@ -525,6 +628,28 @@ public sealed class GrimoireRequestAdmissionTests
 
             });
 
+            // The three marked shapes. Each captures the lease the admission stage took and then
+            // parks on the same barrier the gated route uses, so a transition can begin while the
+            // request is provably still live and the revocation it does or does not receive is
+            // observable.
+            _ = api.MapGet(
+                    "/quiesceable",
+                    async (GrimoireRequestAdmissionScope admission) =>
+                        await host!.CaptureAndParkAsync(admission))
+                .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
+
+            _ = api.MapGet(
+                    "/billable",
+                    async (GrimoireRequestAdmissionScope admission) =>
+                        await host!.CaptureAndParkAsync(admission))
+                .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain);
+
+            _ = api.MapGet(
+                    "/finite-stream",
+                    async (GrimoireRequestAdmissionScope admission) =>
+                        await host!.CaptureAndParkAsync(admission))
+                .WithMetadata(GrimoireStreamRouteMetadata.FiniteDrain);
+
             _ = v1.MapGet("/probe", () => host!.Ran());
 
             // Mapped on the root application rather than inside the group, exactly as the anonymous
@@ -555,6 +680,35 @@ public sealed class GrimoireRequestAdmissionTests
             _ = Interlocked.Increment(ref _endpointRuns);
 
             return Results.Ok();
+
+        }
+
+        /// <summary>
+        /// Records the lease this request was admitted on, then waits if a test armed the barrier.
+        /// </summary>
+        /// <remarks>
+        /// Capture and park are one method because the two have to happen in that order on the same
+        /// request: a test that begins a transition needs the lease already recorded, and needs the
+        /// request still running when it does. Parking is conditional so every existing test that
+        /// calls these routes without arming a barrier still returns immediately.
+        /// </remarks>
+        internal async Task<IResult> CaptureAndParkAsync(GrimoireRequestAdmissionScope admission)
+        {
+
+            _admittedLease = admission.Lease;
+
+            AdmittedQuiesceable = admission.Lease?.Kind == GrimoireRequestKind.QuiesceableStream;
+
+            _entered?.TrySetResult();
+
+            if (_release is not null)
+            {
+
+                await _release.Task.ConfigureAwait(false);
+
+            }
+
+            return Ran();
 
         }
 
