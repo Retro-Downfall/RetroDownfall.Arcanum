@@ -230,7 +230,8 @@ tests.
 
 ### Task 10: Verification and delivery
 
-- [ ] Warning-free Release solution build.
-- [ ] The complete `RetroDownfall.Arcanum.Tests` suite green.
-- [ ] Changed-file style check and a clean branch diff.
-- [ ] Merge `--no-ff` into `grimoire-fixes`, push, delete the feature branch, close issue #250.
+- [x] Warning-free Release solution build.
+- [x] The complete `RetroDownfall.Arcanum.Tests` suite green (13,583 passed, 59 skipped), and
+      `RetroDownfall.Compendium.Tests` green (181 passed).
+- [x] Changed-file style check and a clean branch diff.
+- [x] Merge `--no-ff` into `grimoire-fixes`, push, delete the feature branch, close issue #250.
