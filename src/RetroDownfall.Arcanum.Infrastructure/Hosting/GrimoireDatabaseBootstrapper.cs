@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -293,7 +294,7 @@ public static class GrimoireDatabaseBootstrapper
             grimoireDirectory,
             cancellationToken).ConfigureAwait(false);
 
-        CovenantOperationGate? recoveredGate = await RecoverProtectedMaintenanceAsync(
+        ProtectedMaintenanceRecovery protectedRecovery = await RecoverProtectedMaintenanceAsync(
             installConnection,
             scopeFactory,
             heldInstallationLock,
@@ -302,6 +303,19 @@ public static class GrimoireDatabaseBootstrapper
             cancellationToken).ConfigureAwait(false);
 
         await installConnection.CloseAsync().ConfigureAwait(false);
+
+        // After the install handle is physically closed and before readiness. A launch committed by a
+        // process that died before publishing its journal is a pre-effect crash: safe to resume, and
+        // unsafe to leave, because a nonterminal durable operation blocks every later data-retention
+        // operation. Until now it was left to the periodic reconciler, which runs after readiness on a
+        // ten-second budget with the host already serving - and a transition closes admission, so it
+        // may not begin after the signal every pool and worker waits on has been published.
+        await ResumeLaunchGapAsync(
+            scopeFactory,
+            heldInstallationLock,
+            grimoireDirectory,
+            protectedRecovery.AdoptedErasureOwner,
+            cancellationToken).ConfigureAwait(false);
 
         if (File.Exists(dbPath))
         {
@@ -314,7 +328,7 @@ public static class GrimoireDatabaseBootstrapper
         {
             IGrimoireDbReadiness readiness = scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>();
 
-            recoveredGate?.PublishReadiness();
+            protectedRecovery.Gate?.PublishReadiness();
 
             readiness.MarkReady();
         }
@@ -925,7 +939,17 @@ public static class GrimoireDatabaseBootstrapper
     /// refuses readiness: after the readiness boundary freezes adoption, no later component could
     /// reconstruct the missing owner safely.</para>
     /// </remarks>
-    private static async Task<CovenantOperationGate?> RecoverProtectedMaintenanceAsync(
+    /// <summary>What the pre-readiness protected pass adopted, and the gate it adopted into.</summary>
+    /// <remarks>
+    /// The owner travels back rather than staying inside the pass, because resuming it has to happen
+    /// after the install connection is physically closed: the handler closes the Grimoire and waits
+    /// for every enrolled handle, and this bootstrap is holding one.
+    /// </remarks>
+    private sealed record ProtectedMaintenanceRecovery(
+        CovenantOperationGate? Gate,
+        CovenantExclusiveRecoveryOwner? AdoptedErasureOwner);
+
+    private static async Task<ProtectedMaintenanceRecovery> RecoverProtectedMaintenanceAsync(
         SqliteConnection installConnection,
         IServiceScopeFactory scopeFactory,
         ArcanumMaintenanceLock? heldInstallationLock,
@@ -937,13 +961,15 @@ public static class GrimoireDatabaseBootstrapper
         if (heldInstallationLock is null)
         {
 
-            return null;
+            return new ProtectedMaintenanceRecovery(Gate: null, AdoptedErasureOwner: null);
 
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         CovenantOperationGate? gate = scope.ServiceProvider.GetService<CovenantOperationGate>();
+
+        CovenantExclusiveRecoveryOwner? adoptedErasureOwner = null;
 
         CovenantSqliteConnectionInitializer initializer = CovenantSqliteConnectionInitializer.Instance;
 
@@ -967,6 +993,8 @@ public static class GrimoireDatabaseBootstrapper
                 throw ProtectedRecoveryUnavailable();
 
             }
+
+            adoptedErasureOwner = erasureOwner.Value;
 
             repair = new CovenantSchemaRepairStartupRecovery(
                 gate,
@@ -1059,7 +1087,65 @@ public static class GrimoireDatabaseBootstrapper
 
         }
 
-        return gate;
+        return new ProtectedMaintenanceRecovery(gate, adoptedErasureOwner);
+
+    }
+
+    /// <summary>
+    /// Finishes an adopted launch-gap operation, or refuses readiness.
+    /// </summary>
+    /// <remarks>
+    /// Skipped without an installation lock, exactly as the protected-maintenance recovery above is: a
+    /// CLI beside a live host does not own the installation, and a second process resuming a
+    /// transition would be two owners for one closed period. Skipped too when the composition carries
+    /// no dispatch - such a container has no way to run a handler here at all, and the operation is
+    /// left to the periodic pass exactly as it was before this step existed.
+    /// </remarks>
+    private static async Task ResumeLaunchGapAsync(
+        IServiceScopeFactory scopeFactory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        string grimoireDirectory,
+        CovenantExclusiveRecoveryOwner? adopted,
+        CancellationToken cancellationToken)
+    {
+
+        if (heldInstallationLock is null || adopted is null)
+        {
+
+            return;
+
+        }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        if (scope.ServiceProvider.GetService<IGrimoireOfflineTransitionHandlerDispatch>()
+            is not { } dispatch)
+        {
+
+            Log.Warning(
+                "An interrupted Covenant erasure launch was adopted before readiness, but this "
+                + "composition carries no offline-transition dispatch, so it is left to ordinary "
+                + "reconciliation.");
+
+            return;
+
+        }
+
+        Result resumed = await CovenantOfflineTransitionLaunchGapResumption
+            .ResumeBeforeReadinessAsync(
+                dispatch,
+                heldInstallationLock,
+                grimoireDirectory,
+                adopted,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (resumed.IsFailure)
+        {
+
+            throw ProtectedRecoveryUnavailable();
+
+        }
 
     }
 
