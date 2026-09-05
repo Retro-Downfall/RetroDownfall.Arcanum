@@ -473,6 +473,239 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ProcessOneAsync_SuccessfulBatch_DisposesEffectGroupAfterDurableAppend()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(sessionId, "content appended inside its group");
+
+        RecordingAdmissionGate gate = new(OpenGate());
+
+        SessionAttachmentIndexState? stateAtDisposal = null;
+
+        int chunkCountAtDisposal = -1;
+
+        gate.OnEffectGroupDisposing = async () =>
+        {
+
+            stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
+
+            chunkCountAtDisposal = (await _index
+                .GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None)).Length;
+
+        };
+
+        SessionAttachmentIndexingService service = CreateService(
+            BuildScopeFactory(new FakeWeaveService()),
+            gate);
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        Assert.NotNull(stateAtDisposal);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Pending, stateAtDisposal.Status);
+
+        Assert.True(chunkCountAtDisposal > 0);
+
+    }
+
+    [SkippableFact]
+    public async Task ProcessOneAsync_FailedProviderResult_DisposesEffectGroupAfterDurableFailure()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(sessionId, "provider result fails inside its group");
+
+        RecordingAdmissionGate gate = new(OpenGate());
+
+        SessionAttachmentIndexState? stateAtDisposal = null;
+
+        gate.OnEffectGroupDisposing = async () =>
+        {
+
+            stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        };
+
+        FakeWeaveService weave = new()
+        {
+
+            EmbedBatchResult = Result<Embedding<float>[]>.Failure(
+                new Error(
+                    ErrorCodes.Embeddings.ProviderUnavailable,
+                    "Simulated embedding failure.")),
+
+        };
+
+        SessionAttachmentIndexingService service = CreateService(
+            BuildScopeFactory(weave),
+            gate,
+            timeProvider: new ImmediateTimeProvider(static () => { }));
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.NotNull(stateAtDisposal);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, stateAtDisposal.Status);
+
+    }
+
+    [SkippableFact]
+    public async Task ProcessOneAsync_DimensionMismatch_DisposesEffectGroupAfterDurableFailure()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(sessionId, "wrong dimensions fail inside their group");
+
+        RecordingAdmissionGate gate = new(OpenGate());
+
+        SessionAttachmentIndexState? stateAtDisposal = null;
+
+        gate.OnEffectGroupDisposing = async () =>
+        {
+
+            stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        };
+
+        SessionAttachmentIndexingService service = CreateService(
+            BuildScopeFactory(new FakeWeaveService { OutputDimensions = Dimensions + 1 }),
+            gate);
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        Assert.NotNull(stateAtDisposal);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, stateAtDisposal.Status);
+
+    }
+
+    [SkippableFact]
+    public async Task ProcessOneAsync_ProviderCancellation_DisposesEffectGroupAfterDurableFailure()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(sessionId, "provider cancellation fails inside its group");
+
+        RecordingAdmissionGate gate = new(OpenGate());
+
+        SessionAttachmentIndexState? stateAtDisposal = null;
+
+        gate.OnEffectGroupDisposing = async () =>
+        {
+
+            stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        };
+
+        FakeWeaveService weave = new()
+        {
+
+            OnEmbed = static _ => throw new OperationCanceledException("simulated provider interruption"),
+
+        };
+
+        SessionAttachmentIndexingService service = CreateService(
+            BuildScopeFactory(weave),
+            gate,
+            timeProvider: new ImmediateTimeProvider(static () => { }));
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.NotNull(stateAtDisposal);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, stateAtDisposal.Status);
+
+        Assert.Equal(
+            "Attachment indexing was interrupted and will be retried.",
+            stateAtDisposal.FailureReason);
+
+    }
+
+    [SkippableFact]
+    public async Task ProcessOneAsync_HostCancellation_PropagatesWithoutFailureClassification()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(sessionId, "host cancellation is not failure");
+
+        using CancellationTokenSource stopping = new();
+
+        FakeWeaveService weave = new()
+        {
+
+            OnEmbed = _ =>
+            {
+
+                stopping.Cancel();
+
+                stopping.Token.ThrowIfCancellationRequested();
+
+                return Task.CompletedTask;
+
+            },
+
+        };
+
+        SessionAttachmentIndexingService service = CreateService(
+            BuildScopeFactory(weave),
+            new RecordingAdmissionGate(OpenGate()));
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.ProcessOneAsync(
+                new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+                stopping.Token));
+
+        SessionAttachmentIndexState state = await _index!.GetStateAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Pending, state.Status);
+
+        Assert.Equal(0, state.AttemptCount);
+
+        Assert.Null(state.FailureReason);
+
+    }
+
+    [SkippableFact]
     public async Task ProcessOneAsync_RevocationWinsTheFirstEffectRace_MakesNoProviderCall()
     {
 
@@ -1297,10 +1530,10 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
     }
 
-    private static float[] CreateVector()
+    private static float[] CreateVector(int dimensions = Dimensions)
     {
 
-        float[] vector = new float[Dimensions];
+        float[] vector = new float[dimensions];
 
         vector[0] = 1f;
 
@@ -1398,6 +1631,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         internal Result<Embedding<float>[]>? EmbedBatchResult { get; init; }
 
+        internal int OutputDimensions { get; init; } = Dimensions;
+
         public bool IsAvailable => true;
 
         public Task<Result<Embedding<float>>> EmbedAsync(
@@ -1429,7 +1664,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             }
 
             return EmbedBatchResult ?? Result<Embedding<float>[]>.Success(
-                [.. texts.Select(static _ => new Embedding<float>(CreateVector()))]);
+                [.. texts.Select(_ => new Embedding<float>(CreateVector(OutputDimensions)))]);
 
         }
 
@@ -1454,6 +1689,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         internal List<GrimoireWorkKind> RequestedWorkKinds { get; } = [];
 
         internal bool WorkLeaseIsHeld => _workLease is { IsHeld: true };
+
+        internal Func<ValueTask>? OnEffectGroupDisposing { get; set; }
 
         public long CurrentGeneration => inner.CurrentGeneration;
 
@@ -1480,7 +1717,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
             }
 
-            _workLease = new RecordingWorkLease(admitted!);
+            _workLease = new RecordingWorkLease(
+                admitted!,
+                OnEffectGroupDisposing ?? (static () => ValueTask.CompletedTask));
 
             lease = _workLease;
 
@@ -1534,7 +1773,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
     }
 
-    private sealed class RecordingWorkLease(IGrimoireWorkLease inner) : IGrimoireWorkLease
+    private sealed class RecordingWorkLease(
+        IGrimoireWorkLease inner,
+        Func<ValueTask> onEffectGroupDisposing) : IGrimoireWorkLease
     {
 
         private int _disposed;
@@ -1548,8 +1789,23 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
 
         public bool TryBeginExternalEffectGroup(
-            out IGrimoireExternalEffectGroup? effectGroup) =>
-            inner.TryBeginExternalEffectGroup(out effectGroup);
+            out IGrimoireExternalEffectGroup? effectGroup)
+        {
+
+            if (!inner.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admitted))
+            {
+
+                effectGroup = null;
+
+                return false;
+
+            }
+
+            effectGroup = new ObservingExternalEffectGroup(admitted!, onEffectGroupDisposing);
+
+            return true;
+
+        }
 
         public async ValueTask DisposeAsync()
         {
@@ -1557,6 +1813,31 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             await inner.DisposeAsync();
 
             _ = Interlocked.Exchange(ref _disposed, 1);
+
+        }
+
+    }
+
+    private sealed class ObservingExternalEffectGroup(
+        IGrimoireExternalEffectGroup inner,
+        Func<ValueTask> onDisposing) : IGrimoireExternalEffectGroup
+    {
+
+        public async ValueTask DisposeAsync()
+        {
+
+            try
+            {
+
+                await onDisposing();
+
+            }
+            finally
+            {
+
+                await inner.DisposeAsync();
+
+            }
 
         }
 

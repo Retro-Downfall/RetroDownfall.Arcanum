@@ -193,7 +193,7 @@ internal sealed class SessionAttachmentIndexProcessor(
         int observedChunkCount = 0;
 
         // One sequential effect group per batch, opened before the provider call and closed after
-        // whichever of this batch's three durable exits it takes. The span is the batch's whole
+        // whichever durable exit this batch takes. The span is the batch's whole
         // independently resumable unit: begun, the closure waits through the call and its append or
         // its classification; refused, nothing is billed and every earlier batch stands. Groups are
         // taken one after another from the same lease, which the gate permits because its per-lease
@@ -216,12 +216,42 @@ internal sealed class SessionAttachmentIndexProcessor(
                 .ToArray();
 
             // The host token, never the lease's revocation. Once the frontier is won maintenance
-            // waits through this group and its durable disposition rather than cancelling into it —
-            // and here that rule has teeth beyond the frontier, because a cancellation reaching the
-            // caller is caught by an arm that marks the attachment Failed and moves its attempt.
-            Result<Embedding<float>[]> batch = await weave
-                .EmbedBatchAsync(inputs, cancellationToken)
-                .ConfigureAwait(false);
+            // waits through this group and its durable disposition rather than cancelling into it.
+            // Provider cancellation while the host is live is classified below inside that same
+            // group; host cancellation remains the one cancellation that propagates unchanged.
+            Result<Embedding<float>[]> batch;
+
+            try
+            {
+
+                batch = await weave
+                    .EmbedBatchAsync(inputs, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+
+                // WeaveService deliberately propagates provider cancellation. It is a genuine,
+                // retryable interruption when the host token is still live, so classify it before
+                // giving back the effect group that admitted the provider call. Let a signalled host
+                // token escape instead: shutdown is neither a product failure nor another attempt.
+                logger.LogWarning(
+                    ex,
+                    "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
+                    attachment.Id);
+
+                await MarkWithoutIndexAsync(
+                    attachment,
+                    SessionAttachmentIndexStatus.Failed,
+                    request.Attempt,
+                    "Attachment indexing was interrupted and will be retried.",
+                    extractedAt,
+                    cancellationToken).ConfigureAwait(false);
+
+                return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+
+            }
 
             if (batch.IsFailure)
             {
