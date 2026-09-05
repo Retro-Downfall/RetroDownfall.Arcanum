@@ -5,6 +5,38 @@ using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
+/// <summary>What settling one durable operation ended as.</summary>
+/// <remarks>
+/// Named rather than counted, because one caller needs the verdict for a single operation rather than
+/// a tally over a page. Pre-readiness recovery may publish readiness only on the three terminal
+/// answers; everything else means the operation is still owed and the host must stay closed.
+/// </remarks>
+public enum LongRunningOperationSettlementOutcome : byte
+{
+
+    /// <summary>This process is already running it, so nothing was done.</summary>
+    OwnedInProcess = 1,
+
+    /// <summary>No such durable row.</summary>
+    NotFound = 2,
+
+    /// <summary>The handler finished it.</summary>
+    Completed = 3,
+
+    /// <summary>The handler recorded a durable failure.</summary>
+    Failed = 4,
+
+    /// <summary>The handler abandoned it safely.</summary>
+    Abandoned = 5,
+
+    /// <summary>The handler could not finish it, and an operator has to look.</summary>
+    RequiresAttention = 6,
+
+    /// <summary>Somebody moved the row between the handler and the verdict.</summary>
+    ConcurrencyLost = 7,
+
+}
+
 /// <param name="scopeFactory">
 /// Supplies one DI scope — and therefore one <c>ArcanumDbContext</c> and one SQLite connection — per
 /// concurrently recovered operation. The reconciler and its store are both scoped, so without this
@@ -161,59 +193,27 @@ public sealed class LongRunningOperationReconciler(
 
             Interlocked.Increment(ref claimed);
 
-            LongRunningOperationRecoveryResult result = await RecoverOneAsync(
+            switch (await SettleLeasedAsync(
+                operationStore,
                 operationHandlers,
                 lease.Operation,
-                ct).ConfigureAwait(false);
-
-            // Once the handler has returned, persisting its outcome is compensation: the pass token is
-            // often the reason compensation is running at all (a startup budget that just expired, a
-            // background pass whose host is shutting down), so recording the result must not be lost
-            // because that same token is now cancelled. Compensating work runs on CancellationToken.None
-            // (the recurring-root-cause pattern; ct stays scoped to the handler call and the lease
-            // acquisition above).
-            LongRunningOperation latest = await operationStore.GetAsync(
-                lease.Operation.Id,
-                CancellationToken.None).ConfigureAwait(false)
-                ?? lease.Operation;
-
-            bool transitioned = await operationStore.TryTransitionAsync(
-                lease.Operation.Id,
-                latest.Revision,
                 ownerId,
-                result.State,
-                timeProvider.GetUtcNow(),
-                result.ErrorCode,
-                CancellationToken.None).ConfigureAwait(false);
-
-            if (!transitioned)
+                ct).ConfigureAwait(false))
             {
-
-                Interlocked.Increment(ref skipped);
-
-                RecordOutcome(operation.Kind, "cas_lost");
-
-                return;
-
-            }
-
-            switch (result.State)
-            {
-                case LongRunningOperationState.Completed:
+                case LongRunningOperationSettlementOutcome.Completed:
                     Interlocked.Increment(ref completed);
-                    RecordOutcome(operation.Kind, "completed");
                     break;
-                case LongRunningOperationState.Failed:
+                case LongRunningOperationSettlementOutcome.Failed:
                     Interlocked.Increment(ref failed);
-                    RecordOutcome(operation.Kind, "failed");
                     break;
-                case LongRunningOperationState.Abandoned:
+                case LongRunningOperationSettlementOutcome.Abandoned:
                     Interlocked.Increment(ref abandoned);
-                    RecordOutcome(operation.Kind, "abandoned");
+                    break;
+                case LongRunningOperationSettlementOutcome.ConcurrencyLost:
+                    Interlocked.Increment(ref skipped);
                     break;
                 default:
                     Interlocked.Increment(ref attention);
-                    RecordOutcome(operation.Kind, "attention");
                     break;
             }
 
@@ -288,6 +288,118 @@ public sealed class LongRunningOperationReconciler(
             abandoned,
             attention,
             skipped);
+    }
+
+    /// <summary>
+    /// Settles exactly one named operation whose lease this caller already holds.
+    /// </summary>
+    /// <remarks>
+    /// The pass's own per-operation protocol, reached by identity instead of by expiry discovery.
+    /// Pre-readiness offline-transition recovery knows which operation the authenticated journal names
+    /// and has already adopted its lease under the held installation maintenance lock, so the two
+    /// things the generic pass does first — find an expired row, then take its lease — are the two it
+    /// must not repeat. Everything after that is identical, and is identical by being the same code:
+    /// a second copy of "run the handler, reread, compare-exchange the verdict" would be a second
+    /// answer to what a recovery outcome means.
+    /// </remarks>
+    public async Task<LongRunningOperationSettlementOutcome> SettleExactlyAsync(
+        Guid operationId,
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        LongRunningOperation? leased = await store
+            .GetAsync(operationId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (leased is null)
+        {
+
+            return LongRunningOperationSettlementOutcome.NotFound;
+
+        }
+
+        // The same skip the generic pass makes, for the same reason: an operation this process is
+        // already running must not be recovered beside itself. It is checked after the read here only
+        // so the metric can carry the row's real kind, which an identity alone does not name.
+        if (ownership.IsClaimed(operationId))
+        {
+
+            RecordOutcome(leased.Kind, "owned_in_process");
+
+            return LongRunningOperationSettlementOutcome.OwnedInProcess;
+
+        }
+
+        return await SettleLeasedAsync(store, _handlers, leased, ownerId, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Runs the handler for one leased operation and records the verdict it returned.
+    /// </summary>
+    /// <remarks>
+    /// Once the handler has returned, persisting its outcome is compensation: the caller's token is
+    /// often the reason compensation is running at all — a startup budget that just expired, a
+    /// background pass whose host is shutting down — so recording the result must not be lost because
+    /// that same token is now cancelled. The reread and the compare-exchange therefore run on
+    /// <see cref="CancellationToken.None"/>, and the caller's token stays scoped to the handler call.
+    /// </remarks>
+    private async Task<LongRunningOperationSettlementOutcome> SettleLeasedAsync(
+        ILongRunningOperationStore operationStore,
+        IReadOnlyDictionary<string, ILongRunningOperationRecoveryHandler> operationHandlers,
+        LongRunningOperation leased,
+        string ownerId,
+        CancellationToken cancellationToken)
+    {
+
+        LongRunningOperationRecoveryResult result = await RecoverOneAsync(
+            operationHandlers,
+            leased,
+            cancellationToken).ConfigureAwait(false);
+
+        LongRunningOperation latest = await operationStore.GetAsync(
+            leased.Id,
+            CancellationToken.None).ConfigureAwait(false)
+            ?? leased;
+
+        bool transitioned = await operationStore.TryTransitionAsync(
+            leased.Id,
+            latest.Revision,
+            ownerId,
+            result.State,
+            timeProvider.GetUtcNow(),
+            result.ErrorCode,
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (!transitioned)
+        {
+
+            RecordOutcome(leased.Kind, "cas_lost");
+
+            return LongRunningOperationSettlementOutcome.ConcurrencyLost;
+
+        }
+
+        switch (result.State)
+        {
+            case LongRunningOperationState.Completed:
+                RecordOutcome(leased.Kind, "completed");
+                return LongRunningOperationSettlementOutcome.Completed;
+            case LongRunningOperationState.Failed:
+                RecordOutcome(leased.Kind, "failed");
+                return LongRunningOperationSettlementOutcome.Failed;
+            case LongRunningOperationState.Abandoned:
+                RecordOutcome(leased.Kind, "abandoned");
+                return LongRunningOperationSettlementOutcome.Abandoned;
+            default:
+                RecordOutcome(leased.Kind, "attention");
+                return LongRunningOperationSettlementOutcome.RequiresAttention;
+        }
+
     }
 
     private async Task<LongRunningOperationRecoveryResult> RecoverOneAsync(
