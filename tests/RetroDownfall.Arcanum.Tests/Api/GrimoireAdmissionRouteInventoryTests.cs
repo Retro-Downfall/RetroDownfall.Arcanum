@@ -152,7 +152,7 @@ public sealed class GrimoireAdmissionRouteInventoryTests
         Assert.True(authenticated >= 0, "the API-key check is missing");
 
         int admission = source.IndexOf(
-            "ApplyGrimoireRequestAdmissionAsync(context)",
+            "TryAdmitGrimoireRequest(context)",
             authenticated,
             StringComparison.Ordinal);
 
@@ -197,7 +197,7 @@ public sealed class GrimoireAdmissionRouteInventoryTests
             StringComparison.Ordinal);
 
         int admission = source.IndexOf(
-            "ApplyGrimoireRequestAdmissionAsync(context)",
+            "TryAdmitGrimoireRequest(context)",
             StringComparison.Ordinal);
 
         int authenticated = source.IndexOf(

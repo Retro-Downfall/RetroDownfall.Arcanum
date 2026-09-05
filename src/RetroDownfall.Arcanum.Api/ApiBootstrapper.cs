@@ -652,8 +652,10 @@ public static class ApiBootstrapper
 
                 }
 
-                if (await ApplyGrimoireRequestAdmissionAsync(context).ConfigureAwait(false))
+                if (!TryAdmitGrimoireRequest(context))
                 {
+
+                    _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
 
                     return;
 
@@ -679,8 +681,10 @@ public static class ApiBootstrapper
             if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
             {
 
-                if (await ApplyGrimoireRequestAdmissionAsync(context).ConfigureAwait(false))
+                if (!TryAdmitGrimoireRequest(context))
                 {
+
+                    _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
 
                     return;
 
@@ -737,14 +741,24 @@ public static class ApiBootstrapper
     }
 
     /// <summary>
-    /// Takes this request's Grimoire admission, or refuses it, before any endpoint work happens.
+    /// Takes this request's Grimoire admission, reporting whether the pipeline may continue.
     /// </summary>
     /// <remarks>
-    /// Returns <see langword="true"/> when it has already written a refusal and the pipeline must
-    /// stop. It runs in both branches of the gate above, after whichever authentication that branch
-    /// performs and before every later decision, because the parent design's order is authentication,
-    /// then Grimoire admission, then installation-reset admission and Covenant pre-binding, then the
-    /// endpoint.
+    /// Returns <see langword="false"/> only when the request must be refused; the caller writes the
+    /// refusal. It runs in both branches of the gate above, after whichever authentication that
+    /// branch performs and before every later decision, because the parent design's order is
+    /// authentication, then Grimoire admission, then installation-reset admission and Covenant
+    /// pre-binding, then the endpoint.
+    ///
+    /// <para><b>This method is deliberately synchronous, and that is load-bearing rather than
+    /// incidental.</b> Admitting a request records its ordinary lifetime in the gate's static
+    /// <c>AsyncLocal</c>, and that lifetime is what lets an already-admitted request keep opening its
+    /// connection once maintenance has begun closing — including the reset request that is promoted
+    /// out of its own drain. An <c>AsyncLocal</c> written inside an <c>async</c> method does not
+    /// survive that method's return, so taking the lease behind an <c>await</c> would discard the
+    /// lifetime before the pipeline ever reached the endpoint: every request would appear to have no
+    /// live lifetime, and the initiator of an erasure would be refused by its own transition. Taken
+    /// from the delegate's own frame, the write is carried forward across its later awaits.</para>
     ///
     /// <para>Selection is by path and never by API-key metadata. That is the whole of the exclusion
     /// rule: <see cref="PathString.StartsWithSegments(PathString, StringComparison)"/> compares whole
@@ -766,14 +780,14 @@ public static class ApiBootstrapper
     /// writer has run. Releasing the lease in a <c>finally</c> after <c>next()</c> would invert that
     /// and leave those writers with no live lifetime.</para>
     /// </remarks>
-    private static async Task<bool> ApplyGrimoireRequestAdmissionAsync(HttpContext context)
+    private static bool TryAdmitGrimoireRequest(HttpContext context)
     {
 
         if (context.GetEndpoint() is not RouteEndpoint endpoint
             || endpoint.Metadata.GetMetadata<GrimoireAdmissionExemptRouteMetadata>() is not null)
         {
 
-            return false;
+            return true;
 
         }
 
@@ -781,7 +795,7 @@ public static class ApiBootstrapper
             && !context.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
         {
 
-            return false;
+            return true;
 
         }
 
@@ -792,21 +806,14 @@ public static class ApiBootstrapper
             // Grimoire, so there is no admission to take and nothing for a refusal to protect. The
             // two stages below answer an absent service exactly this way. That the composed host does
             // register it is a composition contract, held by its own test rather than by a throw here.
-            return false;
+            return true;
 
         }
 
         // Finite is the only kind this stage takes. Marking the declared streaming routes
         // quiesceable, so a transition can end them at a frame boundary, is a separate change; until
         // it lands a live stream is drained through completion like any other finite request.
-        if (admission.TryAdmit(GrimoireRequestKind.Finite))
-        {
-
-            return false;
-
-        }
-
-        return await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
+        return admission.TryAdmit(GrimoireRequestKind.Finite);
 
     }
 

@@ -267,6 +267,38 @@ public sealed class GrimoireRequestAdmissionTests
     }
 
     /// <summary>
+    /// An admitted request can still reach the Grimoire once maintenance begins closing under it.
+    /// </summary>
+    /// <remarks>
+    /// Admission records the request's ordinary lifetime in the gate's static <c>AsyncLocal</c>, and
+    /// that lifetime is the only thing that distinguishes an already-admitted request from a new one
+    /// while the gate is <c>Closing</c>: without it every open is refused, including the reset
+    /// request's own, which is promoted out of its drain precisely so it can finish its transition.
+    ///
+    /// <para>The assertion is made from inside the endpoint because that is where the property has to
+    /// hold, and because it is the one place a defect in how the lease is taken shows up. Taking the
+    /// lease behind an <c>await</c> discards the lifetime on return, and a test that admitted and
+    /// checked in the same frame would pass over exactly that defect.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_admitted_request_can_still_open_the_grimoire_once_closing_begins()
+    {
+
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        using HttpResponseMessage response = await host.GetAsync("/api/lifetime");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(1, host.EndpointRuns);
+
+        Assert.True(
+            host.OrdinaryOpenSucceededWhileClosing,
+            "the admitted request had no live ordinary lifetime once the gate began closing");
+
+    }
+
+    /// <summary>
     /// A request admitted before stage one holds the drain open until it is finished.
     /// </summary>
     [Fact]
@@ -321,6 +353,8 @@ public sealed class GrimoireRequestAdmissionTests
 
         private int _leaseHeldAtSentinelDisposal = -1;
 
+        private int _ordinaryOpenWhileClosing = -1;
+
         private AdmissionProbeHost(WebApplication app, GrimoireConnectionAdmissionGate admission)
         {
 
@@ -337,6 +371,12 @@ public sealed class GrimoireRequestAdmissionTests
         internal HttpClient Client { get; }
 
         internal int EndpointRuns => Volatile.Read(ref _endpointRuns);
+
+        internal bool OrdinaryOpenSucceededWhileClosing =>
+            Volatile.Read(ref _ordinaryOpenWhileClosing) == 1;
+
+        internal void RecordOrdinaryOpenWhileClosing(bool succeeded) =>
+            Interlocked.Exchange(ref _ordinaryOpenWhileClosing, succeeded ? 1 : 0);
 
         internal static async Task<AdmissionProbeHost> StartAsync()
         {
@@ -388,6 +428,34 @@ public sealed class GrimoireRequestAdmissionTests
                 .WithMetadata(GrimoireAdmissionExemptRouteMetadata.Instance);
 
             _ = api.MapGet("/sentinel", (DisposalSentinel sentinel) => host!.Ran());
+
+            _ = api.MapGet("/lifetime", async () =>
+            {
+
+                await using IGrimoireClosingOwner closing = host!.BeginClosing();
+
+                using SqliteConnection connection = new();
+
+                try
+                {
+
+                    using IGrimoireConnectionOpenTicket ticket = admission.AcquireOrdinaryOpen(connection);
+
+                    ticket.MarkFailed();
+
+                    host.RecordOrdinaryOpenWhileClosing(succeeded: true);
+
+                }
+                catch (GrimoireMaintenanceUnavailableException)
+                {
+
+                    host.RecordOrdinaryOpenWhileClosing(succeeded: false);
+
+                }
+
+                return host.Ran();
+
+            });
 
             _ = api.MapGet("/gated", async () =>
             {
