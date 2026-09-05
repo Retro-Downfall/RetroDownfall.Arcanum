@@ -1206,13 +1206,18 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IBudgetReservationService, BudgetReservationService>();
 
-        services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
+        services.AddScoped<LongRunningOperationStore>();
+
+        services.AddScoped<ILongRunningOperationStore>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
 
         // The same store, reached through the one contract whose evidence is a held installation
-        // maintenance lock. Registered separately rather than folded into the Core contract so an
-        // expiry-free lease acquisition is not available to every caller of the ordinary store.
+        // maintenance lock. Registered separately rather than folded into the Core contract, so an
+        // expiry-free lease acquisition is not available to every caller of the ordinary store — and
+        // resolved from the concrete type rather than by casting the interface, because a composition
+        // that decorates the ordinary store is decorating ordinary behaviour, not this one.
         services.AddScoped<ILongRunningOperationMaintenanceLeaseAdoption>(
-            static sp => (LongRunningOperationStore)sp.GetRequiredService<ILongRunningOperationStore>());
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
 
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
 
