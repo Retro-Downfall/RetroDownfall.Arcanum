@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.Middleware;
 
@@ -63,6 +64,23 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
                 .ConfigureAwait(false);
 
             return true;
+
+        }
+
+        if (exception is GrimoireMaintenanceUnavailableException)
+        {
+
+            // Expected control flow, not a fault. Admission refuses what arrives after a transition
+            // begins; this is the request that was already in flight when admission closed under it,
+            // and it deserves the same answer rather than "Arcanum broke".
+            //
+            // The line is Debug, carries no path and no exception object, and is written before the
+            // response-started check so a refusal that cannot be written is still observable. Logging
+            // it at Error would put the request path into a sink on every scrape of an endpoint that
+            // reads the database, for the whole of a planned window.
+            logger.LogDebug("A request was refused because Grimoire maintenance owns connection admission.");
+
+            return await GrimoireMaintenanceRefusal.TryWriteAsync(httpContext).ConfigureAwait(false);
 
         }
 
