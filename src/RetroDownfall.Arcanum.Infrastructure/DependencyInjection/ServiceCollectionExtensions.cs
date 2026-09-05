@@ -1067,6 +1067,39 @@ public static class ServiceCollectionExtensions
                         sp.GetRequiredService<IOsCredentialStore>()),
                     GrimoireOfflineTransitionHandlerRegistry.Production)));
 
+        services.AddSingleton<IGrimoireRecoveryOnlyUnlock>(
+            static sp => new GrimoireRecoveryOnlyUnlock(
+                sp.GetRequiredService<ISecretStore>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
+
+        services.AddSingleton<ICovenantRecoveryAuthorityBootstrapper>(
+            static sp => new CovenantRecoveryAuthorityBootstrapper(
+                sp.GetRequiredService<CovenantOperationGate>(),
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
+                sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
+                sp.GetRequiredService<CovenantAvailability>(),
+                sp.GetRequiredService<IHostProcessToolsRuntimePolicy>(),
+                sp.GetRequiredService<ISecretStore>(),
+                // Built here from the same closed Declared list rather than resolved, because this
+                // pass runs before any request scope exists and the scoped registration below would
+                // be a captive dependency. The decision that registration records — a handler must
+                // not capture a scope it outlives — is preserved: what is shared is the declaration,
+                // not an instance, and the closure suite compares both tables against Declared.
+                GrimoireOfflineTransitionEffectHandlerRegistry
+                    .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                    .Value));
+
+        services.AddSingleton<IGrimoireOfflineTransitionHandlerDispatch>(
+            static sp => new GrimoireOfflineTransitionHandlerDispatch(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        services.AddSingleton<IGrimoireOfflineTransitionStartupRecovery>(
+            static sp => new GrimoireOfflineTransitionStartupRecovery(
+                sp.GetRequiredService<IGrimoireRecoveryOnlyUnlock>(),
+                sp.GetRequiredService<ICovenantRecoveryAuthorityBootstrapper>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>()));
+
         services.AddSingleton(
             static sp => new GrimoireDatabaseHostedService(
                 sp.GetRequiredService<IServiceScopeFactory>(),
@@ -1078,8 +1111,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<HostLockSerilogFileSink>(),
                 ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync,
                 sp.GetRequiredService<InstallationResetApiAdmission>(),
-                startupCoordination:
-                    sp.GetRequiredService<InstallationMaintenanceCoordination>()));
+                sp.GetRequiredService<InstallationMaintenanceCoordination>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionStartupRecovery>()));
 
         services.AddHostedService(
             static sp => sp.GetRequiredService<GrimoireDatabaseHostedService>());
@@ -1173,7 +1206,18 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IBudgetReservationService, BudgetReservationService>();
 
-        services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
+        services.AddScoped<LongRunningOperationStore>();
+
+        services.AddScoped<ILongRunningOperationStore>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
+
+        // The same store, reached through the one contract whose evidence is a held installation
+        // maintenance lock. Registered separately rather than folded into the Core contract, so an
+        // expiry-free lease acquisition is not available to every caller of the ordinary store — and
+        // resolved from the concrete type rather than by casting the interface, because a composition
+        // that decorates the ordinary store is decorating ordinary behaviour, not this one.
+        services.AddScoped<ILongRunningOperationMaintenanceLeaseAdoption>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
 
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
 

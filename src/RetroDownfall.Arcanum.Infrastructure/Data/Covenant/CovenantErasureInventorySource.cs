@@ -500,10 +500,23 @@ internal sealed class CovenantErasureInventorySource(
             label.ArtifactContentDigest,
             label.ArtifactRevision);
 
-    private static async Task<Result<CovenantOfflineTransitionSourceState>>
+    /// <summary>
+    /// The current source tuple, read as one statement over a caller-supplied handle.
+    /// </summary>
+    /// <remarks>
+    /// Shared with pre-readiness recovery rather than copied there. The rule this encodes — which four
+    /// columns are the tuple and which values are advanceable — decides whether a transition may be
+    /// resumed, and a second reader would be right on the day it was written.
+    ///
+    /// <para>The transaction is optional because the two callers differ in what they hold. The
+    /// inventory reads inside its own maintenance snapshot; recovery reads over an unpooled connection
+    /// that is the only handle on the catalog, and enrolling it in a transaction would add a writer to
+    /// a pass whose whole property is that it does not write.</para>
+    /// </remarks>
+    internal static async Task<Result<CovenantOfflineTransitionSourceState>>
         ReadOfflineTransitionSourceStateAsync(
             SqliteConnection connection,
-            SqliteTransaction transaction,
+            SqliteTransaction? transaction,
             CancellationToken cancellationToken)
     {
 

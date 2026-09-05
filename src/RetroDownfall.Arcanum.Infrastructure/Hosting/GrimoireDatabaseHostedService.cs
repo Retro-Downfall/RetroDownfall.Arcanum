@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -27,11 +28,10 @@ internal static class InstallationResetHostStartupAdmission
     /// Whether the resolved record pair leaves an offline transition mid-flight.
     /// </summary>
     /// <remarks>
-    /// An active journal means the database is part way through a transformation nobody has finished.
-    /// Bootstrapping over it would open the catalog this host is meant to be proving closed, so
-    /// startup stops instead. Resuming the transition rather than refusing is the startup-recovery
-    /// child's work; what belongs here is the refusal, which has to exist before a journal-driven
-    /// erasure can crash in the field.
+    /// An active journal means the database is part way through a transformation nobody has finished,
+    /// and bootstrapping over it would open the catalog this host is meant to be proving closed. A
+    /// composed host now resumes it instead; this predicate is what a composition without the resuming
+    /// pass falls back to, so the absence of a recoverer refuses rather than admits.
     /// </remarks>
     public static bool LeavesTransitionUnfinished(
         InstallationResetNestedTransitionEvidenceOutcome? evidence) =>
@@ -56,6 +56,16 @@ public sealed class GrimoireDatabaseHostedService(
     private InstallationResetMaintenanceLockAccessor _maintenanceLockAccessor = new();
 
     private IInstallationResetStartupRecovery? _startupRecovery;
+
+    /// <summary>
+    /// The pass that finishes an interrupted transition, present wherever a journal can be read.
+    /// </summary>
+    /// <remarks>
+    /// Null only on the lock-free probe constructor. That path holds no installation lock, so it
+    /// cannot read the journal and is never given a pair outcome to act on; a recoverer there would be
+    /// a component with nothing to recover from.
+    /// </remarks>
+    private IGrimoireOfflineTransitionStartupRecovery? _transitionRecovery;
 
     private InstallationResetApiAdmission _apiAdmission = new();
 
@@ -114,7 +124,8 @@ public sealed class GrimoireDatabaseHostedService(
         InstallationResetMaintenanceLockAccessor maintenanceLockAccessor,
         IInstallationResetStartupRecovery startupRecovery,
         InstallationResetApiAdmission? apiAdmission = null,
-        InstallationMaintenanceCoordination? startupCoordination = null)
+        InstallationMaintenanceCoordination? startupCoordination = null,
+        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery = null)
         : this(
             scopeFactory,
             secretStore,
@@ -133,6 +144,8 @@ public sealed class GrimoireDatabaseHostedService(
 
         _startupCoordination = startupCoordination;
 
+        _transitionRecovery = transitionRecovery;
+
     }
 
     internal GrimoireDatabaseHostedService(
@@ -145,7 +158,8 @@ public sealed class GrimoireDatabaseHostedService(
         HostLockSerilogFileSink fileSink,
         Func<CancellationToken, Task<string?>> masterKeyBootstrap,
         InstallationResetApiAdmission? apiAdmission = null,
-        InstallationMaintenanceCoordination? startupCoordination = null)
+        InstallationMaintenanceCoordination? startupCoordination = null,
+        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery = null)
         : this(
             scopeFactory,
             secretStore,
@@ -153,7 +167,9 @@ public sealed class GrimoireDatabaseHostedService(
             maintenanceDirectory,
             maintenanceLockAccessor,
             startupRecovery,
-            apiAdmission)
+            apiAdmission,
+            startupCoordination: null,
+            transitionRecovery)
     {
 
         _fileSink = fileSink
@@ -314,6 +330,8 @@ public sealed class GrimoireDatabaseHostedService(
 
             InstallationResetNestedTransitionEvidenceOutcome? nestedTransitionEvidence = null;
 
+            GrimoireOfflineTransitionRecoveryEvidence? transitionJournal = null;
+
             if (_startupRecovery is not null)
             {
 
@@ -331,6 +349,8 @@ public sealed class GrimoireDatabaseHostedService(
                     expectedInstallationId = recovered.Value.ExpectedInstallationId;
 
                     nestedTransitionEvidence = recovered.Value.NestedTransitionEvidence;
+
+                    transitionJournal = recovered.Value.TransitionJournal;
 
                 }
 
@@ -362,14 +382,44 @@ public sealed class GrimoireDatabaseHostedService(
 
             }
 
-            // Checked after the reset record and before the bootstrap, because an unfinished offline
-            // transition is a statement about the catalog itself: the database is part way through a
+            // After the reset record and before the bootstrap, because an unfinished offline transition
+            // is a statement about the catalog itself: the database is part way through a
             // transformation, and opening it here would be this host doing the one thing the
-            // transition closed admission to prevent.
-            if (InstallationResetHostStartupAdmission
+            // transition closed admission to prevent. So the transition is finished first, on the same
+            // borrowed lock, and only then does the ordinary bootstrap run.
+            if (_transitionRecovery is { } transitions)
+            {
+
+                Result<GrimoireOfflineTransitionStartupRecoveryOutcome> resumed = await transitions
+                    .RecoverBeforeBootstrapAsync(
+                        heldInstallationLock,
+                        _maintenanceDirectory,
+                        _databasePath,
+                        nestedTransitionEvidence,
+                        transitionJournal,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                // A resumption that reached a durable verdict has retired its journal and reopened
+                // ordinary admission, which is the state an ordinary start expects; anything else
+                // leaves the catalog mid-transformation and startup fails closed with the one
+                // content-free sentence every unfinished-maintenance refusal uses.
+                if (resumed.IsFailure)
+                {
+
+                    throw new InvalidOperationException(
+                        "An offline Grimoire transition is active. Resume it before starting the host.");
+
+                }
+
+            }
+            else if (InstallationResetHostStartupAdmission
                 .LeavesTransitionUnfinished(nestedTransitionEvidence))
             {
 
+                // A host composed without the resuming pass keeps the refusal it had before there was
+                // one. The absence of a recoverer is not permission to bootstrap over an active
+                // journal; it only means nobody in this composition can finish it.
                 throw new InvalidOperationException(
                     "An offline Grimoire transition is active. Resume it before starting the host.");
 

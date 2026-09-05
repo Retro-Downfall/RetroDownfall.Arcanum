@@ -1097,6 +1097,20 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireRecoveryOnlyUnlock.cs", "GrimoireRecoveryOnlyUnlock", "OpenExistingAsync(4)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(connectionString)"),
+            GrimoirePathAuthority.PreReadinessGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireRecoveryOnlyUnlock.OpenExistingAsync(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireRecoveryOnlyUnlock.cs", "GrimoireRecoveryOnlyUnlock", "OpenExistingAsync(4)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.PreReadinessGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireRecoveryOnlyUnlock.OpenExistingAsync(4)", 0)),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "CheckpointOnShutdownAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(connectionString)"),
             GrimoirePathAuthority.ShutdownGrimoire,
             GrimoireAcquisitionKind.BootstrapOrShutdown,
@@ -2567,7 +2581,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "TryAcquireLeaseAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "AcquireLeaseAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,

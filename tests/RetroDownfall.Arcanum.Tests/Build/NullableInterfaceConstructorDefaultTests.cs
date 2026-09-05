@@ -172,6 +172,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:sourceResolver"] = "every use of the IAttachmentSourceResolver is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:GrimoireDatabaseHostedService:transitionRecovery"] = "IGrimoireOfflineTransitionStartupRecovery is registered at ServiceCollectionExtensions.cs and the composed host factory passes it; absence does not open a bypass - the else arm falls back to InstallationResetHostStartupAdmission.LeavesTransitionUnfinished, which is the refusal this parameter replaced, so a null resumes nothing and admits nothing",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:GrimoireDatabaseHostedService:startupProbe"] = "the null coalesces to InstallationStartupProbe.CreateDefault() at GrimoireDatabaseHostedService.cs:37, and the only construction in src - the DI factory at ServiceCollectionExtensions.cs:1058 - never passes one, so that default is the production probe",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs:HostToolsMarkerPairResetCoordinator:managedFiles"] = "every use of the IFullInstallationResetManagedFileReconciler is null-safe; absence disables an observation, not a refusal",
