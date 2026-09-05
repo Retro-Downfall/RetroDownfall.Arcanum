@@ -130,6 +130,7 @@ case "$PRODUCT" in
     PROJECT="$REPO_ROOT/src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux.csproj"
     APP_NAME="Compendium"
     PLIST_TEMPLATE="$SCRIPT_DIR/Info.plist.compendium"
+    ICNS="$SCRIPT_DIR/Compendium.icns"
     DMG_NAME="compendium-osx-arm64.dmg"
     EXECUTABLE_NAME="RetroDownfall.Compendium.Ux"
     ;;
@@ -137,6 +138,7 @@ case "$PRODUCT" in
     PROJECT="$REPO_ROOT/src/RetroDownfall.TheForge.Ux/RetroDownfall.TheForge.Ux.csproj"
     APP_NAME="The Forge"
     PLIST_TEMPLATE="$SCRIPT_DIR/Info.plist.theforge"
+    ICNS="$SCRIPT_DIR/TheForge.icns"
     DMG_NAME="the-forge-osx-arm64.dmg"
     EXECUTABLE_NAME="RetroDownfall.TheForge.Ux"
     ;;
@@ -192,6 +194,12 @@ echo "==> Assembling ${APP_NAME}.app"
 rm -rf "$APP_PATH"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 render_plist_template "$PLIST_TEMPLATE" "$APP_PATH/Contents/Info.plist" "$MARKETING_VERSION" "$BUNDLE_VERSION"
+
+if [[ ! -f "$ICNS" ]]; then
+  echo "error: icon not found: $ICNS" >&2
+  exit 1
+fi
+cp "$ICNS" "$APP_PATH/Contents/Resources/$(basename "$ICNS")"
 cp -a "$PUBLISH_DIR"/. "$APP_PATH/Contents/MacOS/"
 
 # Debug symbols are not part of a shipped app. They are several megabytes of internals nobody

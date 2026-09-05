@@ -4,6 +4,8 @@
 
     <OutputType>Exe</OutputType>
 
+    <ApplicationIcon>Assets/arcanum.ico</ApplicationIcon>
+
     <IsAotCompatible>true</IsAotCompatible>
 
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>

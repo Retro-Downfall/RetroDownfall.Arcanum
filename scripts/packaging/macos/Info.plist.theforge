@@ -6,6 +6,8 @@
   <string>en</string>
   <key>CFBundleExecutable</key>
   <string>RetroDownfall.TheForge.Ux</string>
+  <key>CFBundleIconFile</key>
+  <string>TheForge.icns</string>
   <key>CFBundleIdentifier</key>
   <string>com.retrodownfall.theforge</string>
   <key>CFBundleInfoDictionaryVersion</key>

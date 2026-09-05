@@ -4,6 +4,8 @@
 
     <OutputType>WinExe</OutputType>
 
+    <ApplicationIcon>Assets/the-forge.ico</ApplicationIcon>
+
     <RootNamespace>RetroDownfall.TheForge.Ux</RootNamespace>
 
     <AssemblyName>RetroDownfall.TheForge.Ux</AssemblyName>
@@ -15,6 +17,12 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
 
   </PropertyGroup>
+
+  <ItemGroup>
+
+    <AvaloniaResource Include="Assets/**" />
+
+  </ItemGroup>
 
   <ItemGroup>
 
