@@ -14,6 +14,8 @@ using BackupRestoreFullResetTerminalArm =
 using BackupRestoreFullResetTerminalProjectionV1 =
     RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreFullResetTerminalProjectionV1;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal sealed record InstallationResetActiveLocation(
@@ -397,9 +399,41 @@ internal sealed record InstallationResetActivePayloadV3(
             checkpoint.OrphanCount,
             CopyManagedFileCheckpoint(checkpoint.ManagedFile),
             CopyRestoreTerminal(checkpoint.RestoreTerminal),
-            checkpoint.RestoreCredentialCleanup);
+            checkpoint.RestoreCredentialCleanup,
+            CopyTransitionTerminal(checkpoint.TransitionTerminal));
 
     }
+
+    /// <summary>
+    /// Deep-copies the terminal transition-slot projection a resumed removal compares against.
+    /// </summary>
+    /// <remarks>
+    /// Persisted rather than re-derived for the same reason the restore projection is: once the first
+    /// account is gone the slot no longer has the shape the proof was made from, so a resume compares
+    /// the survivor against the value that was projected for it while both were still there.
+    /// </remarks>
+    private static GrimoireOfflineTransitionFullResetTerminalProjectionV1? CopyTransitionTerminal(
+        GrimoireOfflineTransitionFullResetTerminalProjectionV1? terminal) =>
+        terminal is null
+            ? null
+            : new GrimoireOfflineTransitionFullResetTerminalProjectionV1(
+                terminal.Version,
+                terminal.Arm,
+                CopyDigest(terminal.ProfileNamespaceDigest),
+                terminal.InstallationId,
+                terminal.ClosedSlotEpoch,
+                terminal.ClosedOperationId,
+                terminal.ClosedRevision,
+                terminal.ClosedEnvelopeDigest is { } closedEnvelope
+                    ? CopyDigest(closedEnvelope)
+                    : null,
+                terminal.JournalKeyAccountValueDigest is { } journalKey
+                    ? CopyDigest(journalKey)
+                    : null,
+                terminal.AnchorAccountValueDigest is { } anchor
+                    ? CopyDigest(anchor)
+                    : null,
+                CopyDigest(terminal.TerminalEvidenceDigest));
 
     private static FullInstallationResetManagedFileCheckpointV1? CopyManagedFileCheckpoint(
         FullInstallationResetManagedFileCheckpointV1? checkpoint)
@@ -525,6 +559,8 @@ internal sealed record InstallationResetActivePayloadV3(
 [JsonSerializable(typeof(InstallationResetNestedTransitionPhase))]
 [JsonSerializable(typeof(BackupRestoreFullResetTerminalProjectionV1))]
 [JsonSerializable(typeof(BackupRestoreFullResetTerminalArm))]
+[JsonSerializable(typeof(GrimoireOfflineTransitionFullResetTerminalProjectionV1))]
+[JsonSerializable(typeof(GrimoireOfflineTransitionFullResetTerminalArm))]
 [JsonSerializable(typeof(FullInstallationResetRestartProofV1))]
 [JsonSerializable(typeof(FullInstallationResetSignedAttestationProjectionV1))]
 [JsonSerializable(typeof(CampaignMarkerInventoryEntryV1))]

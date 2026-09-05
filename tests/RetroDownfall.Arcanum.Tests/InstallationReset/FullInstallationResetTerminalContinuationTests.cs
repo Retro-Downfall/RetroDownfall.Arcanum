@@ -365,6 +365,78 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
     }
 
+    [Theory]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void A_crash_inside_the_transition_pair_resumes_from_the_persisted_projection(
+        byte reachedCode)
+    {
+
+        InstallationResetRestoreCredentialCleanupPhase reached =
+            (InstallationResetRestoreCredentialCleanupPhase)reachedCode;
+
+        // One case per boundary inside the pair: after the trio verified, after the anchor went, and
+        // after the key went. Each resumes from the phase and projection the record carries rather
+        // than reproving a slot it has already started taking apart, which would report "partially
+        // cleaned" and refuse forever.
+        Harness harness = Create();
+
+        harness.SeedClosedRestore();
+
+        harness.SeedClosedTransitionSlot();
+
+        harness.SeedNestedReceipt(InstallationResetNestedTransitionPhase.Completed);
+
+        harness.RemoveTrioOutOfBand();
+
+        if (reached >= InstallationResetRestoreCredentialCleanupPhase.TransitionAnchorRemoved)
+        {
+
+            harness.RemoveTransitionAnchorOutOfBand();
+
+        }
+
+        if (reached >= InstallationResetRestoreCredentialCleanupPhase.TransitionKeyRemoved)
+        {
+
+            harness.RemoveTransitionKeyOutOfBand();
+
+        }
+
+        harness.SeedTransitionResumeAt(reached);
+
+        Result<FullInstallationResetTerminalOutcome> completed = harness.Complete();
+
+        Assert.True(
+            completed.IsSuccess,
+            reached + ": " + (completed.IsFailure ? completed.Error.Message : string.Empty));
+
+        Assert.Equal(
+            InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
+            completed.Value.Phase);
+
+        Assert.Equal(
+            reached is InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent
+                ? 1
+                : 0,
+            harness.Deleted.Count(
+                account => string.Equals(
+                    account,
+                    harness.TransitionAccounts.AnchorAccount,
+                    StringComparison.Ordinal)));
+
+        // The key is taken exactly when it had not already been, and never twice.
+        Assert.Equal(
+            reached is InstallationResetRestoreCredentialCleanupPhase.TransitionKeyRemoved ? 0 : 1,
+            harness.Deleted.Count(
+                account => string.Equals(
+                    account,
+                    harness.TransitionAccounts.KeyAccount,
+                    StringComparison.Ordinal)));
+
+    }
+
     public void Dispose()
     {
 
@@ -509,6 +581,97 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
         }
 
+        /// <summary>
+        /// Seeds the durable record a removal interrupted inside the transition pair would find.
+        /// </summary>
+        /// <remarks>
+        /// The projection travels with the phase for the same reason the restore trio's does: once the
+        /// anchor is gone the slot no longer has the shape the proof was made from, so a resumed pass
+        /// compares the survivor against the value projected while both were still there.
+        /// </remarks>
+        internal void SeedTransitionResumeAt(
+            InstallationResetRestoreCredentialCleanupPhase phase)
+        {
+
+            (string anchorAccount, string keyAccount) = TransitionAccounts;
+
+            GrimoireOfflineTransitionFullResetTerminalProjectionV1 projection = new(
+                Version: 1,
+                GrimoireOfflineTransitionFullResetTerminalArm.ClosedAnchor,
+                TransitionLocation.ProfileNamespace.Digest,
+                InstallationId,
+                ClosedSlotEpoch: 3,
+                ClosedOperationId: Guid.Parse("aaaabbbb-cccc-4ddd-8eee-ffff00001111"),
+                ClosedRevision: 6,
+                new CovenantDigest([.. Enumerable.Repeat((byte)0x66, 32)]),
+                GrimoireOfflineTransitionJournalAnchorStore.TerminalAccountValueDigest(
+                    keyAccount,
+                    Convert.ToBase64String([.. Enumerable.Repeat((byte)0x77, 32)])),
+                GrimoireOfflineTransitionJournalAnchorStore.TerminalAccountValueDigest(
+                    anchorAccount,
+                    AnchorValue()),
+                new CovenantDigest([.. Enumerable.Repeat((byte)0xAA, 32)]));
+
+            Store.Seed(marker => marker with
+            {
+                RestoreTerminal = RestoreProjection(),
+                TransitionTerminal = projection,
+                RestoreCredentialCleanup = phase,
+            });
+
+        }
+
+        /// <summary>Clears the trio exactly as the steps that already ran would have left it.</summary>
+        internal void RemoveTrioOutOfBand()
+        {
+
+            _ = _owner._credentials.Delete(ArcanumCredentialIdentity.Service, Trio.AnchorAccount);
+
+            _ = _owner._credentials.Delete(
+                ArcanumCredentialIdentity.Service,
+                Trio.JournalKeyAccount);
+
+            _ = _owner._credentials.Delete(
+                ArcanumCredentialIdentity.Service,
+                Trio.InstallationAccount);
+
+        }
+
+        internal void RemoveTransitionAnchorOutOfBand() =>
+            _ = _owner._credentials.Delete(
+                ArcanumCredentialIdentity.Service,
+                TransitionAccounts.AnchorAccount);
+
+        internal void RemoveTransitionKeyOutOfBand() =>
+            _ = _owner._credentials.Delete(
+                ArcanumCredentialIdentity.Service,
+                TransitionAccounts.KeyAccount);
+
+        private string AnchorValue()
+        {
+
+            GrimoireOfflineTransitionAnchorV1 anchor = new(
+                Version: 1,
+                TransitionLocation.ProfileNamespace.Digest,
+                InstallationId,
+                SlotEpoch: 3,
+                GrimoireOfflineTransitionAnchorState.Closed,
+                OperationId: Guid.Parse("aaaabbbb-cccc-4ddd-8eee-ffff00001111"),
+                Kind: GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+                PayloadVersion: 1,
+                Revision: 6,
+                new CovenantDigest([.. Enumerable.Repeat((byte)0x66, 32)]),
+                TransitionLocation.JournalLocationDigest);
+
+            Result<string> encoded =
+                GrimoireOfflineTransitionJournalAuthenticator.EncodeAnchor(anchor);
+
+            Assert.True(encoded.IsSuccess, encoded.IsFailure ? encoded.Error.Message : null);
+
+            return encoded.Value;
+
+        }
+
         /// <summary>Records a nested transition the reset launched and how far it reported.</summary>
         internal void SeedNestedReceipt(InstallationResetNestedTransitionPhase phase) =>
             Store.SeedPayload(payload => payload with
@@ -544,7 +707,18 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         internal void SeedResumeAt(InstallationResetRestoreCredentialCleanupPhase phase)
         {
 
-            BackupRestoreFullResetTerminalProjectionV1 terminal = new(
+            BackupRestoreFullResetTerminalProjectionV1 terminal = RestoreProjection();
+
+            Store.Seed(marker => marker with
+            {
+                RestoreTerminal = terminal,
+                RestoreCredentialCleanup = phase,
+            });
+
+        }
+
+        private BackupRestoreFullResetTerminalProjectionV1 RestoreProjection() =>
+            new(
                 Version: 1,
                 BackupRestoreFullResetTerminalArm.ClosedAnchor,
                 Profile().Digest,
@@ -561,14 +735,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                     Convert.ToBase64String([.. Enumerable.Repeat((byte)0x33, 32)])),
                 new CovenantDigest([.. Enumerable.Repeat((byte)0x44, 32)]),
                 new CovenantDigest([.. Enumerable.Repeat((byte)0x55, 32)]));
-
-            Store.Seed(marker => marker with
-            {
-                RestoreTerminal = terminal,
-                RestoreCredentialCleanup = phase,
-            });
-
-        }
 
         internal Result<FullInstallationResetTerminalOutcome> Complete(
             InstallationResetActivePublication? publication = null)
