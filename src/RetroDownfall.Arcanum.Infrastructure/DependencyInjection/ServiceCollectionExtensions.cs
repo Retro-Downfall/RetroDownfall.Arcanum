@@ -1059,7 +1059,11 @@ public static class ServiceCollectionExtensions
                 ArcanumPaths.GrimoireDirectory,
                 new InstallationResetActiveStore(
                     ArcanumPaths.GrimoireDirectory,
-                    sp.GetRequiredService<IOsCredentialStore>())));
+                    sp.GetRequiredService<IOsCredentialStore>()),
+                new GrimoireOfflineTransitionLifecycleStore(
+                    new GrimoireOfflineTransitionJournalStore(
+                        sp.GetRequiredService<IOsCredentialStore>()),
+                    GrimoireOfflineTransitionHandlerRegistry.Production)));
 
         services.AddSingleton(
             static sp => new GrimoireDatabaseHostedService(

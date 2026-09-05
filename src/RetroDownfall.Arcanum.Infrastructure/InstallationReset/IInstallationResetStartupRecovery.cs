@@ -4,12 +4,23 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+/// <summary>
+/// What startup found, including how the two maintenance records read as a pair.
+/// </summary>
+/// <remarks>
+/// <paramref name="NestedTransitionEvidence"/> is <see langword="null"/> only on the paths that could
+/// not read the journal at all — the lock-free probe, which has no lock to read it under. A host that
+/// held the lock always has an answer, because "neither record is active" is itself one.
+/// </remarks>
 internal sealed record InstallationResetStartupRecoveryState(
     ActiveInstallationReset? ActiveReset,
     Guid? ExpectedInstallationId,
-    bool IsLegacyV1);
+    bool IsLegacyV1,
+    InstallationResetNestedTransitionEvidenceOutcome? NestedTransitionEvidence = null);
 
 internal interface IInstallationResetStartupRecovery
 {
@@ -26,7 +37,8 @@ internal interface IInstallationResetStartupRecovery
 /// </summary>
 internal sealed class InstallationResetStartupRecovery(
     string guardedRoot,
-    IInstallationResetActiveStore activeStore) : IInstallationResetStartupRecovery
+    IInstallationResetActiveStore activeStore,
+    GrimoireOfflineTransitionLifecycleStore transitionJournal) : IInstallationResetStartupRecovery
 {
 
     private readonly string _guardedRoot = Path.TrimEndingDirectorySeparator(
@@ -39,6 +51,9 @@ internal sealed class InstallationResetStartupRecovery(
 
     private readonly IInstallationResetActiveStore _activeStore =
         activeStore ?? throw new ArgumentNullException(nameof(activeStore));
+
+    private readonly GrimoireOfflineTransitionLifecycleStore _transitionJournal =
+        transitionJournal ?? throw new ArgumentNullException(nameof(transitionJournal));
 
     public async Task<Result<InstallationResetStartupRecoveryState>> RecoverBeforeBootstrapAsync(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -56,7 +71,8 @@ internal sealed class InstallationResetStartupRecovery(
         if (recovered.IsSuccess)
         {
 
-            return Project(recovered.Value);
+            return await PairAsync(heldInstallationLock, recovered.Value, cancellationToken)
+                .ConfigureAwait(false);
 
         }
 
@@ -89,9 +105,79 @@ internal sealed class InstallationResetStartupRecovery(
 
         }
 
-        return Project(afterCleanup.Value);
+        return await PairAsync(heldInstallationLock, afterCleanup.Value, cancellationToken)
+            .ConfigureAwait(false);
 
     }
+
+    /// <summary>
+    /// Reads the offline-transition journal under the same held lock and resolves the pair.
+    /// </summary>
+    /// <remarks>
+    /// The journal read belongs here rather than beside the projection because it needs the lock, and
+    /// this is the one entry point that holds it. The lock-free probe shares the projection and
+    /// deliberately does not share this: an answer it could not have computed honestly is worse than
+    /// no answer.
+    /// </remarks>
+    private async Task<Result<InstallationResetStartupRecoveryState>> PairAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        InstallationResetActiveRecoveryState recovered,
+        CancellationToken cancellationToken)
+    {
+
+        Result<InstallationResetStartupRecoveryState> projected = Project(recovered);
+
+        if (projected.IsFailure)
+        {
+
+            return projected;
+
+        }
+
+        Result<GrimoireOfflineTransitionTypedRecoveryState> journal = await _transitionJournal
+            .RecoverAsync(heldInstallationLock, _guardedRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (journal.IsFailure)
+        {
+
+            return Result<InstallationResetStartupRecoveryState>.Failure(journal.Error);
+
+        }
+
+        InstallationResetNestedTransitionEvidenceOutcome outcome =
+            InstallationResetNestedTransitionEvidence.Resolve(
+                Outer(recovered),
+                Inner(journal.Value));
+
+        return outcome is InstallationResetNestedTransitionEvidenceOutcome.RecoveryRequired
+            ? EvidenceFailure()
+            : Result<InstallationResetStartupRecoveryState>.Success(
+                projected.Value with { NestedTransitionEvidence = outcome });
+
+    }
+
+    private static InstallationResetNestedTransitionEvidence.OuterRecord? Outer(
+        InstallationResetActiveRecoveryState recovered) =>
+        recovered.Publication is { } publication
+            ? new InstallationResetNestedTransitionEvidence.OuterRecord(
+                publication.Payload.OperationId,
+                publication.Payload.NestedTransitionReceipt)
+            : null;
+
+    private static InstallationResetNestedTransitionEvidence.InnerJournal? Inner(
+        GrimoireOfflineTransitionTypedRecoveryState journal) =>
+        journal.Publication is { } publication
+            ? new InstallationResetNestedTransitionEvidence.InnerJournal(
+                publication.Payload.Binding.OperationId,
+                publication.Payload.Binding.Kind,
+                publication.Payload.Binding.EffectDigest,
+                publication.Payload.Binding.ParentReceiptBindingDigest,
+                publication.Payload.Lifecycle.State,
+                publication.Payload.Lifecycle.ReconciliationEvidence?.Step,
+                publication.Payload.Lifecycle.ReconciliationEvidence
+                    ?.DatabaseTerminalWinnerDigest)
+            : null;
 
     internal static Result<InstallationResetStartupRecoveryState> Project(
         InstallationResetActiveRecoveryState recovered) =>
