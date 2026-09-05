@@ -45,8 +45,9 @@ the append or durable failure classification that batch produces. Groups are tak
 from the same lease, which the gate permits and §3.4 records.
 
 **Third, a deferral that keeps the exact pending identity and the exact attempt.** Today a closed
-gate reaches the loop's catch-all, which stamps `Failed`, destroys the staged generation, drops the
-`_pending` key, and re-enqueues at `Attempt + 1`. All four are forbidden by the parent's §6.3.
+gate reaches `ProcessOneAsync`'s request-level failure handler, which stamps `Failed`, destroys the
+staged generation, drops the `_pending` key, and re-enqueues at `Attempt + 1`. All four are forbidden
+by the parent's §6.3.
 
 **Fourth, a re-signal of that exact request, once, after reopen, written straight to the bounded
 channel.** The deduplicating enqueue path cannot carry it: `TryEnqueue` returns `true` *without
