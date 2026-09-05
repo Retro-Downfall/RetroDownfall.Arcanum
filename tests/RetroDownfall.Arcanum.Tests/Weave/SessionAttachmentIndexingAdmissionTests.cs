@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 
+using System.Data.Common;
+
 using System.Text;
 
 using System.Threading.Channels;
@@ -155,9 +157,22 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         FakeWeaveService weave = new();
 
+        RecordingAdmissionGate gate = new(OpenGate());
+
         ObservingScopeFactory scopes = BuildScopeFactory(weave);
 
-        SessionAttachmentIndexingService service = CreateService(scopes, OpenGate());
+        scopes.OnScopeCreated = () => Assert.True(gate.WorkLeaseIsHeld);
+
+        scopes.OnScopeDisposed = () =>
+        {
+
+            Assert.True(gate.WorkLeaseIsHeld);
+
+            return ValueTask.CompletedTask;
+
+        };
+
+        SessionAttachmentIndexingService service = CreateService(scopes, gate);
 
         SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
@@ -168,6 +183,14 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
 
         Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        Assert.Equal(1, gate.WorkLeaseAttempts);
+
+        Assert.Equal(
+            GrimoireWorkKind.SessionAttachmentIndexing,
+            Assert.Single(gate.RequestedWorkKinds));
+
+        Assert.False(gate.WorkLeaseIsHeld);
 
         Assert.NotEmpty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
 
@@ -308,7 +331,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentRecord attachment = await PersistAsync(sessionId, "content whose indexing throws");
 
-        GrimoireConnectionAdmissionGate gate = OpenGate();
+        RecordingAdmissionGate gate = new(OpenGate());
 
         FakeWeaveService weave = new()
         {
@@ -319,12 +342,18 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         ObservingScopeFactory scopes = BuildScopeFactory(weave);
 
-        // A genuine failure opens a second scope to write its durable classification. That scope
-        // must be created while the request's work lease is still held, or the write it makes is a
-        // write nothing put into the drain set.
-        int scopesCreatedWhileLeaseWasHeld = 0;
+        // A genuine failure opens a second scope to write its durable classification. Both scope
+        // boundaries must stay inside the exact lease returned for this dequeue.
+        scopes.OnScopeCreated = () => Assert.True(gate.WorkLeaseIsHeld);
 
-        scopes.OnScopeCreated = () => scopesCreatedWhileLeaseWasHeld++;
+        scopes.OnScopeDisposed = () =>
+        {
+
+            Assert.True(gate.WorkLeaseIsHeld);
+
+            return ValueTask.CompletedTask;
+
+        };
 
         SessionAttachmentIndexingService service = CreateService(scopes, gate);
 
@@ -338,7 +367,15 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         Assert.True(outcome.ShouldRetry);
 
-        Assert.Equal(2, scopesCreatedWhileLeaseWasHeld);
+        Assert.Equal(2, scopes.ScopesCreated);
+
+        Assert.Equal(1, gate.WorkLeaseAttempts);
+
+        Assert.Equal(
+            GrimoireWorkKind.SessionAttachmentIndexing,
+            Assert.Single(gate.RequestedWorkKinds));
+
+        Assert.False(gate.WorkLeaseIsHeld);
 
         IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus> statuses =
             await _index!.GetStatusesAsync([attachment.Id], CancellationToken.None);
@@ -347,6 +384,81 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         // A genuine failure is not a deferral: the identity is released so the retry can re-enter.
         Assert.Empty(service.DeferredRequests);
+
+    }
+
+    [SkippableFact]
+    public async Task ProcessOneAsync_RetryableProviderOutcome_ReleasesLeaseBeforeRetryDelay()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "content whose provider result is retryable");
+
+        GrimoireConnectionAdmissionGate innerGate = OpenGate();
+
+        RecordingAdmissionGate gate = new(innerGate);
+
+        IGrimoireClosingOwner? closing = null;
+
+        Task<Result>? drain = null;
+
+        bool drainCompletedWhenRetryDelayWasScheduled = false;
+
+        ImmediateTimeProvider time = new(() =>
+        {
+
+            closing = BeginClosing(innerGate, 69);
+
+            drain = innerGate
+                .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+                .AsTask();
+
+            drainCompletedWhenRetryDelayWasScheduled = drain.IsCompleted;
+
+        });
+
+        FakeWeaveService weave = new()
+        {
+
+            EmbedBatchResult = Result<Embedding<float>[]>.Failure(
+                new Error(
+                    ErrorCodes.Embeddings.ProviderUnavailable,
+                    "Simulated embedding failure.")),
+
+        };
+
+        ObservingScopeFactory scopes = BuildScopeFactory(weave);
+
+        SessionAttachmentIndexingService service = CreateService(scopes, gate, timeProvider: time);
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexDisposition.Concluded, outcome.Disposition);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.Equal([TimeSpan.FromSeconds(5)], time.Delays);
+
+        Assert.True(
+            drainCompletedWhenRetryDelayWasScheduled,
+            "Maintenance was still waiting on a concluded work lease when automatic retry entered its delay.");
+
+        Result drained = await drain!;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.False(gate.WorkLeaseIsHeld);
+
+        await closing!.DisposeAsync();
 
     }
 
@@ -1029,11 +1141,13 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
     private SessionAttachmentIndexingService CreateService(
         ObservingScopeFactory scopes,
         IGrimoireConnectionAdmissionGate gate,
-        ILogger<SessionAttachmentIndexingService>? logger = null) =>
+        ILogger<SessionAttachmentIndexingService>? logger = null,
+        TimeProvider? timeProvider = null) =>
         new(
             scopes,
             new TestOptionsMonitor<ArcanumSettings>(_settings),
             gate,
+            timeProvider ?? TimeProvider.System,
             logger ?? NullLogger<SessionAttachmentIndexingService>.Instance);
 
     /// <summary>A container holding exactly what one indexing scope resolves.</summary>
@@ -1272,6 +1386,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         /// <summary>Receives the exact provider inputs in request-processing order.</summary>
         internal Func<int, IReadOnlyList<string>, Task>? OnEmbedInputs { get; init; }
 
+        internal Result<Embedding<float>[]>? EmbedBatchResult { get; init; }
+
         public bool IsAvailable => true;
 
         public Task<Result<Embedding<float>>> EmbedAsync(
@@ -1302,7 +1418,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
             }
 
-            return Result<Embedding<float>[]>.Success(
+            return EmbedBatchResult ?? Result<Embedding<float>[]>.Success(
                 [.. texts.Select(static _ => new Embedding<float>(CreateVector()))]);
 
         }
@@ -1311,6 +1427,169 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             string text,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+
+    }
+
+    /// <summary>Records the exact work lease the service asks the real gate to create.</summary>
+    private sealed class RecordingAdmissionGate(
+        IGrimoireConnectionAdmissionGate inner) : IGrimoireConnectionAdmissionGate
+    {
+
+        private RecordingWorkLease? _workLease;
+
+        private int _workLeaseAttempts;
+
+        internal int WorkLeaseAttempts => Volatile.Read(ref _workLeaseAttempts);
+
+        internal List<GrimoireWorkKind> RequestedWorkKinds { get; } = [];
+
+        internal bool WorkLeaseIsHeld => _workLease is { IsHeld: true };
+
+        public long CurrentGeneration => inner.CurrentGeneration;
+
+        public bool TryAcquireRequestLease(
+            GrimoireRequestKind kind,
+            out IGrimoireRequestLease? lease) =>
+            inner.TryAcquireRequestLease(kind, out lease);
+
+        public bool TryAcquireWorkLease(
+            GrimoireWorkKind kind,
+            out IGrimoireWorkLease? lease)
+        {
+
+            _ = Interlocked.Increment(ref _workLeaseAttempts);
+
+            RequestedWorkKinds.Add(kind);
+
+            if (!inner.TryAcquireWorkLease(kind, out IGrimoireWorkLease? admitted))
+            {
+
+                lease = null;
+
+                return false;
+
+            }
+
+            _workLease = new RecordingWorkLease(admitted!);
+
+            lease = _workLease;
+
+            return true;
+
+        }
+
+        public IGrimoireConnectionOpenTicket AcquireOrdinaryOpen(DbConnection connection) =>
+            inner.AcquireOrdinaryOpen(connection);
+
+        public Result<IGrimoireClosingOwner> BeginOrResumeExclusive(
+            CovenantExclusiveRecoveryOwner owner,
+            IGrimoireRequestLease? initiatingRequest = null,
+            DbConnection? scopedConnection = null) =>
+            inner.BeginOrResumeExclusive(owner, initiatingRequest, scopedConnection);
+
+        public ValueTask<Result> DrainRequestAndWorkAsync(
+            IGrimoireClosingOwner closingOwner,
+            CancellationToken cancellationToken) =>
+            inner.DrainRequestAndWorkAsync(closingOwner, cancellationToken);
+
+        public ValueTask<Result<IGrimoireExclusiveClosedLease>> CloseConnectionAdmissionAsync(
+            IGrimoireClosingOwner closingOwner,
+            CancellationToken cancellationToken) =>
+            inner.CloseConnectionAdmissionAsync(closingOwner, cancellationToken);
+
+        public ValueTask<Result> AbortClosingAsync(
+            IGrimoireClosingOwner closingOwner,
+            Func<CancellationToken, ValueTask<bool>> proveNoDestructiveEffectAsync,
+            CancellationToken cancellationToken) =>
+            inner.AbortClosingAsync(
+                closingOwner,
+                proveNoDestructiveEffectAsync,
+                cancellationToken);
+
+        public Task<long> WaitForNextOpenGenerationAsync(
+            long observedGeneration,
+            CancellationToken cancellationToken) =>
+            inner.WaitForNextOpenGenerationAsync(observedGeneration, cancellationToken);
+
+        public ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>>
+            AcquireExpiredLeaseAdoptionInterlockAsync(
+                CovenantExclusiveRecoveryOwner candidateOwner,
+                Func<CovenantExclusiveRecoveryOwner, CancellationToken, ValueTask<bool>>
+                    revalidateDurableOwnerAsync,
+                CancellationToken cancellationToken) =>
+            inner.AcquireExpiredLeaseAdoptionInterlockAsync(
+                candidateOwner,
+                revalidateDurableOwnerAsync,
+                cancellationToken);
+
+    }
+
+    private sealed class RecordingWorkLease(IGrimoireWorkLease inner) : IGrimoireWorkLease
+    {
+
+        private int _disposed;
+
+        internal bool IsHeld => Volatile.Read(ref _disposed) == 0;
+
+        public GrimoireWorkKind Kind => inner.Kind;
+
+        public long Generation => inner.Generation;
+
+        public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
+
+        public bool TryBeginExternalEffectGroup(
+            out IGrimoireExternalEffectGroup? effectGroup) =>
+            inner.TryBeginExternalEffectGroup(out effectGroup);
+
+        public async ValueTask DisposeAsync()
+        {
+
+            await inner.DisposeAsync();
+
+            _ = Interlocked.Exchange(ref _disposed, 1);
+
+        }
+
+    }
+
+    /// <summary>Completes delays immediately while exposing their scheduling boundary.</summary>
+    private sealed class ImmediateTimeProvider(Action onDelayScheduled) : TimeProvider
+    {
+
+        internal List<TimeSpan> Delays { get; } = [];
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+
+            Delays.Add(dueTime);
+
+            onDelayScheduled();
+
+            ThreadPool.QueueUserWorkItem(_ => callback(state));
+
+            return NoopTimer.Instance;
+
+        }
+
+        private sealed class NoopTimer : ITimer
+        {
+
+            internal static NoopTimer Instance { get; } = new();
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+            public void Dispose()
+            {
+
+            }
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        }
 
     }
 

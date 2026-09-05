@@ -37,6 +37,8 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
     private readonly IGrimoireConnectionAdmissionGate _admissionGate;
 
+    private readonly TimeProvider _timeProvider;
+
     private readonly ILogger<SessionAttachmentIndexingService> _logger;
 
     private readonly Channel<SessionAttachmentIndexRequest> _channel;
@@ -72,6 +74,7 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         IServiceScopeFactory scopeFactory,
         IOptionsMonitor<ArcanumSettings> options,
         IGrimoireConnectionAdmissionGate admissionGate,
+        TimeProvider timeProvider,
         ILogger<SessionAttachmentIndexingService> logger)
     {
 
@@ -80,6 +83,8 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         _options = options;
 
         _admissionGate = admissionGate;
+
+        _timeProvider = timeProvider;
 
         _logger = logger;
 
@@ -385,81 +390,88 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
         }
 
-        await using IGrimoireWorkLease lease = workLease!;
-
         SessionAttachmentIndexOutcome outcome;
 
-        bool retainedForMaintenance = false;
-
-        try
+        // Keep retry scheduling outside this block. The lease owns one completed work unit: every
+        // scope, durable disposition and pending-identity decision, but not the later backoff before
+        // a new dequeue attempt.
         {
 
-            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+            await using IGrimoireWorkLease lease = workLease!;
 
-            SessionAttachmentIndexProcessor processor = scope.ServiceProvider
-                .GetRequiredService<SessionAttachmentIndexProcessor>();
+            bool retainedForMaintenance = false;
 
-            outcome = await processor.ProcessAsync(request, lease, stoppingToken).ConfigureAwait(false);
-
-            if (outcome.Disposition == SessionAttachmentIndexDisposition.DeferredForMaintenance)
+            try
             {
 
-                Defer(request, observedGeneration);
+                await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
-                retainedForMaintenance = true;
+                SessionAttachmentIndexProcessor processor = scope.ServiceProvider
+                    .GetRequiredService<SessionAttachmentIndexProcessor>();
+
+                outcome = await processor.ProcessAsync(request, lease, stoppingToken).ConfigureAwait(false);
+
+                if (outcome.Disposition == SessionAttachmentIndexDisposition.DeferredForMaintenance)
+                {
+
+                    Defer(request, observedGeneration);
+
+                    retainedForMaintenance = true;
+
+                }
 
             }
-
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-
-            throw;
-
-        }
-        catch (OperationCanceledException ex)
-        {
-
-            _logger.LogWarning(
-                ex,
-                "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
-                request.AttachmentId);
-
-            outcome = new SessionAttachmentIndexOutcome(
-                SessionAttachmentIndexDisposition.Concluded,
-                SessionAttachmentIndexStatus.Failed,
-                ShouldRetry: true);
-
-            await MarkFailedAsync(
-                request,
-                "Attachment indexing was interrupted and will be retried.").ConfigureAwait(false);
-
-        }
-        catch (Exception ex)
-        {
-
-            _logger.LogWarning(ex, "Session attachment {AttachmentId} indexing failed.", request.AttachmentId);
-
-            outcome = new SessionAttachmentIndexOutcome(
-                SessionAttachmentIndexDisposition.Concluded,
-                SessionAttachmentIndexStatus.Failed,
-                ShouldRetry: true);
-
-            await MarkFailedAsync(
-                request,
-                "Attachment indexing failed unexpectedly.").ConfigureAwait(false);
-
-        }
-        finally
-        {
-
-            // The pending identity is released only by a request that actually concluded. A deferral
-            // keeps it, because it is what a resumed run resumes and what keeps a producer's enqueue
-            // for the same attachment deduplicated while it waits.
-            if (!retainedForMaintenance)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
 
-                _pending.TryRemove(request.AttachmentId, out _);
+                throw;
+
+            }
+            catch (OperationCanceledException ex)
+            {
+
+                _logger.LogWarning(
+                    ex,
+                    "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
+                    request.AttachmentId);
+
+                outcome = new SessionAttachmentIndexOutcome(
+                    SessionAttachmentIndexDisposition.Concluded,
+                    SessionAttachmentIndexStatus.Failed,
+                    ShouldRetry: true);
+
+                await MarkFailedAsync(
+                    request,
+                    "Attachment indexing was interrupted and will be retried.").ConfigureAwait(false);
+
+            }
+            catch (Exception ex)
+            {
+
+                _logger.LogWarning(ex, "Session attachment {AttachmentId} indexing failed.", request.AttachmentId);
+
+                outcome = new SessionAttachmentIndexOutcome(
+                    SessionAttachmentIndexDisposition.Concluded,
+                    SessionAttachmentIndexStatus.Failed,
+                    ShouldRetry: true);
+
+                await MarkFailedAsync(
+                    request,
+                    "Attachment indexing failed unexpectedly.").ConfigureAwait(false);
+
+            }
+            finally
+            {
+
+                // The pending identity is released only by a request that actually concluded. A
+                // deferral keeps it, because it is what a resumed run resumes and what keeps a
+                // producer's enqueue for the same attachment deduplicated while it waits.
+                if (!retainedForMaintenance)
+                {
+
+                    _pending.TryRemove(request.AttachmentId, out _);
+
+                }
 
             }
 
@@ -468,7 +480,7 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         if (ShouldAutomaticallyRetry(outcome, stoppingToken))
         {
 
-            await Task.Delay(AutomaticRetryDelay, stoppingToken).ConfigureAwait(false);
+            await Task.Delay(AutomaticRetryDelay, _timeProvider, stoppingToken).ConfigureAwait(false);
 
             _ = TryEnqueue(request with { Attempt = NextAttempt(request.Attempt) });
 

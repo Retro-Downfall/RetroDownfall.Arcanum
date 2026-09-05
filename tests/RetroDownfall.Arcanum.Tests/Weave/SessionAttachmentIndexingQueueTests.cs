@@ -39,6 +39,7 @@ public sealed class SessionAttachmentIndexingQueueTests
             scopes,
             new TestOptionsMonitor<ArcanumSettings>(settings),
             new GrimoireConnectionAdmissionGate(TimeProvider.System),
+            TimeProvider.System,
             NullLogger<SessionAttachmentIndexingService>.Instance);
 
         for (int index = 0; index < ArcanumRuntimeDefaults.Embeddings.Attachments.QueueCapacity; index++)
