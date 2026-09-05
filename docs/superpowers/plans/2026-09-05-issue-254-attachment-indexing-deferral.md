@@ -135,15 +135,47 @@ xUnit, `TaskCompletionSource` barriers, Git, GitHub CLI.
 
 ### Task 9 — Verification
 
-- [ ] Focused `SessionAttachmentIndexingAdmissionTests`, `SessionAttachmentIndexingTests`,
+- [x] Focused `SessionAttachmentIndexingAdmissionTests`, `SessionAttachmentIndexingTests`,
       `SessionAttachmentIndexingQueueTests`, `GrimoireConnectionAdmissionGateTests`,
       `EntryWeavingServiceTests`.
-- [ ] Complete `RetroDownfall.Arcanum.Tests` and `RetroDownfall.Compendium.Tests` suites.
-- [ ] Warning-free Release solution build; `git diff --check`; clean tracked status.
-- [ ] Mutation-check each guard: releasing the lease before the scope, ignoring the effect-group
+- [x] Complete `RetroDownfall.Arcanum.Tests` and `RetroDownfall.Compendium.Tests` suites.
+- [x] Warning-free Release solution build; `git diff --check`; clean tracked status.
+- [x] Mutation-check each guard: releasing the lease before the scope, ignoring the effect-group
       refusal, releasing `_pending` on a deferral, and re-signalling through `TryEnqueue` must each
       fail a test that had previously passed.
 
 ## Delivery evidence
 
-_To be completed on delivery._
+- Reviewed feature implementation: `0123c1df..37819d3c`. Task-scoped reviews for Tasks 3–6 and 8
+  approved their final fixes; the final whole-branch review and integration remain pending after
+  this evidence-only plan update.
+- Focused cluster, before mutations and again after exact restoration:
+  `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --filter
+  "FullyQualifiedName~SessionAttachmentIndexingAdmissionTests|FullyQualifiedName~SessionAttachmentIndexingTests|FullyQualifiedName~SessionAttachmentIndexingQueueTests|FullyQualifiedName~GrimoireConnectionAdmissionGateTests|FullyQualifiedName~EntryWeavingServiceTests"
+  --no-restore` — 120 passed, 0 failed, 0 skipped on both runs.
+- Complete Arcanum suite:
+  `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --no-restore` —
+  13,704 passed, 0 failed, 59 skipped, 13,763 total.
+- Complete Compendium suite:
+  `dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
+  --no-restore` — 181 passed, 0 failed, 0 skipped.
+- Release build: `dotnet build RetroDownfall.Arcanum.slnx -c Release` — succeeded with 0 warnings
+  and 0 errors.
+- Hygiene on the restored reviewed source: `git diff --check grimoire-fixes...HEAD` returned no
+  findings; tracked status was clean. The restored production blobs were
+  `c54becfc8fd8f2c6a23a651270ab4bf855cf427f` for `SessionAttachmentIndexingService.cs` and
+  `2fcc07569447fce63aff94a2a065d2a79a78e64c` for `SessionAttachmentIndexProcessor.cs`.
+- Mutation guard — releasing the work lease before scope disposal made
+  `ProcessOneAsync_HoldsItsWorkLeaseUntilAfterEveryScopeHasDisposed` fail 1/1 because the closure
+  drain completed while the scoped context was still disposing.
+- Mutation guard — ignoring a refused effect group made
+  `ProcessOneAsync_RevocationWinsTheFirstEffectRace_MakesNoProviderCall` fail 1/1: expected
+  `DeferredForMaintenance`, actual `Concluded`.
+- Mutation guard — releasing `_pending` on a deferral made
+  `ProcessOneAsync_RevocationWinsTheFirstEffectRace_MakesNoProviderCall` fail 1/1: the duplicate
+  enqueue produced one queued request where zero was required.
+- Mutation guard — re-signalling through `TryEnqueue` made
+  `DeferredRequest_WaitsForTheExactClosedLeaseToReopenBeforeItIsResignalledOnce` fail 1/1 because
+  the pending identity deduplicated the direct signal and the queue stayed empty.
+- Coverage thresholds, Native AOT/IL, benchmark, native SQLCipher provenance, packaging, full-host,
+  and cross-platform qualification are deliberately outside child #254 and remain owned by #257.
