@@ -1741,6 +1741,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireConnectionAdmissionGate>(
             static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());
 
+        // Scoped, and deliberately not resolved by anything at composition time. Whoever owns a scope
+        // populates it — an HTTP request through the admission middleware, nobody at all in a startup,
+        // recovery or background scope — and the container's reverse-order disposal is what holds the
+        // lease past the pooled context and past every response-completed writer.
+        services.AddScoped(
+            static sp => new GrimoireRequestAdmissionScope(
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>()));
+
         // Its enrolment set is the proof a drain owns. Every direct Covenant handle in the process
         // therefore has to meet the same instance, whichever request scope opened it.
         services.AddSingleton<ICovenantConnectionDrain, CovenantConnectionDrain>();
