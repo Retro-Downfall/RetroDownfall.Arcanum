@@ -123,7 +123,9 @@ key-by-key reference.
   a deletion is actually taking the database offline, the host says so: new `/api` and `/v1` work is
   refused with a stable, sanitized `503` before it runs, rather than failing somewhere further in
   (issue #251). A live event, log, session, or Chronicle stream is ended cleanly at a complete frame
-  boundary rather than blocking the deletion or being cut mid-frame (issue #252).
+  boundary rather than blocking the deletion or being cut mid-frame (issue #252). Background indexing
+  work steps aside for the window instead of failing, retrying, or paying an embedding provider for a
+  batch it then loses, and picks up on its own once the database is back (issue #253).
 - **Your API, not a bespoke one.** An OpenAI Chat Completions compatibility subset means existing
   clients and SDKs work against `arcanum serve` unchanged.
 - **Bring the providers you already pay for.** Any OpenAI-compatible HTTP endpoint, plus opt-in

@@ -52,46 +52,46 @@ opened after the pending fetch and before `EmbedBatchAsync`, closed after the la
 
 ### Task 1 — The outcome type
 
-- [ ] RED: a test asserting `RunTickAsync` returns `EntryWeavingTickOutcome.Woven` for an admitted
+- [x] RED: a test asserting `RunTickAsync` returns `EntryWeavingTickOutcome.Woven` for an admitted
       tick does not compile / fails.
-- [ ] GREEN: add `EntryWeavingTickOutcome`; return `Woven` from every existing exit.
-- [ ] Every existing `EntryWeavingServiceTests` case still passes unchanged in meaning.
+- [x] GREEN: add `EntryWeavingTickOutcome`; return `Woven` from every existing exit.
+- [x] Every existing `EntryWeavingServiceTests` case still passes unchanged in meaning.
 
 ### Task 2 — One work lease per tick, released after scope disposal
 
-- [ ] RED: a tick against a gate whose admission is closed creates no scope, opens no connection,
+- [x] RED: a tick against a gate whose admission is closed creates no scope, opens no connection,
       calls no provider, writes nothing, and returns `DeferredForMaintenance`.
-- [ ] RED: an admitted tick takes exactly one lease of kind `EntryWeaving`.
-- [ ] RED: a closure begun mid-tick does not conclude its request/work drain until the tick's scope
+- [x] RED: an admitted tick takes exactly one lease of kind `EntryWeaving`.
+- [x] RED: a closure begun mid-tick does not conclude its request/work drain until the tick's scope
       has disposed.
-- [ ] GREEN: inject `IGrimoireConnectionAdmissionGate`; declare the lease before the scope.
+- [x] GREEN: inject `IGrimoireConnectionAdmissionGate`; declare the lease before the scope.
 
 ### Task 3 — One atomic effect group
 
-- [ ] RED: revocation winning the frontier makes zero provider calls and zero writes and returns
+- [x] RED: revocation winning the frontier makes zero provider calls and zero writes and returns
       `DeferredForMaintenance`.
-- [ ] RED: effect start winning makes the closure wait through the provider call and every upsert.
-- [ ] GREEN: open the group after the fetch and before `EmbedBatchAsync`; close it after the last
+- [x] RED: effect start winning makes the closure wait through the provider call and every upsert.
+- [x] GREEN: open the group after the fetch and before `EmbedBatchAsync`; close it after the last
       upsert.
 
 ### Task 4 — The loop arm
 
-- [ ] RED: a repeatedly deferred worker logs nothing at `Error` and ticks at the configured cadence,
+- [x] RED: a repeatedly deferred worker logs nothing at `Error` and ticks at the configured cadence,
       not the one-second fault cadence.
-- [ ] GREEN: add the `Debug` arm; fall through to the existing interval delay.
-- [ ] `ExecuteAsync_TickThrowsRepeatedly_BacksOffInsteadOfTightLooping` still passes, pinning the
+- [x] GREEN: add the `Debug` arm; fall through to the existing interval delay.
+- [x] `ExecuteAsync_TickThrowsRepeatedly_BacksOffInsteadOfTightLooping` still passes, pinning the
       genuine-failure path apart from the deferral path.
 
 ### Task 5 — The accounting-scope leak
 
-- [ ] RED: a `BeginAsync` that throws leaves no undisposed scope.
-- [ ] GREEN: dispose the accounting scope on the throwing path.
+- [x] RED: a `BeginAsync` that throws leaves no undisposed scope.
+- [x] GREEN: dispose the accounting scope on the throwing path.
 
 ### Task 6 — Documentation
 
-- [ ] `docs/Arcanum.DESIGN.md` §21.6, §10.20.3, §13.7.
-- [ ] `docs/Arcanum.Engineering.md` per-issue paragraph after #252.
-- [ ] `README.md` local-first bullet.
+- [x] `docs/Arcanum.DESIGN.md` §21.6, §10.20.3, §13.7.
+- [x] `docs/Arcanum.Engineering.md` per-issue paragraph after #252.
+- [x] `README.md` local-first bullet.
 
 ### Task 7 — Verification
 
