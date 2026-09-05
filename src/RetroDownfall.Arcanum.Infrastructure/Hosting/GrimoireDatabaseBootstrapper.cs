@@ -775,7 +775,11 @@ public static class GrimoireDatabaseBootstrapper
         if (runtime is not null && keyProvider is not null && hostToolsPolicy is not null)
         {
 
-            await CovenantAuthorityStartupReconciler.ReconcileAsync(
+            // The answer is deliberately discarded here. An ordinary start with no operator authority
+            // is a degraded installation rather than a failed one, and every consumer already reads an
+            // unpublished authority as "none". Pre-readiness transition recovery reads the same answer
+            // and refuses on it, because there the authority is what a handler is about to spend.
+            _ = await CovenantAuthorityStartupReconciler.ReconcileAsync(
                 installConnection,
                 runtime,
                 keyProvider,

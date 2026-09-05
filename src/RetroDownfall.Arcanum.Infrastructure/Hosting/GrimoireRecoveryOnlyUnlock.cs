@@ -13,10 +13,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// One open connection to an existing catalog, physically closed when the recovery pass lets go.
 /// </summary>
 /// <remarks>
-/// Unpooled and drained on disposal rather than merely closed. A pooled handle returns to the pool
-/// still open against the pinned <c>Microsoft.Data.Sqlite</c>, which leaves <c>-wal</c> and
-/// <c>-shm</c> on disk after the caller believes it let go — and the transition this connection was
-/// opened to recover is about to prove exactly those files absent.
+/// The handle is unpooled, which is what makes closing it enough. Disposing a pooled
+/// <c>SqliteConnection</c> returns the native handle to the pool still open, so <c>-wal</c> and
+/// <c>-shm</c> stay on disk after the caller believes it let go — and the transition this connection
+/// was opened to recover is about to prove exactly those files absent. Clearing the pools is
+/// deliberately not done here: that is the connection drain's one job, and a second caller doing half
+/// of it is how a component comes to believe it has closed a database it has not.
 /// </remarks>
 internal sealed class GrimoireRecoveryUnlockedCatalog(SqliteConnection connection) : IAsyncDisposable
 {
@@ -39,8 +41,6 @@ internal sealed class GrimoireRecoveryUnlockedCatalog(SqliteConnection connectio
         {
 
             await _connection.DisposeAsync().ConfigureAwait(false);
-
-            SqliteConnection.ClearAllPools();
 
         }
 
