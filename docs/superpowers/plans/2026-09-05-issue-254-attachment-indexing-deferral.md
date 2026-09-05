@@ -152,30 +152,33 @@ xUnit, `TaskCompletionSource` barriers, Git, GitHub CLI.
 
 ## Delivery evidence
 
-- Reviewed feature implementation: `0123c1df..f5893a8c`. Task-scoped reviews for Tasks 3–6 and 8
-  approved their final fixes. The final whole-branch review then found two exceptional-boundary gaps:
+- Final reviewed and verified feature range before this evidence commit: `0123c1df..e4606693`.
+  Every task-scoped review was approved. Whole-branch review found two P2 exception-boundary gaps:
   a refused batch was retained before processing-scope disposal succeeded, and provider/append
-  exceptions were classified only after their effect group disposed. Their fixes and focused evidence
-  are present after `f5893a8c`; scoped re-review and integration remain pending.
-- Focused cluster, before mutations and again after exact restoration:
+  exceptions were classified only after their effect group disposed. Fix `aaf48af2` and test-coverage
+  follow-up `5367d8f1` were re-reviewed and approved. The final test-only delta through `6983ddc4`
+  and `e4606693` was also reviewed with no findings.
+- Fresh exact-tip focused cluster:
   `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --filter
   "FullyQualifiedName~SessionAttachmentIndexingAdmissionTests|FullyQualifiedName~SessionAttachmentIndexingTests|FullyQualifiedName~SessionAttachmentIndexingQueueTests|FullyQualifiedName~GrimoireConnectionAdmissionGateTests|FullyQualifiedName~EntryWeavingServiceTests"
-  --no-restore` — 120 passed, 0 failed, 0 skipped on both runs.
-- The same focused cluster after the final-review fixes — 122 passed, 0 failed, 0 skipped. Its three
+  --no-restore` — 122 passed, 0 failed, 0 skipped. Its three
   direct boundary regressions passed 3/3: failed processing-scope disposal does not retain a concluded
   request, and ordinary provider/append exceptions persist `Failed` before effect-group disposal.
-- Complete Arcanum suite:
+- Fresh exact-tip complete Arcanum suite:
   `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --no-restore` —
-  13,704 passed, 0 failed, 59 skipped, 13,763 total.
-- Complete Compendium suite:
+  13,706 passed, 0 failed, 59 skipped, 13,765 total.
+- Fresh exact-tip complete Compendium suite:
   `dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
   --no-restore` — 181 passed, 0 failed, 0 skipped.
-- Release build: `dotnet build RetroDownfall.Arcanum.slnx -c Release` — succeeded with 0 warnings
-  and 0 errors.
-- Hygiene on the restored reviewed source: `git diff --check grimoire-fixes...HEAD` returned no
-  findings; tracked status was clean. The restored production blobs were
-  `c54becfc8fd8f2c6a23a651270ab4bf855cf427f` for `SessionAttachmentIndexingService.cs` and
-  `2fcc07569447fce63aff94a2a065d2a79a78e64c` for `SessionAttachmentIndexProcessor.cs`.
+- Fresh exact-tip Release build: `dotnet build RetroDownfall.Arcanum.slnx -c Release` — succeeded
+  with 0 warnings and 0 errors. `git diff --check grimoire-fixes...HEAD` returned no findings and
+  tracked status was clean.
+- Qualification also exposed pre-existing ThreadPool starvation in synchronous checkpoint tests.
+  Test-only commit `6983ddc4` moved eight blocked codec participants to `LongRunning`; its scoped
+  review and stress run passed. The next full rerun exposed the equivalent Covenant checkpoint
+  timeouts, so test-only commit `e4606693` hardened seven participants across four test classes;
+  its scoped review and stress run passed. The final full suite above is green. Neither commit
+  changes #254 production behavior.
 - Mutation guard — releasing the work lease before scope disposal made
   `ProcessOneAsync_HoldsItsWorkLeaseUntilAfterEveryScopeHasDisposed` fail 1/1 because the closure
   drain completed while the scoped context was still disposing.
@@ -190,3 +193,5 @@ xUnit, `TaskCompletionSource` barriers, Git, GitHub CLI.
   the pending identity deduplicated the direct signal and the queue stayed empty.
 - Coverage thresholds, Native AOT/IL, benchmark, native SQLCipher provenance, packaging, full-host,
   and cross-platform qualification are deliberately outside child #254 and remain owned by #257.
+- Merge, push, feature-branch deletion, and issue closure remain pending; this evidence does not
+  claim integration.
