@@ -38,9 +38,9 @@ Second, the refusal has exactly two shapes and one wording, on whichever surface
 `/api` it is a source-generated `ApiResponse<string>` at `503` carrying
 `Grimoire.MaintenanceUnavailable`; under `/v1` it is the source-generated OpenAI error envelope at
 `503` with type `service_unavailable`. Both carry the existing content-free sentence, no path, owner,
-operation id, phase or native detail, and neither is logged at `Error`. The same pair is produced by
-the exception handler for a gate that closes *after* a request was admitted, which is the window the
-middleware alone cannot cover.
+operation id, phase or native detail, and neither is logged at `Error`. The same stage produces the
+same pair for a gate that closes *after* a request was admitted, by wrapping the rest of the pipeline
+— the window a pre-endpoint refusal alone cannot cover.
 
 Third, the two things that break the moment a request holds a lease are fixed, because this child is
 what makes them reachable. The erasure runs inside the request that asked for it, so the initiating
