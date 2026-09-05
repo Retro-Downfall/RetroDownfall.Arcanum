@@ -827,7 +827,10 @@ internal sealed class CovenantErasureCoordinator(
         if (drained.IsFailure)
         {
 
-            return await AbandonClosingAsync(closingOwner, drained.Error).ConfigureAwait(false);
+            return await AbandonTimedOutOrClosingAsync(
+                    closingOwner,
+                    drained.Error)
+                .ConfigureAwait(false);
 
         }
 
@@ -1061,6 +1064,63 @@ internal sealed class CovenantErasureCoordinator(
         IGrimoireClosingOwner closingOwner,
         Error error)
     {
+
+        await closingOwner.DisposeAsync().ConfigureAwait(false);
+
+        return Result<CovenantGrimoireClosure>.Failure(error);
+
+    }
+
+    /// <summary>
+    /// Gives up a stage one, reopening ordinary admission when it was a drain that timed out.
+    /// </summary>
+    /// <remarks>
+    /// Disposing the closing owner clears the active owner and nothing else: the gate stays
+    /// <c>Closing</c>, and while it is <c>Closing</c> it refuses every request and work lease there
+    /// is. For every other drain failure that is the honest answer, because those errors say the
+    /// closure moved out from under this owner and is no longer this owner's to decide about.
+    ///
+    /// <para>A timed-out drain is the one case where it is not. Nothing was closed, nothing was
+    /// issued, and no phase ran — the run is simply unable to proceed — so leaving admission shut
+    /// would turn a refusal an operator can retry into an outage that lasts until the process is
+    /// restarted. The gate's proven abort is the only edge back, it accepts only this owner and only
+    /// a stage one that recorded its timeout, and the proof it asks for is the same fact this method
+    /// is standing on: no closed lease was ever issued here, so there is no destructive effect to
+    /// have occurred.</para>
+    ///
+    /// <para>An abort that is itself refused changes nothing. The original error is what the caller
+    /// gets either way, because the reason the erasure failed is the drain, not the cleanup.</para>
+    /// </remarks>
+    private async Task<Result<CovenantGrimoireClosure>> AbandonTimedOutOrClosingAsync(
+        IGrimoireClosingOwner closingOwner,
+        Error error)
+    {
+
+        if (!string.Equals(
+                error.Code,
+                GrimoireConnectionAdmissionGate.WorkDrainTimeoutCode,
+                StringComparison.Ordinal))
+        {
+
+            return await AbandonClosingAsync(closingOwner, error).ConfigureAwait(false);
+
+        }
+
+        Result aborted = await _admissionGate
+            .AbortClosingAsync(
+                closingOwner,
+                static _ => ValueTask.FromResult(true),
+                CancellationToken.None)
+            .ConfigureAwait(false);
+
+        if (aborted.IsFailure)
+        {
+
+            _logger.LogWarning(
+                "A Grimoire stage-one drain timed out and its abort was refused with {Code}; ordinary admission stays closed.",
+                aborted.Error.Code);
+
+        }
 
         await closingOwner.DisposeAsync().ConfigureAwait(false);
 

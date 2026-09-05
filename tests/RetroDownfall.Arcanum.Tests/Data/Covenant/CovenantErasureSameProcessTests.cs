@@ -427,6 +427,63 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    /// <summary>
+    /// A stage one that could not drain leaves ordinary admission open, not shut for the process's life.
+    /// </summary>
+    /// <remarks>
+    /// The gate's only edge out of a timed-out <c>Closing</c> is its proven abort, and until this
+    /// change nothing in production spent it: the coordinator disposed the closing owner, which clears
+    /// the active owner and leaves the state exactly where it was. That was invisible while no request
+    /// ever took a lease. It stops being invisible the moment one does — a single request that outlives
+    /// the checkpoint would otherwise refuse every later request on this installation until somebody
+    /// restarted the host, which is a worse answer than the refusal it replaced.
+    ///
+    /// <para>The lease held here is an ordinary one, not the initiator's. Promotion removes the
+    /// initiator; this is the watcher, the slow call, the client that stopped reading — the caller a
+    /// drain genuinely cannot wait out.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_erasure_that_cannot_drain_reopens_ordinary_admission()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        IGrimoireConnectionAdmissionGate admission = harness.Services
+            .GetRequiredService<IGrimoireConnectionAdmissionGate>();
+
+        Assert.True(
+            admission.TryAcquireRequestLease(
+                GrimoireRequestKind.Finite,
+                out IGrimoireRequestLease? blocking));
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(confirmed.PlanId);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(GrimoireConnectionAdmissionGate.WorkDrainTimeoutCode, result.Error.Code);
+
+        // Still held, and admission is open anyway. The abort cannot depend on whatever blocked the
+        // drain going away, because a caller that could not be drained is the caller that will not
+        // oblige.
+        Assert.True(
+            admission.TryAcquireRequestLease(
+                GrimoireRequestKind.Finite,
+                out IGrimoireRequestLease? afterwards));
+
+        await afterwards!.DisposeAsync();
+
+        await blocking!.DisposeAsync();
+
+    }
+
     [SkippableFact]
     public async Task Factory_catalog_change_after_planning_refuses_before_exclusive_or_any_effect()
     {

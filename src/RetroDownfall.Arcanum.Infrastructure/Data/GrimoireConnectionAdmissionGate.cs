@@ -18,7 +18,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private const string OpeningTimeoutCode = "Grimoire.OpeningTimeout";
 
-    private const string WorkDrainTimeoutCode = "Grimoire.WorkDrainTimeout";
+    /// <summary>
+    /// The stage-one drain's own refusal, which is the one drain failure an owner may abort out of.
+    /// </summary>
+    internal const string WorkDrainTimeoutCode = "Grimoire.WorkDrainTimeout";
 
     private const string StaleOpenCode = "Grimoire.StaleOpenGeneration";
 
