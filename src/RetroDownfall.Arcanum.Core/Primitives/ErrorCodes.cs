@@ -262,6 +262,12 @@ public static class ErrorCodes
         /// <summary>A durable Grimoire write did not commit. The transaction wrote nothing.</summary>
         public const string WriteFailed = "Grimoire.WriteFailed";
 
+        /// <summary>
+        /// Maintenance owns database admission and the request was refused before it ran. A deliberate,
+        /// temporary refusal the caller should retry, never a product failure.
+        /// </summary>
+        public const string MaintenanceUnavailable = "Grimoire.MaintenanceUnavailable";
+
     }
 
     /// <summary>Apprentice — autonomous agent orchestration.</summary>
