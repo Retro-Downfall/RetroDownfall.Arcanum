@@ -390,6 +390,43 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    /// <summary>
+    /// The request that asked for the erasure does not have to wait for itself.
+    /// </summary>
+    /// <remarks>
+    /// Both destructive routes run the whole erasure inside the request, so once a request holds an
+    /// admission lease the initiator's own lease is in the set stage one waits on. Promotion is what
+    /// takes it out — paired with the exact scoped connection, so the initiator can still reach the
+    /// ledger while ordinary admission is shut. A success here therefore proves two things at once:
+    /// the drain finished, and the promoted connection kept matching across the close and reopen the
+    /// factory arm performs on it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_erasure_completes_while_its_own_request_holds_the_admission_lease()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(
+            confirmed.PlanId,
+            asAdmittedRequest: true);
+
+        Assert.True(
+            result.IsSuccess,
+            result.IsFailure
+                ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
+
+    }
+
     [SkippableFact]
     public async Task Factory_catalog_change_after_planning_refuses_before_exclusive_or_any_effect()
     {
@@ -1863,6 +1900,7 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
                             provider.GetRequiredService<IGrimoireDbPassphraseSource>(),
                             provider.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                            provider.GetRequiredService<GrimoireRequestAdmissionScope>(),
                             provider.GetRequiredService<ICovenantConnectionDrain>(),
                             provider.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
                             provider.GetRequiredService<LongRunningOperationOwnership>(),
@@ -2075,12 +2113,33 @@ public sealed class CovenantErasureSameProcessTests
 
         }
 
+        /// <summary>
+        /// Applies the factory erasure, optionally as the HTTP request that asked for it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="asAdmittedRequest"/> reproduces exactly what the admission middleware does
+        /// before an endpoint runs: it takes this scope's request lease from the same gate the
+        /// erasure is about to close. Without it every test here is a requestless caller, which is
+        /// the one caller shape the deadlock cannot reach.
+        /// </remarks>
         internal async Task<Result<DataRetentionApplyResult>> ApplyFactoryAsync(
             string expectedPlanId,
-            Guid? requestedOperationId = null)
+            Guid? requestedOperationId = null,
+            bool asAdmittedRequest = false)
         {
 
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
+
+            if (asAdmittedRequest)
+            {
+
+                Assert.True(
+                    scope.ServiceProvider
+                        .GetRequiredService<GrimoireRequestAdmissionScope>()
+                        .TryAdmit(GrimoireRequestKind.Finite),
+                    "the harness could not take the request lease the middleware would have taken");
+
+            }
 
             return await scope.ServiceProvider
                 .GetRequiredService<IDataRetentionService>()

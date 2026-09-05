@@ -2171,6 +2171,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                sp.GetRequiredService<GrimoireRequestAdmissionScope>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
                 sp.GetRequiredService<LongRunningOperationOwnership>(),

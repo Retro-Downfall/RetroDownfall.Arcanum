@@ -576,6 +576,7 @@ internal sealed class CovenantErasureCoordinator(
     IGrimoireMaintenancePathAuthority maintenancePaths,
     IGrimoireDbPassphraseSource passphrase,
     ICovenantClosedPeriodLedgerConnection ledgerConnection,
+    GrimoireRequestAdmissionScope requestAdmission,
     ICovenantConnectionDrain drain,
     GrimoireOfflineTransitionDatabaseReconciler reconciler,
     LongRunningOperationOwnership ownership,
@@ -667,6 +668,20 @@ internal sealed class CovenantErasureCoordinator(
 
     private readonly ICovenantClosedPeriodLedgerConnection _ledgerConnection =
         ledgerConnection ?? throw new ArgumentNullException(nameof(ledgerConnection));
+
+    /// <summary>
+    /// This scope's Grimoire admission, carrying a request lease only when a request populated it.
+    /// </summary>
+    /// <remarks>
+    /// It is read rather than passed down from the endpoint, because the two halves of a promotion
+    /// have to be the exact pair and both already live in this scope: the lease the admission
+    /// middleware took, and <see cref="_ledgerConnection"/>'s connection, which is the same
+    /// <c>DbConnection</c> object the operation store issues its terminal compare-exchange on.
+    /// Threading either through <c>RunAsync</c> would let a caller supply one that is not this
+    /// scope's, and the gate would then be checking a caller's value against the same caller's value.
+    /// </remarks>
+    private readonly GrimoireRequestAdmissionScope _requestAdmission =
+        requestAdmission ?? throw new ArgumentNullException(nameof(requestAdmission));
 
     private readonly ICovenantConnectionDrain _drain =
         drain ?? throw new ArgumentNullException(nameof(drain));
@@ -784,7 +799,17 @@ internal sealed class CovenantErasureCoordinator(
         CancellationToken cancellationToken)
     {
 
-        Result<IGrimoireClosingOwner> closing = _admissionGate.BeginOrResumeExclusive(owner);
+        // The request that asked for this erasure runs it, so its own lease is in the set stage one
+        // is about to wait on. Promotion takes that one lease out and binds this scope's exact
+        // connection, which is what keeps the initiator able to reach the ledger while ordinary
+        // admission is shut. A startup, recovery or background caller populated no lease and takes
+        // the unpromoted path, which is the same call this has always made.
+        Result<IGrimoireClosingOwner> closing = _requestAdmission.Lease is { } initiatingRequest
+            ? _admissionGate.BeginOrResumeExclusive(
+                owner,
+                initiatingRequest,
+                _ledgerConnection.Connection)
+            : _admissionGate.BeginOrResumeExclusive(owner);
 
         if (closing.IsFailure)
         {
