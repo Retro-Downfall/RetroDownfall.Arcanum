@@ -247,8 +247,8 @@ public sealed class InstallationResetContractTests
             CredentialResults: credentials,
             LastErrorCode: null);
 
-        InstallationResetActivePayloadV2 payload =
-            InstallationResetActivePayloadV2.FromRecord(domain);
+        InstallationResetActivePayloadV3 payload =
+            InstallationResetActivePayloadV3.FromRecord(domain);
 
         selectedRoots[0] = "/mutated";
 
@@ -400,8 +400,8 @@ public sealed class InstallationResetContractTests
             LastErrorCode: ErrorCodes.Data.RecoveryRequired,
             HostToolsMarkerPairReset: checkpoint);
 
-        InstallationResetActivePayloadV2 payload =
-            InstallationResetActivePayloadV2.FromRecord(domain);
+        InstallationResetActivePayloadV3 payload =
+            InstallationResetActivePayloadV3.FromRecord(domain);
 
         inventoryBacking[0] = inventoryEntry with { CampaignId = Guid.NewGuid() };
 
@@ -462,8 +462,8 @@ public sealed class InstallationResetContractTests
             inventoryCount: 4096,
             intentCount: 4096);
 
-        InstallationResetActivePayloadV2 exactPayload =
-            InstallationResetActivePayloadV2.FromRecord(exact);
+        InstallationResetActivePayloadV3 exactPayload =
+            InstallationResetActivePayloadV3.FromRecord(exact);
 
         Assert.Equal(4096, exactPayload.HostToolsMarkerPairReset!.CampaignInventory.Length);
 
@@ -482,12 +482,12 @@ public sealed class InstallationResetContractTests
                 intentCount: 4097);
 
         Assert.Throws<ArgumentException>(() =>
-            InstallationResetActivePayloadV2.FromRecord(oversizedInventory));
+            InstallationResetActivePayloadV3.FromRecord(oversizedInventory));
 
         Assert.Throws<ArgumentException>(() =>
-            InstallationResetActivePayloadV2.FromRecord(oversizedIntents));
+            InstallationResetActivePayloadV3.FromRecord(oversizedIntents));
 
-        InstallationResetActivePayloadV2 payloadWithOversizedCheckpoint =
+        InstallationResetActivePayloadV3 payloadWithOversizedCheckpoint =
             exactPayload with
             {
                 HostToolsMarkerPairReset = oversizedInventory.HostToolsMarkerPairReset,
@@ -525,10 +525,10 @@ public sealed class InstallationResetContractTests
         };
 
         Assert.Throws<ArgumentException>(() =>
-            InstallationResetActivePayloadV2.FromRecord(defaultInventory));
+            InstallationResetActivePayloadV3.FromRecord(defaultInventory));
 
         Assert.Throws<ArgumentException>(() =>
-            InstallationResetActivePayloadV2.FromRecord(defaultIntents));
+            InstallationResetActivePayloadV3.FromRecord(defaultIntents));
 
     }
 
@@ -542,7 +542,7 @@ public sealed class InstallationResetContractTests
         [
             typeof(InstallationResetActiveEnvelopeV2),
             typeof(InstallationResetActiveAnchorV1),
-            typeof(InstallationResetActivePayloadV2),
+            typeof(InstallationResetActivePayloadV3),
             typeof(InstallationResetActiveWorkspaceV2),
             typeof(InstallationResetActiveFileIdentityV2),
             typeof(InstallationResetActivePreservedBackupV2),

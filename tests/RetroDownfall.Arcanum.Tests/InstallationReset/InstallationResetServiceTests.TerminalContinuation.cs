@@ -352,7 +352,7 @@ public sealed partial class InstallationResetServiceTests
                         InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
                         publication with
                         {
-                            Payload = InstallationResetActivePayloadV2.FromRecord(published),
+                            Payload = InstallationResetActivePayloadV3.FromRecord(published),
                         })));
 
         }

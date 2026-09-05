@@ -48,7 +48,9 @@ internal sealed record InstallationResetActiveRecord(
     [property: JsonIgnore]
     FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null,
     [property: JsonIgnore]
-    HostToolsMarkerPairResetCheckpointV1? HostToolsMarkerPairReset = null);
+    HostToolsMarkerPairResetCheckpointV1? HostToolsMarkerPairReset = null,
+    [property: JsonIgnore]
+    InstallationResetNestedTransitionReceiptV1? NestedTransitionReceipt = null);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
@@ -180,7 +182,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         }
 
-        Result<InstallationResetActivePayloadV2> payload = ToAuthenticatedPayload(record);
+        Result<InstallationResetActivePayloadV3> payload = ToAuthenticatedPayload(record);
 
         if (installationId == Guid.Empty || payload.IsFailure)
         {
@@ -346,7 +348,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         }
 
-        Result<InstallationResetActivePayloadV2> payload = ToAuthenticatedPayload(next);
+        Result<InstallationResetActivePayloadV3> payload = ToAuthenticatedPayload(next);
 
         if (payload.IsFailure || !IsMonotonicTransition(actual.Payload, payload.Value))
         {
@@ -508,7 +510,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         }
 
-        Result<InstallationResetActivePayloadV2> payload = ToAuthenticatedPayload(legacy.Value);
+        Result<InstallationResetActivePayloadV3> payload = ToAuthenticatedPayload(legacy.Value);
 
         if (payload.IsFailure)
         {
@@ -1064,7 +1066,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             }
 
-            Result<InstallationResetActivePayloadV2> opened = OpenEnvelope(
+            Result<InstallationResetActivePayloadV3> opened = OpenEnvelope(
                 profile,
                 location,
                 closed.InstallationId,
@@ -1311,7 +1313,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         }
 
-        Result<InstallationResetActivePayloadV2> payload = OpenEnvelope(
+        Result<InstallationResetActivePayloadV3> payload = OpenEnvelope(
             profile,
             location,
             anchor.InstallationId,
@@ -1389,7 +1391,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveLocation location,
         InstallationResetActiveAnchorV1 anchor,
         InstallationResetActiveRecordKeyLease sealingKey,
-        InstallationResetActivePayloadV2 payload,
+        InstallationResetActivePayloadV3 payload,
         CovenantDigest previousEnvelopeDigest,
         CancellationToken cancellationToken)
     {
@@ -1499,7 +1501,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             }
 
-            Result<InstallationResetActivePayloadV2> opened = OpenEnvelope(
+            Result<InstallationResetActivePayloadV3> opened = OpenEnvelope(
                 profile,
                 location,
                 anchor.InstallationId,
@@ -1541,7 +1543,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
     }
 
-    private Result<InstallationResetActivePayloadV2> OpenEnvelope(
+    private Result<InstallationResetActivePayloadV3> OpenEnvelope(
         BackupRestoreProfileNamespace profile,
         InstallationResetActiveLocation location,
         Guid installationId,
@@ -1554,8 +1556,8 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         {
 
             return key.Error.Code == ErrorCodes.Covenant.NotFound
-                ? EvidenceFailure<InstallationResetActivePayloadV2>()
-                : Result<InstallationResetActivePayloadV2>.Failure(key.Error);
+                ? EvidenceFailure<InstallationResetActivePayloadV3>()
+                : Result<InstallationResetActivePayloadV3>.Failure(key.Error);
 
         }
 
@@ -1608,30 +1610,35 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 ErrorCodes.Covenant.Unavailable,
                 "The authenticated installation-reset active store is not composed.");
 
-    private static Result<InstallationResetActivePayloadV2> ToAuthenticatedPayload(
+    private static Result<InstallationResetActivePayloadV3> ToAuthenticatedPayload(
         InstallationResetActiveRecord record)
     {
 
         try
         {
 
+            // The legacy plaintext version, the one earlier authenticated payload version, and the
+            // current one are all readable here; the projection stamps the current version, so a
+            // record read at an earlier one is migrated forward by its next publication rather than
+            // resealed at the version it arrived with.
             if (record.Version is not CurrentVersion
-                and not InstallationResetActiveRecordAuthenticator.EnvelopeVersion
+                and not InstallationResetActiveRecordAuthenticator.LegacyPayloadVersion
+                and not InstallationResetActiveRecordAuthenticator.PayloadVersion
                 || !IsValid(record with { Version = CurrentVersion }))
             {
 
-                return Integrity<InstallationResetActivePayloadV2>();
+                return Integrity<InstallationResetActivePayloadV3>();
 
             }
 
-            InstallationResetActivePayloadV2 payload =
-                InstallationResetActivePayloadV2.FromRecord(record);
+            InstallationResetActivePayloadV3 payload =
+                InstallationResetActivePayloadV3.FromRecord(record);
 
             Result valid = InstallationResetActiveRecordAuthenticator.ValidatePayload(payload);
 
             return valid.IsSuccess
                 ? payload
-                : Result<InstallationResetActivePayloadV2>.Failure(valid.Error);
+                : Result<InstallationResetActivePayloadV3>.Failure(valid.Error);
 
         }
         catch (Exception exception) when (
@@ -1640,7 +1647,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 or NullReferenceException)
         {
 
-            return Integrity<InstallationResetActivePayloadV2>();
+            return Integrity<InstallationResetActivePayloadV3>();
 
         }
 
@@ -1731,8 +1738,8 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         && SamePayload(expected.Payload, actual.Payload);
 
     private static bool IsMonotonicTransition(
-        InstallationResetActivePayloadV2 current,
-        InstallationResetActivePayloadV2 next)
+        InstallationResetActivePayloadV3 current,
+        InstallationResetActivePayloadV3 next)
     {
 
         if (next.OperationId != current.OperationId
@@ -1754,6 +1761,9 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || !IsCheckpointTransition(
                 current.HostToolsMarkerPairReset,
                 next.HostToolsMarkerPairReset)
+            || !IsNestedReceiptTransition(
+                current.NestedTransitionReceipt,
+                next.NestedTransitionReceipt)
             || !CredentialsAreMonotonic(current.CredentialResults, next.CredentialResults))
         {
 
@@ -1835,8 +1845,8 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
     }
 
     private static bool SamePayload(
-        InstallationResetActivePayloadV2 expected,
-        InstallationResetActivePayloadV2 actual) =>
+        InstallationResetActivePayloadV3 expected,
+        InstallationResetActivePayloadV3 actual) =>
         expected.Version == actual.Version
         && expected.OperationId == actual.OperationId
         && string.Equals(expected.PlanId, actual.PlanId, StringComparison.Ordinal)
@@ -1857,7 +1867,49 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             actual.HostToolsMarkerPairReset)
         && SameClaim(
             expected.FullInstallationResetRemediationClaim,
-            actual.FullInstallationResetRemediationClaim);
+            actual.FullInstallationResetRemediationClaim)
+        && expected.NestedTransitionReceipt == actual.NestedTransitionReceipt;
+
+    /// <summary>
+    /// Admits only the one edge a nested receipt has, and refuses every way of unsaying it.
+    /// </summary>
+    /// <remarks>
+    /// Absent may become a claim, and a claim may become the completion of the same nested operation.
+    /// Nothing else: removing the receipt would let a reset forget it launched a database transition
+    /// whose journal it can no longer read, moving it back would let a finished transition be
+    /// relaunched, and renaming its operation would let one transition's proof stand in for another's.
+    ///
+    /// <para>A same-state republication is legal only when the receipt is unchanged, so the identity
+    /// comparison here doubles as the no-silent-edit rule the rest of the payload gets from
+    /// <c>SamePayload</c>.</para>
+    /// </remarks>
+    private static bool IsNestedReceiptTransition(
+        InstallationResetNestedTransitionReceiptV1? current,
+        InstallationResetNestedTransitionReceiptV1? next)
+    {
+
+        if (current is null)
+        {
+
+            return next is null
+                || next.Phase is InstallationResetNestedTransitionPhase.Claimed;
+
+        }
+
+        if (next is null || next.NestedOperationId != current.NestedOperationId)
+        {
+
+            return false;
+
+        }
+
+        return current.Phase is InstallationResetNestedTransitionPhase.Claimed
+            ? next.Phase is InstallationResetNestedTransitionPhase.Claimed
+                ? next == current
+                : next.Phase is InstallationResetNestedTransitionPhase.Completed
+            : next == current;
+
+    }
 
     private static bool IsCheckpointTransition(
         HostToolsMarkerPairResetCheckpointV1? current,
@@ -2181,7 +2233,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveLocation location,
         InstallationResetActiveEnvelopeV2 envelope,
         CovenantDigest digest,
-        InstallationResetActivePayloadV2 payload,
+        InstallationResetActivePayloadV3 payload,
         InstallationResetActiveAnchorV1 anchor) =>
         new InstallationResetActiveRecoveryState(
             InstallationResetActiveRecoveryOutcome.AuthenticatedV2,

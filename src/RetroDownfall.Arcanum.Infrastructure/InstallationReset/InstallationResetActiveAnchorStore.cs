@@ -16,7 +16,7 @@ internal sealed record InstallationResetActivePublication(
     InstallationResetActiveLocation Location,
     InstallationResetActiveEnvelopeV2 Envelope,
     CovenantDigest EnvelopeDigest,
-    InstallationResetActivePayloadV2 Payload,
+    InstallationResetActivePayloadV3 Payload,
     InstallationResetActiveAnchorV1 Anchor);
 
 internal enum InstallationResetActiveRecoveryOutcome : byte

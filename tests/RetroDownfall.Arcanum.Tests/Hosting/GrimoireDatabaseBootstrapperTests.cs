@@ -1963,7 +1963,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         InstallationResetActiveEnvelopeV2 ahead = SealEnvelope(
             guardedRoot,
             first,
-            InstallationResetActivePayloadV2.FromRecord(prepared),
+            InstallationResetActivePayloadV3.FromRecord(prepared),
             revision: 2);
 
         File.WriteAllBytes(
@@ -3252,7 +3252,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     private InstallationResetActiveEnvelopeV2 SealEnvelope(
         string guardedRoot,
         InstallationResetActivePublication publication,
-        InstallationResetActivePayloadV2 payload,
+        InstallationResetActivePayloadV3 payload,
         ulong revision)
     {
 

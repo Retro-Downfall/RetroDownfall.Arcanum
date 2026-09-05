@@ -614,7 +614,7 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                     "ciphertext",
                     "tag"),
                 envelopeDigest,
-                InstallationResetActivePayloadV2.FromRecord(record),
+                InstallationResetActivePayloadV3.FromRecord(record),
                 new InstallationResetActiveAnchorV1(
                     1,
                     InstallationResetActiveAnchorState.Active,
@@ -653,7 +653,7 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
             Current = Current with
             {
-                Payload = InstallationResetActivePayloadV2.FromRecord(
+                Payload = InstallationResetActivePayloadV3.FromRecord(
                     Current.Payload.ToRecord() with
                     {
                         HostToolsMarkerPairReset =
@@ -707,7 +707,7 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
             Advances++;
 
-            Current = Bump(Current, InstallationResetActivePayloadV2.FromRecord(next));
+            Current = Bump(Current, InstallationResetActivePayloadV3.FromRecord(next));
 
             return Task.FromResult(
                 Result<InstallationResetActivePublication>.Success(Current));
@@ -746,7 +746,7 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
         private static InstallationResetActivePublication Bump(
             InstallationResetActivePublication current,
-            InstallationResetActivePayloadV2 payload)
+            InstallationResetActivePayloadV3 payload)
         {
 
             CovenantDigest envelopeDigest = new(

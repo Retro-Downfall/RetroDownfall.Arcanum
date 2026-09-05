@@ -1224,8 +1224,8 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             FullInstallationResetRemediationClaim: claim,
             HostToolsMarkerPairReset: checkpoint);
 
-        InstallationResetActivePayloadV2 payload =
-            InstallationResetActivePayloadV2.FromRecord(record);
+        InstallationResetActivePayloadV3 payload =
+            InstallationResetActivePayloadV3.FromRecord(record);
 
         InstallationResetActiveLocation location = new(
             "/active",
@@ -1306,7 +1306,7 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                 PreviousEnvelopeDigest = current.EnvelopeDigest,
             },
             envelopeDigest,
-            InstallationResetActivePayloadV2.FromRecord(nextRecord),
+            InstallationResetActivePayloadV3.FromRecord(nextRecord),
             current.Anchor with
             {
                 Revision = current.Anchor.Revision + 1,
@@ -1326,7 +1326,7 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
         return publication with
         {
-            Payload = InstallationResetActivePayloadV2.FromRecord(
+            Payload = InstallationResetActivePayloadV3.FromRecord(
                 publication.Payload.ToRecord() with
                 {
                     HostToolsMarkerPairReset = checkpoint with { Phase = phase },
@@ -1579,7 +1579,7 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
         return publication with
         {
-            Payload = InstallationResetActivePayloadV2.FromRecord(
+            Payload = InstallationResetActivePayloadV3.FromRecord(
                 publication.Payload.ToRecord() with
                 {
                     HostToolsMarkerPairReset = checkpoint with

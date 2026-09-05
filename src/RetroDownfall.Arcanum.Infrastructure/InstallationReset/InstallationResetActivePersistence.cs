@@ -100,7 +100,48 @@ internal sealed record FullInstallationResetRemediationClaimV1(
     CovenantDigest IssuerDigest,
     DateTimeOffset AcceptedAtUtc);
 
-internal sealed record InstallationResetActivePayloadV2(
+/// <summary>How far the one nested offline transition an installation reset launches has got.</summary>
+/// <remarks>
+/// Two phases, and the absence of the receipt is a third fact. Nothing started, something started and
+/// has not reported, and something finished are three different positions for a reset to resume from,
+/// and only the first and the third allow it to go on. A single boolean, or a receipt written only on
+/// success, would collapse the middle one into whichever neighbour it happened to resemble.
+///
+/// <para>The claim is published before the nested transition is launched. That ordering is what makes
+/// the middle state observable at all: a claim that arrived after the effect could not distinguish a
+/// transition that never began from one whose journal is gone.</para>
+/// </remarks>
+internal enum InstallationResetNestedTransitionPhase : byte
+{
+
+    Claimed = 1,
+
+    Completed = 2,
+
+}
+
+/// <summary>The outer workflow's record of the nested database transition it launched.</summary>
+/// <remarks>
+/// It names the nested operation and, once that operation is over, the effect it was launched against
+/// and the exact database row it terminalized. It carries nothing else: no path, credential, key,
+/// generation, epoch, lease, handle, count, subject identity, or disclosure detail. The outer
+/// operation id is deliberately absent — this record lives inside the payload whose
+/// <c>OperationId</c> is that value, and a second copy would be a second place for the two to
+/// disagree.
+///
+/// <para>The digests are null together at <see cref="InstallationResetNestedTransitionPhase.Claimed"/>
+/// and valid together at <see cref="InstallationResetNestedTransitionPhase.Completed"/>, because
+/// neither is knowable before the nested transition reaches its terminal compare-exchange.</para>
+/// </remarks>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record InstallationResetNestedTransitionReceiptV1(
+    byte Version,
+    Guid NestedOperationId,
+    InstallationResetNestedTransitionPhase Phase,
+    CovenantDigest? NestedEffectDigest,
+    CovenantDigest? TerminalWinnerDigest);
+
+internal sealed record InstallationResetActivePayloadV3(
     byte Version,
     Guid OperationId,
     string PlanId,
@@ -118,11 +159,13 @@ internal sealed record InstallationResetActivePayloadV2(
     InstallationResetActiveOnlineCompletionV2? OnlineDataCompletion,
     HostToolsMarkerPairResetCheckpointV1? HostToolsMarkerPairReset,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null)
+    FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    InstallationResetNestedTransitionReceiptV1? NestedTransitionReceipt = null)
 {
 
     /// <summary>Projects mutable service state into a detached immutable persistence graph.</summary>
-    internal static InstallationResetActivePayloadV2 FromRecord(
+    internal static InstallationResetActivePayloadV3 FromRecord(
         InstallationResetActiveRecord record)
     {
 
@@ -130,8 +173,8 @@ internal sealed record InstallationResetActivePayloadV2(
 
         ArgumentNullException.ThrowIfNull(record.AcceptedBinding);
 
-        return new InstallationResetActivePayloadV2(
-            Version: InstallationResetActiveRecordAuthenticator.EnvelopeVersion,
+        return new InstallationResetActivePayloadV3(
+            Version: InstallationResetActiveRecordAuthenticator.PayloadVersion,
             OperationId: record.OperationId,
             PlanId: record.PlanId,
             Scope: record.Scope,
@@ -181,7 +224,9 @@ internal sealed record InstallationResetActivePayloadV2(
                     record.OnlineDataCompletion.DerivedRecordsDeleted),
             HostToolsMarkerPairReset: CopyCheckpoint(record.HostToolsMarkerPairReset),
             FullInstallationResetRemediationClaim:
-                record.FullInstallationResetRemediationClaim);
+                record.FullInstallationResetRemediationClaim,
+            NestedTransitionReceipt:
+                CopyNestedTransitionReceipt(record.NestedTransitionReceipt));
 
     }
 
@@ -250,7 +295,20 @@ internal sealed record InstallationResetActivePayloadV2(
                     OnlineDataCompletion.DerivedRecordsDeleted),
             FullInstallationResetRemediationClaim:
                 FullInstallationResetRemediationClaim,
-            HostToolsMarkerPairReset: CopyCheckpoint(HostToolsMarkerPairReset));
+            HostToolsMarkerPairReset: CopyCheckpoint(HostToolsMarkerPairReset),
+            NestedTransitionReceipt: CopyNestedTransitionReceipt(NestedTransitionReceipt));
+
+    /// <summary>Deep-copies the nested receipt so the two graphs share no digest buffer.</summary>
+    private static InstallationResetNestedTransitionReceiptV1? CopyNestedTransitionReceipt(
+        InstallationResetNestedTransitionReceiptV1? receipt) =>
+        receipt is null
+            ? null
+            : new InstallationResetNestedTransitionReceiptV1(
+                receipt.Version,
+                receipt.NestedOperationId,
+                receipt.Phase,
+                receipt.NestedEffectDigest is { } effect ? CopyDigest(effect) : null,
+                receipt.TerminalWinnerDigest is { } winner ? CopyDigest(winner) : null);
 
     private static HostToolsMarkerPairResetCheckpointV1? CopyCheckpoint(
         HostToolsMarkerPairResetCheckpointV1? checkpoint)
@@ -450,7 +508,7 @@ internal sealed record InstallationResetActivePayloadV2(
     UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow)]
 [JsonSerializable(typeof(InstallationResetActiveEnvelopeV2))]
 [JsonSerializable(typeof(InstallationResetActiveAnchorV1))]
-[JsonSerializable(typeof(InstallationResetActivePayloadV2))]
+[JsonSerializable(typeof(InstallationResetActivePayloadV3))]
 [JsonSerializable(typeof(InstallationResetActiveWorkspaceV2))]
 [JsonSerializable(typeof(InstallationResetActiveFileIdentityV2))]
 [JsonSerializable(typeof(InstallationResetActivePreservedBackupV2))]
@@ -463,6 +521,8 @@ internal sealed record InstallationResetActivePayloadV2(
 [JsonSerializable(typeof(FullInstallationResetManagedFileCheckpointV1))]
 [JsonSerializable(typeof(FullInstallationResetManagedFileReconciliationPhase))]
 [JsonSerializable(typeof(InstallationResetRestoreCredentialCleanupPhase))]
+[JsonSerializable(typeof(InstallationResetNestedTransitionReceiptV1))]
+[JsonSerializable(typeof(InstallationResetNestedTransitionPhase))]
 [JsonSerializable(typeof(BackupRestoreFullResetTerminalProjectionV1))]
 [JsonSerializable(typeof(BackupRestoreFullResetTerminalArm))]
 [JsonSerializable(typeof(FullInstallationResetRestartProofV1))]

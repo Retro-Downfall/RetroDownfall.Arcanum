@@ -4093,7 +4093,7 @@ public sealed partial class InstallationResetServiceTests
                 Location: null!,
                 Envelope: null!,
                 EnvelopeDigest: default,
-                InstallationResetActivePayloadV2.FromRecord(record),
+                InstallationResetActivePayloadV3.FromRecord(record),
                 Anchor: null!);
 
         private static Task<T> AuthenticatedSurfaceNotUsed<T>() =>
