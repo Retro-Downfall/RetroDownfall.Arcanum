@@ -48,6 +48,7 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -651,6 +652,13 @@ public static class ApiBootstrapper
 
                 }
 
+                if (await ApplyGrimoireRequestAdmissionAsync(context).ConfigureAwait(false))
+                {
+
+                    return;
+
+                }
+
                 if (context.GetEndpoint()?.Metadata
                         .GetMetadata<InstallationResetRecoveryBlockedRouteMetadata>() is not null
                     && await ApplyInstallationResetRecoveryAdmissionAsync(context).ConfigureAwait(false))
@@ -670,6 +678,13 @@ public static class ApiBootstrapper
 
             if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
             {
+
+                if (await ApplyGrimoireRequestAdmissionAsync(context).ConfigureAwait(false))
+                {
+
+                    return;
+
+                }
 
                 if (await ApplyInstallationResetRecoveryAdmissionAsync(context).ConfigureAwait(false))
                 {
@@ -718,6 +733,80 @@ public static class ApiBootstrapper
         await context.Response.CompleteAsync().ConfigureAwait(false);
 
         return true;
+
+    }
+
+    /// <summary>
+    /// Takes this request's Grimoire admission, or refuses it, before any endpoint work happens.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see langword="true"/> when it has already written a refusal and the pipeline must
+    /// stop. It runs in both branches of the gate above, after whichever authentication that branch
+    /// performs and before every later decision, because the parent design's order is authentication,
+    /// then Grimoire admission, then installation-reset admission and Covenant pre-binding, then the
+    /// endpoint.
+    ///
+    /// <para>Selection is by path and never by API-key metadata. That is the whole of the exclusion
+    /// rule: <see cref="PathString.StartsWithSegments(PathString, StringComparison)"/> compares whole
+    /// segments, so an authenticated <c>/metrics</c> is outside both prefixes, <c>/apiary</c> is not
+    /// inside <c>/api</c>, and <c>/v10</c> is not inside <c>/v1</c> — while an anonymous or
+    /// peer-authenticated route that really is under <c>/api</c> stays protected.</para>
+    ///
+    /// <para>A request that matched no route this host mapped is left alone. It takes the anonymous
+    /// branch and is never authenticated, so refusing it would answer a maintenance <c>503</c> to a
+    /// caller who presented no key — telling them both that the prefix is real and that this
+    /// installation is mid-transition — in place of the <c>404</c> or <c>405</c> that costs nothing.
+    /// It also runs no endpoint, so there is no work for admission to prevent. The test is
+    /// <see cref="RouteEndpoint"/> rather than merely non-null, because routing answers a method
+    /// mismatch with an endpoint of its own that no <c>Map</c> call produced.</para>
+    ///
+    /// <para>The holder is resolved rather than the gate, and it is resolved <i>here</i> on purpose.
+    /// It is the first scoped service the request touches, so the container creates it first and
+    /// disposes it last — after the pooled context has gone back and after every response-completed
+    /// writer has run. Releasing the lease in a <c>finally</c> after <c>next()</c> would invert that
+    /// and leave those writers with no live lifetime.</para>
+    /// </remarks>
+    private static async Task<bool> ApplyGrimoireRequestAdmissionAsync(HttpContext context)
+    {
+
+        if (context.GetEndpoint() is not RouteEndpoint endpoint
+            || endpoint.Metadata.GetMetadata<GrimoireAdmissionExemptRouteMetadata>() is not null)
+        {
+
+            return false;
+
+        }
+
+        if (!context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
+            && !context.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return false;
+
+        }
+
+        if (context.RequestServices.GetService<GrimoireRequestAdmissionScope>() is not { } admission)
+        {
+
+            // A host that maps these endpoints without the Arcanum infrastructure stack has no
+            // Grimoire, so there is no admission to take and nothing for a refusal to protect. The
+            // two stages below answer an absent service exactly this way. That the composed host does
+            // register it is a composition contract, held by its own test rather than by a throw here.
+            return false;
+
+        }
+
+        // Finite is the only kind this stage takes. Marking the declared streaming routes
+        // quiesceable, so a transition can end them at a frame boundary, is a separate change; until
+        // it lands a live stream is drained through completion like any other finite request.
+        if (admission.TryAdmit(GrimoireRequestKind.Finite))
+        {
+
+            return false;
+
+        }
+
+        return await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
 
     }
 

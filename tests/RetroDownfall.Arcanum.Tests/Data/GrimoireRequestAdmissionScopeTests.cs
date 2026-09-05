@@ -190,6 +190,36 @@ public sealed class GrimoireRequestAdmissionScopeTests
 
     }
 
+    /// <summary>
+    /// A synchronously disposed container scope releases the lease rather than throwing.
+    /// </summary>
+    /// <remarks>
+    /// The request scope is disposed asynchronously, so this path is not the one production takes. It
+    /// exists because a service that implements only <c>IAsyncDisposable</c> makes a synchronous scope
+    /// disposal throw outright, and eleven synchronous scopes exist under <c>src</c> today — any of
+    /// which a later change could give a transitive dependency on this holder.
+    /// </remarks>
+    [Fact]
+    public async Task A_synchronously_disposed_scope_still_releases_the_lease()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        using (GrimoireRequestAdmissionScope scope = new(gate))
+        {
+
+            Assert.True(scope.TryAdmit(GrimoireRequestKind.Finite));
+
+        }
+
+        await using IGrimoireClosingOwner closing = Begin(gate);
+
+        Result drained = await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+    }
+
     private static GrimoireConnectionAdmissionGate CreateGate() =>
         new(
             TimeProvider.System,

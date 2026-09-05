@@ -22,8 +22,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// persist among them. Releasing there would leave those writes with no live finisher lifetime, and a
 /// closing gate would refuse them silently.</para>
 /// </remarks>
+/// <remarks>
+/// <para>It is disposable both ways on purpose. ASP.NET Core disposes the request scope
+/// asynchronously, which is the path that matters; but a container scope disposed <i>synchronously</i>
+/// throws outright on a service that implements only <see cref="IAsyncDisposable"/>, so a holder with
+/// one disposal would turn any future background scope that resolved it — directly or through
+/// something that depends on it — into a crash at teardown. Releasing a request lease is synchronous
+/// work in any case, which is what makes the second implementation honest rather than a wrapper around
+/// a blocking wait.</para>
+/// </remarks>
 internal sealed class GrimoireRequestAdmissionScope(IGrimoireConnectionAdmissionGate gate)
-    : IAsyncDisposable
+    : IAsyncDisposable, IDisposable
 {
 
     private IGrimoireRequestLease? _lease;
@@ -76,13 +85,34 @@ internal sealed class GrimoireRequestAdmissionScope(IGrimoireConnectionAdmission
 
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => ReleaseAsync();
+
+    public void Dispose()
+    {
+
+        ValueTask released = ReleaseAsync();
+
+        if (released.IsCompleted)
+        {
+
+            // Observes a fault rather than discarding one; a completed release has nothing to wait on.
+            released.GetAwaiter().GetResult();
+
+            return;
+
+        }
+
+        released.AsTask().GetAwaiter().GetResult();
+
+    }
+
+    private ValueTask ReleaseAsync()
     {
 
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
 
-            return;
+            return ValueTask.CompletedTask;
 
         }
 
@@ -90,12 +120,7 @@ internal sealed class GrimoireRequestAdmissionScope(IGrimoireConnectionAdmission
 
         _lease = null;
 
-        if (held is not null)
-        {
-
-            await held.DisposeAsync().ConfigureAwait(false);
-
-        }
+        return held?.DisposeAsync() ?? ValueTask.CompletedTask;
 
     }
 
