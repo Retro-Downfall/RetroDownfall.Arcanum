@@ -237,13 +237,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 
         heldInstallationLock.AssertHeldFor(location.GuardedDirectory);
 
-        if (!projectedValueDigest.IsValid)
-        {
-
-            return NotTerminal().Error;
-
-        }
-
         Result<CovenantDigest?> before = ReadTerminalAccountDigest(account);
 
         if (before.IsFailure)
@@ -253,6 +246,10 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 
         }
 
+        // Absence is read before the projection is examined, and that order matters twice over. A slot
+        // that was never opened has no projected digest for an account that was never there, and a
+        // removal resumed after a crash finds the account already gone; both are the same observation,
+        // and neither is a reason to refuse.
         if (before.Value is null)
         {
 
@@ -260,7 +257,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 
         }
 
-        if (before.Value != projectedValueDigest)
+        if (!projectedValueDigest.IsValid || before.Value != projectedValueDigest)
         {
 
             return NotTerminal().Error;

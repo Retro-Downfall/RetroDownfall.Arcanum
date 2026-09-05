@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal enum HostToolsMarkerPairResetPhase : byte
@@ -114,7 +116,8 @@ internal sealed record HostToolsMarkerPairResetCheckpointV1(
     ulong? OrphanCount,
     FullInstallationResetManagedFileCheckpointV1? ManagedFile = null,
     BackupRestoreFullResetTerminalProjectionV1? RestoreTerminal = null,
-    InstallationResetRestoreCredentialCleanupPhase? RestoreCredentialCleanup = null);
+    InstallationResetRestoreCredentialCleanupPhase? RestoreCredentialCleanup = null,
+    GrimoireOfflineTransitionFullResetTerminalProjectionV1? TransitionTerminal = null);
 
 internal static class HostToolsMarkerPairResetCheckpointBounds
 {

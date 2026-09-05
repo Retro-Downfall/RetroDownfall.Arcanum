@@ -578,6 +578,8 @@ public static class ServiceCollectionExtensions
                         provider.GetRequiredService<IOsCredentialStore>())),
                 provider.GetRequiredService<InstallationResetRestoreCredentialCleanup>(),
                 provider.GetRequiredService<IOsCredentialStore>(),
+                new GrimoireTransitions.GrimoireOfflineTransitionJournalAnchorStore(
+                    provider.GetRequiredService<IOsCredentialStore>()),
                 ArcanumPaths.GrimoireDatabaseFile));
 
         // A deferred resolution for the same reason the marker-pair coordinator is one: planning and

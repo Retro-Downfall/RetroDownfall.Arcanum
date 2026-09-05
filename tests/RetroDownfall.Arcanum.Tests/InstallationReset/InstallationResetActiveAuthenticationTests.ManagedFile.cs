@@ -291,7 +291,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests
                     WithRestore(
                         ManagedFile(),
                         ClosedProjection(),
-                        InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent))
+                        InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent))
                 .IsFailure);
 
     }
