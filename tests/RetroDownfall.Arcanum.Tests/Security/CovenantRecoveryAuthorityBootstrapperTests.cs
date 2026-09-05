@@ -125,18 +125,21 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         long before = await RevisionAsync(seeded.OperationId);
 
-        Result<CovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
+        Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
             .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
 
         Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);
 
         Assert.Equal(seeded.OperationId, loaded.Value.OperationId);
 
-        Assert.Equal(seeded.Owner, loaded.Value.Owner);
+        CovenantClosedRecoveryHandoff handoff =
+            Assert.IsType<CovenantClosedRecoveryHandoff>(loaded.Value);
+
+        Assert.Equal(seeded.Owner, handoff.Owner);
 
         Assert.Equal(
             GrimoireOfflineTransitionObservedState.ExactlyNotApplied,
-            loaded.Value.ObservedDatabaseState);
+            handoff.ObservedDatabaseState);
 
         Assert.Equal(before, await RevisionAsync(seeded.OperationId));
 
@@ -170,7 +173,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         Seeded seeded = await SeedAsync(disagreement);
 
-        Result<CovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
+        Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
             .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
 
         Assert.True(loaded.IsFailure);
@@ -207,7 +210,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
                     requiresOrdinaryContinuation: true),
             ])));
 
-        Result<CovenantClosedRecoveryHandoff> loaded = await bootstrapper
+        Result<ICovenantClosedRecoveryHandoff> loaded = await bootstrapper
             .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
 
         Assert.True(loaded.IsFailure);
@@ -234,7 +237,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
                     requiresOrdinaryContinuation: false),
             ])));
 
-        Result<CovenantClosedRecoveryHandoff> loaded = await bootstrapper
+        Result<ICovenantClosedRecoveryHandoff> loaded = await bootstrapper
             .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
 
         Assert.True(loaded.IsFailure);
@@ -251,7 +254,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         Seeded seeded = await SeedAsync();
 
-        Result<CovenantClosedRecoveryHandoff> loaded = await Bootstrapper(covenantPermitted: false)
+        Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper(covenantPermitted: false)
             .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
 
         Assert.True(loaded.IsFailure);
@@ -272,7 +275,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         CovenantRecoveryAuthorityBootstrapper bootstrapper = Bootstrapper(composition);
 
-        Result<CovenantClosedRecoveryHandoff> loaded = await bootstrapper
+        Result<ICovenantClosedRecoveryHandoff> loaded = await bootstrapper
             .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
 
         Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);
@@ -307,7 +310,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         Seeded seeded = await SeedAsync();
 
-        Result<CovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
+        Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
             .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
 
         Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);

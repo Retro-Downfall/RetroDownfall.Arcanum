@@ -38,7 +38,7 @@ internal sealed record GrimoireOfflineTransitionRecoveryEvidence(
 internal interface ICovenantRecoveryAuthorityBootstrapper
 {
 
-    Task<Result<CovenantClosedRecoveryHandoff>> LoadAsync(
+    Task<Result<ICovenantClosedRecoveryHandoff>> LoadAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         SqliteConnection recoveryConnection,
@@ -51,6 +51,27 @@ internal interface ICovenantRecoveryAuthorityBootstrapper
 /// The one-use permission to put this process into the closed posture a crashed transition left.
 /// </summary>
 /// <remarks>
+/// An interface because the pass that spends it is a different component from the one that mints it,
+/// and the seam between them is where the authority order is enforced rather than assumed. What it
+/// exposes is deliberately thin: the operation the journal names, and the one act of spending.
+/// </remarks>
+internal interface ICovenantClosedRecoveryHandoff
+{
+
+    /// <summary>The durable operation the journal names, and the only one this handoff can resume.</summary>
+    Guid OperationId { get; }
+
+    Task<Result> ConsumeAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        GrimoireOfflineTransitionRecoveryEvidence evidence,
+        SqliteConnection recoveryConnection,
+        CancellationToken cancellationToken);
+
+}
+
+/// <summary>The production handoff, minted only by the bootstrapper that verified it.</summary>
+/// <remarks>
 /// One use, enforced by an interlocked claim rather than by a flag a caller could read and race. A
 /// handoff that could be spent twice would let a retry loop adopt a second owner over a scope the
 /// first one is still holding, and the gate's refusal there is a thrown exception rather than a
@@ -60,7 +81,7 @@ internal interface ICovenantRecoveryAuthorityBootstrapper
 /// verified against. Neither of those can be re-derived at consumption time, and a handoff spent
 /// against a journal that has since moved would be publishing authority for a run nobody observed.</para>
 /// </remarks>
-internal sealed class CovenantClosedRecoveryHandoff
+internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHandoff
 {
 
     private readonly CovenantOperationGate _gate;
@@ -130,8 +151,8 @@ internal sealed class CovenantClosedRecoveryHandoff
 
     }
 
-    /// <summary>The durable operation the journal names, and the only one this handoff can resume.</summary>
-    internal Guid OperationId { get; }
+    /// <inheritdoc />
+    public Guid OperationId { get; }
 
     /// <summary>The durable ledger kind that operation is filed under.</summary>
     internal string OperationKind { get; }
@@ -151,7 +172,7 @@ internal sealed class CovenantClosedRecoveryHandoff
     /// The facts are present precisely so that the one exclusive lease can be resumed; present facts
     /// behind a gate the adopted owner has closed are not availability.
     /// </remarks>
-    internal async Task<Result> ConsumeAsync(
+    public async Task<Result> ConsumeAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
@@ -284,7 +305,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
     private readonly GrimoireOfflineTransitionEffectHandlerRegistry _effects =
         effects ?? throw new ArgumentNullException(nameof(effects));
 
-    public async Task<Result<CovenantClosedRecoveryHandoff>> LoadAsync(
+    public async Task<Result<ICovenantClosedRecoveryHandoff>> LoadAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         SqliteConnection recoveryConnection,
@@ -308,7 +329,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         if (!_hostToolsPolicy.CovenantPermitted)
         {
 
-            return Result<CovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
 
         }
 
@@ -323,7 +344,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         if (row.IsFailure)
         {
 
-            return Result<CovenantClosedRecoveryHandoff>.Failure(row.Error);
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(row.Error);
 
         }
 
@@ -335,7 +356,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         if (launch.IsFailure)
         {
 
-            return Result<CovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
 
         }
 
@@ -344,7 +365,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         if (agreement.IsFailure)
         {
 
-            return Result<CovenantClosedRecoveryHandoff>.Failure(agreement.Error);
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(agreement.Error);
 
         }
 
@@ -355,7 +376,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         if (observed.IsFailure)
         {
 
-            return Result<CovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
 
         }
 
@@ -374,11 +395,11 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         if (state is GrimoireOfflineTransitionObservedState.Ambiguous)
         {
 
-            return Result<CovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
 
         }
 
-        return new CovenantClosedRecoveryHandoff(
+        return Result<ICovenantClosedRecoveryHandoff>.Success(new CovenantClosedRecoveryHandoff(
             _gate,
             _runtime,
             _keys,
@@ -393,7 +414,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
                 launch.Value.OperationId,
                 launch.Value.Operation,
                 launch.Value.EffectDigest),
-            state);
+            state));
 
     }
 
