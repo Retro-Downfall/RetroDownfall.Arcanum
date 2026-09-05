@@ -1097,6 +1097,20 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireRecoveryOnlyUnlock.cs", "GrimoireRecoveryOnlyUnlock", "OpenExistingAsync(4)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(connectionString)"),
+            GrimoirePathAuthority.PreReadinessGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireRecoveryOnlyUnlock.OpenExistingAsync(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireRecoveryOnlyUnlock.cs", "GrimoireRecoveryOnlyUnlock", "OpenExistingAsync(4)", AcquisitionConstructKind.ProviderOpen, "connection.OpenAsync", 1, "connection.OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.PreReadinessGrimoire,
+            GrimoireAcquisitionKind.BootstrapOrShutdown,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireRecoveryOnlyUnlock.OpenExistingAsync(4)", 0)),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs", "GrimoireDatabaseBootstrapper", "CheckpointOnShutdownAsync(3)", AcquisitionConstructKind.ProviderObjectCreation, "SqliteConnection", 1, "connection=newSqliteConnection(connectionString)"),
             GrimoirePathAuthority.ShutdownGrimoire,
             GrimoireAcquisitionKind.BootstrapOrShutdown,
