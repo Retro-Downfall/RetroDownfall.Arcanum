@@ -103,7 +103,7 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
         checkpoint.Arm();
 
-        Task<Result> publishing = Task.Run(async () => await harness.Publisher.PublishCommittedAsync(
+        Task<Result> publishing = RunLongRunningAsync(async () => await harness.Publisher.PublishCommittedAsync(
             Transition(authorityEpoch: 12, canonicalEnvelopeEpoch: 4, dataset: NextDataset),
             lease,
             CancellationToken.None));
@@ -129,7 +129,7 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
         using ManualResetEventSlim codecStarted = new(initialState: false);
 
-        Task<Result<CovenantEnvelopeBody>> codecReader = Task.Run(() =>
+        Task<Result<CovenantEnvelopeBody>> codecReader = RunLongRunning(() =>
         {
 
             codecStarted.Set();
@@ -146,7 +146,7 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
         using ManualResetEventSlim retryGateReader = new(initialState: false);
 
-        Task<CovenantReadLease> gateReader = Task.Run(async () =>
+        Task<CovenantReadLease> gateReader = RunLongRunningAsync(async () =>
         {
 
             gateStarted.Set();
@@ -1258,6 +1258,21 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             ValueTask.FromResult<Result<CovenantCampaignScopeState>>(CovenantCampaignScopeState.Live);
 
     }
+
+    private static Task<TResult> RunLongRunning<TResult>(Func<TResult> action) =>
+        Task.Factory.StartNew(
+            action,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+    private static Task<TResult> RunLongRunningAsync<TResult>(Func<Task<TResult>> action) =>
+        Task.Factory.StartNew(
+                action,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .Unwrap();
 
     private sealed class ThrowingDerivationCheckpoint : ICovenantEnvelopeDerivationCheckpoint
     {

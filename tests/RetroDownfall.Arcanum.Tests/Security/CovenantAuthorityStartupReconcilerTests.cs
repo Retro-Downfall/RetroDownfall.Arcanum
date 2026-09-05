@@ -145,7 +145,7 @@ public sealed class CovenantAuthorityStartupReconcilerTests
         CovenantAvailabilitySnapshot availability = runtime.PublishAvailability(
             _ => Unavailable());
 
-        Task reconciliation = Task.Run(
+        Task reconciliation = RunLongRunningAsync(
             () => CovenantAuthorityStartupReconciler.ReconcileAsync(
                 database.Connection,
                 runtime,
@@ -596,6 +596,14 @@ public sealed class CovenantAuthorityStartupReconcilerTests
         }
 
     }
+
+    private static Task<TResult> RunLongRunningAsync<TResult>(Func<Task<TResult>> action) =>
+        Task.Factory.StartNew(
+                action,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .Unwrap();
 
     private sealed class PublishingDerivationCheckpoint(Action publish) : ICovenantEnvelopeDerivationCheckpoint
     {

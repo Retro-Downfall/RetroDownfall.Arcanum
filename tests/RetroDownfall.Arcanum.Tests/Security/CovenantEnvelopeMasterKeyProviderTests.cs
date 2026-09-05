@@ -546,7 +546,7 @@ public sealed class CovenantEnvelopeMasterKeyProviderTests
 
         _ = RuntimeInitialize(keys, Encoding.UTF8.GetBytes("master-key-material"), Transition());
 
-        Task<DiagnosticCopy> copying = Task.Run(
+        Task<DiagnosticCopy> copying = RunLongRunning(
             () =>
             {
 
@@ -560,7 +560,7 @@ public sealed class CovenantEnvelopeMasterKeyProviderTests
 
         checkpoint.WaitUntilReached();
 
-        Task retirement = Task.Run(() => RuntimeRetire(keys));
+        Task retirement = RunLongRunning(() => RuntimeRetire(keys));
 
         try
         {
@@ -809,6 +809,20 @@ public sealed class CovenantEnvelopeMasterKeyProviderTests
     }
 
     private sealed record DiagnosticCopy(bool Copied, uint KeyVersion, byte[] Key);
+
+    private static Task<TResult> RunLongRunning<TResult>(Func<TResult> action) =>
+        Task.Factory.StartNew(
+            action,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+    private static Task RunLongRunning(Action action) =>
+        Task.Factory.StartNew(
+            action,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
 
     /// <summary>A fixed clock, so envelope timestamps and expiry are exact rather than approximate.</summary>
