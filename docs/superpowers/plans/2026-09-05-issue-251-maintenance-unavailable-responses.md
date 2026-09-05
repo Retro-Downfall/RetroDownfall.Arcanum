@@ -264,7 +264,17 @@ its reasoning; they are collected here so the plan is not read as a description 
    timed-out transition into something an operator can retry, so answering `500` from an unlisted code
    was no longer right. It is now on `ErrorCodes.Grimoire`, mapped, and in the §8.23 catalog.
 
-7. **Two source-ordering guards, not one.** The existing guard indexes from the top of the file, which
+7. **One unrelated build fix rides in this branch.** `scripts/verify-aot-il-warnings.sh` could not
+   complete on any Homebrew-dotnet macOS host: `RetroDownfall.Arcanum.RegexAotSmoke` has never carried
+   the keg-only openssl/brotli linker search paths or the lld `ld-path` that `RetroDownfall.Arcanum.Cli`
+   carries, so its Native AOT link failed with `library 'ssl' not found` and took the IL gate down with
+   it. Those arguments moved to `Directory.Build.props`, where every AOT publish gets them and a third
+   AOT project cannot reintroduce the gap. It is pre-existing — that csproj has never contained a
+   `LinkerArg` in its history — and unrelated to this issue; it is here because it is what let the gate
+   run at all, and the gate is how this child's Native-AOT-safety claim is checked. It landed inside
+   commit `8309fcba`, whose subject names only the request-lease fix.
+
+8. **Two source-ordering guards, not one.** The existing guard indexes from the top of the file, which
    the anonymous branch's earlier call would satisfy however the authenticated one moved. The new
    ordering test searches from the API-key check, and a second test pins that the anonymous 404-hide
    still precedes admission.
