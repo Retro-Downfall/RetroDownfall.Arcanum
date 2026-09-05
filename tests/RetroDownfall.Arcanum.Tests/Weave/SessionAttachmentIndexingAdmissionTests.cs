@@ -668,17 +668,18 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         using CancellationTokenSource stopping = new();
 
+        TaskCompletionSource<bool> providerStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
         FakeWeaveService weave = new()
         {
 
-            OnEmbed = _ =>
+            OnEmbedWithCancellation = async (_, cancellationToken) =>
             {
 
-                stopping.Cancel();
+                providerStarted.TrySetResult(true);
 
-                stopping.Token.ThrowIfCancellationRequested();
-
-                return Task.CompletedTask;
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
 
             },
 
@@ -688,10 +689,21 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             BuildScopeFactory(weave),
             new RecordingAdmissionGate(OpenGate()));
 
-        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            service.ProcessOneAsync(
-                new SessionAttachmentIndexRequest(attachment.Id, sessionId),
-                stopping.Token));
+        SessionAttachmentIndexRequest request = Dequeue(
+            service,
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId));
+
+        Task<SessionAttachmentIndexOutcome> processing = service.ProcessOneAsync(
+            request,
+            stopping.Token);
+
+        await providerStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(processing.IsCompleted);
+
+        stopping.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => processing);
 
         SessionAttachmentIndexState state = await _index!.GetStateAsync(
             attachment.Id,
@@ -702,6 +714,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal(0, state.AttemptCount);
 
         Assert.Null(state.FailureReason);
+
+        Assert.Empty(service.DeferredRequests);
+
+        Assert.False(service.QueueReader.TryRead(out _));
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
 
     }
 
@@ -1296,9 +1314,22 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentRecord attachment = await PersistAsync(sessionId, "waiting to be reconciled");
 
+        RecordingAdmissionGate gate = new(OpenGate());
+
         ObservingScopeFactory scopes = BuildScopeFactory(new FakeWeaveService());
 
-        SessionAttachmentIndexingService service = CreateService(scopes, OpenGate());
+        scopes.OnScopeCreated = () => Assert.True(gate.WorkLeaseIsHeld);
+
+        scopes.OnScopeDisposed = () =>
+        {
+
+            Assert.True(gate.WorkLeaseIsHeld);
+
+            return ValueTask.CompletedTask;
+
+        };
+
+        SessionAttachmentIndexingService service = CreateService(scopes, gate);
 
         Assert.Equal(
             SessionAttachmentIndexDisposition.Concluded,
@@ -1307,6 +1338,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
                 CancellationToken.None));
 
         Assert.Equal(1, scopes.ScopesCreated);
+
+        Assert.Equal(1, gate.WorkLeaseAttempts);
+
+        Assert.Equal([GrimoireWorkKind.SessionAttachmentIndexing], gate.RequestedWorkKinds);
+
+        Assert.False(gate.WorkLeaseIsHeld);
 
         Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? found));
 
@@ -1324,28 +1361,35 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentRecord attachment = await PersistAsync(sessionId, "content deferred for the whole window");
 
-        GrimoireConnectionAdmissionGate gate = OpenGate();
+        GrimoireConnectionAdmissionGate innerGate = OpenGate();
+
+        RecordingAdmissionGate gate = new(innerGate);
 
         FakeWeaveService weave = new();
 
         ObservingScopeFactory scopes = BuildScopeFactory(weave);
 
-        TestCapturingLogger<SessionAttachmentIndexingService> logger = new();
+        RequestDeferralBarrierLogger logger = new(attachment.Id);
 
         SessionAttachmentIndexingService service = CreateService(scopes, gate, logger);
 
         Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(attachment.Id, sessionId)));
 
-        await using IGrimoireClosingOwner closing = BeginClosing(gate, 68);
-
+        await using IGrimoireClosingOwner closing = BeginClosing(innerGate, 68);
 
         Microsoft.Extensions.Hosting.IHostedService hosted = service;
 
         await hosted.StartAsync(CancellationToken.None);
 
-        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        await logger.RequestDeferred.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await gate.NextOpenWaitStarted.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(2, gate.WorkLeaseAttempts);
 
         await hosted.StopAsync(CancellationToken.None);
+
+        Assert.True(service.ExecuteTask?.IsCompleted);
 
         Assert.DoesNotContain(logger.Entries, entry => entry.Level == LogLevel.Error);
 
@@ -1626,6 +1670,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         /// <summary>Receives the one-based batch number, so a test can act at a group boundary.</summary>
         internal Func<int, Task>? OnEmbed { get; init; }
 
+        /// <summary>Receives the provider token when cancellation is the behavior under test.</summary>
+        internal Func<int, CancellationToken, Task>? OnEmbedWithCancellation { get; init; }
+
         /// <summary>Receives the exact provider inputs in request-processing order.</summary>
         internal Func<int, IReadOnlyList<string>, Task>? OnEmbedInputs { get; init; }
 
@@ -1656,6 +1703,13 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
             }
 
+            if (OnEmbedWithCancellation is not null)
+            {
+
+                await OnEmbedWithCancellation(batchNumber, cancellationToken);
+
+            }
+
             if (OnEmbedInputs is not null)
             {
 
@@ -1680,6 +1734,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         IGrimoireConnectionAdmissionGate inner) : IGrimoireConnectionAdmissionGate
     {
 
+        private readonly TaskCompletionSource<bool> _nextOpenWaitStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
         private RecordingWorkLease? _workLease;
 
         private int _workLeaseAttempts;
@@ -1689,6 +1746,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         internal List<GrimoireWorkKind> RequestedWorkKinds { get; } = [];
 
         internal bool WorkLeaseIsHeld => _workLease is { IsHeld: true };
+
+        internal Task NextOpenWaitStarted => _nextOpenWaitStarted.Task;
 
         internal Func<ValueTask>? OnEffectGroupDisposing { get; set; }
 
@@ -1757,8 +1816,14 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         public Task<long> WaitForNextOpenGenerationAsync(
             long observedGeneration,
-            CancellationToken cancellationToken) =>
-            inner.WaitForNextOpenGenerationAsync(observedGeneration, cancellationToken);
+            CancellationToken cancellationToken)
+        {
+
+            _nextOpenWaitStarted.TrySetResult(true);
+
+            return inner.WaitForNextOpenGenerationAsync(observedGeneration, cancellationToken);
+
+        }
 
         public ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>>
             AcquireExpiredLeaseAdoptionInterlockAsync(
@@ -1889,10 +1954,14 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         ILogger<SessionAttachmentIndexingService>
     {
 
+        private readonly ConcurrentQueue<TestLogEntry> _entries = new();
+
         private readonly TaskCompletionSource<bool> _requestDeferred = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal Task RequestDeferred => _requestDeferred.Task;
+
+        internal IReadOnlyCollection<TestLogEntry> Entries => _entries;
 
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull =>
@@ -1909,6 +1978,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         {
 
             string message = formatter(state, exception);
+
+            _entries.Enqueue(new TestLogEntry(logLevel, message, exception));
 
             if (message.Contains(attachmentId.ToString(), StringComparison.Ordinal)
                 && message.Contains("indexing deferred", StringComparison.Ordinal))
