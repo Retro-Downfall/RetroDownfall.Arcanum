@@ -589,6 +589,27 @@ public sealed class WeaveServiceTests
 
     }
 
+    [Fact]
+    public async Task EmbedBatchAsync_WhenOpeningTheRunRowThrows_StillGivesBackItsAccountingScope()
+    {
+        CountingScopeFactory? scopes = null;
+
+        WeaveService service = CreateService(
+            EnabledSettings(),
+            writer: new ThrowingTurnRunWriter(),
+            decorateScopes: inner => scopes = new CountingScopeFactory(inner));
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.EmbedBatchAsync(["text to embed"], CancellationToken.None));
+
+        Assert.Equal(1, scopes!.Created);
+
+        // The accounting scope is opened before the method's own try, so a throwing StartRunAsync
+        // used to escape with the scope still live. A background tick meeting a closed admission
+        // gate is exactly that throw, which is how a leak nobody could see became reachable.
+        Assert.Equal(scopes.Created, scopes.Disposed);
+    }
+
     private static ArcanumSettings EnabledSettings() =>
         new()
         {
@@ -607,7 +628,8 @@ public sealed class WeaveServiceTests
         ArcanumSettings settings,
         FakeEmbeddingGeneratorFactory? factory = null,
         ITurnRunWriter? writer = null,
-        IBudgetReservationService? reservations = null)
+        IBudgetReservationService? reservations = null,
+        Func<IServiceScopeFactory, IServiceScopeFactory>? decorateScopes = null)
     {
         ServiceCollection collection = new();
 
@@ -623,11 +645,66 @@ public sealed class WeaveServiceTests
 
         ServiceProvider services = collection.BuildServiceProvider();
 
+        IServiceScopeFactory scopes = services.GetRequiredService<IServiceScopeFactory>();
+
         return new(
             factory ?? new FakeEmbeddingGeneratorFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
-            services.GetRequiredService<IServiceScopeFactory>(),
+            decorateScopes is null ? scopes : decorateScopes(scopes),
             NullLogger<WeaveService>.Instance);
+    }
+
+    /// <summary>Counts the scopes a call opens and the ones it actually gives back.</summary>
+    private sealed class CountingScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
+    {
+        private int _created;
+
+        private int _disposed;
+
+        public int Created => Volatile.Read(ref _created);
+
+        public int Disposed => Volatile.Read(ref _disposed);
+
+        public IServiceScope CreateScope()
+        {
+            _ = Interlocked.Increment(ref _created);
+
+            return new CountingScope(inner.CreateScope(), () => Interlocked.Increment(ref _disposed));
+        }
+
+        private sealed class CountingScope(IServiceScope inner, Action onDisposed) : IServiceScope
+        {
+            public IServiceProvider ServiceProvider => inner.ServiceProvider;
+
+            public void Dispose()
+            {
+                inner.Dispose();
+
+                onDisposed();
+            }
+        }
+    }
+
+    private sealed class ThrowingTurnRunWriter : ITurnRunWriter
+    {
+        public Task<Guid> StartRunAsync(
+            InferenceRunStart start,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Simulated store fault opening the run row.");
+
+        public Task CompleteRunAsync(
+            Guid runId,
+            InferenceRunStatus status,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<Guid> RecordBillableOperationAsync(
+            BillableOperationRecord operation,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Guid.NewGuid());
     }
 
     private sealed class RecordingTurnRunWriter : ITurnRunWriter

@@ -39,6 +39,14 @@ public sealed class ProviderHealthProbeServiceTests
 
         await service.StartAsync(CancellationToken.None);
 
+        // Waiting for the first tick rather than assuming 300ms contains it. A busy machine can
+        // schedule the loop later than that, which left AccessCount at 0 and failed the lower half
+        // of the range check below for a reason that had nothing to do with backing off.
+        await options.FirstAccess.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // The window after the first tick is what a spin would fill. Only the upper bound depends on
+        // it, so a slow machine can make this test pass for the right reason but never fail for the
+        // wrong one.
         await Task.Delay(TimeSpan.FromMilliseconds(300));
 
         // Assert.InRange(AccessCount, 1, 5) alone cannot tell "backed off" apart from "faulted after
@@ -62,9 +70,15 @@ public sealed class ProviderHealthProbeServiceTests
     private sealed class ThrowingOptionsMonitor : IOptionsMonitor<ArcanumSettings>
     {
 
+        private readonly TaskCompletionSource _firstAccess =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private int _accessCount;
 
         public int AccessCount => Volatile.Read(ref _accessCount);
+
+        /// <summary>Completes when the scheduler has actually reached its first tick.</summary>
+        public Task FirstAccess => _firstAccess.Task;
 
         public ArcanumSettings CurrentValue
         {
@@ -72,6 +86,8 @@ public sealed class ProviderHealthProbeServiceTests
             {
 
                 Interlocked.Increment(ref _accessCount);
+
+                _ = _firstAccess.TrySetResult();
 
                 throw new InvalidOperationException("Synthetic options failure for W8-7.");
 
