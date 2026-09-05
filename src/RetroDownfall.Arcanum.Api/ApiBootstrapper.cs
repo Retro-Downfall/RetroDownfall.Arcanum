@@ -670,7 +670,7 @@ public static class ApiBootstrapper
 
                 }
 
-                await next().ConfigureAwait(false);
+                await ContinueWithMaintenanceRefusalAsync(context, next).ConfigureAwait(false);
 
                 return;
 
@@ -707,7 +707,7 @@ public static class ApiBootstrapper
 
                 }
 
-                await next().ConfigureAwait(false);
+                await ContinueWithMaintenanceRefusalAsync(context, next).ConfigureAwait(false);
 
                 return;
 
@@ -737,6 +737,43 @@ public static class ApiBootstrapper
         await context.Response.CompleteAsync().ConfigureAwait(false);
 
         return true;
+
+    }
+
+    /// <summary>
+    /// Runs the rest of the pipeline, answering a gate that closes under an admitted request.
+    /// </summary>
+    /// <remarks>
+    /// Admission refuses what arrives after a transition begins. This is the other half: a request
+    /// admitted a moment earlier is drained, and while it drains it can still reach SQLite and be
+    /// refused there. Answering it here rather than leaving it to the framework's exception middleware
+    /// is what keeps the two answers identical — that middleware registers its own cache-header clear
+    /// through <c>OnStarting</c> before any handler runs, and those callbacks run last-registered-first,
+    /// so a handler can never put back the exact <c>no-store, private</c> tuple #128 requires. It also
+    /// covers the surfaces admission deliberately does not gate: <c>/metrics</c> queries the database
+    /// on every scrape, and without this each scrape during a maintenance window would be a <c>500</c>
+    /// logged at Error with the request path.
+    ///
+    /// <para>The refusal is swallowed rather than rethrown once it is answered, and swallowed when the
+    /// response has already started too: a response whose first byte has left is finished by its own
+    /// writer, and rethrowing only hands the framework something to log at Error about a window that
+    /// was expected.</para>
+    /// </remarks>
+    private static async Task ContinueWithMaintenanceRefusalAsync(HttpContext context, Func<Task> next)
+    {
+
+        try
+        {
+
+            await next().ConfigureAwait(false);
+
+        }
+        catch (GrimoireMaintenanceUnavailableException)
+        {
+
+            _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
+
+        }
 
     }
 

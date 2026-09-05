@@ -284,21 +284,28 @@ exists at `docs/Arcanum.API.md:662`.
 The Api project may not spell the literal anywhere — including in a comment, because the scanner reads
 raw file text. Every Api reference goes through the constant.
 
-### 3.5 The exception handler covers the requests admission cannot
+### 3.5 The admission stage answers the requests it could not refuse in advance
 
 Admission refuses requests that arrive **after** stage 1. A request admitted a moment before closure
-is drained, and while it drains it can still touch SQLite and be refused. `ArcanumExceptionHandler`
-therefore gains a typed arm ahead of its `LogError` call:
+is drained, and while it drains it can still touch SQLite and be refused. The same stage therefore
+wraps the rest of the pipeline and answers that refusal with the identical pair from §3.3.
 
-- if the exception is `GrimoireMaintenanceUnavailableException`, log once at `Debug` with a fixed
-  message carrying no path and no exception object, and write the same two `503` shapes §3.3 defines;
-- if the response has already started, return `false` and rewrite nothing — a stream that has emitted
-  a frame cannot become a `503` envelope, and #252 owns ending those cleanly.
+It is answered there rather than left to the framework's exception handling for a reason that is not
+stylistic. `ExceptionHandlerMiddleware` registers its own cache-header clear through
+`Response.OnStarting` before any handler runs, and those callbacks run last-registered-first — so a
+handler cannot put back the exact `no-store, private` tuple #128 requires, and a refusal written there
+ships the framework's weaker `no-store, no-cache` instead. Answering in the owning stage keeps one
+condition to one answer, headers included.
 
-This is also what makes `/metrics` honest. It is outside the admission surface by design, it counts
-sessions on every scrape, and without this arm every Prometheus scrape during a maintenance window
-would be a `500` logged at `Error` with the request path — the precise pair of failures the acceptance
-criterion forbids.
+It is also what makes `/metrics` honest. That route is outside the admission surface by design and it
+counts sessions on every scrape, so without this every Prometheus scrape during a maintenance window
+would be a `500` logged at `Error` with the request path — the precise pair the acceptance criterion
+forbids. The wrap covers it because it wraps the pipeline rather than a prefix.
+
+`ArcanumExceptionHandler` keeps the same typed arm for anything thrown outside that stage: log once at
+`Debug` with no path and no exception object, write the same shapes, and report the refusal as handled
+even when the response has already started — reporting otherwise returns it to the framework, which
+logs it at `Error` on the way past.
 
 ### 3.6 Initiator promotion
 

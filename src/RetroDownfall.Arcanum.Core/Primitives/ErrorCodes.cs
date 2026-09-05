@@ -268,6 +268,13 @@ public static class ErrorCodes
         /// </summary>
         public const string MaintenanceUnavailable = "Grimoire.MaintenanceUnavailable";
 
+        /// <summary>
+        /// A database transformation could not take the database offline because ordinary work would
+        /// not drain in time. Nothing was erased and ordinary admission is open again, so the caller's
+        /// action is to ask once whatever held the database open has finished.
+        /// </summary>
+        public const string WorkDrainTimeout = "Grimoire.WorkDrainTimeout";
+
     }
 
     /// <summary>Apprentice — autonomous agent orchestration.</summary>

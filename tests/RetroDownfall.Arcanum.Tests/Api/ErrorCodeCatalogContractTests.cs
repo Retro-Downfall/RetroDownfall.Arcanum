@@ -132,6 +132,7 @@ public sealed class ErrorCodeCatalogContractTests
     [InlineData("Validation.BodyReadTimeout")]
     [InlineData("Validation.RequestHeadersTooLarge")]
     [InlineData("Grimoire.MaintenanceUnavailable")]
+    [InlineData("Grimoire.WorkDrainTimeout")]
     public void Catalog_and_constant_table_both_carry_every_code_a_route_emits(string code)
     {
 

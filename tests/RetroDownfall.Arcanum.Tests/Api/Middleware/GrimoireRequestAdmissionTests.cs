@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -267,6 +268,41 @@ public sealed class GrimoireRequestAdmissionTests
     }
 
     /// <summary>
+    /// A gate that closes under an in-flight request answers on the wire exactly as admission does.
+    /// </summary>
+    /// <remarks>
+    /// Driven through the real exception middleware rather than by calling the handler, because the
+    /// framework clears cache headers on its way to a handler and sets the status itself. Whether the
+    /// protected tuple survives that is a property of the composed pipeline, and #128 requires it on
+    /// every protected refusal — including one no handler wrote.
+    /// </remarks>
+    [Fact]
+    public async Task An_in_flight_refusal_carries_the_same_envelope_and_headers_on_the_wire()
+    {
+
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        using HttpResponseMessage response = await host.GetAsync("/api/throws");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        ApiResponse<string>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseString);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(ErrorCodes.Grimoire.MaintenanceUnavailable, body.Error?.Code);
+
+        Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
+
+        Assert.Equal("no-cache", response.Headers.Pragma.ToString());
+
+        Assert.Null(response.Headers.ETag);
+
+    }
+
+    /// <summary>
     /// An admitted request can still reach the Grimoire once maintenance begins closing under it.
     /// </summary>
     /// <remarks>
@@ -399,6 +435,10 @@ public sealed class GrimoireRequestAdmissionTests
 
             builder.Services.AddSingleton<ApiKeyAuthenticator>();
 
+            builder.Services.AddExceptionHandler<ArcanumExceptionHandler>();
+
+            builder.Services.AddProblemDetails();
+
             builder.Services.AddSingleton(admission);
 
             builder.Services.AddSingleton<IGrimoireConnectionAdmissionGate>(admission);
@@ -416,6 +456,8 @@ public sealed class GrimoireRequestAdmissionTests
 
             WebApplication app = builder.Build();
 
+            app.UseArcanumExceptionHandler();
+
             app.UseArcanumApiKeyAuthentication();
 
             RouteGroupBuilder api = app.MapGroup("/api").RequireArcanumApiKey();
@@ -428,6 +470,16 @@ public sealed class GrimoireRequestAdmissionTests
                 .WithMetadata(GrimoireAdmissionExemptRouteMetadata.Instance);
 
             _ = api.MapGet("/sentinel", (DisposalSentinel sentinel) => host!.Ran());
+
+            // Admitted, then the gate closes under it and the endpoint reaches SQLite anyway.
+            _ = api.MapGet("/throws", IResult () =>
+            {
+
+                _ = host!.Ran();
+
+                throw new GrimoireMaintenanceUnavailableException();
+
+            });
 
             _ = api.MapGet("/lifetime", async () =>
             {

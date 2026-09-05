@@ -252,7 +252,9 @@ public sealed class ArcanumExceptionHandlerTests
             new GrimoireMaintenanceUnavailableException(),
             CancellationToken.None);
 
-        Assert.False(handled);
+        // Handled, even though nothing could be written. Reporting otherwise returns the exception to
+        // the framework's exception middleware, which logs it at Error with the request path.
+        Assert.True(handled);
 
         Assert.Equal(StatusCodes.Status200OK, httpContext.Response.StatusCode);
 

@@ -80,7 +80,15 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
             // reads the database, for the whole of a planned window.
             logger.LogDebug("A request was refused because Grimoire maintenance owns connection admission.");
 
-            return await GrimoireMaintenanceRefusal.TryWriteAsync(httpContext).ConfigureAwait(false);
+            _ = await GrimoireMaintenanceRefusal.TryWriteAsync(httpContext).ConfigureAwait(false);
+
+            // Handled either way, and the return value says so even when nothing could be written.
+            // Reporting false hands the exception back to the framework's own exception middleware,
+            // which logs it at Error with the request path before rethrowing - which is precisely the
+            // pair this arm exists to avoid, and it would happen on exactly the requests that had
+            // already begun a response when admission closed under them. A response whose first byte
+            // has left is finished by its own writer; there is nothing further to say about it.
+            return true;
 
         }
 

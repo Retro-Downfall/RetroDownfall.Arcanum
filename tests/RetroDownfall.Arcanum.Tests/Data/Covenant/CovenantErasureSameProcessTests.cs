@@ -396,10 +396,16 @@ public sealed class CovenantErasureSameProcessTests
     /// <remarks>
     /// Both destructive routes run the whole erasure inside the request, so once a request holds an
     /// admission lease the initiator's own lease is in the set stage one waits on. Promotion is what
-    /// takes it out — paired with the exact scoped connection, so the initiator can still reach the
-    /// ledger while ordinary admission is shut. A success here therefore proves two things at once:
-    /// the drain finished, and the promoted connection kept matching across the close and reopen the
-    /// factory arm performs on it.
+    /// takes it out, and this is the case that fails without it: the drain waits out its whole
+    /// checkpoint on the very request performing it and answers <c>Grimoire.WorkDrainTimeout</c>.
+    ///
+    /// <para>It proves the drain and nothing about which connection was promoted. The gate binds the
+    /// promoted connection only to <i>ordinary</i> opens attempted while it is closing, and this path
+    /// makes none — its closed-period work goes through the maintenance and scoped-permit routes — so
+    /// the same success is reached with any connection object. That the scope's own ledger connection
+    /// is the one handed over is a property of the coordinator's single call site, not something this
+    /// erasure can be made to demonstrate; claiming otherwise here would be a comment the test does
+    /// not support.</para>
     /// </remarks>
     [SkippableFact]
     public async Task Factory_erasure_completes_while_its_own_request_holds_the_admission_lease()

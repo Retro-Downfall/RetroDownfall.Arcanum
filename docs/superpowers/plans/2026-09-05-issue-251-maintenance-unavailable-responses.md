@@ -249,7 +249,22 @@ its reasoning; they are collected here so the plan is not read as a description 
    own gate could not be steered into a stage-one timeout without rebuilding it, so
    `Factory_erasure_that_cannot_drain_reopens_ordinary_admission` drives a real catalog instead. Its
    RED was confirmed by reverting the production branch and re-running.
-5. **Two source-ordering guards, not one.** The existing guard indexes from the top of the file, which
+5. **The lease is taken synchronously, and the in-flight refusal moved to the admission stage.**
+   An adversarial review caught both. An `AsyncLocal` written inside an `async` method does not
+   survive that method's return, so admitting behind an `await` discarded the gate's ordinary lifetime
+   before the pipeline reached the endpoint — every request looked like it had none, and a promoted
+   reset request would have been refused by its own transition. The admit is synchronous now. The
+   in-flight arm moved for a second reason found the same way: the framework's exception middleware
+   registers its cache-header clear through `OnStarting` before any handler runs, and those run
+   last-registered-first, so a refusal written from the handler cannot keep #128's exact tuple. Both
+   have pipeline-level tests, and both were confirmed by reintroducing the defect and watching them
+   fail.
+
+6. **`Grimoire.WorkDrainTimeout` became a documented, retryable `503`.** The abort in Task 7 turns a
+   timed-out transition into something an operator can retry, so answering `500` from an unlisted code
+   was no longer right. It is now on `ErrorCodes.Grimoire`, mapped, and in the §8.23 catalog.
+
+7. **Two source-ordering guards, not one.** The existing guard indexes from the top of the file, which
    the anonymous branch's earlier call would satisfy however the authenticated one moved. The new
    ordering test searches from the API-key check, and a second test pins that the anonymous 404-hide
    still precedes admission.
