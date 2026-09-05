@@ -1311,6 +1311,69 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    /// <summary>
+    /// One lease may spend a second effect group once the first has been given back.
+    /// </summary>
+    /// <remarks>
+    /// The per-lease guard is a nullable slot rather than a flag or a count, so "has had a group" is
+    /// not a state the lease records. Attachment indexing depends on that: one dequeued request can
+    /// produce many embedding batches, and each one is its own independently resumable frontier. The
+    /// sibling case above pins concurrent groups as refused; without this one, tightening that guard
+    /// into a once-per-lease latch would pass every gate test and silently give a many-batch
+    /// attachment exactly one admitted batch.
+    ///
+    /// <para>The lease must also still be revocable between groups, because that is the window in
+    /// which a transition is allowed to stand the worker down having let its completed batches
+    /// stand.</para>
+    /// </remarks>
+    [Fact]
+    public async Task One_work_lease_begins_a_second_effect_group_after_giving_back_the_first()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        Assert.True(gate.TryAcquireWorkLease(
+            GrimoireWorkKind.SessionAttachmentIndexing,
+            out IGrimoireWorkLease? work));
+
+        Assert.True(work!.TryBeginExternalEffectGroup(
+            out IGrimoireExternalEffectGroup? firstGroup));
+
+        await firstGroup!.DisposeAsync();
+
+        Assert.True(work.TryBeginExternalEffectGroup(
+            out IGrimoireExternalEffectGroup? secondGroup));
+
+        await secondGroup!.DisposeAsync();
+
+        Assert.True(work.TryBeginExternalEffectGroup(
+            out IGrimoireExternalEffectGroup? thirdGroup));
+
+        // Between groups the lease is collected as a revocation source, so a closure begun here
+        // refuses the next group rather than cutting the one already open.
+        await thirdGroup!.DisposeAsync();
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(58));
+
+        Assert.False(work.TryBeginExternalEffectGroup(
+            out IGrimoireExternalEffectGroup? refusedGroup));
+
+        Assert.Null(refusedGroup);
+
+        Task<Result> drain = gate
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Assert.False(drain.IsCompleted);
+
+        await work.DisposeAsync();
+
+        Result drained = await drain;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+    }
+
     [Fact]
     public async Task Denied_work_waits_for_a_later_open_generation_without_spinning()
     {

@@ -513,7 +513,7 @@ public sealed class CovenantEnvelopeCodecTests
 
         using CodecHarness harness = CodecHarness.Create(checkpoint);
 
-        Task<Result<string>> encoding = Task.Run(
+        Task<Result<string>> encoding = RunLongRunning(
             () => harness.Codec.Encode(
                 CovenantEnvelopePurpose.Cursor,
                 [1, 2, 3],
@@ -550,7 +550,7 @@ public sealed class CovenantEnvelopeCodecTests
 
         using CodecHarness harness = CodecHarness.Create(checkpoint);
 
-        Task<Result<string>> encoding = Task.Run(
+        Task<Result<string>> encoding = RunLongRunning(
             () => harness.Codec.Encode(
                 CovenantEnvelopePurpose.Cursor,
                 [4, 5, 6],
@@ -603,7 +603,7 @@ public sealed class CovenantEnvelopeCodecTests
 
         CovenantEnvelopeCodec racingCodec = new(harness.Keys, harness.Time, checkpoint);
 
-        Task<Result<CovenantEnvelopeBody>> decoding = Task.Run(
+        Task<Result<CovenantEnvelopeBody>> decoding = RunLongRunning(
             () => racingCodec.Decode(CovenantEnvelopePurpose.Cursor, token));
 
         checkpoint.WaitUntilReached();
@@ -644,7 +644,7 @@ public sealed class CovenantEnvelopeCodecTests
 
         CovenantEnvelopeCodec racingCodec = new(harness.Keys, harness.Time, checkpoint);
 
-        Task<Result<CovenantEnvelopeBody>> decoding = Task.Run(
+        Task<Result<CovenantEnvelopeBody>> decoding = RunLongRunning(
             () => racingCodec.Decode(CovenantEnvelopePurpose.Cursor, token));
 
         checkpoint.WaitUntilReached();
@@ -698,7 +698,7 @@ public sealed class CovenantEnvelopeCodecTests
 
         using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
 
-        Task<Result<string>> encoding = Task.Run(
+        Task<Result<string>> encoding = RunLongRunning(
             () => harness.Codec.Encode(
                 CovenantEnvelopePurpose.Cursor,
                 [13, 14, 15],
@@ -709,7 +709,7 @@ public sealed class CovenantEnvelopeCodecTests
         TaskCompletionSource publicationStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Task publication = Task.Run(
+        Task publication = RunLongRunning(
             () =>
             {
 
@@ -771,7 +771,7 @@ public sealed class CovenantEnvelopeCodecTests
 
         CovenantEnvelopeCodec racingCodec = new(harness.Keys, harness.Time, checkpoint);
 
-        Task<Result<CovenantEnvelopeBody>> decoding = Task.Run(
+        Task<Result<CovenantEnvelopeBody>> decoding = RunLongRunning(
             () => racingCodec.Decode(CovenantEnvelopePurpose.Cursor, token));
 
         checkpoint.WaitUntilReached();
@@ -779,7 +779,7 @@ public sealed class CovenantEnvelopeCodecTests
         TaskCompletionSource retirementStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Task retirement = Task.Run(
+        Task retirement = RunLongRunning(
             () =>
             {
 
@@ -989,6 +989,20 @@ public sealed class CovenantEnvelopeCodecTests
 
     private static ulong Counter(string token) =>
         BinaryPrimitives.ReadUInt64BigEndian(Base64Url.DecodeFromChars(token).AsSpan(18));
+
+    private static Task<TResult> RunLongRunning<TResult>(Func<TResult> action) =>
+        Task.Factory.StartNew(
+            action,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+    private static Task RunLongRunning(Action action) =>
+        Task.Factory.StartNew(
+            action,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
     /// <summary>
     /// Frames one cursor token the way the codec would, with header and body times stated separately.

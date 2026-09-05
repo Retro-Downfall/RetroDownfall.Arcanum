@@ -12,11 +12,31 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 internal sealed record SessionAttachmentIndexOutcome(
+    SessionAttachmentIndexDisposition Disposition,
     SessionAttachmentIndexStatus Status,
-    bool ShouldRetry);
+    bool ShouldRetry)
+{
+
+    /// <summary>The one shape a maintenance deferral takes, so it cannot be spelled two ways.</summary>
+    /// <remarks>
+    /// <see cref="SessionAttachmentIndexStatus.Pending"/> is the literal truth rather than a filler:
+    /// the durable row says pending, the queue identity is still pending, and the caller reads only
+    /// <see cref="ShouldRetry"/> in production. <see cref="ShouldRetry"/> is <see langword="false"/>
+    /// for an equally literal reason — the automatic-retry path is the attempt-increment path, and a
+    /// refusal that was never an attempt must not take it.
+    /// </remarks>
+    internal static SessionAttachmentIndexOutcome DeferredForMaintenance { get; } =
+        new(
+            SessionAttachmentIndexDisposition.DeferredForMaintenance,
+            SessionAttachmentIndexStatus.Pending,
+            ShouldRetry: false);
+
+}
 
 internal sealed class SessionAttachmentIndexProcessor(
     IOptionsMonitor<ArcanumSettings> options,
@@ -30,17 +50,29 @@ internal sealed class SessionAttachmentIndexProcessor(
 
     private const string IndexPipelineVersion = "v1";
 
+    /// <summary>Indexes one dequeued request under the work lease its caller already holds.</summary>
+    /// <remarks>
+    /// The lease arrives as a parameter rather than as an injected dependency, and that is a safety
+    /// choice. This type is registered by convention as a scoped service, so a constructor dependency
+    /// would compile and then fail at resolution on a path the suite reaches only through the
+    /// service's own dequeue loop. A parameter cannot be mis-registered, and it puts the rule that
+    /// matters — one lease per dequeued request, taken before the scope this instance lives in — at
+    /// the call site where it is enforced rather than here where it is only used.
+    /// </remarks>
     public async Task<SessionAttachmentIndexOutcome> ProcessAsync(
         SessionAttachmentIndexRequest request,
+        IGrimoireWorkLease workLease,
         CancellationToken cancellationToken)
     {
+
+        ArgumentNullException.ThrowIfNull(workLease);
 
         EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
         if (!embeddings.Enabled || !embeddings.AttachmentRetrievalEnabled)
         {
 
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.NotEligible, ShouldRetry: false);
+            return Concluded(SessionAttachmentIndexStatus.NotEligible, shouldRetry: false);
 
         }
 
@@ -53,7 +85,7 @@ internal sealed class SessionAttachmentIndexProcessor(
             || attachment.SessionId != request.SessionId)
         {
 
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.NotEligible, ShouldRetry: false);
+            return Concluded(SessionAttachmentIndexStatus.NotEligible, shouldRetry: false);
 
         }
 
@@ -75,7 +107,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                 extractedAt: null,
                 cancellationToken).ConfigureAwait(false);
 
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.NotEligible, ShouldRetry: false);
+            return Concluded(SessionAttachmentIndexStatus.NotEligible, shouldRetry: false);
 
         }
 
@@ -92,7 +124,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                 extractedAt,
                 cancellationToken).ConfigureAwait(false);
 
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
+            return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
 
         }
 
@@ -126,7 +158,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                 extractedAt: null,
                 cancellationToken).ConfigureAwait(false);
 
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
+            return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
 
         }
 
@@ -160,16 +192,108 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         int observedChunkCount = 0;
 
+        // One sequential effect group per batch, opened before the provider call and closed after
+        // whichever durable exit this batch takes. The span is the batch's whole
+        // independently resumable unit: begun, the closure waits through the call and its append or
+        // its classification; refused, nothing is billed and every earlier batch stands. Groups are
+        // taken one after another from the same lease, which the gate permits because its per-lease
+        // guard is a slot the previous group's disposal empties, not a once-per-lease latch.
+        async Task<SessionAttachmentIndexOutcome> ConcludeInterruptedBatchAsync(
+            OperationCanceledException exception)
+        {
+
+            logger.LogWarning(
+                exception,
+                "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
+                attachment.Id);
+
+            await MarkWithoutIndexAsync(
+                attachment,
+                SessionAttachmentIndexStatus.Failed,
+                request.Attempt,
+                "Attachment indexing was interrupted and will be retried.",
+                extractedAt,
+                cancellationToken).ConfigureAwait(false);
+
+            return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+
+        }
+
+        async Task<SessionAttachmentIndexOutcome> ConcludeUnexpectedBatchFailureAsync(
+            Exception exception)
+        {
+
+            logger.LogWarning(
+                exception,
+                "Session attachment {AttachmentId} indexing batch failed unexpectedly.",
+                attachment.Id);
+
+            await MarkWithoutIndexAsync(
+                attachment,
+                SessionAttachmentIndexStatus.Failed,
+                request.Attempt,
+                "Attachment indexing failed unexpectedly.",
+                extractedAt,
+                cancellationToken).ConfigureAwait(false);
+
+            return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+
+        }
+
         async Task<SessionAttachmentIndexOutcome?> FlushBatchAsync()
         {
+
+            if (!workLease.TryBeginExternalEffectGroup(
+                    out IGrimoireExternalEffectGroup? effectGroup))
+            {
+
+                return SessionAttachmentIndexOutcome.DeferredForMaintenance;
+
+            }
+
+            await using IGrimoireExternalEffectGroup effect = effectGroup!;
 
             string[] inputs = chunkBatch
                 .Select(static chunk => chunk.Text)
                 .ToArray();
 
-            Result<Embedding<float>[]> batch = await weave
-                .EmbedBatchAsync(inputs, cancellationToken)
-                .ConfigureAwait(false);
+            // The host token, never the lease's revocation. Once the frontier is won maintenance
+            // waits through this group and its durable disposition rather than cancelling into it.
+            // Provider cancellation while the host is live is classified below inside that same
+            // group; host cancellation remains the one cancellation that propagates unchanged.
+            Result<Embedding<float>[]> batch;
+
+            try
+            {
+
+                batch = await weave
+                    .EmbedBatchAsync(inputs, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+
+                throw;
+
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+
+                // WeaveService deliberately propagates provider cancellation. It is a genuine,
+                // retryable interruption when the host token is still live, so classify it before
+                // giving back the effect group that admitted the provider call. Let a signalled host
+                // token escape instead: shutdown is neither a product failure nor another attempt.
+                return await ConcludeInterruptedBatchAsync(ex).ConfigureAwait(false);
+
+            }
+
+            catch (Exception ex)
+            {
+
+                return await ConcludeUnexpectedBatchFailureAsync(ex).ConfigureAwait(false);
+
+            }
 
             if (batch.IsFailure)
             {
@@ -182,7 +306,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                     extractedAt,
                     cancellationToken).ConfigureAwait(false);
 
-                return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
+                return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
 
             }
 
@@ -198,19 +322,42 @@ internal sealed class SessionAttachmentIndexProcessor(
                     extractedAt,
                     cancellationToken).ConfigureAwait(false);
 
-                return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: false);
+                return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: false);
 
             }
 
-            await index.AppendReplaceBatchAsync(
-                attachment,
-                checkpoint.GenerationId,
-                chunkBatch,
-                batch.Value,
-                expectedDimensions,
-                extractedAt,
-                indexedAt,
-                cancellationToken).ConfigureAwait(false);
+            try
+            {
+
+                await index.AppendReplaceBatchAsync(
+                    attachment,
+                    checkpoint.GenerationId,
+                    chunkBatch,
+                    batch.Value,
+                    expectedDimensions,
+                    extractedAt,
+                    indexedAt,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+
+                throw;
+
+            }
+            catch (OperationCanceledException ex)
+            {
+
+                return await ConcludeInterruptedBatchAsync(ex).ConfigureAwait(false);
+
+            }
+            catch (Exception ex)
+            {
+
+                return await ConcludeUnexpectedBatchFailureAsync(ex).ConfigureAwait(false);
+
+            }
 
             wroteAnyBatch = true;
 
@@ -267,7 +414,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                         extractedAt,
                         cancellationToken).ConfigureAwait(false);
 
-                    return new SessionAttachmentIndexOutcome(status, ShouldRetry: false);
+                    return Concluded(status, shouldRetry: false);
 
                 }
                 catch (Exception ex)
@@ -286,7 +433,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                         extractedAt,
                         cancellationToken).ConfigureAwait(false);
 
-                    return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
+                    return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
 
                 }
 
@@ -339,10 +486,16 @@ internal sealed class SessionAttachmentIndexProcessor(
                 extractedAt,
                 cancellationToken).ConfigureAwait(false);
 
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.NotEligible, ShouldRetry: false);
+            return Concluded(SessionAttachmentIndexStatus.NotEligible, shouldRetry: false);
 
         }
 
+        // Publication takes no effect group of its own, and the omission is deliberate. A group is an
+        // atomic frontier in front of an external effect, and this has none; maintenance already
+        // waits through it because stage one waits on the work lease's terminal and the gate cannot
+        // reach Closed while that lease is held. A group here would therefore add no waiting and one
+        // refusal point, whose only consequence would be a fully embedded generation left unpublished
+        // until a later run re-extracted it for nothing.
         await index.CompleteReplaceAsync(
             attachment,
             checkpoint.GenerationId,
@@ -352,9 +505,15 @@ internal sealed class SessionAttachmentIndexProcessor(
             request.Attempt,
             cancellationToken).ConfigureAwait(false);
 
-        return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Indexed, ShouldRetry: false);
+        return Concluded(SessionAttachmentIndexStatus.Indexed, shouldRetry: false);
 
     }
+
+    /// <summary>An outcome for a unit that held its lease to the end, whatever it decided.</summary>
+    private static SessionAttachmentIndexOutcome Concluded(
+        SessionAttachmentIndexStatus status,
+        bool shouldRetry) =>
+        new(SessionAttachmentIndexDisposition.Concluded, status, shouldRetry);
 
     public async Task MarkFailedAsync(
         SessionAttachmentIndexRequest request,

@@ -213,7 +213,7 @@ public sealed class CovenantPersistedAvailabilityPublisherTests : IAsyncLifetime
 
         checkpoint.Arm();
 
-        Task<CovenantAvailabilitySnapshot> publishing = Task.Run(() =>
+        Task<CovenantAvailabilitySnapshot> publishing = RunLongRunning(() =>
         {
 
             return availability.PublishPersistedState(
@@ -368,5 +368,12 @@ public sealed class CovenantPersistedAvailabilityPublisherTests : IAsyncLifetime
         return new Guid(raw);
 
     }
+
+    private static Task<TResult> RunLongRunning<TResult>(Func<TResult> action) =>
+        Task.Factory.StartNew(
+            action,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
 }
