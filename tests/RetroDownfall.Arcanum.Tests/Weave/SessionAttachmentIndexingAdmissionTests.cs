@@ -342,14 +342,20 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         ObservingScopeFactory scopes = BuildScopeFactory(weave);
 
+        List<bool> scopeCreationsInsideLease = [];
+
+        List<bool> scopeDisposalsInsideLease = [];
+
         // A genuine failure opens a second scope to write its durable classification. Both scope
-        // boundaries must stay inside the exact lease returned for this dequeue.
-        scopes.OnScopeCreated = () => Assert.True(gate.WorkLeaseIsHeld);
+        // boundaries must stay inside the exact lease returned for this dequeue. Record rather than
+        // assert in the callbacks: MarkFailedAsync deliberately catches scope-disposal exceptions,
+        // so an assertion thrown from its callback would otherwise disappear into that recovery.
+        scopes.OnScopeCreated = () => scopeCreationsInsideLease.Add(gate.WorkLeaseIsHeld);
 
         scopes.OnScopeDisposed = () =>
         {
 
-            Assert.True(gate.WorkLeaseIsHeld);
+            scopeDisposalsInsideLease.Add(gate.WorkLeaseIsHeld);
 
             return ValueTask.CompletedTask;
 
@@ -368,6 +374,10 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.True(outcome.ShouldRetry);
 
         Assert.Equal(2, scopes.ScopesCreated);
+
+        Assert.Equal([true, true], scopeCreationsInsideLease);
+
+        Assert.Equal([true, true], scopeDisposalsInsideLease);
 
         Assert.Equal(1, gate.WorkLeaseAttempts);
 
