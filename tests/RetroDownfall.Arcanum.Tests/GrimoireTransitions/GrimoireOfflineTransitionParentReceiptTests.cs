@@ -106,6 +106,40 @@ public sealed class GrimoireOfflineTransitionParentReceiptTests
 
     }
 
+    [Fact]
+    public async Task An_unparented_build_answers_no_parent_on_entry_and_refuses_a_bound_resume()
+    {
+
+        // The resolver a host without a broader workflow record composes. Answering "no parent" for a
+        // first entry is the honest reading of an installation that has no outer record at all; naming
+        // one on a resume is not, and continuing as standalone work there is the downgrade the whole
+        // two-record split exists to forbid.
+        GrimoireOfflineTransitionUnparentedReceiptResolver resolver = new();
+
+        Result<IGrimoireOfflineTransitionParentReceiptSink?> entry = await resolver.ResolveAsync(
+            heldInstallationLock: null!,
+            GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            Digest(0x11),
+            committedBindingDigest: null,
+            CancellationToken.None);
+
+        Assert.True(entry.IsSuccess);
+
+        Assert.Null(entry.Value);
+
+        Result<IGrimoireOfflineTransitionParentReceiptSink?> resume = await resolver.ResolveAsync(
+            heldInstallationLock: null!,
+            GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            Digest(0x11),
+            Digest(0x22),
+            CancellationToken.None);
+
+        Assert.True(resume.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, resume.Error.Code);
+
+    }
+
     private static CovenantDigest Digest(byte first) =>
         new([.. Enumerable.Range(first, 32).Select(static value => (byte)value)]);
 

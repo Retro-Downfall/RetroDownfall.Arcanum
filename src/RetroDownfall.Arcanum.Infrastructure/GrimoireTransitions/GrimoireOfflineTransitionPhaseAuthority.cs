@@ -188,10 +188,14 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
 
         }
 
+        // The two have to agree in both directions. A journal that names a parent nothing corroborates
+        // may not continue as standalone work, and a journal that names none may not be adopted by a
+        // record claiming it: the second is the same disagreement seen from the other side, and
+        // resolving it either way would let one record decide what the other meant.
         return publication.Payload.Binding.ParentReceiptBindingDigest is not null
-            && parent.Value is null
-                ? Unresumable()
-                : Admit(heldInstallationLock, launch, publication, parent.Value);
+            == (parent.Value is not null)
+                ? Admit(heldInstallationLock, launch, publication, parent.Value)
+                : Unresumable();
 
     }
 
