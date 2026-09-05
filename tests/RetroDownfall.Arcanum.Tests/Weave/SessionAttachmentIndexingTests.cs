@@ -293,7 +293,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             "text/plain",
             "purge me");
 
-        _ = await CreateProcessor(new FakeWeaveService()).ProcessAsync(
+        _ = await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
             new(attachment.Id, sessionId),
             CancellationToken.None);
 
@@ -331,7 +331,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         SessionAttachmentIndexProcessor processor = CreateProcessor(new FakeWeaveService());
 
-        SessionAttachmentIndexOutcome outcome = await processor.ProcessAsync(
+        SessionAttachmentIndexOutcome outcome = await processor.ProcessUnderOpenAdmissionAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
             CancellationToken.None);
 
@@ -416,7 +416,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             mimeType,
             kind);
 
-        SessionAttachmentIndexOutcome outcome = await CreateProcessor(new FakeWeaveService()).ProcessAsync(
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
             CancellationToken.None);
 
@@ -456,7 +456,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         FakeWeaveService weave = new();
 
-        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessAsync(
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessUnderOpenAdmissionAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
             CancellationToken.None);
 
@@ -529,7 +529,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         };
 
-        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessAsync(
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessUnderOpenAdmissionAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
             CancellationToken.None);
 
@@ -560,7 +560,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         SessionAttachmentIndexOutcome outcome = await CreateProcessor(
                 new FakeWeaveService(),
                 streamingStore)
-            .ProcessAsync(
+            .ProcessUnderOpenAdmissionAsync(
                 new SessionAttachmentIndexRequest(attachment.Id, sessionId),
                 CancellationToken.None);
 
@@ -589,7 +589,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             new string('x', 70_000));
 
         SessionAttachmentIndexOutcome first = await CreateProcessor(new FakeWeaveService())
-            .ProcessAsync(
+            .ProcessUnderOpenAdmissionAsync(
                 new SessionAttachmentIndexRequest(attachment.Id, sessionId),
                 CancellationToken.None);
 
@@ -628,7 +628,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            CreateProcessor(cancellingWeave).ProcessAsync(
+            CreateProcessor(cancellingWeave).ProcessUnderOpenAdmissionAsync(
                 new SessionAttachmentIndexRequest(attachment.Id, sessionId),
                 interrupted.Token));
 
@@ -657,7 +657,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         FakeWeaveService resumedWeave = new();
 
-        SessionAttachmentIndexOutcome resumed = await CreateProcessor(resumedWeave).ProcessAsync(
+        SessionAttachmentIndexOutcome resumed = await CreateProcessor(resumedWeave).ProcessUnderOpenAdmissionAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
             CancellationToken.None);
 
@@ -706,7 +706,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         FakeWeaveService weave = new();
 
-        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessAsync(
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessUnderOpenAdmissionAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
             CancellationToken.None);
 
@@ -735,7 +735,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             "retry me");
 
         SessionAttachmentIndexOutcome outcome = await CreateProcessor(
-            new FakeWeaveService { FailEmbedding = true }).ProcessAsync(
+            new FakeWeaveService { FailEmbedding = true }).ProcessUnderOpenAdmissionAsync(
                 new SessionAttachmentIndexRequest(attachment.Id, sessionId),
                 CancellationToken.None);
 
@@ -766,7 +766,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             "wrong dimensions");
 
         SessionAttachmentIndexOutcome outcome = await CreateProcessor(
-            new FakeWeaveService { OutputDimensions = Dimensions + 1 }).ProcessAsync(
+            new FakeWeaveService { OutputDimensions = Dimensions + 1 }).ProcessUnderOpenAdmissionAsync(
                 new SessionAttachmentIndexRequest(attachment.Id, sessionId),
                 CancellationToken.None);
 
@@ -812,11 +812,11 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         SessionAttachmentIndexProcessor processor = CreateProcessor(new FakeWeaveService());
 
-        await processor.ProcessAsync(new(firstV1.Id, firstSession), CancellationToken.None);
+        await processor.ProcessUnderOpenAdmissionAsync(new(firstV1.Id, firstSession), CancellationToken.None);
 
-        await processor.ProcessAsync(new(firstV2.Id, firstSession), CancellationToken.None);
+        await processor.ProcessUnderOpenAdmissionAsync(new(firstV2.Id, firstSession), CancellationToken.None);
 
-        await processor.ProcessAsync(new(other.Id, secondSession), CancellationToken.None);
+        await processor.ProcessUnderOpenAdmissionAsync(new(other.Id, secondSession), CancellationToken.None);
 
         SessionAttachmentRetrievalService retrieval = new(
             new TestOptionsMonitor<ArcanumSettings>(_settings),
@@ -878,12 +878,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             "text/plain",
             "latest content");
 
-        await CreateProcessor(new FakeWeaveService()).ProcessAsync(
+        await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
             new(first.Id, sessionId),
             CancellationToken.None);
 
         SessionAttachmentIndexOutcome failed = await CreateProcessor(
-            new FakeWeaveService { FailEmbedding = true }).ProcessAsync(
+            new FakeWeaveService { FailEmbedding = true }).ProcessUnderOpenAdmissionAsync(
                 new(second.Id, sessionId),
                 CancellationToken.None);
 
@@ -934,9 +934,9 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         SessionAttachmentIndexProcessor processor = CreateProcessor(new FakeWeaveService());
 
-        _ = await processor.ProcessAsync(new(second.Id, sessionId), CancellationToken.None);
+        _ = await processor.ProcessUnderOpenAdmissionAsync(new(second.Id, sessionId), CancellationToken.None);
 
-        _ = await processor.ProcessAsync(new(first.Id, sessionId), CancellationToken.None);
+        _ = await processor.ProcessUnderOpenAdmissionAsync(new(first.Id, sessionId), CancellationToken.None);
 
         SessionAttachmentRetrievedChunk[] latest = await CreateRetrievalService().SearchAsync(
             sessionId,

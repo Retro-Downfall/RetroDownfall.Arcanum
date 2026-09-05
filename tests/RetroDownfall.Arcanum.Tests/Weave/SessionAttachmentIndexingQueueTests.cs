@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -36,6 +38,7 @@ public sealed class SessionAttachmentIndexingQueueTests
         SessionAttachmentIndexingService service = new(
             scopes,
             new TestOptionsMonitor<ArcanumSettings>(settings),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<SessionAttachmentIndexingService>.Instance);
 
         for (int index = 0; index < ArcanumRuntimeDefaults.Embeddings.Attachments.QueueCapacity; index++)
@@ -61,6 +64,7 @@ public sealed class SessionAttachmentIndexingQueueTests
     {
 
         SessionAttachmentIndexOutcome outcome = new(
+            SessionAttachmentIndexDisposition.Concluded,
             SessionAttachmentIndexStatus.Failed,
             ShouldRetry: true);
 
@@ -141,6 +145,7 @@ public sealed class SessionAttachmentIndexingQueueTests
         cancellation.Cancel();
 
         SessionAttachmentIndexOutcome outcome = new(
+            SessionAttachmentIndexDisposition.Concluded,
             SessionAttachmentIndexStatus.Failed,
             ShouldRetry: true);
 

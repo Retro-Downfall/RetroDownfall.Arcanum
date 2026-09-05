@@ -661,7 +661,7 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             _index!,
             NullLogger<SessionAttachmentIndexProcessor>.Instance);
 
-        SessionAttachmentIndexOutcome outcome = await processor.ProcessAsync(
+        SessionAttachmentIndexOutcome outcome = await processor.ProcessUnderOpenAdmissionAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
             CancellationToken.None);
 
