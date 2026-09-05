@@ -303,6 +303,32 @@ public sealed class GrimoireOfflineTransitionLaunchBindingTests
 
         Assert.Null(journal.Value.ParentReceiptBindingDigest);
 
+        // The bound arm carries the parent through untouched. It is the one field a journal takes from
+        // outside the launch, so a projection that dropped or rewrote it would leave the transition
+        // unable to prove the workflow that launched it.
+        CovenantDigest parent = new([.. Enumerable.Range(0x91, 32).Select(static value => (byte)value)]);
+
+        Result<GrimoireOfflineTransitionBinding> bound = GrimoireOfflineTransitionLaunch.JournalBinding(
+            launch,
+            slotEpoch: 3,
+            payloadVersion: 1,
+            expectedDatabaseOperationRevision: launch.StartingRevision + 1,
+            parent);
+
+        Assert.True(bound.IsSuccess, bound.IsFailure ? bound.Error.Message : null);
+
+        Assert.Equal(parent, bound.Value.ParentReceiptBindingDigest);
+
+        // An invalid digest is not an absent parent. Admitting one would publish a journal claiming a
+        // parent whose identity nothing can ever reproduce.
+        Assert.True(
+            GrimoireOfflineTransitionLaunch.JournalBinding(
+                launch,
+                slotEpoch: 3,
+                payloadVersion: 1,
+                expectedDatabaseOperationRevision: launch.StartingRevision + 1,
+                default(CovenantDigest)).IsFailure);
+
     }
 
     /// <summary>

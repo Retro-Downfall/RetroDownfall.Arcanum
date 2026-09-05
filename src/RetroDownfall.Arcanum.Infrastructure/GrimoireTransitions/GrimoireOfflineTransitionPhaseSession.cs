@@ -447,14 +447,43 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     /// The absent case is stated rather than left blank. A step that simply carried no receipt would
     /// read identically whether none was required or one was owed and never published, and only the
     /// first of those may go on to retire the journal.
+    ///
+    /// <para><paramref name="provedReceiptDigest"/> is recomputed by the caller from the receipt it
+    /// read back out of the broader workflow's record. It is deliberately not derived here from the
+    /// binding this evidence is checked against: a value taken from the thing it is compared to
+    /// asserts equality with itself and proves nothing about the outer record at all. Supplying one
+    /// where no parent is bound, or omitting one where a parent is, is refused rather than
+    /// interpreted.</para>
     /// </remarks>
-    internal Task<Result> RecordParentReceiptAsync(CancellationToken cancellationToken) =>
-        AdvanceReconciliationAsync(
+    internal Task<Result> RecordParentReceiptAsync(
+        CovenantDigest? provedReceiptDigest,
+        CancellationToken cancellationToken)
+    {
+
+        bool bound = _current.Payload.Binding.ParentReceiptBindingDigest is not null;
+
+        if (bound != provedReceiptDigest is { IsValid: true })
+        {
+
+            return Task.FromResult(Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "The parent receipt step requires exactly the proof its binding calls for.")));
+
+        }
+
+        return AdvanceReconciliationAsync(
             GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied,
-            evidence => _current.Payload.Binding.ParentReceiptBindingDigest is { } parent
-                ? evidence with { ParentReceiptNotRequired = false, ParentReceiptDigest = parent }
+            evidence => bound
+                ? evidence with
+                {
+                    ParentReceiptNotRequired = false,
+                    ParentReceiptDigest = provedReceiptDigest,
+                }
                 : evidence with { ParentReceiptNotRequired = true, ParentReceiptDigest = null },
             cancellationToken);
+
+    }
 
     /// <summary>Records that every maintenance handle is physically closed and the lane is empty.</summary>
     internal Task<Result> RecordLaneClosedAsync(CancellationToken cancellationToken) =>
