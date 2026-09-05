@@ -191,14 +191,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentIndexRequest request = new(attachment.Id, sessionId, Attempt: 3);
 
-        Assert.True(service.TryEnqueue(request));
-
-        Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? dequeued));
+        SessionAttachmentIndexRequest dequeued = Dequeue(service, request);
 
         await using IGrimoireClosingOwner closing = BeginClosing(gate, 61);
 
         SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
-            dequeued!,
+            dequeued,
             CancellationToken.None);
 
         Assert.Equal(SessionAttachmentIndexDisposition.DeferredForMaintenance, outcome.Disposition);
@@ -375,8 +373,10 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentIndexingService service = CreateService(scopes, gate);
 
+        SessionAttachmentIndexRequest request = new(attachment.Id, sessionId, Attempt: 2);
+
         SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
-            new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 2),
+            Dequeue(service, request),
             CancellationToken.None);
 
         Assert.Equal(SessionAttachmentIndexDisposition.DeferredForMaintenance, outcome.Disposition);
@@ -398,6 +398,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         SessionAttachmentIndexRequest held = Assert.Single(service.DeferredRequests);
 
         Assert.Equal(2, held.Attempt);
+
+        // A group refused part way through is still a deferral, so the identity is retained here as
+        // well as on the lease-refusal path — and intake still deduplicates against it.
+        Assert.True(service.TryEnqueue(request with { Attempt = 9 }));
+
+        Assert.Equal(0, service.QueueReader.Count);
 
         await closing!.DisposeAsync();
 
@@ -555,7 +561,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentIndexingService service = CreateService(scopes, gate);
 
-        SessionAttachmentIndexRequest request = new(attachment.Id, sessionId, Attempt: 5);
+        SessionAttachmentIndexRequest request = Dequeue(
+            service,
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 5));
 
         IGrimoireClosingOwner closing = BeginClosing(gate, 66);
 
@@ -666,6 +674,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         await using IGrimoireClosingOwner closing = BeginClosing(gate, 68);
 
+
         Microsoft.Extensions.Hosting.IHostedService hosted = service;
 
         await hosted.StartAsync(CancellationToken.None);
@@ -685,6 +694,26 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Empty(await _index!.GetStatusesAsync([attachment.Id], CancellationToken.None));
 
         Assert.Single(service.DeferredRequests);
+
+    }
+
+    /// <summary>Puts one request through the real intake and takes it off the queue again.</summary>
+    /// <remarks>
+    /// Every deferral case goes through this rather than calling the dequeue path with a bare
+    /// request, because the guarantee under test is about the pending identity that intake creates.
+    /// A request that never entered the queue has no identity to retain, and an assertion about
+    /// retaining it would pass against a worker that dropped it.
+    /// </remarks>
+    private static SessionAttachmentIndexRequest Dequeue(
+        SessionAttachmentIndexingService service,
+        SessionAttachmentIndexRequest request)
+    {
+
+        Assert.True(service.TryEnqueue(request));
+
+        Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? dequeued));
+
+        return dequeued!;
 
     }
 
