@@ -101,10 +101,30 @@ internal static class InstallationResetNestedTransitionEvidence
 
         }
 
-        if (outer.NestedTransitionReceipt is not { } receipt
-            || inner.ParentReceiptBindingDigest is not { } committed
-            || inner.Kind is not GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure
-            || receipt.NestedOperationId != inner.OperationId)
+        // A reset that claimed nothing and a journal that names no parent are two authorities over
+        // separate work that happen to be open at once — a broader reset in its own phases beside an
+        // erasure the running host started for itself. Neither is a downgrade of the other, because a
+        // downgrade is only possible where one of them says otherwise, and the host refuses to
+        // bootstrap over the journal either way.
+        if (outer.NestedTransitionReceipt is null)
+        {
+
+            return inner.ParentReceiptBindingDigest is null
+                ? InstallationResetNestedTransitionEvidenceOutcome.StandaloneTransition
+                : InstallationResetNestedTransitionEvidenceOutcome.RecoveryRequired;
+
+        }
+
+        // The receipt names the identity the nested apply was REQUESTED under, which the operation
+        // ledger deliberately keeps distinct from the identity it then created — a replay key and a
+        // durable operation are different things, and elsewhere the record refuses a completion whose
+        // two ids are equal. So the two records are not tied together by comparing those ids, which
+        // could never match, but by the binding digest below, which both sides derive from the same
+        // claim and different halves of the evidence.
+        InstallationResetNestedTransitionReceiptV1 receipt = outer.NestedTransitionReceipt;
+
+        if (inner.ParentReceiptBindingDigest is not { } committed
+            || inner.Kind is not GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure)
         {
 
             return InstallationResetNestedTransitionEvidenceOutcome.RecoveryRequired;
@@ -134,37 +154,34 @@ internal static class InstallationResetNestedTransitionEvidence
         }
 
         return receipt.NestedEffectDigest == inner.EffectDigest
-            && SameWinner(receipt.TerminalWinnerDigest, inner.TerminalWinnerDigest)
-            && InRetirementSuffix(inner)
+            && InRetirementSuffix(receipt, inner)
             ? InstallationResetNestedTransitionEvidenceOutcome.NestedReceiptStoredRetirementSuffix
             : InstallationResetNestedTransitionEvidenceOutcome.RecoveryRequired;
 
     }
 
     /// <summary>
-    /// Whether the journal is at or past the step the stored receipt says it reached.
+    /// Whether the journal has reached the terminalization the stored receipt reports.
     /// </summary>
     /// <remarks>
-    /// A stored receipt is published only after the exact terminal compare-exchange, so a journal
-    /// sitting anywhere earlier contradicts it. Catching such a journal up would mean publishing a
-    /// reconciliation suffix the transition never performed — recording a lane it did not close and a
-    /// disposition it did not spend — which is worse than staying closed.
+    /// The test is the terminal winner, not the phase. A completion receipt is published after the
+    /// exact terminal compare-exchange is journaled and before the journal records the parent step, so
+    /// the state between those two writes is one the protocol guarantees will occur — demanding the
+    /// later phase would classify the crossing window itself as two records describing different runs.
+    /// A journal that names the same winner has performed the same terminalization, whatever it has
+    /// managed to write down since; one that names none, or a different one, has not.
+    ///
+    /// <para>The three admitted states are the three a journal can be in once its winner is recorded:
+    /// still working through the reconciliation suffix, waiting to retire, or parked. A parked journal
+    /// belongs here because parking is the resumable state — what remains is still only the suffix.</para>
     /// </remarks>
-    private static bool InRetirementSuffix(InnerJournal inner) =>
-        inner.State is GrimoireOfflineTransitionState.RetirementPending
-        || (inner.State is GrimoireOfflineTransitionState.DatabaseReconciliationPending
-            && inner.ReconciliationStep
-                >= GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied);
-
-    /// <summary>
-    /// The one fact both records hold independently, compared only when both actually hold it.
-    /// </summary>
-    /// <remarks>
-    /// The journal records its terminal winner several publications before the outer receipt is
-    /// stored, so a journal that has not reached that point simply has nothing to compare. What is
-    /// forbidden is two present values that differ: that is two records describing two different runs.
-    /// </remarks>
-    private static bool SameWinner(CovenantDigest? outerWinner, CovenantDigest? innerWinner) =>
-        outerWinner is null || innerWinner is null || outerWinner == innerWinner;
+    private static bool InRetirementSuffix(
+        InstallationResetNestedTransitionReceiptV1 receipt,
+        InnerJournal inner) =>
+        receipt.TerminalWinnerDigest is { IsValid: true } winner
+        && inner.TerminalWinnerDigest == winner
+        && inner.State is GrimoireOfflineTransitionState.DatabaseReconciliationPending
+            or GrimoireOfflineTransitionState.RetirementPending
+            or GrimoireOfflineTransitionState.KeepClosed;
 
 }

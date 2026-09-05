@@ -1865,8 +1865,17 @@ internal sealed class InstallationResetService(
                     if (applied.IsFailure)
                     {
 
+                        // A claim that has not reported keeps the record alive whatever the apply
+                        // returned. The nested transition may still hold a journal bound to this exact
+                        // record, and retiring it would delete the one piece of evidence that journal
+                        // needs to be resumed or retired - leaving a parked transition nothing can ever
+                        // finish, and a slot no future transition can open.
                         if (applied.Error.Code is ErrorCodes.Data.RecoveryRequired
-                                or ErrorCodes.Data.ReconciliationFailed)
+                                or ErrorCodes.Data.ReconciliationFailed
+                            || active.NestedTransitionReceipt is
+                            {
+                                Phase: InstallationResetNestedTransitionPhase.Claimed,
+                            })
                         {
 
                             active = active with

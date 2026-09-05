@@ -2059,10 +2059,17 @@ public static class ServiceCollectionExtensions
         // The one production resolver, registered beside the authority that needs it. A nested
         // transition learns it is nested by reading the broader record, so this same registration
         // serves a first entry and a recovery in a fresh process.
+        // The concrete store is tried as well as the interface. The composition that registers the
+        // phase authority registers `InstallationResetActiveStore` itself rather than the interface
+        // over it, so resolving only the interface would hand every daemon transition the unparented
+        // resolver — and a transition answering "no parent" while its reset record claimed it is
+        // exactly the standalone downgrade the evidence matrix fails closed on.
         services.TryAddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(
-            static sp => sp.GetService<IInstallationResetActiveStore>() is { } activeStore
-                ? new InstallationResetNestedTransitionReceiptResolver(activeStore)
-                : new GrimoireOfflineTransitionUnparentedReceiptResolver());
+            static sp =>
+                (sp.GetService<IInstallationResetActiveStore>()
+                    ?? sp.GetService<InstallationResetActiveStore>()) is { } activeStore
+                        ? new InstallationResetNestedTransitionReceiptResolver(activeStore)
+                        : new GrimoireOfflineTransitionUnparentedReceiptResolver());
 
         services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
             static sp => new GrimoireOfflineTransitionPhaseAuthority(

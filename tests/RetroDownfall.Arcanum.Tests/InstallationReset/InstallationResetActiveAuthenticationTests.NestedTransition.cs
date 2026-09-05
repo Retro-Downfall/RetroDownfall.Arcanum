@@ -1,3 +1,7 @@
+using System.Text;
+
+using System.Text.Json;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
@@ -91,6 +95,54 @@ public sealed partial class InstallationResetActiveAuthenticationTests
             InstallationResetActiveRecordAuthenticator
                 .ValidatePayload(legacy with { Version = 4 })
                 .IsFailure);
+
+    }
+
+    [Fact]
+    public void A_checkpoint_bearing_record_sealed_before_this_build_still_opens()
+    {
+
+        // The authenticated open requires the decrypted plaintext to re-serialize byte for byte, so a
+        // member that appeared unconditionally would change the canonical spelling of every checkpoint
+        // sealed before it existed — and those records would then be refused as if they had been
+        // tampered with, which is the one class of record the legacy version exists to rescue.
+        InstallationResetActivePayloadV3 current = CheckpointPayload();
+
+        Assert.NotNull(current.HostToolsMarkerPairReset);
+
+        Assert.Null(current.HostToolsMarkerPairReset.TransitionTerminal);
+
+        string canonical = Encoding.UTF8.GetString(
+            JsonSerializer.SerializeToUtf8Bytes(
+                current,
+                InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV3));
+
+        Assert.DoesNotContain("transitionTerminal", canonical, StringComparison.Ordinal);
+
+        // And the same for the payload's own new member, which an older record also never carried.
+        Assert.DoesNotContain("nestedTransitionReceipt", canonical, StringComparison.Ordinal);
+
+        InstallationResetActivePayloadV3 sealedRoundTrip = Value(
+            JsonSerializer.Deserialize(
+                canonical,
+                InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV3));
+
+        Assert.Equal(
+            canonical,
+            Encoding.UTF8.GetString(
+                JsonSerializer.SerializeToUtf8Bytes(
+                    sealedRoundTrip,
+                    InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV3)));
+
+    }
+
+    private static T Value<T>(T? value)
+        where T : class
+    {
+
+        Assert.NotNull(value);
+
+        return value;
 
     }
 

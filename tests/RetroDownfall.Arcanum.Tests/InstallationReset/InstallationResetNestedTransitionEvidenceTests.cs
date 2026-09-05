@@ -28,6 +28,9 @@ public sealed class InstallationResetNestedTransitionEvidenceTests
 
     private static readonly Guid Nested = Guid.Parse("22222222-2222-4222-8222-222222222222");
 
+    /// <summary>The durable operation the ledger mints, which is never the requested identity.</summary>
+    private static readonly Guid Ledger = Guid.Parse("33333333-3333-4333-8333-333333333333");
+
     [Fact]
     public void Neither_record_active_is_an_ordinary_launch()
     {
@@ -110,6 +113,15 @@ public sealed class InstallationResetNestedTransitionEvidenceTests
                 InstallationResetNestedTransitionEvidenceOutcome.RecoveryRequired,
                 outcome));
 
+        // A reset that claimed nothing beside a journal that names no parent is the ordinary shape of
+        // an erasure the running host started for itself while a broader reset was open. Neither
+        // record downgrades the other, and the host refuses to bootstrap over the journal regardless.
+        Assert.Equal(
+            InstallationResetNestedTransitionEvidenceOutcome.StandaloneTransition,
+            InstallationResetNestedTransitionEvidence.Resolve(
+                Reset(receipt: null),
+                Journal(parentBinding: null)));
+
     }
 
     [Fact]
@@ -131,11 +143,34 @@ public sealed class InstallationResetNestedTransitionEvidenceTests
                 Journal(
                     Binding(),
                     state: GrimoireOfflineTransitionState.DatabaseReconciliationPending,
-                    step: GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied)));
+                    step: GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied,
+                    winnerRecorded: true)));
 
-        // The receipt says the database is already terminal. A journal sitting anywhere before its own
-        // parent step contradicts that, and a suffix published to catch up would record steps this
-        // transition never performed.
+        // The crossing window itself. The receipt is published after the terminal winner is journaled
+        // and before the journal records the parent step, so this exact pair is what a crash between
+        // those two writes leaves — and it is resumable, not a disagreement.
+        Assert.Equal(
+            InstallationResetNestedTransitionEvidenceOutcome.NestedReceiptStoredRetirementSuffix,
+            InstallationResetNestedTransitionEvidence.Resolve(
+                Reset(Completed()),
+                Journal(
+                    Binding(),
+                    state: GrimoireOfflineTransitionState.DatabaseReconciliationPending,
+                    step: GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner,
+                    winnerRecorded: true)));
+
+        // So is a parked one: parking is the resumable state and what remains is still only the suffix.
+        Assert.Equal(
+            InstallationResetNestedTransitionEvidenceOutcome.NestedReceiptStoredRetirementSuffix,
+            InstallationResetNestedTransitionEvidence.Resolve(
+                Reset(Completed()),
+                Journal(
+                    Binding(),
+                    state: GrimoireOfflineTransitionState.KeepClosed,
+                    winnerRecorded: true)));
+
+        // A journal that has recorded no terminal winner cannot have produced the receipt, whatever
+        // phase it claims to be in.
         Assert.Equal(
             InstallationResetNestedTransitionEvidenceOutcome.RecoveryRequired,
             InstallationResetNestedTransitionEvidence.Resolve(
@@ -165,7 +200,8 @@ public sealed class InstallationResetNestedTransitionEvidenceTests
                 Reset(Completed() with { TerminalWinnerDigest = Digest(0x55) }),
                 Journal(
                     Binding(),
-                    state: GrimoireOfflineTransitionState.RetirementPending)));
+                    state: GrimoireOfflineTransitionState.RetirementPending,
+                    winnerRecorded: true)));
 
     }
 
@@ -242,20 +278,32 @@ public sealed class InstallationResetNestedTransitionEvidenceTests
 
     private static InstallationResetNestedTransitionEvidence.InnerJournal? NoJournal() => null;
 
+    /// <summary>
+    /// A journal whose own operation identity is NOT the receipt's, which is the production shape.
+    /// </summary>
+    /// <remarks>
+    /// The receipt names the identity the nested apply was requested under; the operation ledger mints
+    /// a separate durable id for the operation it then creates, and the journal binds that one. A
+    /// fixture that used one value for both would assert an identity production never maintains, and
+    /// would hide a matrix that compared the two.
+    /// </remarks>
     private static InstallationResetNestedTransitionEvidence.InnerJournal Journal(
         CovenantDigest? parentBinding,
         GrimoireOfflineTransitionKind kind =
             GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
         GrimoireOfflineTransitionState state = GrimoireOfflineTransitionState.Applying,
-        GrimoireOfflineTransitionReconciliationStep? step = null) =>
+        GrimoireOfflineTransitionReconciliationStep? step = null,
+        bool winnerRecorded = false) =>
         new(
-            Nested,
+            Ledger,
             kind,
             Effect,
             parentBinding,
             state,
             step,
-            state is GrimoireOfflineTransitionState.RetirementPending ? Winner : null);
+            winnerRecorded || state is GrimoireOfflineTransitionState.RetirementPending
+                ? Winner
+                : null);
 
     private static CovenantDigest Digest(byte first) =>
         new([.. Enumerable.Range(first, 32).Select(static value => (byte)value)]);

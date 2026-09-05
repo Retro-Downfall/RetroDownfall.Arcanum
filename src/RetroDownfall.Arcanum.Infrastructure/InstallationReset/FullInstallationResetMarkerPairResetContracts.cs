@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 
+using System.Text.Json.Serialization;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -117,6 +119,11 @@ internal sealed record HostToolsMarkerPairResetCheckpointV1(
     FullInstallationResetManagedFileCheckpointV1? ManagedFile = null,
     BackupRestoreFullResetTerminalProjectionV1? RestoreTerminal = null,
     InstallationResetRestoreCredentialCleanupPhase? RestoreCredentialCleanup = null,
+    // Omitted from the wire when null, because the authenticated open requires the decrypted plaintext
+    // to re-serialize byte for byte. A member that always appeared would change the canonical spelling
+    // of every checkpoint sealed before it existed, and those records would then fail to authenticate
+    // rather than being read and migrated forward.
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     GrimoireOfflineTransitionFullResetTerminalProjectionV1? TransitionTerminal = null);
 
 internal static class HostToolsMarkerPairResetCheckpointBounds
