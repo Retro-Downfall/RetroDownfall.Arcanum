@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 /// <summary>
@@ -15,12 +17,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 /// <paramref name="NestedTransitionEvidence"/> is <see langword="null"/> only on the paths that could
 /// not read the journal at all — the lock-free probe, which has no lock to read it under. A host that
 /// held the lock always has an answer, because "neither record is active" is itself one.
+///
+/// <para><paramref name="TransitionJournal"/> carries the journal the matrix was computed from, so the
+/// pass that resumes it works from the same evidence rather than reading the slot a second time. Two
+/// reads either side of one decision are two answers to the question the decision already asked.</para>
 /// </remarks>
 internal sealed record InstallationResetStartupRecoveryState(
     ActiveInstallationReset? ActiveReset,
     Guid? ExpectedInstallationId,
     bool IsLegacyV1,
-    InstallationResetNestedTransitionEvidenceOutcome? NestedTransitionEvidence = null);
+    InstallationResetNestedTransitionEvidenceOutcome? NestedTransitionEvidence = null,
+    GrimoireOfflineTransitionRecoveryEvidence? TransitionJournal = null);
 
 internal interface IInstallationResetStartupRecovery
 {
@@ -153,7 +160,14 @@ internal sealed class InstallationResetStartupRecovery(
         return outcome is InstallationResetNestedTransitionEvidenceOutcome.RecoveryRequired
             ? EvidenceFailure()
             : Result<InstallationResetStartupRecoveryState>.Success(
-                projected.Value with { NestedTransitionEvidence = outcome });
+                projected.Value with
+                {
+
+                    NestedTransitionEvidence = outcome,
+
+                    TransitionJournal = Evidence(journal.Value),
+
+                });
 
     }
 
@@ -163,6 +177,17 @@ internal sealed class InstallationResetStartupRecovery(
             ? new InstallationResetNestedTransitionEvidence.OuterRecord(
                 publication.Payload.OperationId,
                 publication.Payload.NestedTransitionReceipt)
+            : null;
+
+    /// <summary>The journal reduced to what the resuming pass verifies its catalog against.</summary>
+    private static GrimoireOfflineTransitionRecoveryEvidence? Evidence(
+        GrimoireOfflineTransitionTypedRecoveryState journal) =>
+        journal.Publication is { } publication
+            ? new GrimoireOfflineTransitionRecoveryEvidence(
+                publication.Payload.Binding,
+                publication.Raw.Envelope.SlotEpoch,
+                publication.Raw.Envelope.Revision,
+                publication.Raw.EnvelopeDigest)
             : null;
 
     private static InstallationResetNestedTransitionEvidence.InnerJournal? Inner(

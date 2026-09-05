@@ -13,7 +13,9 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -276,6 +278,19 @@ public sealed class CovenantArchitectureBoundaryTests
             ServiceLifetime.Scoped);
 
         AssertSingleRegistration<IGrimoireOfflineTransitionPhaseAuthority>(services, ServiceLifetime.Scoped);
+
+        // The pre-bootstrap recovery chain is composed as singletons because it runs before any
+        // request scope exists. Its one scoped collaborator - the operation store, reached through the
+        // lease adoption below - is resolved from a scope the dispatch opens per resumed operation.
+        AssertSingleRegistration<IGrimoireRecoveryOnlyUnlock>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantRecoveryAuthorityBootstrapper>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<IGrimoireOfflineTransitionHandlerDispatch>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<IGrimoireOfflineTransitionStartupRecovery>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ILongRunningOperationMaintenanceLeaseAdoption>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<GrimoireOfflineTransitionDatabaseReconciler>(services, ServiceLifetime.Scoped);
 
