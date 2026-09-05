@@ -214,8 +214,8 @@ That is the mechanism, not a separate rule.
 ### 4.3 The resolver and the sink
 
 `IGrimoireOfflineTransitionParentReceiptResolver.ResolveAsync` takes the held maintenance lock, the
-nested operation id, the transition kind, and the nested effect digest, and answers with one of three
-things:
+transition kind, the nested effect digest, and — on a resume — the binding digest the journal already
+committed to. It reads the outer record and answers with one of three things:
 
 - **no parent** — the outer record is absent, or present and carrying no nested receipt at all. The
   transition is standalone. `ParentReceiptBindingDigest` stays null and the suffix records
@@ -223,14 +223,21 @@ things:
 - **a bound sink** — the outer record carries a receipt whose `NestedOperationId` is exactly this
   operation. The sink exposes the binding digest §4.2 defines and the one publication §4.4 describes;
   or
-- **a refusal** — content-free `Covenant.ManualRecoveryRequired`. The refusing cases are a nested
-  claim naming a different operation, a claim on a transition whose kind is `CovenantReset`, a
-  `Completed` receipt whose recorded nested effect digest is not this launch's, and an outer record
-  that cannot be authenticated.
+- **a refusal** — content-free `Covenant.ManualRecoveryRequired`. The refusing cases are a claim on a
+  transition whose kind is `CovenantReset`, a `Completed` receipt whose recorded nested effect digest
+  is not this launch's, an outer record that cannot be authenticated, a resume whose recomputed
+  binding does not equal the one the journal committed to, and a resume carrying a committed binding
+  with no outer record at all.
 
 The resolver reads; it never repairs, never creates an outer record, and never advances one on the
 resolve path. Because it reads rather than receives, first entry and recovery reach the same answer
-from the same evidence, which is the property a handed-down parameter cannot have.
+from the same evidence, which is the property a handed-down parameter cannot have. The last refusal
+above is exactly §5's "journal only, parent binding present" arm reached from inside the transition
+rather than from startup.
+
+The nested operation the receipt names is the request identity the outer arm mints and passes as the
+nested apply's `RequestedOperationId`, so the outer record's claim names something the operation
+ledger also knows, and a resumed reset replays the one nested operation rather than starting a second.
 
 ### 4.4 Publish and reread
 
