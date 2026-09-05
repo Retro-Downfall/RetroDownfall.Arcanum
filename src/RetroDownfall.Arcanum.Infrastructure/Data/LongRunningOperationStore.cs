@@ -7,7 +7,9 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -18,7 +20,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class LongRunningOperationStore(
     ArcanumDbContext db,
     IGrimoireOrdinaryConnectionFactory connections,
-    ICovenantConnectionDrain? covenantDrain = null) : ILongRunningOperationStore, IDisposable
+    ICovenantConnectionDrain? covenantDrain = null)
+    : ILongRunningOperationStore, ILongRunningOperationMaintenanceLeaseAdoption, IDisposable
 {
     private const int MaxKindLength = 100;
 
@@ -722,12 +725,68 @@ internal sealed class LongRunningOperationStore(
             },
             cancellationToken);
 
-    public async Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+    /// <summary>
+    /// Adopts one operation's lease while the caller holds this installation's maintenance lock.
+    /// </summary>
+    /// <remarks>
+    /// The same compare-update <see cref="TryAcquireLeaseAsync"/> performs, minus the expiry
+    /// predicate, and it is the lock that replaces it. An unexpired lease ordinarily means somebody
+    /// may still be working; a caller holding the installation maintenance lock <c>FileShare.None</c>
+    /// has already established that nobody else owns this installation, so the surviving lease is a
+    /// dead process's and waiting out its remainder would only delay a startup that has to finish
+    /// before readiness.
+    ///
+    /// <para>Nothing else moves. A terminal row is still unadoptable and the flagged states that may
+    /// be reclaimed are the ones the ordinary path admits, because both arms run the one statement
+    /// below rather than two copies of it.</para>
+    /// </remarks>
+    public Task<LongRunningOperationLeaseResult> AdoptUnderInstallationLockAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
         Guid operationId,
         string ownerId,
         DateTimeOffset utcNow,
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        // Asserted, never acquired and never disposed. The caller owns this lock for the whole of
+        // startup, and it is the entire evidence this adoption rests on.
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        return AcquireLeaseAsync(
+            operationId,
+            ownerId,
+            utcNow,
+            leaseExpiresAt,
+            requireExpiredLease: false,
+            cancellationToken);
+
+    }
+
+    public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        AcquireLeaseAsync(
+            operationId,
+            ownerId,
+            utcNow,
+            leaseExpiresAt,
+            requireExpiredLease: true,
+            cancellationToken);
+
+    private async Task<LongRunningOperationLeaseResult> AcquireLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        bool requireExpiredLease,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         if (leaseExpiresAt <= utcNow)
@@ -766,8 +825,12 @@ internal sealed class LongRunningOperationStore(
                               "State" = @attention
                               AND "Kind" = @a2aInbound
                               AND "TerminalErrorCode" = @a2aParked))
-                      AND ("LeaseOwner" IS NULL OR "LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
-                    """;
+                    """
+                    + (requireExpiredLease
+                        ? """
+                            AND ("LeaseOwner" IS NULL OR "LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
+                          """
+                        : string.Empty);
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
