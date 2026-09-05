@@ -1196,7 +1196,8 @@ internal static class SessionEndpoints
 
             })
 
-        .WithName("DownloadSessionAttachment");
+        .WithName("DownloadSessionAttachment")
+        .WithMetadata(GrimoireStreamRouteMetadata.FiniteDrain);
 
         apiGroup.MapPost(
 

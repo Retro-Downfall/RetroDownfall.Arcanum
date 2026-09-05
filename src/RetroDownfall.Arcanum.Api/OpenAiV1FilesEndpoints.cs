@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Api.Streaming;
 
 namespace RetroDownfall.Arcanum.Api;
 
@@ -48,7 +49,8 @@ internal static partial class OpenAiV1Endpoints
             .WithName("DeleteOpenAiFile");
 
         _ = v1.MapGet("/files/{id}/content", HandleContentAsync)
-            .WithName("GetOpenAiFileContent");
+            .WithName("GetOpenAiFileContent")
+            .WithMetadata(GrimoireStreamRouteMetadata.FiniteDrain);
 
     }
 
