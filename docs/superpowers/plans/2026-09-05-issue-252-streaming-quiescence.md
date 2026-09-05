@@ -89,14 +89,14 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 **Files:** new `Api/Streaming/GrimoireStreamRouteMetadata.cs`, plus tests in the new
 `GrimoireStreamingRouteInventoryTests`.
 
-- [ ] RED: tests asserting `GrimoireStreamClass` declares exactly `GrimoireQuiesceableStream`,
+- [x] RED: tests asserting `GrimoireStreamClass` declares exactly `GrimoireQuiesceableStream`,
       `FiniteDrain`, and `BillableDrain` with literal codes; that `GrimoireStreamAuthority` declares
       exactly `LiveGrimoire` and `NoGrimoireAuthority`; that neither has a zero member; and that
       `GrimoireStreamRouteMetadata` exposes its class and cannot be constructed with an undefined one.
-- [ ] GREEN: add the two enums and the marker, each with the summary/remarks the house voice
+- [x] GREEN: add the two enums and the marker, each with the summary/remarks the house voice
       requires, and the four cached singletons the routes attach.
-- [ ] Run the new filter GREEN.
-- [ ] `git commit -m "feat: name what each streaming route is, on the route itself"`.
+- [x] Run the new filter GREEN.
+- [x] `git commit -m "feat: name what each streaming route is, on the route itself"`.
 
 ---
 
@@ -104,17 +104,17 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 
 **Files:** `Api/ApiBootstrapper.cs`, `tests/.../Api/Middleware/GrimoireRequestAdmissionTests.cs`.
 
-- [ ] RED: probe-host tests asserting a route carrying the quiesceable marker takes a
+- [x] RED: probe-host tests asserting a route carrying the quiesceable marker takes a
       `QuiesceableStream` lease; that a route carrying a `FiniteDrain` or `BillableDrain` marker takes
       `Finite`; that an unmarked route takes `Finite`; and that an exempt route still takes nothing.
       The lease kind is observed through the gate rather than inferred from behaviour.
-- [ ] RED: a test asserting that beginning a transition revokes the quiesceable lease's
+- [x] RED: a test asserting that beginning a transition revokes the quiesceable lease's
       `MaintenanceRevocation` and leaves a finite lease's token unsignalled.
-- [ ] GREEN: replace the constant `GrimoireRequestKind.Finite` with the metadata-driven selection.
+- [x] GREEN: replace the constant `GrimoireRequestKind.Finite` with the metadata-driven selection.
       Keep the method synchronous — the `AsyncLocal` lifetime rule its remarks record is unchanged.
-- [ ] Run `GrimoireRequestAdmissionTests`, `GrimoireAdmissionRouteInventoryTests`,
+- [x] Run `GrimoireRequestAdmissionTests`, `GrimoireAdmissionRouteInventoryTests`,
       `GrimoireRequestAdmissionScopeTests` GREEN.
-- [ ] `git commit -m "feat: let a route say which admission kind it needs"`.
+- [x] `git commit -m "feat: let a route say which admission kind it needs"`.
 
 ---
 
@@ -122,14 +122,14 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 
 **Files:** new `Api/Streaming/GrimoireStreamQuiescence.cs`, `Api/ApiBootstrapper.cs`, plus tests.
 
-- [ ] RED: tests asserting a request with no lease reports `IsQuiescing` false and a `Revocation` that
+- [x] RED: tests asserting a request with no lease reports `IsQuiescing` false and a `Revocation` that
       is never signalled; that a request holding a quiesceable lease reports the lease's token; that a
       request holding a finite lease reports an unsignalled token even after a transition begins; that
       `LinkProducer` returns a source cancelled by either the caller's token or revocation; and that
       the type never exposes a token that combines revocation with a caller's frame token.
-- [ ] GREEN: add the type and register it scoped beside `GrimoireRequestAdmissionScope`.
-- [ ] Run the new filter GREEN.
-- [ ] `git commit -m "feat: separate the token that stops a producer from the one that writes a frame"`.
+- [x] GREEN: add the type and register it scoped beside `GrimoireRequestAdmissionScope`.
+- [x] Run the new filter GREEN.
+- [x] `git commit -m "feat: separate the token that stops a producer from the one that writes a frame"`.
 
 ---
 
@@ -138,21 +138,21 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 **Files:** `Api/Streaming/SseStreamWriter.cs`, new
 `tests/.../Api/Streaming/SseStreamWriterQuiescenceTests.cs`.
 
-- [ ] RED: a test parking one `MoveNextAsync` behind a barrier, revoking while a frame write is in
+- [x] RED: a test parking one `MoveNextAsync` behind a barrier, revoking while a frame write is in
       flight, and asserting the in-flight frame's bytes arrive whole and terminated.
-- [ ] RED: tests asserting no frame and no keep-alive is written after revocation; that the terminal
+- [x] RED: tests asserting no frame and no keep-alive is written after revocation; that the terminal
       `data: [DONE]\n\n` is the last thing written and is written exactly once; that revocation before
       the first `MoveNextAsync` writes `[DONE]` and no frame at all; that the producer's token is
       cancelled while the frame token is not; and that the enumerator is disposed only after the
       outstanding move is observed.
-- [ ] RED: a test asserting an ordinary end-of-stream (producer completes on its own) still writes no
+- [x] RED: a test asserting an ordinary end-of-stream (producer completes on its own) still writes no
       `[DONE]` from the writer, so the existing routes' cancellation arms keep their meaning.
-- [ ] GREEN: add the `GrimoireStreamQuiescence` parameter; link the producer token; test
+- [x] GREEN: add the `GrimoireStreamQuiescence` parameter; link the producer token; test
       `IsQuiescing` before each `MoveNextAsync` and after each frame write; keep `writeFrameAsync` and
       `WriteKeepAliveAsync` on the unrevoked token; write the terminal frame on the quiesced break
       only. Apply the same treatment to the heartbeat-free branch.
-- [ ] Run `SseStreamWriterQuiescenceTests` and the existing `SseStreamWriterTests` GREEN.
-- [ ] `git commit -m "fix: finish the frame in hand, then stop"`.
+- [x] Run `SseStreamWriterQuiescenceTests` and the existing `SseStreamWriterTests` GREEN.
+- [x] `git commit -m "fix: finish the frame in hand, then stop"`.
 
 ---
 
@@ -160,14 +160,14 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 
 **Files:** `Api/Streaming/EventEndpoints.cs`, plus tests.
 
-- [ ] RED: probe/integration tests asserting each of `/api/events/daemon`, `/api/events/mcp`, and
+- [x] RED: probe/integration tests asserting each of `/api/events/daemon`, `/api/events/mcp`, and
       `/api/events/logs` carries the quiesceable marker; that a revoked stream ends with `[DONE]` and
       no partial frame; and that the `: connected` comment is not written when the request is already
       quiescing at entry.
-- [ ] GREEN: attach the marker to all three; resolve `GrimoireStreamQuiescence`; pass it to
+- [x] GREEN: attach the marker to all three; resolve `GrimoireStreamQuiescence`; pass it to
       `StreamAsync`; guard the `: connected` write.
-- [ ] Run the event-route filter GREEN.
-- [ ] `git commit -m "feat: end the three event streams at a frame boundary"`.
+- [x] Run the event-route filter GREEN.
+- [x] `git commit -m "feat: end the three event streams at a frame boundary"`.
 
 ---
 
@@ -175,16 +175,16 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 
 **Files:** `Api/Tower/SessionEndpoints.cs`, plus tests.
 
-- [ ] RED: tests asserting the route carries the quiesceable marker; that replay stops between
+- [x] RED: tests asserting the route carries the quiesceable marker; that replay stops between
       Entries when revocation arrives mid-replay and writes no partial Entry frame; that the `live`
       sentinel is skipped when quiescing; that the buffered drain is skipped; that exactly one
       `[DONE]` ends the response; and that the pump task is cancelled and observed.
-- [ ] GREEN: attach the marker; link revocation into `pumpCts`; add the between-frames tests to both
+- [x] GREEN: attach the marker; link revocation into `pumpCts`; add the between-frames tests to both
       replay loops and the buffered drain; guard the sentinel; pass quiescence to `StreamAsync`.
       Fall through to `StreamAsync` rather than returning early, so the terminal frame stays in one
       place.
-- [ ] Run `SessionEndpointTests` and the new session quiescence filter GREEN.
-- [ ] `git commit -m "feat: stop a session stream between entries, not inside one"`.
+- [x] Run `SessionEndpointTests` and the new session quiescence filter GREEN.
+- [x] `git commit -m "feat: stop a session stream between entries, not inside one"`.
 
 ---
 
@@ -192,13 +192,13 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 
 **Files:** `Api/Conclave/ApprenticeEndpoints.cs`, plus tests.
 
-- [ ] RED: tests asserting the route carries the quiesceable marker; that the plan, escalation, and
+- [x] RED: tests asserting the route carries the quiesceable marker; that the plan, escalation, and
       step-start replay frames stop at a boundary; that the buffered drain is skipped; that exactly
       one `[DONE]` ends the response; and that `pumpTask` is cancelled and awaited.
-- [ ] GREEN: attach the marker; link revocation into `pumpCts`; add the between-frames tests; pass
+- [x] GREEN: attach the marker; link revocation into `pumpCts`; add the between-frames tests; pass
       quiescence to `StreamAsync`.
-- [ ] Run `ApprenticeEndpointTests` and the new chronicle filter GREEN.
-- [ ] `git commit -m "feat: stop a chronicle between frames, not inside one"`.
+- [x] Run `ApprenticeEndpointTests` and the new chronicle filter GREEN.
+- [x] `git commit -m "feat: stop a chronicle between frames, not inside one"`.
 
 ---
 
@@ -209,13 +209,13 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 `Api/OpenAiV1Endpoints.cs`, `Api/OpenAiV1FilesEndpoints.cs`, `Api/Tower/SessionEndpoints.cs`,
 `Api/A2A/A2AServerEndpoints.cs`, plus tests.
 
-- [ ] RED: tests asserting each of the eight non-quiesceable surfaces carries a marker naming its
+- [x] RED: tests asserting each of the eight non-quiesceable surfaces carries a marker naming its
       class; that each takes a `Finite` lease; that none receives revocation when a transition begins;
       and that a billable stream in flight is drained through completion rather than cut.
-- [ ] GREEN: attach `BillableDrain` to the five inference/research surfaces and the A2A mapping, and
+- [x] GREEN: attach `BillableDrain` to the five inference/research surfaces and the A2A mapping, and
       `FiniteDrain` to the two content routes. No handler behaviour changes.
-- [ ] Run the exclusion filter GREEN.
-- [ ] `git commit -m "feat: say why a stream is not quiesceable, on the stream"`.
+- [x] Run the exclusion filter GREEN.
+- [x] `git commit -m "feat: say why a stream is not quiesceable, on the stream"`.
 
 ---
 
@@ -224,19 +224,19 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 **Files:** new `tests/.../Support/GrimoireStreamingRouteInventory.cs`, new
 `tests/.../Api/GrimoireStreamingRouteInventoryTests.cs`.
 
-- [ ] RED: a test injecting a synthetic uncatalogued streaming construct and asserting it fails on its
+- [x] RED: a test injecting a synthetic uncatalogued streaming construct and asserting it fails on its
       own with `UncataloguedDiscovery`; and one asserting a catalog entry naming a construct the
       scanner no longer finds fails with `StaleCatalogEntry`.
-- [ ] RED: tests asserting duplicates on either side fail; that a wildcard identity fails; that a
+- [x] RED: tests asserting duplicates on either side fail; that a wildcard identity fails; that a
       quiesceable entry naming a route outside the five fails; and that a non-quiesceable entry with
       no proof fails.
-- [ ] RED: tests asserting the scanner discovers exactly fifteen constructs; that the catalog has
+- [x] RED: tests asserting the scanner discovers exactly fifteen constructs; that the catalog has
       exactly fifteen entries; that exactly five are `GrimoireQuiesceableStream` and they are the five
       named route patterns; and that every catalogued route pattern resolves to a real endpoint in the
       composed host's `EndpointDataSource`.
-- [ ] GREEN: add the scanner, the identity, the failure vocabulary, the catalog, and the validator.
-- [ ] Run the inventory filter GREEN.
-- [ ] `git commit -m "test: close the streaming surface against a route nobody classified"`.
+- [x] GREEN: add the scanner, the identity, the failure vocabulary, the catalog, and the validator.
+- [x] Run the inventory filter GREEN.
+- [x] `git commit -m "test: close the streaming surface against a route nobody classified"`.
 
 ---
 
@@ -244,13 +244,13 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 
 **Files:** `tests/.../Api/Middleware/GrimoireRequestAdmissionTests.cs`.
 
-- [ ] RED: a barrier-driven test asserting that a transition begun while a quiesceable stream is live
+- [x] RED: a barrier-driven test asserting that a transition begun while a quiesceable stream is live
       completes stage one, where the same scenario with a finite lease reports
       `Grimoire.WorkDrainTimeout`. This is the before-and-after #251 §3.8 predicted, and it is the
       test that proves the whole child.
-- [ ] GREEN: no production change expected; if one is needed the earlier tasks were incomplete.
-- [ ] Run the admission filter GREEN.
-- [ ] `git commit -m "test: prove an open watcher no longer refuses an erasure"`.
+- [x] GREEN: no production change expected; if one is needed the earlier tasks were incomplete.
+- [x] Run the admission filter GREEN.
+- [x] `git commit -m "test: prove an open watcher no longer refuses an erasure"`.
 
 ---
 
@@ -259,17 +259,17 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 **Files:** `docs/Arcanum.DESIGN.md`, `docs/Arcanum.API.md`, `docs/Arcanum.Engineering.md`,
 `README.md`.
 
-- [ ] DESIGN §10.7.1: the third SSE-writer invariant; correct the "two invariants" count.
-- [ ] DESIGN §10.20.3: replace the sentence naming this gap and the finite-lease paragraph.
-- [ ] DESIGN §11.9: qualify the in-flight-refusal sentence for a response that has already started.
-- [ ] DESIGN §11.16 and §5.7: what a quiesced session and chronicle stream send.
-- [ ] DESIGN §4.4: the watcher's new terminal condition.
-- [ ] DESIGN §13.7: the inventory row.
-- [ ] API §8.31: the streaming classification subsection and the frame-boundary contract; cross-refs
+- [x] DESIGN §10.7.1: the third SSE-writer invariant; correct the "two invariants" count.
+- [x] DESIGN §10.20.3: replace the sentence naming this gap and the finite-lease paragraph.
+- [x] DESIGN §11.9: qualify the in-flight-refusal sentence for a response that has already started.
+- [x] DESIGN §11.16 and §5.7: what a quiesced session and chronicle stream send.
+- [x] DESIGN §4.4: the watcher's new terminal condition.
+- [x] DESIGN §13.7: the inventory row.
+- [x] API §8.31: the streaming classification subsection and the frame-boundary contract; cross-refs
       from §8.11, §8.13, §8.16 and the §1 wire-shape table.
-- [ ] Engineering: the second bidirectional inventory beside the first.
-- [ ] README: an open watcher no longer blocks a deletion.
-- [ ] `git commit -m "docs: record what a maintenance window does to a stream"`.
+- [x] Engineering: the second bidirectional inventory beside the first.
+- [x] README: an open watcher no longer blocks a deletion.
+- [x] `git commit -m "docs: record what a maintenance window does to a stream"`.
 
 ---
 
