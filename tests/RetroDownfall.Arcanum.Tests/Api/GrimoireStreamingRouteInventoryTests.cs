@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -227,6 +228,230 @@ public sealed class GrimoireStreamingRouteInventoryTests
     /// have no stable name to assert on. That they carry the marker at all is covered by the source
     /// inventory, which keys on the <c>MapA2A</c> call site instead.
     /// </remarks>
+    /// <summary>
+    /// A streaming construct nobody classified fails on its own, without any other source present.
+    /// </summary>
+    /// <remarks>
+    /// Injected rather than observed, because the property under test is what happens to a route that
+    /// does not exist yet. A suite that could only assert over today's sources would pass for as long
+    /// as nobody added a stream, which is exactly the interval it is supposed to cover.
+    /// </remarks>
+    [Fact]
+    public void An_unclassified_streaming_construct_fails_on_its_own()
+    {
+
+        StreamingSource unlisted = new(
+            "src/Fixtures/Fixture.cs",
+            """
+            using Microsoft.AspNetCore.Http;
+            static class Fixture
+            {
+                static void Map(IEndpointRouteBuilder api)
+                {
+                    api.MapGet("/newly-added", (HttpContext ctx) =>
+                    {
+                        ctx.Response.ContentType = "text/event-stream; charset=utf-8";
+                    });
+                }
+            }
+            """);
+
+        IReadOnlyList<StreamingInventoryFailure> failures = GrimoireStreamingRouteScanner.Validate(
+            GrimoireStreamingRouteScanner.Discover([unlisted]),
+            []);
+
+        StreamingInventoryFailure failure = Assert.Single(failures);
+
+        Assert.Equal(StreamingInventoryFailureCode.UncataloguedDiscovery, failure.Code);
+
+        Assert.Equal("/newly-added", failure.Identity?.RouteLiteral);
+
+    }
+
+    /// <summary>
+    /// A catalog entry naming a construct that has moved or gone fails too.
+    /// </summary>
+    /// <remarks>
+    /// The other half of "bidirectional". A catalog that only grew would eventually describe a
+    /// codebase that no longer exists, and every classification in it would be a claim nobody checks.
+    /// </remarks>
+    [Fact]
+    public void A_catalog_entry_the_scanner_no_longer_finds_fails()
+    {
+
+        IReadOnlyList<StreamingInventoryFailure> failures = GrimoireStreamingRouteScanner.Validate(
+            [],
+            GrimoireStreamingRouteScanner.Catalog());
+
+        Assert.NotEmpty(failures);
+
+        Assert.All(
+            failures,
+            static failure =>
+                Assert.Equal(StreamingInventoryFailureCode.StaleCatalogEntry, failure.Code));
+
+    }
+
+    /// <summary>
+    /// Only the five routes the parent design declares may carry the quiesceable class.
+    /// </summary>
+    /// <remarks>
+    /// A sixth quiesceable route would be a stream a transition may cut at a frame boundary, and which
+    /// streams may be cut is a decision the parent design reserves to itself. The check is on the route
+    /// pattern rather than on a count, so adding one and removing another still fails.
+    /// </remarks>
+    [Fact]
+    public void A_quiesceable_entry_outside_the_declared_five_fails()
+    {
+
+        StreamingCatalogEntry undeclared = GrimoireStreamingRouteScanner.Catalog()
+            .First(static entry => entry.Class == GrimoireStreamClass.GrimoireQuiesceableStream)
+            with
+            { RoutePattern = "/api/events/something-new" };
+
+        IReadOnlyList<StreamingInventoryFailure> failures = GrimoireStreamingRouteScanner.Validate(
+            [undeclared.Identity],
+            [undeclared]);
+
+        Assert.Contains(
+            failures,
+            static failure =>
+                failure.Code == StreamingInventoryFailureCode.QuiesceableRouteNotDeclared);
+
+    }
+
+    /// <summary>
+    /// A stream that is drained rather than quiesced has to record why it is drained.
+    /// </summary>
+    [Fact]
+    public void A_drained_entry_with_no_proof_fails()
+    {
+
+        StreamingCatalogEntry unproved = GrimoireStreamingRouteScanner.Catalog()
+            .First(static entry => entry.Class == GrimoireStreamClass.BillableDrain)
+            with
+            { Proof = null };
+
+        IReadOnlyList<StreamingInventoryFailure> failures = GrimoireStreamingRouteScanner.Validate(
+            [unproved.Identity],
+            [unproved]);
+
+        Assert.Contains(
+            failures,
+            static failure => failure.Code == StreamingInventoryFailureCode.MissingDrainProof);
+
+    }
+
+    /// <summary>
+    /// A wildcard identity is refused, so a catalog cannot classify a family it never enumerated.
+    /// </summary>
+    [Fact]
+    public void A_wildcard_identity_fails()
+    {
+
+        StreamingCatalogEntry broad = GrimoireStreamingRouteScanner.Catalog()[0] with
+        {
+            Identity = GrimoireStreamingRouteScanner.Catalog()[0].Identity with
+            {
+                RelativePath = "src/RetroDownfall.Arcanum.Api/Streaming/*.cs",
+            },
+        };
+
+        IReadOnlyList<StreamingInventoryFailure> failures = GrimoireStreamingRouteScanner.Validate(
+            [broad.Identity],
+            [broad]);
+
+        Assert.Contains(
+            failures,
+            static failure => failure.Code == StreamingInventoryFailureCode.WildcardIdentity);
+
+    }
+
+    /// <summary>
+    /// Production and the catalog agree exactly, in both directions.
+    /// </summary>
+    /// <remarks>
+    /// This is the assertion the whole file exists for. Every other case proves the validator can
+    /// fail; this one proves the repository currently passes it.
+    /// </remarks>
+    [Fact]
+    public void Every_authored_streaming_construct_is_classified_and_nothing_else_is()
+    {
+
+        IReadOnlyList<StreamingIdentity> discovered = GrimoireStreamingRouteScanner.Discover(
+            GrimoireStreamingRouteScanner.ProductionSources());
+
+        IReadOnlyList<StreamingInventoryFailure> failures = GrimoireStreamingRouteScanner.Validate(
+            discovered,
+            GrimoireStreamingRouteScanner.Catalog());
+
+        Assert.Empty(
+            failures.Select(static failure =>
+                $"{failure.Code}: {failure.Identity?.RelativePath} {failure.Identity?.RouteLiteral} — {failure.Detail}"));
+
+        Assert.Equal(15, discovered.Count);
+
+        Assert.Equal(discovered.Count, GrimoireStreamingRouteScanner.Catalog().Count);
+
+    }
+
+    /// <summary>
+    /// The catalog's five quiesceable entries are the five declared route patterns.
+    /// </summary>
+    [Fact]
+    public void The_catalog_names_exactly_the_five_declared_quiesceable_routes()
+    {
+
+        string[] quiesceable =
+        [
+            .. GrimoireStreamingRouteScanner.Catalog()
+                .Where(static entry => entry.Class == GrimoireStreamClass.GrimoireQuiesceableStream)
+                .Select(static entry => entry.RoutePattern)
+                .OrderBy(static pattern => pattern, StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(GrimoireStreamingRouteScanner.DeclaredQuiesceableRoutes, quiesceable);
+
+    }
+
+    /// <summary>
+    /// Every catalogued route pattern is a route the composed host actually maps.
+    /// </summary>
+    /// <remarks>
+    /// The source inventory proves a construct was classified; this proves the classification names a
+    /// real route rather than a pattern that was accurate when it was written. The two shared writers
+    /// and the package-owned A2A surface are excluded because neither has a route pattern of ours —
+    /// which is what their proofs already record.
+    /// </remarks>
+    [Fact]
+    public void Every_catalogued_route_pattern_is_mapped_by_the_composed_host()
+    {
+
+        _ = _factory.CreateAuthenticatedClient();
+
+        EndpointDataSource endpoints = _factory.Services.GetRequiredService<EndpointDataSource>();
+
+        HashSet<string> mapped =
+        [
+            .. endpoints.Endpoints
+                .OfType<RouteEndpoint>()
+                .Select(static endpoint => "/" + endpoint.RoutePattern.RawText?.TrimStart('/')),
+        ];
+
+        string[] expected =
+        [
+            .. GrimoireStreamingRouteScanner.Catalog()
+                .Where(static entry => entry.Proof
+                    is not StreamingEntryProofKind.SharedWriterDeclaration
+                    and not StreamingEntryProofKind.ThirdPartyFraming)
+                .Select(static entry => entry.RoutePattern)
+                .Distinct(StringComparer.Ordinal),
+        ];
+
+        Assert.All(expected, pattern => Assert.Contains(pattern, mapped));
+
+    }
+
     private string[] NamesWithClass(GrimoireStreamClass streamClass)
     {
 
