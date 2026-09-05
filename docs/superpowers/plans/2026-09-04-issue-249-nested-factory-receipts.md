@@ -49,23 +49,31 @@ proof-gated compare-removal phases and a new terminal.
 **Files:** `InstallationResetActivePersistence.cs`, `InstallationResetActiveStore.cs`,
 `InstallationResetActiveRecordAuthenticator.cs`, plus their tests.
 
-- [ ] RED: a test asserting `InstallationResetNestedTransitionReceiptV1` round-trips through the
+- [x] RED: a test asserting `InstallationResetNestedTransitionReceiptV1` round-trips through the
       source-generated context, refuses an unmapped member, refuses `Version != 1`, refuses an empty
       nested operation id, refuses digests present at `Claimed`, and refuses digests absent at
       `Completed`.
-- [ ] GREEN: add `InstallationResetNestedTransitionPhase` and the receipt record; register both on
+- [x] GREEN: add `InstallationResetNestedTransitionPhase` and the receipt record; register both on
       `InstallationResetActiveJsonContext`.
-- [ ] RED: a test asserting an authenticated record at envelope version 3 round-trips and that a
-      version-2 envelope decodes as a strict legacy read and re-seals as 3 before its next effect.
-- [ ] GREEN: add `InstallationResetActivePayloadV3` carrying the receipt, move `EnvelopeVersion` to 3
-      with `.v3` associated-data and digest domains, and keep 2 as a decode-only legacy contract.
-- [ ] GREEN: thread the receipt through `FromRecord`, `ToRecord`, a `CopyNestedTransitionReceipt`
+- [x] RED: a test asserting an authenticated record at payload version 3 round-trips and that a
+      version-2 payload decodes as a strict legacy read and re-seals as 3 before its next effect.
+- [x] GREEN: add `InstallationResetActivePayloadV3` carrying the receipt and split `PayloadVersion` 3
+      from `LegacyPayloadVersion` 2. **Changed during implementation.** The plan said to move
+      `EnvelopeVersion` to 3 with new associated-data and digest domains. The envelope format did not
+      change — only the plaintext inside it did — so bumping it would have retired a byte-exact
+      authenticated shape that is still correct, and forced a second AAD domain to live alongside the
+      first for no fact either could carry. The payload version alone moves, and it is authenticated
+      by being inside the AEAD ciphertext.
+- [x] GREEN: every new nullable member is omitted from the wire when null, because the authenticated
+      open re-serializes the plaintext byte for byte and a member that always appeared would refuse
+      every record sealed before it existed.
+- [x] GREEN: thread the receipt through `FromRecord`, `ToRecord`, a `CopyNestedTransitionReceipt`
       helper, and `InstallationResetActiveRecord`.
-- [ ] GREEN: add the `ValidatePayload` arm for the receipt.
-- [ ] RED: a test asserting `IsMonotonicTransition` refuses removing, regressing, or substituting the
+- [x] GREEN: add the `ValidatePayload` arm for the receipt.
+- [x] RED: a test asserting `IsMonotonicTransition` refuses removing, regressing, or substituting the
       receipt, and `SamePayload` compares it.
-- [ ] GREEN: add both rules.
-- [ ] `git add` the changed source and test files; `git commit -m "feat: carry a nested transition receipt on the installation-reset record"`.
+- [x] GREEN: add both rules.
+- [x] `git add` the changed source and test files; `git commit -m "feat: carry a nested transition receipt on the installation-reset record"`.
 
 ---
 
@@ -73,14 +81,14 @@ proof-gated compare-removal phases and a new terminal.
 
 **Files:** `InstallationResetService.cs`, `InstallationResetActiveStore.cs`, plus their tests.
 
-- [ ] RED: a test asserting the offline healthy-catalog arm publishes a `Claimed` receipt with a
+- [x] RED: a test asserting the offline healthy-catalog arm publishes a `Claimed` receipt with a
       stable nested operation id before it calls the data service, and reuses the same id on a
       resumed attempt rather than minting a second one.
-- [ ] GREEN: mint the nested operation id, publish the claim, and pass it as
+- [x] GREEN: mint the nested operation id, publish the claim, and pass it as
       `DataRetentionApplyRequest.RequestedOperationId` so the offline arm stops launching anonymously.
-- [ ] RED: a test asserting a workspace-scope reset publishes no claim.
-- [ ] GREEN: gate the claim on the healthy-catalog factory arm.
-- [ ] `git add` the changed files; `git commit -m "feat: claim the nested factory erasure before it starts"`.
+- [x] RED: a test asserting a workspace-scope reset publishes no claim.
+- [x] GREEN: gate the claim on the healthy-catalog factory arm.
+- [x] `git add` the changed files; `git commit -m "feat: claim the nested factory erasure before it starts"`.
 
 ---
 
@@ -89,18 +97,18 @@ proof-gated compare-removal phases and a new terminal.
 **Files:** new `GrimoireOfflineTransitionParentReceipt.cs`, `GrimoireOfflineTransitionPhaseAuthority.cs`,
 `ServiceCollectionExtensions.cs`, plus their tests.
 
-- [ ] RED: a test asserting the binding digest is domain-separated, covers the four members in order,
+- [x] RED: a test asserting the binding digest is domain-separated, covers the four members in order,
       and changes when any one of them changes.
-- [ ] GREEN: add the digest helper.
-- [ ] RED: tests asserting the resolver answers no-parent for an absent outer record and for one with
+- [x] GREEN: add the digest helper.
+- [x] RED: tests asserting the resolver answers no-parent for an absent outer record and for one with
       no receipt, a bound sink for a matching claim, and a content-free refusal for a mismatched
       operation, a `CovenantReset` kind, a mismatched effect digest, and an unauthenticatable record.
-- [ ] GREEN: add `IGrimoireOfflineTransitionParentReceiptResolver`, its production implementation over
+- [x] GREEN: add `IGrimoireOfflineTransitionParentReceiptResolver`, its production implementation over
       the active store, and the typed sink; register both.
-- [ ] RED: a test asserting `OpeningPayload` mints a non-null `ParentReceiptBindingDigest` for a
+- [x] RED: a test asserting `OpeningPayload` mints a non-null `ParentReceiptBindingDigest` for a
       parent-bound healthy-catalog erasure and null otherwise.
-- [ ] GREEN: give the phase authority the resolver and replace the literal null.
-- [ ] `git add` the changed files; `git commit -m "feat: resolve a parent-receipt sink from the outer record"`.
+- [x] GREEN: give the phase authority the resolver and replace the literal null.
+- [x] `git add` the changed files; `git commit -m "feat: resolve a parent-receipt sink from the outer record"`.
 
 ---
 
@@ -108,18 +116,18 @@ proof-gated compare-removal phases and a new terminal.
 
 **Files:** `GrimoireOfflineTransitionPhaseSession.cs`, `CovenantErasureCoordinator.cs`, plus tests.
 
-- [ ] RED: a test asserting `RecordParentReceiptAsync` refuses a null digest when the binding is
+- [x] RED: a test asserting `RecordParentReceiptAsync` refuses a null digest when the binding is
       non-null, refuses a non-null digest when the binding is absent, and records the supplied digest
       rather than the binding.
-- [ ] GREEN: change the signature to take the recomputed digest and drop the copy-forward.
-- [ ] RED: a test asserting the suffix publishes the `Completed` receipt after the terminal winner
+- [x] GREEN: change the signature to take the recomputed digest and drop the copy-forward.
+- [x] RED: a test asserting the suffix publishes the `Completed` receipt after the terminal winner
       reread and before `ParentReceiptSatisfied`, and that a replay rereads without advancing the
       outer envelope revision a second time.
-- [ ] GREEN: add the publish-and-reread to the suffix through the sink.
-- [ ] RED: a test asserting a recomputed digest that does not equal the binding parks `KeepClosed` at
+- [x] GREEN: add the publish-and-reread to the suffix through the sink.
+- [x] RED: a test asserting a recomputed digest that does not equal the binding parks `KeepClosed` at
       the exact step and repeats no effect.
-- [ ] GREEN: add the park arm.
-- [ ] `git add` the changed files; `git commit -m "feat: publish and reread the exact outer completion receipt"`.
+- [x] GREEN: add the park arm.
+- [x] `git add` the changed files; `git commit -m "feat: publish and reread the exact outer completion receipt"`.
 
 ---
 
@@ -127,10 +135,10 @@ proof-gated compare-removal phases and a new terminal.
 
 **Files:** new `InstallationResetNestedTransitionEvidence.cs`, plus its tests.
 
-- [ ] RED: a table test over all eight arms plus the cross-record terminal-winner disagreement,
+- [x] RED: a table test over all eight arms plus the cross-record terminal-winner disagreement,
       asserting the exact outcome for each and one content-free refusal for every fail-closed arm.
-- [ ] GREEN: add the pure resolver and its outcome enum.
-- [ ] `git add` the changed files; `git commit -m "feat: resolve installation-reset and journal evidence as one pair"`.
+- [x] GREEN: add the pure resolver and its outcome enum.
+- [x] `git add` the changed files; `git commit -m "feat: resolve installation-reset and journal evidence as one pair"`.
 
 ---
 
@@ -138,13 +146,13 @@ proof-gated compare-removal phases and a new terminal.
 
 **Files:** `IInstallationResetStartupRecovery.cs`, `GrimoireDatabaseHostedService.cs`, plus tests.
 
-- [ ] RED: a test asserting `RecoverBeforeBootstrapAsync` recovers the journal under the same held
+- [x] RED: a test asserting `RecoverBeforeBootstrapAsync` recovers the journal under the same held
       lock and returns the matrix outcome.
-- [ ] GREEN: give the startup recovery the journal store and run the matrix.
-- [ ] RED: a test asserting the host refuses to bootstrap on each fail-closed arm and keeps readiness
+- [x] GREEN: give the startup recovery the journal store and run the matrix.
+- [x] RED: a test asserting the host refuses to bootstrap on each fail-closed arm and keeps readiness
       closed on each active-journal arm.
-- [ ] GREEN: act on the outcome before `GrimoireDatabaseBootstrapper.EnsureInitializedAsync`.
-- [ ] `git add` the changed files; `git commit -m "feat: resolve the record pair before database bootstrap"`.
+- [x] GREEN: act on the outcome before `GrimoireDatabaseBootstrapper.EnsureInitializedAsync`.
+- [x] `git add` the changed files; `git commit -m "feat: resolve the record pair before database bootstrap"`.
 
 ---
 
@@ -153,11 +161,11 @@ proof-gated compare-removal phases and a new terminal.
 **Files:** `GrimoireOfflineTransitionJournalAnchorStore.cs`, new
 `GrimoireOfflineTransitionJournalAnchorStore.FullResetTerminal.cs`, plus tests.
 
-- [ ] RED: tests asserting a projection is produced for `NeverTransitionedAbsence` and `ClosedAnchor`,
+- [x] RED: tests asserting a projection is produced for `NeverTransitionedAbsence` and `ClosedAnchor`,
       and refused for an `Active` anchor, a present file, a key with no anchor, and a `Claimed`
       receipt.
-- [ ] GREEN: add `GrimoireOfflineTransitionFullResetTerminalProjectionV1` and the proof.
-- [ ] `git add` the changed files; `git commit -m "feat: prove the transition slot terminal before removal"`.
+- [x] GREEN: add `GrimoireOfflineTransitionFullResetTerminalProjectionV1` and the proof.
+- [x] `git add` the changed files; `git commit -m "feat: prove the transition slot terminal before removal"`.
 
 ---
 
@@ -168,17 +176,17 @@ proof-gated compare-removal phases and a new terminal.
 `FullInstallationResetMarkerPairResetContracts.cs`, `FullInstallationResetTerminalContinuation.cs`,
 plus tests.
 
-- [ ] RED: tests asserting each removal surface compare-removes against an expected value, refuses a
+- [x] RED: tests asserting each removal surface compare-removes against an expected value, refuses a
       changed value, and reads an already-absent account as absent.
-- [ ] GREEN: add `RemoveAndVerifyAbsent` to the key provider and the anchor store.
-- [ ] RED: tests asserting the extended phase order, that codes 1–4 are unchanged, that the terminal
+- [x] GREEN: add `RemoveAndVerifyAbsent` to the key provider and the anchor store.
+- [x] RED: tests asserting the extended phase order, that codes 1–4 are unchanged, that the terminal
       is `TransitionCredentialsVerifiedAbsent`, and that a record resumed at 4 finishes the pair.
-- [ ] GREEN: extend the phase enum, `OrderedSteps`, the checkpoint tail, and the continuation's
+- [x] GREEN: extend the phase enum, `OrderedSteps`, the checkpoint tail, and the continuation's
       short-circuit.
-- [ ] RED: a test asserting the ordinary catalog filter still excludes both accounts.
-- [ ] GREEN: leave the filter untouched and amend the closed deletion inventory to name exactly the
+- [x] RED: a test asserting the ordinary catalog filter still excludes both accounts.
+- [x] GREEN: leave the filter untouched and amend the closed deletion inventory to name exactly the
       one new production source.
-- [ ] `git add` the changed files; `git commit -m "feat: remove the transition pair in final credential cleanup"`.
+- [x] `git add` the changed files; `git commit -m "feat: remove the transition pair in final credential cleanup"`.
 
 ---
 
@@ -186,10 +194,10 @@ plus tests.
 
 **Files:** the test projects only.
 
-- [ ] RED/GREEN: one case per boundary listed in spec §7, each injecting into a second coordinator or
+- [x] RED/GREEN: one case per boundary listed in spec §7, each injecting into a second coordinator or
       continuation over the same durable state and recovering with a fresh one, with the boundary name
       as the assertion message.
-- [ ] `git add` the changed test files; `git commit -m "test: cover every new receipt and cleanup crash boundary"`.
+- [x] `git add` the changed test files; `git commit -m "test: cover every new receipt and cleanup crash boundary"`.
 
 ---
 
@@ -199,18 +207,25 @@ plus tests.
 `docs/Arcanum.Command.Reference.md`, `docs/Arcanum.OATH.md`, `docs/ArcanumOATH.Human.md`,
 `docs/Arcanum.Design.Human.md`, `docs/Arcanum.DEBUGGING.Human.md`.
 
-- [ ] Update every section named in spec §9, in the owning document's own voice and without tracker
+- [x] Update every section named in spec §9, in the owning document's own voice and without tracker
       issue numbers where they are forbidden.
-- [ ] Confirm `README.md` and `docs/Compendium.README.md` need no change, and that no setting
+- [x] Confirm `README.md` and `docs/Compendium.README.md` need no change, and that no setting
       descriptor was added.
-- [ ] `git add` the changed docs; `git commit -m "docs: record the nested receipt, evidence matrix, and cleanup order"`.
+- [x] `git add` the changed docs; `git commit -m "docs: record the nested receipt, evidence matrix, and cleanup order"`.
 
 ---
 
 ### Task 11: Review, build, and merge
 
-- [ ] Bounded read-only review of the whole branch diff; fix Critical and Important findings through a
-      focused RED/GREEN loop.
-- [ ] `dotnet build RetroDownfall.Arcanum.slnx -c Release` with zero warnings.
-- [ ] `./scripts/align-csharp-blanklines.sh --check` over the changed files; `git diff --check`.
-- [ ] Merge into `grimoire-fixes`, push, delete the child branch, and mark issue #249 done.
+- [x] Bounded read-only review of the whole branch diff; fix Critical and Important findings through a
+      focused RED/GREEN loop. Five landed: the new checkpoint tail had to be omitted from the wire
+      when null or every record sealed before it would fail its authenticated open; the pair compared
+      the receipt's replay key against the journal's ledger operation id, which never match; the
+      crossing window between publishing the receipt and recording the journal step was read as a
+      disagreement; a reset that claimed nothing beside an unbound journal was refused rather than
+      read as standalone work; and the resolver could not reach the active store in the composition
+      that registers the phase authority. A sixth fix stops an apply failure retiring a record whose
+      claim has not reported, which would strand the journal bound to it.
+- [x] `dotnet build RetroDownfall.Arcanum.slnx -c Release` with zero warnings.
+- [x] `./scripts/align-csharp-blanklines.sh --check` over the changed files; `git diff --check`.
+- [x] Merge into `grimoire-fixes`, push, delete the child branch, and mark issue #249 done.

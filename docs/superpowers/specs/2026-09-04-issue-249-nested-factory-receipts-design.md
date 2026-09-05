@@ -282,19 +282,31 @@ interpreted.
   erasure is dispatched.
 - **journal only, parent binding present:** fail closed. A nested transition may not be downgraded to
   standalone work.
-- **both active:** `NestedBound`, and only when the journal's kind is `HealthyCatalogFactoryErasure`,
-  its parent binding is non-null and exactly equals the digest recomputed from the outer receipt's
-  own operation id, nested operation id and effect digest at `Completed`, and the outer receipt names
-  this journal's operation. A missing binding, a mismatched binding, standalone work, and a nested
-  `CovenantReset` each fail closed.
+- **both active, reset claimed nothing, journal names no parent:** `StandaloneTransition`. Two
+  authorities over separate work may be open at once — a broader reset in its own phases beside an
+  erasure the running host started for itself — and neither of them says otherwise. A journal that
+  does name a parent here still fails closed.
+- **both active and claimed:** `NestedBound`, and only when the journal's kind is
+  `HealthyCatalogFactoryErasure` and its parent binding is non-null and exactly equals the digest
+  recomputed from the outer record's operation id, the receipt's nested operation id, and the
+  journal's own effect digest. A missing binding, a mismatched binding, and a nested `CovenantReset`
+  each fail closed.
 - **both active, receipt already `Completed`:** `NestedReceiptStoredRetirementSuffix`, and only when
-  the journal sits in `DatabaseReconciliationPending` at or past `ParentReceiptSatisfied`, or in
-  `RetirementPending`. Only exact retirement remains, after which the broader workflow continues. An
-  earlier journal phase conflicts with the receipt and fails closed.
+  the journal names the same terminal winner the receipt reports and is in
+  `DatabaseReconciliationPending`, `RetirementPending`, or `KeepClosed`.
 
-Where both records are in hand and both carry a terminal winner digest, they must be the same value;
-a disagreement fails closed. This is the one cross-record check the matrix can make that neither
-record can make alone.
+The second of those is tested by the terminal winner rather than by the phase. The completion receipt
+is published after the terminal winner is journaled and before the journal records its own parent
+step, so the state between those two writes is one §4.4's ordering guarantees will occur; demanding
+the later phase would classify the crossing window itself as a disagreement. A parked journal is
+admitted for the same reason: parking is the resumable state and what remains of it is still only the
+suffix. A journal that recorded no terminal winner, or a different one, cannot have produced the
+receipt and fails closed.
+
+The two records are not tied together by comparing operation identities. The receipt names the
+identity the nested apply was requested under, and the operation ledger mints a separate durable
+identity for the operation it then creates, so those values never match. The binding digest is the
+tie, and both sides derive it from the same claim and different halves of the evidence.
 
 Every fail-closed arm produces the same content-free `Covenant.ManualRecoveryRequired` refusal. The
 arm is not named in the message: which of eight states an installation is in is exactly the kind of
