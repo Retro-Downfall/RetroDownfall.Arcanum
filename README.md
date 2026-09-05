@@ -125,7 +125,10 @@ key-by-key reference.
   (issue #251). A live event, log, session, or Chronicle stream is ended cleanly at a complete frame
   boundary rather than blocking the deletion or being cut mid-frame (issue #252). Background indexing
   work steps aside for the window instead of failing, retrying, or paying an embedding provider for a
-  batch it then loses, and picks up on its own once the database is back (issue #253).
+  batch it then loses, and picks up on its own once the database is back (issue #253). A file you
+  attached that was part way through being indexed keeps its exact place in the queue — same attempt,
+  nothing marked failed, and every batch already paid for still on disk — and resumes from where it
+  stopped rather than starting over (issue #254).
 - **Your API, not a bespoke one.** An OpenAI Chat Completions compatibility subset means existing
   clients and SDKs work against `arcanum serve` unchanged.
 - **Bring the providers you already pay for.** Any OpenAI-compatible HTTP endpoint, plus opt-in
