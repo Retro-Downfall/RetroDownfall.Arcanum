@@ -6,6 +6,8 @@ using System.Text;
 
 using System.Threading.Channels;
 
+using Microsoft.EntityFrameworkCore;
+
 using Microsoft.Extensions.AI;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -322,7 +324,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ProcessOneAsync_GenuineFailure_ClassifiesInsideTheSameWorkLease()
+    public async Task ProcessOneAsync_ProviderException_DisposesEffectGroupAfterDurableFailure()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -332,6 +334,15 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         SessionAttachmentRecord attachment = await PersistAsync(sessionId, "content whose indexing throws");
 
         RecordingAdmissionGate gate = new(OpenGate());
+
+        SessionAttachmentIndexState? stateAtDisposal = null;
+
+        gate.OnEffectGroupDisposing = async () =>
+        {
+
+            stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        };
 
         FakeWeaveService weave = new()
         {
@@ -346,10 +357,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         List<bool> scopeDisposalsInsideLease = [];
 
-        // A genuine failure opens a second scope to write its durable classification. Both scope
-        // boundaries must stay inside the exact lease returned for this dequeue. Record rather than
-        // assert in the callbacks: MarkFailedAsync deliberately catches scope-disposal exceptions,
-        // so an assertion thrown from its callback would otherwise disappear into that recovery.
         scopes.OnScopeCreated = () => scopeCreationsInsideLease.Add(gate.WorkLeaseIsHeld);
 
         scopes.OnScopeDisposed = () =>
@@ -361,7 +368,10 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         };
 
-        SessionAttachmentIndexingService service = CreateService(scopes, gate);
+        SessionAttachmentIndexingService service = CreateService(
+            scopes,
+            gate,
+            timeProvider: new ImmediateTimeProvider(static () => { }));
 
         SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
@@ -373,11 +383,17 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         Assert.True(outcome.ShouldRetry);
 
-        Assert.Equal(2, scopes.ScopesCreated);
+        Assert.NotNull(stateAtDisposal);
 
-        Assert.Equal([true, true], scopeCreationsInsideLease);
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, stateAtDisposal.Status);
 
-        Assert.Equal([true, true], scopeDisposalsInsideLease);
+        Assert.Equal("Attachment indexing failed unexpectedly.", stateAtDisposal.FailureReason);
+
+        Assert.Equal(1, scopes.ScopesCreated);
+
+        Assert.Equal([true], scopeCreationsInsideLease);
+
+        Assert.Equal([true], scopeDisposalsInsideLease);
 
         Assert.Equal(1, gate.WorkLeaseAttempts);
 
@@ -394,6 +410,67 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         // A genuine failure is not a deferral: the identity is released so the retry can re-enter.
         Assert.Empty(service.DeferredRequests);
+
+    }
+
+    [SkippableFact]
+    public async Task ProcessOneAsync_AppendException_DisposesEffectGroupAfterDurableFailure()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(sessionId, "content whose append throws");
+
+        _ = await _db!.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TRIGGER fail_attachment_chunk_append
+            BEFORE INSERT ON session_attachment_chunks
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated append failure');
+            END;
+            """);
+
+        RecordingAdmissionGate gate = new(OpenGate());
+
+        SessionAttachmentIndexState? stateAtDisposal = null;
+
+        gate.OnEffectGroupDisposing = async () =>
+        {
+
+            stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        };
+
+        ObservingScopeFactory scopes = BuildScopeFactory(new FakeWeaveService());
+
+        SessionAttachmentIndexingService service = CreateService(
+            scopes,
+            gate,
+            timeProvider: new ImmediateTimeProvider(static () => { }));
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 3),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexDisposition.Concluded, outcome.Disposition);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.NotNull(stateAtDisposal);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, stateAtDisposal.Status);
+
+        Assert.Equal(3, stateAtDisposal.AttemptCount);
+
+        Assert.Equal("Attachment indexing failed unexpectedly.", stateAtDisposal.FailureReason);
+
+        Assert.Null(stateAtDisposal.PendingGenerationId);
+
+        Assert.Equal(1, scopes.ScopesCreated);
 
     }
 
@@ -779,6 +856,81 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.True(service.TryEnqueue(request with { Attempt = 9 }));
 
         Assert.Equal(0, service.QueueReader.Count);
+
+        await closing!.DisposeAsync();
+
+    }
+
+    [SkippableFact]
+    public async Task ProcessOneAsync_RefusedEffectWithFailingScopeDisposal_DoesNotRetainConcludedRequest()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "content whose refused processing scope fails to dispose");
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        IGrimoireClosingOwner? closing = null;
+
+        int disposedScopes = 0;
+
+        ObservingScopeFactory scopes = BuildScopeFactory(new FakeWeaveService());
+
+        scopes.OnScopeCreated = () => closing ??= BeginClosing(gate, 76);
+
+        scopes.OnScopeDisposed = () =>
+        {
+
+            if (Interlocked.Increment(ref disposedScopes) == 1)
+            {
+
+                throw new InvalidOperationException("simulated processing-scope disposal fault");
+
+            }
+
+            return ValueTask.CompletedTask;
+
+        };
+
+        SessionAttachmentIndexingService service = CreateService(
+            scopes,
+            gate,
+            timeProvider: new ImmediateTimeProvider(static () => { }));
+
+        SessionAttachmentIndexRequest request = Dequeue(
+            service,
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 4));
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexDisposition.Concluded, outcome.Disposition);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.Empty(service.DeferredRequests);
+
+        Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? retry));
+
+        Assert.Equal(5, retry!.Attempt);
+
+        Assert.False(service.QueueReader.TryRead(out _));
+
+        SessionAttachmentIndexState state = await _index!.GetStateAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, state.Status);
+
+        Assert.Equal(4, state.AttemptCount);
 
         await closing!.DisposeAsync();
 

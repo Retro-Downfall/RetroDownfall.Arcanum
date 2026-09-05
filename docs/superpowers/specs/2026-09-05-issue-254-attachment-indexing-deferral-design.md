@@ -410,8 +410,10 @@ connection, calls no provider, writes nothing, classifies nothing, and returns
 `DeferredForMaintenance`. An admitted request takes exactly one lease of kind
 `SessionAttachmentIndexing`. The lease is still held at the moment the request's scope disposes —
 proved by a drain started from inside scope disposal not completing synchronously, the same
-deterministic probe #253 used. A genuine failure's `MarkFailedAsync` scope is created while the same
-lease is still held.
+deterministic probe #253 used. A genuine failure outside a batch effect group's durable disposition
+opens its `MarkFailedAsync` scope while the same lease is still held. A maintenance outcome is
+retained only after its processing scope disposes successfully; a disposal failure concludes
+normally, releases the identity, and admits the incremented retry.
 
 **Effect frontier.** Revocation winning means zero provider calls and zero writes past the pending
 mark. Effect start winning means the closure waits through the provider call and the append it
@@ -429,9 +431,10 @@ including when the first re-signal pass fills the channel and retains an unwritt
 
 **Loop behaviour.** A repeatedly deferred worker logs nothing at `Error` or `Warning`, creates no
 scopes, calls no provider and increments nothing. A deferred reconciliation opens no scope. A
-provider-originated cancellation is durably classified inside its effect group, a request-level
-failure is handled inside `ProcessOneAsync`, and host cancellation propagates without either
-classification or retry, pinning all three apart.
+provider exceptions, append exceptions, and provider-originated cancellation are durably classified
+before their effect group disposes; other request-level failures are handled inside
+`ProcessOneAsync`; and host cancellation propagates without either classification or retry, pinning
+all three apart.
 
 **Gate.** One work lease begins a second effect group after disposing its first, while ordinary — the
 sequential case §3.4 depends on and the gate suite does not currently cover.

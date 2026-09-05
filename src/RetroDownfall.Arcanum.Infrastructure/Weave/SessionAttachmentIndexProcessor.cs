@@ -198,6 +198,48 @@ internal sealed class SessionAttachmentIndexProcessor(
         // its classification; refused, nothing is billed and every earlier batch stands. Groups are
         // taken one after another from the same lease, which the gate permits because its per-lease
         // guard is a slot the previous group's disposal empties, not a once-per-lease latch.
+        async Task<SessionAttachmentIndexOutcome> ConcludeInterruptedBatchAsync(
+            OperationCanceledException exception)
+        {
+
+            logger.LogWarning(
+                exception,
+                "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
+                attachment.Id);
+
+            await MarkWithoutIndexAsync(
+                attachment,
+                SessionAttachmentIndexStatus.Failed,
+                request.Attempt,
+                "Attachment indexing was interrupted and will be retried.",
+                extractedAt,
+                cancellationToken).ConfigureAwait(false);
+
+            return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+
+        }
+
+        async Task<SessionAttachmentIndexOutcome> ConcludeUnexpectedBatchFailureAsync(
+            Exception exception)
+        {
+
+            logger.LogWarning(
+                exception,
+                "Session attachment {AttachmentId} indexing batch failed unexpectedly.",
+                attachment.Id);
+
+            await MarkWithoutIndexAsync(
+                attachment,
+                SessionAttachmentIndexStatus.Failed,
+                request.Attempt,
+                "Attachment indexing failed unexpectedly.",
+                extractedAt,
+                cancellationToken).ConfigureAwait(false);
+
+            return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+
+        }
+
         async Task<SessionAttachmentIndexOutcome?> FlushBatchAsync()
         {
 
@@ -229,6 +271,12 @@ internal sealed class SessionAttachmentIndexProcessor(
                     .ConfigureAwait(false);
 
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+
+                throw;
+
+            }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
 
@@ -236,20 +284,14 @@ internal sealed class SessionAttachmentIndexProcessor(
                 // retryable interruption when the host token is still live, so classify it before
                 // giving back the effect group that admitted the provider call. Let a signalled host
                 // token escape instead: shutdown is neither a product failure nor another attempt.
-                logger.LogWarning(
-                    ex,
-                    "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
-                    attachment.Id);
+                return await ConcludeInterruptedBatchAsync(ex).ConfigureAwait(false);
 
-                await MarkWithoutIndexAsync(
-                    attachment,
-                    SessionAttachmentIndexStatus.Failed,
-                    request.Attempt,
-                    "Attachment indexing was interrupted and will be retried.",
-                    extractedAt,
-                    cancellationToken).ConfigureAwait(false);
+            }
 
-                return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+            catch (Exception ex)
+            {
+
+                return await ConcludeUnexpectedBatchFailureAsync(ex).ConfigureAwait(false);
 
             }
 
@@ -284,15 +326,38 @@ internal sealed class SessionAttachmentIndexProcessor(
 
             }
 
-            await index.AppendReplaceBatchAsync(
-                attachment,
-                checkpoint.GenerationId,
-                chunkBatch,
-                batch.Value,
-                expectedDimensions,
-                extractedAt,
-                indexedAt,
-                cancellationToken).ConfigureAwait(false);
+            try
+            {
+
+                await index.AppendReplaceBatchAsync(
+                    attachment,
+                    checkpoint.GenerationId,
+                    chunkBatch,
+                    batch.Value,
+                    expectedDimensions,
+                    extractedAt,
+                    indexedAt,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+
+                throw;
+
+            }
+            catch (OperationCanceledException ex)
+            {
+
+                return await ConcludeInterruptedBatchAsync(ex).ConfigureAwait(false);
+
+            }
+            catch (Exception ex)
+            {
+
+                return await ConcludeUnexpectedBatchFailureAsync(ex).ConfigureAwait(false);
+
+            }
 
             wroteAnyBatch = true;
 

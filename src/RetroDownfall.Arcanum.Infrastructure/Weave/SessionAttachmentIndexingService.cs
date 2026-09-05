@@ -404,12 +404,19 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
             try
             {
 
-                await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+                // A maintenance outcome becomes retained queue state only after this scope returns
+                // cleanly. If disposal itself fails, this request concluded as a genuine failure and
+                // must release its identity so the incremented retry can enter the channel.
+                {
 
-                SessionAttachmentIndexProcessor processor = scope.ServiceProvider
-                    .GetRequiredService<SessionAttachmentIndexProcessor>();
+                    await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
-                outcome = await processor.ProcessAsync(request, lease, stoppingToken).ConfigureAwait(false);
+                    SessionAttachmentIndexProcessor processor = scope.ServiceProvider
+                        .GetRequiredService<SessionAttachmentIndexProcessor>();
+
+                    outcome = await processor.ProcessAsync(request, lease, stoppingToken).ConfigureAwait(false);
+
+                }
 
                 if (outcome.Disposition == SessionAttachmentIndexDisposition.DeferredForMaintenance)
                 {

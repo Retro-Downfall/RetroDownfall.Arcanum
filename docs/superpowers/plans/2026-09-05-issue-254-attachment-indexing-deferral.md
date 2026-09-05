@@ -89,8 +89,11 @@ xUnit, `TaskCompletionSource` barriers, Git, GitHub CLI.
 - [x] RED: a closure begun from inside the request's scope disposal does not conclude its drain
       synchronously.
 - [x] RED: a genuine failure's `MarkFailedAsync` scope is created while the lease is still held.
+- [x] RED: a refused batch whose processing scope fails to dispose is not retained as a maintenance
+      deferral; its identity is released and its incremented retry enters the channel.
 - [x] GREEN: inject `IGrimoireConnectionAdmissionGate`; take the lease before the `try`; declare it
-      so reverse-order disposal releases every scope first.
+      so reverse-order disposal releases every scope first; retain a deferral only after its
+      processing scope disposes successfully.
 
 ### Task 4 — One sequential effect group per batch
 
@@ -99,8 +102,11 @@ xUnit, `TaskCompletionSource` barriers, Git, GitHub CLI.
 - [x] RED: effect start winning makes the closure wait through the provider call and its append.
 - [x] RED: a close landing between batch N and batch N+1 keeps batch N's chunks durable, makes no
       further provider call, and defers.
+- [x] RED: ordinary provider and durable append exceptions leave `Failed` state before the effect
+      group disposes and return the existing concluded retryable outcome without a second scope.
 - [x] GREEN: pass the lease into `ProcessAsync`; open the group at the top of `FlushBatchAsync` and
-      close it after whichever durable exit that batch takes.
+      close it after whichever durable exit that batch takes; classify provider and append exceptions
+      before returning that group.
 
 ### Task 5 — The identity, the attempt, and the re-signal
 
@@ -146,13 +152,18 @@ xUnit, `TaskCompletionSource` barriers, Git, GitHub CLI.
 
 ## Delivery evidence
 
-- Reviewed feature implementation: `0123c1df..37819d3c`. Task-scoped reviews for Tasks 3–6 and 8
-  approved their final fixes; the final whole-branch review and integration remain pending after
-  this evidence-only plan update.
+- Reviewed feature implementation: `0123c1df..f5893a8c`. Task-scoped reviews for Tasks 3–6 and 8
+  approved their final fixes. The final whole-branch review then found two exceptional-boundary gaps:
+  a refused batch was retained before processing-scope disposal succeeded, and provider/append
+  exceptions were classified only after their effect group disposed. Their fixes and focused evidence
+  are present after `f5893a8c`; scoped re-review and integration remain pending.
 - Focused cluster, before mutations and again after exact restoration:
   `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --filter
   "FullyQualifiedName~SessionAttachmentIndexingAdmissionTests|FullyQualifiedName~SessionAttachmentIndexingTests|FullyQualifiedName~SessionAttachmentIndexingQueueTests|FullyQualifiedName~GrimoireConnectionAdmissionGateTests|FullyQualifiedName~EntryWeavingServiceTests"
   --no-restore` — 120 passed, 0 failed, 0 skipped on both runs.
+- The same focused cluster after the final-review fixes — 122 passed, 0 failed, 0 skipped. Its three
+  direct boundary regressions passed 3/3: failed processing-scope disposal does not retain a concluded
+  request, and ordinary provider/append exceptions persist `Failed` before effect-group disposal.
 - Complete Arcanum suite:
   `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --no-restore` —
   13,704 passed, 0 failed, 59 skipped, 13,763 total.
