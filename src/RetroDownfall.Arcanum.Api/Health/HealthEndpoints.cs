@@ -46,7 +46,8 @@ internal static class HealthEndpoints
 
         })
         .WithName("GetHealth")
-        .WithMetadata(InstallationResetRecoveryApiRouteMetadata.GetHealth);
+        .WithMetadata(InstallationResetRecoveryApiRouteMetadata.GetHealth)
+        .WithMetadata(GrimoireAdmissionExemptRouteMetadata.Instance);
 
         apiGroup.MapGet("/grimoire/stats", async (GrimoireStatsService statsService, HttpContext httpContext, CancellationToken cancellationToken) =>
         {

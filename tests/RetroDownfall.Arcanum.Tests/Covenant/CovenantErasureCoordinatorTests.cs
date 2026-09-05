@@ -1375,6 +1375,16 @@ public sealed class CovenantErasureCoordinatorTests
         /// </remarks>
         internal GrimoireConnectionAdmissionGate Admission { get; }
 
+        /// <summary>
+        /// A holder no request populated, which is what every case in this file is.
+        /// </summary>
+        /// <remarks>
+        /// Promotion is exercised where it can be observed end to end, over a real catalog. Here the
+        /// holder is empty on purpose, so these cases keep asserting the unpromoted path — the one a
+        /// startup, recovery or reconciler caller takes.
+        /// </remarks>
+        internal GrimoireRequestAdmissionScope RequestAdmission { get; }
+
         internal CovenantConnectionDrain Drain { get; } = new();
 
         /// <summary>
@@ -1446,6 +1456,8 @@ public sealed class CovenantErasureCoordinatorTests
                 TimeProvider.System,
                 Drain,
                 MaintenancePaths);
+
+            RequestAdmission = new GrimoireRequestAdmissionScope(Admission);
 
             Operations = new RecordingOperationCoordinator(Store);
 
@@ -1601,6 +1613,7 @@ public sealed class CovenantErasureCoordinatorTests
                 MaintenancePaths,
                 MaintenancePassphrase,
                 Ledger,
+                RequestAdmission,
                 Drain,
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 Ownership,
@@ -1658,6 +1671,7 @@ public sealed class CovenantErasureCoordinatorTests
                 MaintenancePaths,
                 MaintenancePassphrase,
                 Ledger,
+                RequestAdmission,
                 Drain,
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 Ownership,

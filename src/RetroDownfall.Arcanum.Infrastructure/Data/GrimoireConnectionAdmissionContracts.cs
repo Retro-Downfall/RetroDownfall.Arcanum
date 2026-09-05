@@ -580,8 +580,13 @@ internal sealed class GrimoireMaintenanceUnavailableException : InvalidOperation
     /// Distinct from the generic unavailable code, because a closed admission gate is a deliberate,
     /// temporary refusal rather than a product failure. Without a code of its own, the one thing a
     /// caller can say about it is the same thing it says about an invalid connection string.
+    ///
+    /// <para>It reads the Core constant rather than repeating its text. The same code now reaches a
+    /// caller three ways — this exception, a <c>Result</c> the connection factory returns, and the
+    /// HTTP refusal admission writes — and a wire-stable code spelled in more than one place is one
+    /// that can be corrected in one place and left wrong in the others.</para>
     /// </remarks>
-    internal const string Code = "Grimoire.MaintenanceUnavailable";
+    internal const string Code = ErrorCodes.Grimoire.MaintenanceUnavailable;
 
     internal GrimoireMaintenanceUnavailableException()
         : base("The Grimoire is temporarily unavailable while maintenance owns connection admission.")

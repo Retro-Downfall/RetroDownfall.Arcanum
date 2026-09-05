@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.Middleware;
 
@@ -62,6 +63,31 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
                 .WriteAsJsonAsync(invalidBody, ArcanumJsonContext.Default.ApiResponseBoolean, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
+            return true;
+
+        }
+
+        if (exception is GrimoireMaintenanceUnavailableException)
+        {
+
+            // Expected control flow, not a fault. Admission refuses what arrives after a transition
+            // begins; this is the request that was already in flight when admission closed under it,
+            // and it deserves the same answer rather than "Arcanum broke".
+            //
+            // The line is Debug, carries no path and no exception object, and is written before the
+            // response-started check so a refusal that cannot be written is still observable. Logging
+            // it at Error would put the request path into a sink on every scrape of an endpoint that
+            // reads the database, for the whole of a planned window.
+            logger.LogDebug("A request was refused because Grimoire maintenance owns connection admission.");
+
+            _ = await GrimoireMaintenanceRefusal.TryWriteAsync(httpContext).ConfigureAwait(false);
+
+            // Handled either way, and the return value says so even when nothing could be written.
+            // Reporting false hands the exception back to the framework's own exception middleware,
+            // which logs it at Error with the request path before rethrowing - which is precisely the
+            // pair this arm exists to avoid, and it would happen on exactly the requests that had
+            // already begun a response when admission closed under them. A response whose first byte
+            // has left is finished by its own writer; there is nothing further to say about it.
             return true;
 
         }

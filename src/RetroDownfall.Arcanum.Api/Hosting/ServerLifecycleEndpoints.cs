@@ -40,7 +40,8 @@ internal static class ServerLifecycleEndpoints
 
         })
         .WithName("QuitServer")
-        .WithMetadata(InstallationResetRecoveryApiRouteMetadata.QuitServer);
+        .WithMetadata(InstallationResetRecoveryApiRouteMetadata.QuitServer)
+        .WithMetadata(GrimoireAdmissionExemptRouteMetadata.Instance);
 
         return apiGroup;
 

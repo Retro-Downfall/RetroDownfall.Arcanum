@@ -126,7 +126,14 @@ internal static class ArcanumErrorMapper
                 // on purpose and will give it back, so the caller is being asked to retry. The
                 // refusal used to travel as Covenant.Unavailable and was already answered here;
                 // giving it a code of its own must not turn a planned window into "Arcanum broke".
-                or GrimoireMaintenanceUnavailableException.Code =>
+                or GrimoireMaintenanceUnavailableException.Code
+
+                // A transformation that could not take the database offline because ordinary work
+                // would not drain in time. It belongs with them for the same reason: nothing was
+                // erased, ordinary admission is open again, and asking once the database is quieter
+                // is the action. Answering 500 would tell an operator their installation broke when
+                // what actually happened is that something else was still using it.
+                or ErrorCodes.Grimoire.WorkDrainTimeout =>
                 StatusCodes.Status503ServiceUnavailable,
 
             ErrorCodes.Hub.Model =>

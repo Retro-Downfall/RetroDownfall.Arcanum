@@ -806,6 +806,8 @@ public sealed partial class DataRetentionServiceTests
 
         ScratchLedgerConnection ledger = new();
 
+        GrimoireConnectionAdmissionGate admission = new(clock, drain, new ScratchMaintenancePaths());
+
         return new CovenantErasureCoordinator(
             new LongRunningOperationCoordinator(operations, clock),
             operations,
@@ -823,11 +825,14 @@ public sealed partial class DataRetentionServiceTests
             // work now and a recovery run has to be able to re-enter a closed period. Nothing in this
             // file ever opens a maintenance connection — the transition and the inventory are doubles
             // — so the factory is the unreachable one and the paths are never touched.
-            new GrimoireConnectionAdmissionGate(clock, drain, new ScratchMaintenancePaths()),
+            admission,
             new UnreachableMaintenanceFactory(),
             new ScratchMaintenancePaths(),
             new ScratchPassphraseSource(),
             ledger,
+            // A recovery run is requestless by construction: nothing populated this holder, so the
+            // coordinator takes the unpromoted path exactly as it did before promotion existed.
+            new GrimoireRequestAdmissionScope(admission),
             drain,
             new GrimoireOfflineTransitionDatabaseReconciler(operations, clock),
             ownership ?? new LongRunningOperationOwnership(),

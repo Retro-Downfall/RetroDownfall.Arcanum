@@ -390,6 +390,106 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    /// <summary>
+    /// The request that asked for the erasure does not have to wait for itself.
+    /// </summary>
+    /// <remarks>
+    /// Both destructive routes run the whole erasure inside the request, so once a request holds an
+    /// admission lease the initiator's own lease is in the set stage one waits on. Promotion is what
+    /// takes it out, and this is the case that fails without it: the drain waits out its whole
+    /// checkpoint on the very request performing it and answers <c>Grimoire.WorkDrainTimeout</c>.
+    ///
+    /// <para>It proves the drain and nothing about which connection was promoted. The gate binds the
+    /// promoted connection only to <i>ordinary</i> opens attempted while it is closing, and this path
+    /// makes none — its closed-period work goes through the maintenance and scoped-permit routes — so
+    /// the same success is reached with any connection object. That the scope's own ledger connection
+    /// is the one handed over is a property of the coordinator's single call site, not something this
+    /// erasure can be made to demonstrate; claiming otherwise here would be a comment the test does
+    /// not support.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_erasure_completes_while_its_own_request_holds_the_admission_lease()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(
+            confirmed.PlanId,
+            asAdmittedRequest: true);
+
+        Assert.True(
+            result.IsSuccess,
+            result.IsFailure
+                ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
+
+    }
+
+    /// <summary>
+    /// A stage one that could not drain leaves ordinary admission open, not shut for the process's life.
+    /// </summary>
+    /// <remarks>
+    /// The gate's only edge out of a timed-out <c>Closing</c> is its proven abort, and until this
+    /// change nothing in production spent it: the coordinator disposed the closing owner, which clears
+    /// the active owner and leaves the state exactly where it was. That was invisible while no request
+    /// ever took a lease. It stops being invisible the moment one does — a single request that outlives
+    /// the checkpoint would otherwise refuse every later request on this installation until somebody
+    /// restarted the host, which is a worse answer than the refusal it replaced.
+    ///
+    /// <para>The lease held here is an ordinary one, not the initiator's. Promotion removes the
+    /// initiator; this is the watcher, the slow call, the client that stopped reading — the caller a
+    /// drain genuinely cannot wait out.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_erasure_that_cannot_drain_reopens_ordinary_admission()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        IGrimoireConnectionAdmissionGate admission = harness.Services
+            .GetRequiredService<IGrimoireConnectionAdmissionGate>();
+
+        Assert.True(
+            admission.TryAcquireRequestLease(
+                GrimoireRequestKind.Finite,
+                out IGrimoireRequestLease? blocking));
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(confirmed.PlanId);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(GrimoireConnectionAdmissionGate.WorkDrainTimeoutCode, result.Error.Code);
+
+        // Still held, and admission is open anyway. The abort cannot depend on whatever blocked the
+        // drain going away, because a caller that could not be drained is the caller that will not
+        // oblige.
+        Assert.True(
+            admission.TryAcquireRequestLease(
+                GrimoireRequestKind.Finite,
+                out IGrimoireRequestLease? afterwards));
+
+        await afterwards!.DisposeAsync();
+
+        await blocking!.DisposeAsync();
+
+    }
+
     [SkippableFact]
     public async Task Factory_catalog_change_after_planning_refuses_before_exclusive_or_any_effect()
     {
@@ -1863,6 +1963,7 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
                             provider.GetRequiredService<IGrimoireDbPassphraseSource>(),
                             provider.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                            provider.GetRequiredService<GrimoireRequestAdmissionScope>(),
                             provider.GetRequiredService<ICovenantConnectionDrain>(),
                             provider.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
                             provider.GetRequiredService<LongRunningOperationOwnership>(),
@@ -2075,12 +2176,33 @@ public sealed class CovenantErasureSameProcessTests
 
         }
 
+        /// <summary>
+        /// Applies the factory erasure, optionally as the HTTP request that asked for it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="asAdmittedRequest"/> reproduces exactly what the admission middleware does
+        /// before an endpoint runs: it takes this scope's request lease from the same gate the
+        /// erasure is about to close. Without it every test here is a requestless caller, which is
+        /// the one caller shape the deadlock cannot reach.
+        /// </remarks>
         internal async Task<Result<DataRetentionApplyResult>> ApplyFactoryAsync(
             string expectedPlanId,
-            Guid? requestedOperationId = null)
+            Guid? requestedOperationId = null,
+            bool asAdmittedRequest = false)
         {
 
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
+
+            if (asAdmittedRequest)
+            {
+
+                Assert.True(
+                    scope.ServiceProvider
+                        .GetRequiredService<GrimoireRequestAdmissionScope>()
+                        .TryAdmit(GrimoireRequestKind.Finite),
+                    "the harness could not take the request lease the middleware would have taken");
+
+            }
 
             return await scope.ServiceProvider
                 .GetRequiredService<IDataRetentionService>()

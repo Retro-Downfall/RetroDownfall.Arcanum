@@ -83,23 +83,9 @@
 
   </PropertyGroup>
 
-  <!-- Homebrew dotnet ships nonportable.txt, so Native AOT links keg-only openssl/brotli on macOS. Add search paths when present. -->
-
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/openssl@3/lib')" Include="-L/opt/homebrew/opt/openssl@3/lib" />
-
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/brotli/lib')" Include="-L/opt/homebrew/opt/brotli/lib" />
-
-    <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
-
-    <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
-
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/lld/bin/ld64.lld')" Include="--ld-path=/opt/homebrew/opt/lld/bin/ld64.lld" />
-
-    <LinkerArg Condition="!Exists('/opt/homebrew/opt/lld/bin/ld64.lld') and Exists('/usr/local/opt/lld/bin/ld64.lld')" Include="--ld-path=/usr/local/opt/lld/bin/ld64.lld" />
-
-  </ItemGroup>
+  <!-- The macOS keg-only openssl/brotli search paths and the lld ld-path these links need now live in
+       Directory.Build.props, so every Native AOT publish in the repository gets them rather than only
+       this one. -->
 
   <ItemGroup>
 
