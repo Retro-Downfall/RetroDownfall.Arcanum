@@ -452,6 +452,100 @@ public sealed class GrimoireStreamingRouteInventoryTests
 
     }
 
+    /// <summary>
+    /// Every catalogued route's class is the class its endpoint actually carries.
+    /// </summary>
+    /// <remarks>
+    /// This is the join, and without it the two halves of the inventory prove less together than they
+    /// appear to. The source scanner proves a construct was classified <i>somewhere</i>; the marker
+    /// proves an endpoint takes a particular lease. Nothing connected them, so a new SSE route that
+    /// nobody marked could be catalogued as <c>FiniteDrain</c> and every assertion would stay green
+    /// while the route silently took a finite lease and held a transition open until it timed out.
+    ///
+    /// <para>Asserted per route pattern rather than in aggregate so a failure names the route whose
+    /// classification and marker disagree, instead of reporting that two sets differ.</para>
+    /// </remarks>
+    [Fact]
+    public void Every_catalogued_routes_class_matches_the_marker_its_endpoint_carries()
+    {
+
+        _ = _factory.CreateAuthenticatedClient();
+
+        EndpointDataSource endpoints = _factory.Services.GetRequiredService<EndpointDataSource>();
+
+        Dictionary<string, GrimoireStreamClass?> markedByPattern = [];
+
+        foreach (RouteEndpoint endpoint in endpoints.Endpoints.OfType<RouteEndpoint>())
+        {
+
+            markedByPattern["/" + (endpoint.RoutePattern.RawText?.TrimStart('/') ?? string.Empty)] =
+                endpoint.Metadata.GetMetadata<GrimoireStreamRouteMetadata>()?.Class;
+
+        }
+
+        foreach (StreamingCatalogEntry entry in GrimoireStreamingRouteScanner.Catalog())
+        {
+
+            // A shared writer has no route of its own, and the A2A surface is mapped by its package
+            // under an operator-configurable path this host leaves disabled. Both say so in their
+            // proof, which is what makes the exclusion a recorded decision rather than a gap.
+            if (entry.Proof is StreamingEntryProofKind.SharedWriterDeclaration
+                or StreamingEntryProofKind.ThirdPartyFraming)
+            {
+
+                continue;
+
+            }
+
+            Assert.True(
+                markedByPattern.TryGetValue(entry.RoutePattern, out GrimoireStreamClass? marked),
+                $"the catalog names {entry.RoutePattern}, which this host maps no endpoint for");
+
+            Assert.Equal(entry.Class, marked);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Every endpoint carrying a streaming marker is a route the catalog classifies.
+    /// </summary>
+    /// <remarks>
+    /// The other direction of the same join. A route marked in composition but absent from the
+    /// catalog is one whose classification nobody reviewed, and it would be invisible to the
+    /// source scanner whenever its framing lives in a shared writer or a handler bound by method
+    /// group. Names are deliberately not used here: nothing obliges a streaming route to call
+    /// <c>WithName</c>, and an assertion keyed on names would simply not see one that skipped it.
+    /// </remarks>
+    [Fact]
+    public void Every_marked_endpoint_is_a_route_the_catalog_classifies()
+    {
+
+        _ = _factory.CreateAuthenticatedClient();
+
+        EndpointDataSource endpoints = _factory.Services.GetRequiredService<EndpointDataSource>();
+
+        HashSet<string> catalogued =
+        [
+            .. GrimoireStreamingRouteScanner.Catalog().Select(static entry => entry.RoutePattern),
+        ];
+
+        string[] markedButUncatalogued =
+        [
+            .. endpoints.Endpoints
+                .OfType<RouteEndpoint>()
+                .Where(static endpoint =>
+                    endpoint.Metadata.GetMetadata<GrimoireStreamRouteMetadata>() is not null)
+                .Select(static endpoint => "/" + (endpoint.RoutePattern.RawText?.TrimStart('/') ?? string.Empty))
+                .Where(pattern => !catalogued.Contains(pattern))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(static pattern => pattern, StringComparer.Ordinal),
+        ];
+
+        Assert.Empty(markedButUncatalogued);
+
+    }
+
     private string[] NamesWithClass(GrimoireStreamClass streamClass)
     {
 

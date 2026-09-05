@@ -61,9 +61,23 @@ internal static class SseStreamWriter
         // Owned by this writer so a disconnect or a revocation can unwind the producer and let the
         // outstanding MoveNextAsync complete before the enumerator is disposed (see
         // QuiesceAndDisposeAsync). Revocation belongs here and nowhere else.
-        using CancellationTokenSource producerCts = quiescence.LinkProducer(cancellationToken);
+        //
+        // The link is skipped when there is nothing to add to the caller's own token — no revocation
+        // to carry and no heartbeat needing a source of its own — because the *identity* of the
+        // enumeration token is load-bearing on that path. A compiler-generated iterator combines the
+        // token it captured with the one it is enumerated on only when the two differ, so enumerating
+        // a source built over `RequestAborted` on a linked token makes a client disconnect's
+        // OperationCanceledException carry a combined token instead of `RequestAborted` itself — and
+        // ClientDisconnect compares by reference, so the route would stop classifying that disconnect
+        // and would write a terminal frame at a socket it has already been told is gone.
+        using CancellationTokenSource? producerCts =
+            quiescence.Revocation.CanBeCanceled || heartbeatInterval > TimeSpan.Zero
+                ? quiescence.LinkProducer(cancellationToken)
+                : null;
 
-        IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(producerCts.Token);
+        CancellationToken producerToken = producerCts?.Token ?? cancellationToken;
+
+        IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(producerToken);
 
         // Keep a single pending MoveNextAsync for the lifetime of each item wait.
         // Heartbeats must WhenAny against the same move task — never start a second
@@ -97,7 +111,7 @@ internal static class SseStreamWriter
                     // timer and its registration immediately instead of leaving one TimerQueueTimer per
                     // delivered frame alive for the whole interval (matches the OpenAI /v1 writer).
                     using CancellationTokenSource delayCts =
-                        CancellationTokenSource.CreateLinkedTokenSource(producerCts.Token);
+                        CancellationTokenSource.CreateLinkedTokenSource(producerToken);
 
                     Task delay = Task.Delay(heartbeatInterval, delayCts.Token);
 

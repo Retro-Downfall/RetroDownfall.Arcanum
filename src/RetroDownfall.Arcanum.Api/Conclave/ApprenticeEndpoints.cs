@@ -412,18 +412,25 @@ internal static class ApprenticeEndpoints
 
                 GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
 
+                // Everything that can throw is computed before the pump starts, so that nothing sits
+                // between starting it and entering the try whose finally cancels it. `DeserializePlan`
+                // is the one that matters: it parses operator-influenced JSON off the Apprentice row,
+                // and a fault there used to unwind through `using pumpCts` — disposing the linked
+                // source without cancelling it, which unlinks it from RequestAborted for good and
+                // strands the pump and its chronicle subscription for the life of the host. The
+                // session stream already keeps this ordering and records the same reason.
+                List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+                TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.EventBusHeartbeatSeconds(
+                        settings.CurrentValue.ResolveEventBus().HeartbeatSeconds));
+
                 // Revocation reaches the pump and never the frame writes below. Cancelling the pump
                 // completes the channel, so the live loop observes an ordinary end of stream after
                 // whichever frame it was writing, rather than a cancellation inside one.
                 using CancellationTokenSource pumpCts = quiescence.LinkProducer(httpContext.RequestAborted);
 
                 Task pumpTask = PumpChronicleLiveAsync(id, runtime, liveBuffer.Writer, pumpCts.Token);
-
-                List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
-
-                TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
-                    ArcanumSettingClamps.EventBusHeartbeatSeconds(
-                        settings.CurrentValue.ResolveEventBus().HeartbeatSeconds));
 
                 try
                 {

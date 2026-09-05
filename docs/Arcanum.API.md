@@ -860,7 +860,10 @@ frame. HTTP status stays **200**, because it left with the first byte. The two r
 before going live stop between replayed frames as well: the session stream stops between Entries and
 skips its `data: {"type":"live"}` sentinel, and the Chronicle stops between its plan, escalation, and
 step-start frames. Both then skip their buffered drain. `/api/events/logs` writes no `: connected`
-comment if the window began before it got there.
+comment if the window began before it got there. Those per-route guards fall through to the shared
+writer, so a stream that stopped early still ends on the one terminal frame the writer owns; the
+frame-boundary behaviour itself is pinned at that writer, and driving each route's replay phase
+against a live transition belongs to the full-host races of issue #257.
 
 A client cannot distinguish this ending from any other deliberate one, and that is intentional:
 `[DONE]` already means "the server ended this stream" on all five, so `arcanum watch` exits cleanly

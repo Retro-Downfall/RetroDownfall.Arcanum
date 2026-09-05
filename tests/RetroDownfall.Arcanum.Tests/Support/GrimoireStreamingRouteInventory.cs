@@ -379,14 +379,6 @@ internal static class GrimoireStreamingRouteScanner
     /// </summary>
     /// <remarks>
     /// Fifteen entries — thirteen surfaces and the two shared writers' own declarations. A writer
-    /// serves whichever routes call it and carries no route pattern of its own, which is why its
-    /// entry names one rather than inventing a fictional route for it.
-    /// </remarks>
-    /// <summary>
-    /// The catalog: every streaming construct this repository authors, and what it is.
-    /// </summary>
-    /// <remarks>
-    /// Fifteen entries — thirteen surfaces and the two shared writers' own declarations. A writer
     /// serves whichever routes call it and carries no route pattern of its own, which is why its entry
     /// names one rather than inventing a fictional route for it; it is classified <c>FiniteDrain</c>
     /// because a declaration frames nothing on its own, and its proof records that it is a writer

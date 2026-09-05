@@ -317,10 +317,23 @@ public sealed class SseStreamWriterQuiescenceTests
     }
 
     /// <summary>
-    /// The same boundary holds on the heartbeat branch, where a delay races the pending move.
+    /// The heartbeat branch writes no keep-alive once revocation has been observed.
     /// </summary>
+    /// <remarks>
+    /// This is the one case that reaches the guard inside the delay arm, and reaching it needs a
+    /// producer that ignores its cancellation token. A producer that honours it throws
+    /// <see cref="OperationCanceledException"/> out of the pending move the moment revocation fires,
+    /// so the loop leaves through the move's own arm and the delay arm is never consulted — which is
+    /// how an earlier version of this test passed with the guard deleted.
+    ///
+    /// <para>An unresponsive producer is not a contrivance: the token reaches a producer only if it
+    /// was threaded through, and the writer cannot assume every source honours it. Without the guard,
+    /// the delay — cancelled along with the producer source — completes immediately and the writer
+    /// writes a keep-alive comment into a stream it has already been told to stop, then spins doing it
+    /// again. The keep-alive count is what proves the difference.</para>
+    /// </remarks>
     [Fact]
-    public async Task The_heartbeat_branch_stops_at_the_same_boundary()
+    public async Task The_heartbeat_branch_writes_no_keep_alive_after_revocation()
     {
 
         RecordingBody body = new();
@@ -331,11 +344,9 @@ public sealed class SseStreamWriterQuiescenceTests
 
         using CancellationTokenSource revocation = new();
 
-        ControlledSource source = new();
+        UnresponsiveSource source = new();
 
         source.Yield("first");
-
-        source.ParkAfterYields = true;
 
         Task stream = SseStreamWriter.StreamAsync(
             context,
@@ -351,19 +362,232 @@ public sealed class SseStreamWriterQuiescenceTests
 
         await revocation.CancelAsync();
 
+        // The producer never unwinds on its own, so the writer must leave through the delay arm's
+        // guard. Releasing it afterwards lets the outstanding move complete for teardown.
+        await Task.Yield();
+
+        source.Release();
+
         await stream.WaitAsync(BoundedWait);
 
-        Assert.EndsWith(Done, body.Text, StringComparison.Ordinal);
+        Assert.Equal($"data: first\n\n{Done}", body.Text);
 
-        Assert.StartsWith("data: first\n\n", body.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(": keep-alive", body.Text, StringComparison.Ordinal);
 
         Assert.True(source.Disposed);
 
-        // Keep-alive comments may or may not have raced in before the revocation; what must never
-        // appear is a second data frame or bytes after the terminal one.
-        Assert.EndsWith(Done, body.Text, StringComparison.Ordinal);
+    }
 
-        Assert.DoesNotContain("data: second", body.Text, StringComparison.Ordinal);
+    /// <summary>
+    /// An outstanding move is cancelled and observed before the enumerator is disposed.
+    /// </summary>
+    /// <remarks>
+    /// Driven with a producer that ignores its token, because a producer that honours it has already
+    /// completed its move by the time the writer reaches teardown — so the observation path the
+    /// invariant is about is never entered, and a test using one proves only that nothing crashed.
+    /// </remarks>
+    [Fact]
+    public async Task An_outstanding_move_is_observed_before_the_enumerator_is_disposed()
+    {
+
+        RecordingBody body = new();
+
+        DefaultHttpContext context = new();
+
+        context.Response.Body = body;
+
+        using CancellationTokenSource revocation = new();
+
+        UnresponsiveSource source = new();
+
+        source.Yield("first");
+
+        Task stream = SseStreamWriter.StreamAsync(
+            context,
+            source,
+            (string _, CancellationToken _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(20),
+            new GrimoireStreamQuiescence(revocation.Token),
+            CancellationToken.None);
+
+        await source.Parked.Task.WaitAsync(BoundedWait);
+
+        await revocation.CancelAsync();
+
+        // The writer has been told to stop but the producer has not returned. It must be waiting on
+        // that move rather than disposing over it, so its own task cannot have completed.
+        await Assert.ThrowsAsync<TimeoutException>(
+            async () => await stream.WaitAsync(TimeSpan.FromMilliseconds(250)));
+
+        Assert.False(source.Disposed);
+
+        source.Release();
+
+        await stream.WaitAsync(BoundedWait);
+
+        Assert.True(source.Disposed);
+
+        Assert.False(source.DisposedWhileMoving);
+
+    }
+
+    /// <summary>
+    /// A producer that parks without honouring its cancellation token.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately unresponsive, because that is the only shape that reaches the writer's
+    /// delay-arm guard and its outstanding-move observation. A producer that honours the token
+    /// unwinds through the pending move the instant revocation fires, and every path that exists for
+    /// the producer that does not is then unreachable from the test.
+    /// </remarks>
+    private sealed class UnresponsiveSource : IAsyncEnumerable<string>
+    {
+
+        private readonly Queue<string> _items = new();
+
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Parked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal bool Disposed { get; private set; }
+
+        internal bool DisposedWhileMoving { get; private set; }
+
+        internal void Yield(string item) => _items.Enqueue(item);
+
+        internal void Release() => _release.TrySetResult();
+
+        public IAsyncEnumerator<string> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
+            new Enumerator(this);
+
+        private sealed class Enumerator(UnresponsiveSource owner) : IAsyncEnumerator<string>
+        {
+
+            private bool _moving;
+
+            public string Current { get; private set; } = string.Empty;
+
+            public async ValueTask<bool> MoveNextAsync()
+            {
+
+                if (owner._items.Count > 0)
+                {
+
+                    Current = owner._items.Dequeue();
+
+                    return true;
+
+                }
+
+                _moving = true;
+
+                owner.Parked.TrySetResult();
+
+                // No token: this producer parks until the test releases it, which is what forces the
+                // writer to decide on its own rather than being unwound from underneath.
+                await owner._release.Task.ConfigureAwait(false);
+
+                _moving = false;
+
+                return false;
+
+            }
+
+            public ValueTask DisposeAsync()
+            {
+
+                if (_moving)
+                {
+
+                    owner.DisposedWhileMoving = true;
+
+                }
+
+                owner.Disposed = true;
+
+                return ValueTask.CompletedTask;
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// A stream that cannot be revoked enumerates on the caller's own token, by identity.
+    /// </summary>
+    /// <remarks>
+    /// The identity is the contract, not an implementation detail. A compiler-generated iterator
+    /// combines the token it captured with the one it is enumerated on only when the two differ, so
+    /// enumerating a source built over <c>RequestAborted</c> on a linked token makes a client
+    /// disconnect's <see cref="OperationCanceledException"/> carry a combined token rather than
+    /// <c>RequestAborted</c> itself. <c>ClientDisconnect</c> compares by reference, so the route would
+    /// stop recognising that disconnect and would write a terminal frame at a socket it had already
+    /// been told was gone — the one thing the disconnect arms exist to prevent.
+    ///
+    /// <para>Only the heartbeat-free path is asserted, because it is the only one where the writer
+    /// has a choice: a heartbeat needs a source of its own to cancel the delay with, and always
+    /// linked, before this change and after it.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_unrevocable_stream_enumerates_on_the_callers_own_token()
+    {
+
+        RecordingBody body = new();
+
+        DefaultHttpContext context = new();
+
+        context.Response.Body = body;
+
+        using CancellationTokenSource caller = new();
+
+        ControlledSource source = new();
+
+        source.Yield("only");
+
+        await SseStreamWriter.StreamAsync(
+            context,
+            source,
+            (string _, CancellationToken _) => Task.CompletedTask,
+            TimeSpan.Zero,
+            new GrimoireStreamQuiescence(CancellationToken.None),
+            caller.Token).WaitAsync(BoundedWait);
+
+        Assert.Equal(caller.Token, source.EnumerationToken);
+
+    }
+
+    /// <summary>
+    /// A revocable stream enumerates on a linked token, because it has revocation to carry.
+    /// </summary>
+    [Fact]
+    public async Task A_revocable_stream_enumerates_on_a_linked_token()
+    {
+
+        RecordingBody body = new();
+
+        DefaultHttpContext context = new();
+
+        context.Response.Body = body;
+
+        using CancellationTokenSource caller = new();
+
+        using CancellationTokenSource revocation = new();
+
+        ControlledSource source = new();
+
+        source.Yield("only");
+
+        await SseStreamWriter.StreamAsync(
+            context,
+            source,
+            (string _, CancellationToken _) => Task.CompletedTask,
+            TimeSpan.Zero,
+            new GrimoireStreamQuiescence(revocation.Token),
+            caller.Token).WaitAsync(BoundedWait);
+
+        Assert.NotEqual(caller.Token, source.EnumerationToken);
 
     }
 

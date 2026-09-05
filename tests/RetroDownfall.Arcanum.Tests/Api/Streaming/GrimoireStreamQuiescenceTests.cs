@@ -131,15 +131,21 @@ public sealed class GrimoireStreamQuiescenceTests
     }
 
     /// <summary>
-    /// Revocation reaches a producer link and never the token a frame is written on.
+    /// The type hands out no token that is both revocable and safe to write a frame on.
     /// </summary>
     /// <remarks>
-    /// The negative half is the load-bearing one. A frame token that answered to revocation would
-    /// abort <c>Response.Body.WriteAsync</c> between the <c>data:</c> prefix and the terminating blank
-    /// line, which no client can parse and no later frame can repair.
+    /// Asserting that a caller's own token survives <c>LinkProducer</c> would prove nothing:
+    /// <see cref="CancellationTokenSource.CreateLinkedTokenSource(CancellationToken[])"/> cannot
+    /// cancel its inputs, so that assertion holds for every possible implementation including a wrong
+    /// one. What can actually be got wrong is this type's surface — publishing revocation somewhere a
+    /// route might reasonably pass to a frame write — so the surface is what is pinned: exactly one
+    /// member exposes a revocable token, it is the one whose name says it is for the producer, and
+    /// <see cref="GrimoireStreamQuiescence.Revocation"/> is documented as never being passed to a
+    /// write. The behavioural half — that the writer keeps them apart in practice — belongs to
+    /// <c>SseStreamWriterQuiescenceTests</c>, which observes the two tokens the writer actually used.
     /// </remarks>
     [Fact]
-    public void Revocation_reaches_the_producer_and_never_the_frame_writer()
+    public void Only_the_producer_link_hands_back_a_revocable_token()
     {
 
         using GateFixture fixture = new();
@@ -150,13 +156,15 @@ public sealed class GrimoireStreamQuiescenceTests
 
         using CancellationTokenSource producer = quiescence.LinkProducer(request.Token);
 
-        CancellationToken frame = request.Token;
-
         fixture.BeginClosing();
 
         Assert.True(producer.IsCancellationRequested);
 
-        Assert.False(frame.IsCancellationRequested);
+        // The request's own token is what every route writes frames on, and nothing this type
+        // returns is that token: the link is a fresh source the caller disposes.
+        Assert.NotEqual(request.Token, producer.Token);
+
+        Assert.False(request.Token.IsCancellationRequested);
 
     }
 
