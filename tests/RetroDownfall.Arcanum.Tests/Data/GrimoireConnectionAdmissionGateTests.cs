@@ -22,9 +22,10 @@ public sealed class GrimoireConnectionAdmissionGateTests
     /// Real-time ceiling for a step that a manual clock has already made ready to complete.
     /// </summary>
     /// <remarks>
-    /// These tests drive the gate's own waits from <see cref="ManualTimeProvider"/>, so anything
-    /// still pending after the clock has been advanced is a defect rather than a slow machine. The
-    /// ceiling exists only so such a defect fails the test instead of hanging the suite.
+    /// These tests drive the gate's own waits from <see cref="ManualTimeProvider"/> — every one of
+    /// them, including the ones that name no clock — so anything still pending after the clock has
+    /// been advanced is a defect rather than a slow machine. The ceiling exists only so such a
+    /// defect fails the test instead of hanging the suite.
     /// </remarks>
     private static readonly TimeSpan BoundedWait = TimeSpan.FromSeconds(10);
 
@@ -2876,9 +2877,18 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     }
 
+    /// <summary>A gate whose three waits can only expire when a test says so.</summary>
+    /// <remarks>
+    /// The default is a manual clock rather than <see cref="TimeProvider.System"/>, because every
+    /// caller that wants a timeout to fire already passes its own clock and advances it. The ones
+    /// that pass nothing want the opposite — the drain or the open to complete — and a real clock
+    /// gave them a one-second ceiling on a machine running the whole suite in parallel, which is a
+    /// property of the host rather than of the gate. Two of these failed that way in a full-suite
+    /// run and passed in isolation.
+    /// </remarks>
     private static GrimoireConnectionAdmissionGate CreateGate(TimeProvider? timeProvider = null) =>
         new(
-            timeProvider ?? TimeProvider.System,
+            timeProvider ?? new ManualTimeProvider(),
             new RecordingStageTwoDrain(block: false),
             OpeningTimeout);
 

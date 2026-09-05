@@ -774,10 +774,16 @@ public sealed class CovenantCanonicalErasureTransactionTests
         // inspecting what it was called with is the only way to assert a retry happened at all.
         int retryCount = 0;
 
+        TaskCompletionSource firstRetry = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         service.RetryingForTesting = (attempt, exception, retryingToken) =>
         {
 
             _ = Interlocked.Increment(ref retryCount);
+
+            // Signalled before the assertions below so that a failing one surfaces as itself rather
+            // than as the holder never being released.
+            _ = firstRetry.TrySetResult();
 
             Assert.True(attempt >= 1, $"Expected a positive attempt number; observed {attempt}.");
 
@@ -810,10 +816,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
             period.Authority,
             Token));
 
-        // The throttled per-attempt bound is ~1s (ThrottledMaintenanceConnectionFactory); holding
-        // past it before closing the holder proves the C# retry - not the first attempt's own wait -
-        // is what makes a later attempt succeed.
-        await Task.Delay(TimeSpan.FromMilliseconds(1_800), Token);
+        // Waiting for the retry itself, rather than sleeping past the throttled per-attempt bound
+        // and hoping the racing attempt was scheduled in time. The sleep asserted the same property
+        // only when the machine was idle: under a full-suite run the Task.Run above could start
+        // after the delay had already elapsed, the holder would be gone before the first attempt
+        // ever raced it, and the test failed on its own "may have released before" message. Holding
+        // until a retry has demonstrably happened proves what the sleep was reaching for - that the
+        // C# retry, not the first attempt's own wait, is what makes a later attempt succeed.
+        await firstRetry.Task.WaitAsync(TimeSpan.FromSeconds(30), Token);
 
         await holderTransaction.RollbackAsync(Token);
 
