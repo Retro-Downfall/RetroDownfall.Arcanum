@@ -407,7 +407,7 @@ On live synthesis, supplied `attachedFiles` and `scryingFoci` enter the normal a
 
 ### 8.11 Daemon event SSE bus (`GET /api/events/daemon`)
 
-In-process `IEventBus` uses code-owned bounded per-subscriber channels with `DropOldest`. Wire: `text/event-stream` `DaemonEvent` frames + best-effort `[DONE]`. `Arcanum:Execution:MaxSseConnections` and `MaxSseConnectionsPerType` feed `SseConnectionGate` → **503** `Api.TooManyConnections`. Anti-buffering headers; API key on the `/api` group. Rate limiting admits the HTTP request only, not open-stream duration.
+In-process `IEventBus` uses code-owned bounded per-subscriber channels with `DropOldest`. Wire: `text/event-stream` `DaemonEvent` frames + best-effort `[DONE]`. A maintenance window ends the stream at a complete frame boundary with that same `[DONE]` (§8.32). `Arcanum:Execution:MaxSseConnections` and `MaxSseConnectionsPerType` feed `SseConnectionGate` → **503** `Api.TooManyConnections`. Anti-buffering headers; API key on the `/api` group. Rate limiting admits the HTTP request only, not open-stream duration.
 
 `arcanum watch daemons` is the terminal consumer. It keeps heartbeats and `[DONE]` out of data output, supports free-form event/tool filtering, and offers opt-in reconnect. Reconnect cannot recover process-local daemon frames and therefore always warns that a gap may exist.
 
@@ -425,7 +425,7 @@ Redaction is structural rather than a filtering pass: the bound DTOs have no fie
 
 ### 8.13 MCP server event SSE bus (`GET /api/events/mcp`)
 
-`McpConnectionManager` publishes `McpServerEvent` on state changes. Same SSE back-pressure/caps/auth as §8.11. `arcanum watch mcp` uses the common watcher, including repeatable `--tool` / `--tool-name` and `--event-type` filters. Reconnect does not imply replay of MCP lifecycle events.
+`McpConnectionManager` publishes `McpServerEvent` on state changes. Same SSE back-pressure/caps/auth as §8.11, and the same maintenance quiescence (§8.32). `arcanum watch mcp` uses the common watcher, including repeatable `--tool` / `--tool-name` and `--event-type` filters. Reconnect does not imply replay of MCP lifecycle events.
 
 ### 8.14 Spell Management API (`/api/spells`)
 
@@ -439,7 +439,7 @@ Workspace resolution: `?workspace=` → `Arcanum:Workspaces:DefaultRoot` → CWD
 
 ### 8.16 Log ring buffer (`GET /api/logs`, `GET /api/events/logs`)
 
-Serilog → `SerilogLogRingBufferSink` → a code-owned bounded in-memory ring that overwrites the oldest entry. Query filters + `beforeSequence` cursor. Live SSE accepts nullable `LogLevel` `level` (`trace`, `debug`, `information`, `warning`, `error`, or `critical`) plus free-form `category` and `search`. The CLI forwards the level token without adding another client-side allowlist; API enum binding remains authoritative, and an unknown nonblank value returns **400** `Validation.InvalidQuery` before the response becomes SSE. A successful stream begins with the SSE comment `: connected`, not a synthetic data object. The route uses the same caps/auth as §8.11 and is not persisted across restarts. Post-build sink registration avoids a Build()-time logging DI deadlock.
+Serilog → `SerilogLogRingBufferSink` → a code-owned bounded in-memory ring that overwrites the oldest entry. Query filters + `beforeSequence` cursor. Live SSE accepts nullable `LogLevel` `level` (`trace`, `debug`, `information`, `warning`, `error`, or `critical`) plus free-form `category` and `search`. The CLI forwards the level token without adding another client-side allowlist; API enum binding remains authoritative, and an unknown nonblank value returns **400** `Validation.InvalidQuery` before the response becomes SSE. A successful stream begins with the SSE comment `: connected`, not a synthetic data object; a stream entered during a maintenance window writes no `: connected` and ends immediately on `[DONE]` (§8.32). The route uses the same caps/auth as §8.11 and is not persisted across restarts. Post-build sink registration avoids a Build()-time logging DI deadlock.
 
 `arcanum watch logs` maps `--level`, `--category`, and `--search` to those server filters and may add repeatable client-side `--event-type` / `--tool` filters. Like the other process-local streams, an opt-in reconnect continues across retryable disconnects until cancellation or clean completion, uses capped exponential delays, warns on every possible gap, and never claims missed log entries were replayed. Permanent 4xx/authentication/cap denials remain terminal.
 
@@ -827,6 +827,56 @@ The same pair is written for a request that was already running when admission c
 **What it guarantees.** Every matched, non-exempt `/api` or `/v1` request either owns an admission lease for the whole of its request scope — held past the pooled database context and past every response-completion writer — or receives the refusal above before any endpoint work happens, with **zero bytes of the request body read**. Both bodies serialize through explicit source-generated `JsonTypeInfo`, so neither adds a reflection path.
 
 No route, request or response shape, CLI verb, configuration key, or database schema changed to deliver this.
+
+---
+
+### 8.32 Streaming routes in a maintenance window
+
+§8.31 is what a request that has not started receives. This section is what a response that has
+already started does, because a stream whose first byte has left cannot be given a `503`: its status
+and headers are settled, and a half-written body cannot become an envelope. Every streaming route is
+therefore classified, and the class decides what a maintenance window does to it.
+
+| Route | Class | Grimoire authority | Framing |
+|---|---|---|---|
+| `GET /api/events/daemon` | quiesceable | none | SSE |
+| `GET /api/events/mcp` | quiesceable | none | SSE |
+| `GET /api/events/logs` | quiesceable | none | SSE |
+| `GET /api/sessions/{id}/stream` | quiesceable | live | SSE |
+| `GET /api/apprentices/{id}/chronicle` | quiesceable | live | SSE |
+| `POST /api/intelligence/ping-stream` | billable drain | live | NDJSON |
+| `POST /api/prompts/{id}/execute-stream` | billable drain | live | NDJSON |
+| `POST /api/spells/{name}/execute-stream` | billable drain | live | NDJSON |
+| `POST /api/web/research` | billable drain | live | NDJSON |
+| `POST /v1/chat/completions` (`stream: true`) | billable drain | live | SSE |
+| `GET /api/sessions/{id}/attachments/{attachmentId}/content` | finite drain | live | bytes |
+| `GET /v1/files/{id}/content` | finite drain | live | bytes |
+| The A2A JSON-RPC server surface | billable drain | live | package-owned SSE |
+
+**The five quiesceable routes stop at a complete frame boundary.** The frame already being written is
+finished, no further data frame or `: keep-alive` comment is written, the producer is cancelled and
+observed, enumerators and scopes are disposed, and the body ends with the terminal `data: [DONE]`
+frame. HTTP status stays **200**, because it left with the first byte. The two routes that replay
+before going live stop between replayed frames as well: the session stream stops between Entries and
+skips its `data: {"type":"live"}` sentinel, and the Chronicle stops between its plan, escalation, and
+step-start frames. Both then skip their buffered drain. `/api/events/logs` writes no `: connected`
+comment if the window began before it got there.
+
+A client cannot distinguish this ending from any other deliberate one, and that is intentional:
+`[DONE]` already means "the server ended this stream" on all five, so `arcanum watch` exits cleanly
+instead of reporting a disconnect that did not happen. A reconnect attempt made while the window is
+still open receives the §8.31 **503**.
+
+**Every other stream is drained, never cut.** A billable stream has already spent money on the
+caller's behalf by the time a transition begins, so cutting it would charge for an answer nobody
+receives; a finite one ends on its own in bounded time and holds no producer to stop. Both hold an
+ordinary request lease, which the transition waits out — so a transition begun while one is open can
+still reach its work-drain timeout and refuse. That refusal is the intended answer rather than a
+regression: nothing is erased, ordinary admission stays open, and the operator retries once the
+stream has finished.
+
+No route, request or response shape, media type, frame vocabulary, sentinel, CLI verb, configuration
+key, or database schema changed to deliver this.
 
 ---
 
