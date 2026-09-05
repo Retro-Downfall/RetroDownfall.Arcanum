@@ -873,18 +873,33 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             sessionId,
             "content whose refused processing scope fails to dispose");
 
-        GrimoireConnectionAdmissionGate gate = OpenGate();
+        GrimoireConnectionAdmissionGate innerGate = OpenGate();
+
+        RecordingAdmissionGate gate = new(innerGate);
 
         IGrimoireClosingOwner? closing = null;
 
         int disposedScopes = 0;
 
+        List<bool> scopeCreationsInsideLease = [];
+
+        List<bool> scopeDisposalsInsideLease = [];
+
         ObservingScopeFactory scopes = BuildScopeFactory(new FakeWeaveService());
 
-        scopes.OnScopeCreated = () => closing ??= BeginClosing(gate, 76);
+        scopes.OnScopeCreated = () =>
+        {
+
+            scopeCreationsInsideLease.Add(gate.WorkLeaseIsHeld);
+
+            closing ??= BeginClosing(innerGate, 76);
+
+        };
 
         scopes.OnScopeDisposed = () =>
         {
+
+            scopeDisposalsInsideLease.Add(gate.WorkLeaseIsHeld);
 
             if (Interlocked.Increment(ref disposedScopes) == 1)
             {
@@ -931,6 +946,20 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal(SessionAttachmentIndexStatus.Failed, state.Status);
 
         Assert.Equal(4, state.AttemptCount);
+
+        Assert.Equal(2, scopes.ScopesCreated);
+
+        Assert.Equal([true, true], scopeCreationsInsideLease);
+
+        Assert.Equal([true, true], scopeDisposalsInsideLease);
+
+        Assert.Equal(1, gate.WorkLeaseAttempts);
+
+        Assert.Equal(
+            GrimoireWorkKind.SessionAttachmentIndexing,
+            Assert.Single(gate.RequestedWorkKinds));
+
+        Assert.False(gate.WorkLeaseIsHeld);
 
         await closing!.DisposeAsync();
 
