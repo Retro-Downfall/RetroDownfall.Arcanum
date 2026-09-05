@@ -53,7 +53,8 @@ internal static class WebWorkflowEndpoints
         _ = group.MapPost(
                 "/web/research",
                 HandleResearchAsync)
-            .WithName("PostWebResearch");
+            .WithName("PostWebResearch")
+            .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain);
 
     }
 

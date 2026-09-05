@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -335,6 +336,164 @@ public sealed class GrimoireRequestAdmissionTests
     }
 
     /// <summary>
+    /// The lease kind comes from the route's own marker, not from the path or the handler.
+    /// </summary>
+    /// <remarks>
+    /// Asserted through the lease the gate actually issued rather than through any downstream
+    /// behaviour, because the kind is the only thing that decides whether a transition revokes this
+    /// request at all. A test that inferred it from an observed refusal would pass equally well on a
+    /// stage that had guessed right for the wrong reason.
+    ///
+    /// <para>An unmarked route stays <see cref="GrimoireRequestKind.Finite"/> deliberately: a finite
+    /// lease is drained through completion, so a streaming route whose marker was forgotten makes a
+    /// transition slow rather than cutting a response mid-frame. The inventory is what stops the
+    /// marker staying forgotten.</para>
+    /// </remarks>
+    [Theory]
+    [InlineData("/api/quiesceable", true)]
+    [InlineData("/api/billable", false)]
+    [InlineData("/api/finite-stream", false)]
+    [InlineData("/api/probe", false)]
+    public async Task The_route_marker_decides_which_kind_of_lease_the_request_takes(
+        string path,
+        bool expectedQuiesceable)
+    {
+
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        using HttpResponseMessage response = await host.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(expectedQuiesceable, host.AdmittedQuiesceable);
+
+    }
+
+    /// <summary>
+    /// Beginning a transition revokes a quiesceable stream and leaves every finite request alone.
+    /// </summary>
+    /// <remarks>
+    /// This is the whole reason the kind exists. The gate collects revocation sources only from
+    /// <see cref="GrimoireRequestKind.QuiesceableStream"/> leases, so a route that took the wrong kind
+    /// is either never told to stop or is told to stop when it should have been drained — and neither
+    /// failure is visible from the request's own response.
+    /// </remarks>
+    [Theory]
+    [InlineData("/api/quiesceable", true)]
+    [InlineData("/api/billable", false)]
+    [InlineData("/api/finite-stream", false)]
+    [InlineData("/api/probe", false)]
+    public async Task Only_a_quiesceable_lease_is_revoked_when_a_transition_begins(
+        string path,
+        bool expectedRevoked)
+    {
+
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        host.Gate(entered, release);
+
+        Task<HttpResponseMessage> pending = host.GetAsync(path);
+
+        await entered.Task.WaitAsync(BoundedWait);
+
+        await using IGrimoireClosingOwner closing = host.BeginClosing();
+
+        Assert.Equal(expectedRevoked, host.RevocationSignalled);
+
+        release.SetResult();
+
+        using HttpResponseMessage response = await pending;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+    }
+
+    /// <summary>
+    /// A transition begun while a watcher is connected now drains instead of timing out.
+    /// </summary>
+    /// <remarks>
+    /// This is the whole of issue #252 in one assertion, and the exact behaviour #251 §3.8 recorded
+    /// as the interim state: a watcher held a finite lease, a finite lease is drained through
+    /// completion and never revoked, so an erasure attempted while one was open waited out the work
+    /// drain and refused. Marked quiesceable, the same request is told to stop, ends, and lets its
+    /// scope go — and stage one completes.
+    /// </remarks>
+    [Fact]
+    public async Task A_transition_begun_while_a_watcher_is_connected_now_drains()
+    {
+
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        host.Gate(entered, release: null);
+
+        Task<HttpResponseMessage> watcher = host.GetAsync("/api/watcher");
+
+        await entered.Task.WaitAsync(BoundedWait);
+
+        await using IGrimoireClosingOwner closing = host.BeginClosing();
+
+        Result drained = await host.Admission
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask()
+            .WaitAsync(BoundedWait);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        using HttpResponseMessage response = await watcher.WaitAsync(BoundedWait);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+    }
+
+    /// <summary>
+    /// The same watcher classified billable is not revoked, and stage one waits it out instead.
+    /// </summary>
+    /// <remarks>
+    /// The negative half, and it is the one that shows the marker is doing the work rather than the
+    /// handler: the same handler, on the same gate, with the same barrier — only the class differs.
+    /// A billable stream must never be cut, because it has already spent money on the caller's
+    /// behalf, so the honest outcome is the refusal an operator can retry.
+    /// </remarks>
+    [Fact]
+    public async Task A_transition_begun_while_a_billable_stream_is_open_still_times_out()
+    {
+
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        host.Gate(entered, release: null);
+
+        Task<HttpResponseMessage> billable = host.GetAsync("/api/billable-watcher");
+
+        await entered.Task.WaitAsync(BoundedWait);
+
+        await using IGrimoireClosingOwner closing = host.BeginClosing();
+
+        Result drained = await host.Admission
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask()
+            .WaitAsync(BoundedWait);
+
+        Assert.True(drained.IsFailure);
+
+        Assert.Equal(ErrorCodes.Grimoire.WorkDrainTimeout, drained.Error.Code);
+
+        host.ReleaseWatchers();
+
+        using HttpResponseMessage response = await billable.WaitAsync(BoundedWait);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+    }
+
+    /// <summary>
     /// A request admitted before stage one holds the drain open until it is finished.
     /// </summary>
     [Fact]
@@ -391,6 +550,17 @@ public sealed class GrimoireRequestAdmissionTests
 
         private int _ordinaryOpenWhileClosing = -1;
 
+        private IGrimoireRequestLease? _admittedLease;
+
+        /// <summary>
+        /// Ends a stand-in watcher that maintenance is never going to revoke.
+        /// </summary>
+        /// <remarks>
+        /// A billable stream is deliberately not revoked, so nothing in the production path would ever
+        /// end this handler. The suite has to be able to, or the test host could not shut down.
+        /// </remarks>
+        private readonly CancellationTokenSource _teardown = new();
+
         private AdmissionProbeHost(WebApplication app, GrimoireConnectionAdmissionGate admission)
         {
 
@@ -410,6 +580,26 @@ public sealed class GrimoireRequestAdmissionTests
 
         internal bool OrdinaryOpenSucceededWhileClosing =>
             Volatile.Read(ref _ordinaryOpenWhileClosing) == 1;
+
+        /// <summary>
+        /// Whether the lease the admission stage took was the quiesceable kind, as the gate issued it.
+        /// </summary>
+        /// <remarks>
+        /// A bool rather than the kind itself only because <c>GrimoireRequestKind</c> is internal to
+        /// Infrastructure and a public xUnit theory cannot carry it as a parameter. The read is still
+        /// of the real lease.
+        /// </remarks>
+        internal bool AdmittedQuiesceable { get; private set; }
+
+        /// <summary>
+        /// Whether the admitted lease's maintenance revocation has fired.
+        /// </summary>
+        /// <remarks>
+        /// Read from the captured lease rather than from the endpoint, because the whole point is what
+        /// the gate did to a request that is still running when a transition began.
+        /// </remarks>
+        internal bool RevocationSignalled =>
+            _admittedLease?.MaintenanceRevocation.IsCancellationRequested ?? false;
 
         internal void RecordOrdinaryOpenWhileClosing(bool succeeded) =>
             Interlocked.Exchange(ref _ordinaryOpenWhileClosing, succeeded ? 1 : 0);
@@ -464,7 +654,10 @@ public sealed class GrimoireRequestAdmissionTests
 
             RouteGroupBuilder v1 = app.MapGroup("/v1").RequireArcanumApiKey();
 
-            _ = api.MapGet("/probe", () => host!.Ran());
+            _ = api.MapGet(
+                "/probe",
+                async (GrimoireRequestAdmissionScope admission) =>
+                    await host!.CaptureAndParkAsync(admission));
 
             _ = api.MapGet("/exempt", () => host!.Ran())
                 .WithMetadata(GrimoireAdmissionExemptRouteMetadata.Instance);
@@ -525,6 +718,42 @@ public sealed class GrimoireRequestAdmissionTests
 
             });
 
+            // The three marked shapes. Each captures the lease the admission stage took and then
+            // parks on the same barrier the gated route uses, so a transition can begin while the
+            // request is provably still live and the revocation it does or does not receive is
+            // observable.
+            _ = api.MapGet(
+                    "/quiesceable",
+                    async (GrimoireRequestAdmissionScope admission) =>
+                        await host!.CaptureAndParkAsync(admission))
+                .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
+
+            _ = api.MapGet(
+                    "/billable",
+                    async (GrimoireRequestAdmissionScope admission) =>
+                        await host!.CaptureAndParkAsync(admission))
+                .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain);
+
+            _ = api.MapGet(
+                    "/finite-stream",
+                    async (GrimoireRequestAdmissionScope admission) =>
+                        await host!.CaptureAndParkAsync(admission))
+                .WithMetadata(GrimoireStreamRouteMetadata.FiniteDrain);
+
+            // The two shapes stage one has to tell apart. Both are open when a transition begins;
+            // one is told to stop and does, and the other is only ever drained through completion.
+            _ = api.MapGet(
+                    "/watcher",
+                    async (HttpContext ctx, GrimoireRequestAdmissionScope admission) =>
+                        await host!.WatchUntilRevokedAsync(ctx, admission))
+                .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
+
+            _ = api.MapGet(
+                    "/billable-watcher",
+                    async (HttpContext ctx, GrimoireRequestAdmissionScope admission) =>
+                        await host!.WatchUntilRevokedAsync(ctx, admission))
+                .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain);
+
             _ = v1.MapGet("/probe", () => host!.Ran());
 
             // Mapped on the root application rather than inside the group, exactly as the anonymous
@@ -558,7 +787,83 @@ public sealed class GrimoireRequestAdmissionTests
 
         }
 
+        /// <summary>
+        /// Records the lease this request was admitted on, then waits if a test armed the barrier.
+        /// </summary>
+        /// <remarks>
+        /// Capture and park are one method because the two have to happen in that order on the same
+        /// request: a test that begins a transition needs the lease already recorded, and needs the
+        /// request still running when it does. Parking is conditional so every existing test that
+        /// calls these routes without arming a barrier still returns immediately.
+        /// </remarks>
+        /// <summary>
+        /// Stands in for a live watcher: it holds its lease open until maintenance revokes it.
+        /// </summary>
+        /// <remarks>
+        /// The real routes end because their producer is revoked and their loop then starts no next
+        /// frame; this ends on the same signal without needing a producer, because what stage one is
+        /// waiting on is the request scope, not the frames. A route whose class is not quiesceable
+        /// receives a token that never fires, so the same handler stands in for both shapes and the
+        /// only difference between them is the marker.
+        /// </remarks>
+        internal async Task<IResult> WatchUntilRevokedAsync(
+            HttpContext context,
+            GrimoireRequestAdmissionScope admission)
+        {
+
+            _admittedLease = admission.Lease;
+
+            AdmittedQuiesceable = admission.Lease?.Kind == GrimoireRequestKind.QuiesceableStream;
+
+            GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(context);
+
+            _entered?.TrySetResult();
+
+            using CancellationTokenSource ending = CancellationTokenSource.CreateLinkedTokenSource(
+                quiescence.Revocation,
+                _teardown.Token);
+
+            try
+            {
+
+                await Task.Delay(Timeout.Infinite, ending.Token).ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                // Revoked, which is this stand-in's whole ending.
+
+            }
+
+            return Ran();
+
+        }
+
+        internal async Task<IResult> CaptureAndParkAsync(GrimoireRequestAdmissionScope admission)
+        {
+
+            _admittedLease = admission.Lease;
+
+            AdmittedQuiesceable = admission.Lease?.Kind == GrimoireRequestKind.QuiesceableStream;
+
+            _entered?.TrySetResult();
+
+            if (_release is not null)
+            {
+
+                await _release.Task.ConfigureAwait(false);
+
+            }
+
+            return Ran();
+
+        }
+
         internal void CloseAdmission() => _ = BeginClosing();
+
+        /// <summary>Ends any stand-in watcher maintenance did not revoke.</summary>
+        internal void ReleaseWatchers() => _teardown.Cancel();
 
         internal IGrimoireClosingOwner BeginClosing()
         {
@@ -575,7 +880,7 @@ public sealed class GrimoireRequestAdmissionTests
 
         }
 
-        internal void Gate(TaskCompletionSource entered, TaskCompletionSource release)
+        internal void Gate(TaskCompletionSource entered, TaskCompletionSource? release)
         {
 
             _entered = entered;
@@ -643,6 +948,10 @@ public sealed class GrimoireRequestAdmissionTests
 
         public async ValueTask DisposeAsync()
         {
+
+            await _teardown.CancelAsync();
+
+            _teardown.Dispose();
 
             Client.Dispose();
 

@@ -72,6 +72,8 @@ internal static class EventEndpoints
                 using (sseLease)
                 {
 
+                GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
+
                 using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
                     httpContext.RequestAborted,
                     cancellationToken);
@@ -97,6 +99,7 @@ internal static class EventEndpoints
                             await WriteSseJsonAsync(httpContext, ev, ArcanumJsonContext.Default.DaemonEvent, sseBuffer, sseJsonWriter, writeCt).ConfigureAwait(false);
                         },
                         heartbeatInterval,
+                        quiescence,
                         ct).ConfigureAwait(false);
 
                 }
@@ -127,7 +130,8 @@ internal static class EventEndpoints
                 }
 
             })
-        .WithName("GetDaemonEvents");
+        .WithName("GetDaemonEvents")
+        .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
 
         apiGroup.MapGet(
             "/events/mcp",
@@ -143,6 +147,8 @@ internal static class EventEndpoints
 
                 using (sseLease)
                 {
+
+                GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
 
                 using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
                     httpContext.RequestAborted,
@@ -169,6 +175,7 @@ internal static class EventEndpoints
                             await WriteSseJsonAsync(httpContext, ev, ArcanumJsonContext.Default.McpServerEvent, sseBuffer, sseJsonWriter, writeCt).ConfigureAwait(false);
                         },
                         heartbeatInterval,
+                        quiescence,
                         ct).ConfigureAwait(false);
 
                 }
@@ -199,7 +206,8 @@ internal static class EventEndpoints
                 }
 
             })
-        .WithName("GetMcpEvents");
+        .WithName("GetMcpEvents")
+        .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
 
         apiGroup.MapGet(
             "/events/logs",
@@ -246,6 +254,8 @@ internal static class EventEndpoints
                 using (sseLease)
                 {
 
+                GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
+
                 using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
                     httpContext.RequestAborted,
                     cancellationToken);
@@ -263,9 +273,16 @@ internal static class EventEndpoints
                 try
                 {
 
-                    await httpContext.Response.Body.WriteAsync(SseLogsConnectedComment, ct).ConfigureAwait(false);
+                    if (!quiescence.IsQuiescing)
+                    {
 
-                    await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+                        // The sentinel is a complete frame of its own, so writing one while the
+                        // stream has already been told to stop is starting a next frame.
+                        await httpContext.Response.Body.WriteAsync(SseLogsConnectedComment, ct).ConfigureAwait(false);
+
+                        await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+
+                    }
 
                     await SseStreamWriter.StreamAsync(
                         httpContext,
@@ -281,6 +298,7 @@ internal static class EventEndpoints
                                 writeCt).ConfigureAwait(false);
                         },
                         heartbeatInterval,
+                        quiescence,
                         ct).ConfigureAwait(false);
 
                 }
@@ -311,7 +329,8 @@ internal static class EventEndpoints
                 }
 
             })
-        .WithName("StreamLogs");
+        .WithName("StreamLogs")
+        .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
 
         return apiGroup;
     }

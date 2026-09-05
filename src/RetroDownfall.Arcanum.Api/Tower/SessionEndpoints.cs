@@ -1196,7 +1196,8 @@ internal static class SessionEndpoints
 
             })
 
-        .WithName("DownloadSessionAttachment");
+        .WithName("DownloadSessionAttachment")
+        .WithMetadata(GrimoireStreamRouteMetadata.FiniteDrain);
 
         apiGroup.MapPost(
 
@@ -1659,8 +1660,12 @@ internal static class SessionEndpoints
                         FullMode = BoundedChannelFullMode.DropOldest,
                     });
 
-                using CancellationTokenSource pumpCts = CancellationTokenSource.CreateLinkedTokenSource(
-                    httpContext.RequestAborted);
+                GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
+
+                // Revocation reaches the pump and never the frame writes below. Cancelling the pump
+                // completes the channel, so the live loop observes an ordinary end of stream after
+                // whichever frame it was writing, rather than a cancellation inside one.
+                using CancellationTokenSource pumpCts = quiescence.LinkProducer(httpContext.RequestAborted);
 
                 Task pumpTask = PumpSessionLiveAsync(id, eventHub, liveBuffer.Writer, pumpCts.Token);
 
@@ -1688,6 +1693,11 @@ internal static class SessionEndpoints
 
                         foreach (Entry entry in catchUp)
                         {
+                            if (quiescence.IsQuiescing)
+                            {
+                                break;
+                            }
+
                             replayIds.Add(entry.Id);
 
                             await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
@@ -1703,19 +1713,33 @@ internal static class SessionEndpoints
 
                         foreach (Entry entry in replay)
                         {
+                            if (quiescence.IsQuiescing)
+                            {
+                                break;
+                            }
+
                             await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
                         }
                     }
 
-                    await httpContext.Response.Body.WriteAsync(SseLiveSentinel, httpContext.RequestAborted).ConfigureAwait(false);
+                    if (!quiescence.IsQuiescing)
+                    {
 
-                    await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
+                        // The replay/live boundary sentinel is a complete frame, so writing one while
+                        // the stream has already been told to stop is starting a next frame.
+                        await httpContext.Response.Body.WriteAsync(SseLiveSentinel, httpContext.RequestAborted).ConfigureAwait(false);
+
+                        await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
+
+                    }
 
                     TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
                         ArcanumSettingClamps.EventBusHeartbeatSeconds(
                             options.CurrentValue.ResolveEventBus().HeartbeatSeconds));
 
-                    while (liveBuffer.Reader.TryRead(out Entry? buffered) && buffered is not null)
+                    while (!quiescence.IsQuiescing
+                        && liveBuffer.Reader.TryRead(out Entry? buffered)
+                        && buffered is not null)
                     {
 
                         if (!replayIds.Contains(buffered.Id))
@@ -1732,6 +1756,7 @@ internal static class SessionEndpoints
                         liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted),
                         (entry, ct) => WriteEntrySseAsync(httpContext, entry, ct),
                         heartbeatInterval,
+                        quiescence,
                         httpContext.RequestAborted).ConfigureAwait(false);
 
                 }
@@ -1767,7 +1792,8 @@ internal static class SessionEndpoints
                 }
 
             })
-        .WithName("StreamSession");
+        .WithName("StreamSession")
+        .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
 
         apiGroup.MapDelete(
             "/sessions/{id:guid}/entries/{entryId:guid}",

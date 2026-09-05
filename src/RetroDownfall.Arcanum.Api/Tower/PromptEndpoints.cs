@@ -20,6 +20,7 @@ using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Api.Streaming;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
@@ -914,6 +915,7 @@ internal static class PromptEndpoints
                     .ConfigureAwait(false);
             })
         .WithName("Prompt_ExecuteStream")
+        .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain)
         .AllowCovenantContext()
         .WithLargeRequestBody()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(2, ArcanumJsonContext.Default.PromptExecuteRequest));

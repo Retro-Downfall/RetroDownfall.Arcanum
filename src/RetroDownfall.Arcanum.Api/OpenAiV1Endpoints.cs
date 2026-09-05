@@ -61,6 +61,7 @@ internal static partial class OpenAiV1Endpoints
     {
         _ = v1.MapPost("/chat/completions", HandleChatCompletionsAsync)
             .WithName("PostOpenAiChatCompletions")
+            .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain)
             .WithLargeRequestBody()
             .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
     }
