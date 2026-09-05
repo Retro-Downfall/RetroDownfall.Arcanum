@@ -275,9 +275,9 @@ source-generated JSON, `Microsoft.CodeAnalysis.CSharp` syntax analysis in tests,
 
 ### Task 12: Review and delivery
 
-- [ ] Warning-free Release solution build.
-- [ ] `./scripts/align-csharp-blanklines.sh` over changed files; no diff.
-- [ ] Full `RetroDownfall.Arcanum.Tests` suite GREEN.
-- [ ] One bounded read-only review; fix Critical and Important findings.
+- [x] Warning-free Release solution build.
+- [x] `./scripts/align-csharp-blanklines.sh` over changed files; no diff.
+- [x] Full `RetroDownfall.Arcanum.Tests` suite GREEN — 13,676 passed, 0 failed, 59 skipped.
+- [x] One bounded read-only review across five dimensions, every claim adversarially verified: 20 claimed, 13 confirmed, all addressed. Two were real defects — the writer's unconditional producer link, which broke client-disconnect classification on the heartbeat-free path, and the chronicle route's pre-existing pump-start gap — and four were tests that did not pin what they named, one of which a mutation survived.
 - [ ] Merge `--no-ff` into `grimoire-fixes`, push, delete the child branch.
 - [ ] Move issue #252 to Done and close it.
