@@ -62,11 +62,19 @@ GitHub CLI.
   `src/RetroDownfall.Arcanum.Api/Hosting/ServerLifecycleEndpoints.cs` — the exemption marker.
 - `src/RetroDownfall.Arcanum.Infrastructure/Data/CovenantErasureCoordinator.cs` — initiator promotion
   and the timed-out-stage-one abort.
-- `tests/RetroDownfall.Arcanum.Tests/Api/Middleware/GrimoireRequestAdmissionTests.cs` — new.
+- `tests/RetroDownfall.Arcanum.Tests/Api/Middleware/GrimoireRequestAdmissionTests.cs` — new, the probe-host
+  admission surface.
+- `tests/RetroDownfall.Arcanum.Tests/Api/Middleware/GrimoireMaintenanceRefusalTests.cs` — new, the refusal
+  writer both surfaces share.
+- `tests/RetroDownfall.Arcanum.Tests/Api/GrimoireAdmissionRouteInventoryTests.cs` — new, the composed-host
+  exemption inventory, the holder's registration, and the two source-ordering guards.
+- `tests/RetroDownfall.Arcanum.Tests/Data/GrimoireRequestAdmissionScopeTests.cs` — new, the holder's own
+  contract.
 - `tests/RetroDownfall.Arcanum.Tests/Api/Middleware/ArcanumExceptionHandlerTests.cs`,
   `tests/RetroDownfall.Arcanum.Tests/Api/ErrorCodeCatalogContractTests.cs`,
-  `tests/RetroDownfall.Arcanum.Tests/Api/InstallationResetApiAdmissionTests.cs` — extended.
-- `tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureInitiatorPromotionTests.cs` — new.
+  `tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureSameProcessTests.cs`,
+  `tests/RetroDownfall.Arcanum.Tests/Covenant/CovenantErasureCoordinatorTests.cs`,
+  `tests/RetroDownfall.Arcanum.Tests/Data/DataRetentionCovenantResetRecoveryTests.cs` — extended.
 - Documentation: `docs/Arcanum.DESIGN.md`, `docs/Arcanum.API.md`, `README.md`.
 
 ---
@@ -76,15 +84,15 @@ GitHub CLI.
 **Files:** `Core/Primitives/ErrorCodes.cs`, `Infrastructure/Data/GrimoireConnectionAdmissionContracts.cs`,
 `tests/.../Api/ErrorCodeCatalogContractTests.cs`.
 
-- [ ] RED: add `Grimoire.MaintenanceUnavailable` to
+- [x] RED: add `Grimoire.MaintenanceUnavailable` to
       `Catalog_and_constant_table_both_carry_every_code_a_route_emits`'s `[InlineData]` list and observe
       it fail on the missing constant.
-- [ ] GREEN: add `public const string MaintenanceUnavailable = "Grimoire.MaintenanceUnavailable";` to
+- [x] GREEN: add `public const string MaintenanceUnavailable = "Grimoire.MaintenanceUnavailable";` to
       `ErrorCodes.Grimoire` with an XML summary, and redefine
       `GrimoireMaintenanceUnavailableException.Code` as `ErrorCodes.Grimoire.MaintenanceUnavailable` so
       the literal exists once. Leave `ArcanumErrorMapper`'s single operand alone.
-- [ ] Run `ErrorCodeCatalogContractTests`, `ArcanumErrorMapperTests`, `CovenantErrorContractTests` GREEN.
-- [ ] `git commit -m "refactor: give the maintenance refusal one code and one literal"`.
+- [x] Run `ErrorCodeCatalogContractTests`, `ArcanumErrorMapperTests`, `CovenantErrorContractTests` GREEN.
+- [x] `git commit -m "refactor: give the maintenance refusal one code and one literal"`.
 
 ---
 
@@ -94,14 +102,14 @@ GitHub CLI.
 `Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs`, plus tests in the new
 `GrimoireRequestAdmissionTests`.
 
-- [ ] RED: tests asserting a freshly constructed holder has acquired nothing and reports no lease; that
+- [x] RED: tests asserting a freshly constructed holder has acquired nothing and reports no lease; that
       `TryAdmit` on an ordinary gate returns `true` and exposes the lease; that a second `TryAdmit`
       returns `true` without taking a second lease; that `TryAdmit` on a closing gate returns `false`
       and leaves no lease; that `DisposeAsync` releases exactly once and is idempotent; and that
       disposing a never-admitted holder does not throw.
-- [ ] GREEN: add the holder and register it `AddScoped` beside the gate.
-- [ ] Run the holder filter GREEN.
-- [ ] `git commit -m "feat: carry one request's admission for the whole of its scope"`.
+- [x] GREEN: add the holder and register it `AddScoped` beside the gate.
+- [x] Run the holder filter GREEN.
+- [x] `git commit -m "feat: carry one request's admission for the whole of its scope"`.
 
 ---
 
@@ -109,18 +117,18 @@ GitHub CLI.
 
 **Files:** new `Api/Middleware/GrimoireMaintenanceRefusal.cs`, plus tests.
 
-- [ ] RED: tests asserting `/api/**` produces `503` + `ApiResponse<string>` with code
+- [x] RED: tests asserting `/api/**` produces `503` + `ApiResponse<string>` with code
       `Grimoire.MaintenanceUnavailable`, `IsSuccess: false`, no `data` member and a trace id; `/v1/**`
       produces `503` + `OpenAiErrorResponse` with type `service_unavailable` and code
       `grimoire_maintenance`; both carry the exact sanitized sentence; both carry
       `Cache-Control: no-store, private`, `Pragma: no-cache`, `Expires: 0` with `ETag` and
       `Last-Modified` removed; the raw JSON contains no path, owner, operation id, phase or type name;
       and a response that has already started is left untouched with `false` returned.
-- [ ] GREEN: add the writer. Both bodies go through `ArcanumJsonContext.Default.ApiResponseString` and
+- [x] GREEN: add the writer. Both bodies go through `ArcanumJsonContext.Default.ApiResponseString` and
       `.OpenAiErrorResponse`; the code comes from `ErrorCodes.Grimoire.MaintenanceUnavailable`; the
       trace id is `Activity.Current?.Id ?? context.TraceIdentifier`.
-- [ ] Run the refusal filter GREEN.
-- [ ] `git commit -m "feat: give a maintenance window one answer on each surface"`.
+- [x] Run the refusal filter GREEN.
+- [x] `git commit -m "feat: give a maintenance window one answer on each surface"`.
 
 ---
 
@@ -129,25 +137,25 @@ GitHub CLI.
 **Files:** new `Api/Security/GrimoireAdmissionExemptRouteMetadata.cs`, `Api/ApiBootstrapper.cs`,
 `Api/Health/HealthEndpoints.cs`, `Api/Hosting/ServerLifecycleEndpoints.cs`, plus tests.
 
-- [ ] RED: probe-host tests asserting a closed gate refuses `/api/...` and `/v1/...` before the endpoint
+- [x] RED: probe-host tests asserting a closed gate refuses `/api/...` and `/v1/...` before the endpoint
       runs and with zero body bytes read; admits `/metrics`, `/apiary/...`, `/v10/...` and `/apiVersion`;
       refuses `/API/...` and `/V1/...`; leaves an unmatched `/api/...` path a `404` and a wrong method a
       `405`; and answers `401`, never `503`, for a bad key on a protected route.
-- [ ] RED: a test asserting an anonymous `/api` route with no API-key metadata is still refused, and one
+- [x] RED: a test asserting an anonymous `/api` route with no API-key metadata is still refused, and one
       asserting the installation-reset 404-hide still wins on the hidden route.
-- [ ] RED: full-host inventory tests asserting exactly `GetHealth` and `QuitServer` carry
+- [x] RED: full-host inventory tests asserting exactly `GetHealth` and `QuitServer` carry
       `GrimoireAdmissionExemptRouteMetadata`, and that no other route does.
-- [ ] RED: an ordering test asserting the admission call precedes both
+- [x] RED: an ordering test asserting the admission call precedes both
       `ApplyInstallationResetRecoveryAdmissionAsync` and `ApplyCovenantPreBindingPolicyAsync` in the
       authenticated branch, written so it cannot be satisfied by the anonymous branch's earlier call.
-- [ ] GREEN: add the marker, attach it to the two routes, add
+- [x] GREEN: add the marker, attach it to the two routes, add
       `ApplyGrimoireRequestAdmissionAsync`, and call it in both branches at the placements §3.1 fixes.
-- [ ] RED: a lifetime test with a later-created scoped async-disposable sentinel proving the lease is
+- [x] RED: a lifetime test with a later-created scoped async-disposable sentinel proving the lease is
       released after that sentinel, and a test proving an admitted request holds a closing gate open
       through endpoint completion and scope disposal.
-- [ ] GREEN: nothing further should be needed; if it is, the holder's registration order is wrong.
-- [ ] Run the admission, installation-reset, Covenant-boundary, metrics and API-surface filters GREEN.
-- [ ] `git commit -m "feat: refuse new protected work while maintenance owns the database"`.
+- [x] GREEN: nothing further should be needed; if it is, the holder's registration order is wrong.
+- [x] Run the admission, installation-reset, Covenant-boundary, metrics and API-surface filters GREEN.
+- [x] `git commit -m "feat: refuse new protected work while maintenance owns the database"`.
 
 ---
 
@@ -155,13 +163,13 @@ GitHub CLI.
 
 **Files:** `Api/Middleware/ArcanumExceptionHandler.cs`, `tests/.../Api/Middleware/ArcanumExceptionHandlerTests.cs`.
 
-- [ ] RED: tests asserting a `GrimoireMaintenanceUnavailableException` thrown from an endpoint answers
+- [x] RED: tests asserting a `GrimoireMaintenanceUnavailableException` thrown from an endpoint answers
       the same `503` pair on both surfaces, is not logged at `Error`, logs no request path, and is not
       rewritten once the response has started; and that every other exception still logs at `Error` and
       answers `500`.
-- [ ] GREEN: add the typed arm ahead of the `LogError` call, reusing the Task 3 writer.
-- [ ] Run the exception-handler filter GREEN.
-- [ ] `git commit -m "fix: answer an expected refusal without calling it an internal error"`.
+- [x] GREEN: add the typed arm ahead of the `LogError` call, reusing the Task 3 writer.
+- [x] Run the exception-handler filter GREEN.
+- [x] `git commit -m "fix: answer an expected refusal without calling it an internal error"`.
 
 ---
 
@@ -171,17 +179,17 @@ GitHub CLI.
 `Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs`, new
 `tests/.../Data/Covenant/CovenantErasureInitiatorPromotionTests.cs`, plus a full-host test.
 
-- [ ] RED: a full-host `[SkippableFact]` driving `POST /api/data/factory-reset` through the **real**
+- [x] RED: a full-host `[SkippableFact]` driving `POST /api/data/factory-reset` through the **real**
       `IDataRetentionService` on a real catalog, asserting the erasure completes rather than failing
       with `Grimoire.WorkDrainTimeout`. This fails before promotion is wired.
-- [ ] RED: focused tests asserting the coordinator promotes exactly the holder's lease paired with
+- [x] RED: focused tests asserting the coordinator promotes exactly the holder's lease paired with
       `ICovenantClosedPeriodLedgerConnection.Connection`; that a holder with no lease takes the
       one-argument path unchanged; and that the promoted `DbConnection` instance is the same object
       after the factory arm's close and the coordinator's reopen.
-- [ ] GREEN: give the coordinator the scoped holder and branch `BeginOrResumeExclusive` on whether a
+- [x] GREEN: give the coordinator the scoped holder and branch `BeginOrResumeExclusive` on whether a
       lease is present.
-- [ ] Run the promotion, erasure-coordinator, retention-endpoint and same-process filters GREEN.
-- [ ] `git commit -m "feat: let the request that asked for an erasure out of its own drain"`.
+- [x] Run the promotion, erasure-coordinator, retention-endpoint and same-process filters GREEN.
+- [x] `git commit -m "feat: let the request that asked for an erasure out of its own drain"`.
 
 ---
 
@@ -189,15 +197,15 @@ GitHub CLI.
 
 **Files:** `Infrastructure/Data/CovenantErasureCoordinator.cs`, plus tests.
 
-- [ ] RED: a test holding one unrelated request lease open past the drain checkpoint and asserting the
+- [x] RED: a test holding one unrelated request lease open past the drain checkpoint and asserting the
       erasure fails with `Grimoire.WorkDrainTimeout` **and** the gate is `Ordinary` afterwards, with a
       later request admitted. This fails today: the gate stays `Closing` for the life of the process.
-- [ ] RED: a test asserting a non-timeout drain failure still disposes the closing owner and does not
+- [x] RED: a test asserting a non-timeout drain failure still disposes the closing owner and does not
       attempt the abort.
-- [ ] GREEN: branch `CloseGrimoireAsync`'s drain failure on the timeout code and spend
+- [x] GREEN: branch `CloseGrimoireAsync`'s drain failure on the timeout code and spend
       `AbortClosingAsync` with a proof drawn from the run's state.
-- [ ] Run the erasure and gate filters GREEN.
-- [ ] `git commit -m "fix: give a drain that timed out its way back to ordinary admission"`.
+- [x] Run the erasure and gate filters GREEN.
+- [x] `git commit -m "fix: give a drain that timed out its way back to ordinary admission"`.
 
 ---
 
@@ -205,26 +213,54 @@ GitHub CLI.
 
 **Files:** `docs/Arcanum.DESIGN.md`, `docs/Arcanum.API.md`, `README.md`.
 
-- [ ] DESIGN: §10.18 pipeline order, §11.3 the second pre-binding middleware, §11.9 the refusal pair,
+- [x] DESIGN: §10.18 pipeline order, §11.3 the second pre-binding middleware, §11.9 the refusal pair,
       §11.12 the fourth dual-surface branch, §10.20.3 request middleware and maintenance responses
       delivered while stream quiescence and worker adoption stay deferred, §2.2 the second `503`
       producer, §13.7 a regression-catalog row.
-- [ ] API: new §8.31 owning the admission contract; §8.23 `503` semantics and the `/v1` type list;
+- [x] API: new §8.31 owning the admission contract; §8.23 `503` semantics and the `/v1` type list;
       §8.29 decision order corrected to include both the installation-reset stage and the new one; §1
       health's success-envelope `503` disambiguated from a refusal `503`; §8.22 the `/metrics`
       exclusion as a consequence of segment-safe matching. Do not renumber existing sections.
-- [ ] README: the one sentence recording host-wide maintenance admission.
-- [ ] Run `DocumentationStructureTests`, `DocumentationIssueReferenceTests`,
+- [x] README: the one sentence recording host-wide maintenance admission.
+- [x] Run `DocumentationStructureTests`, `DocumentationIssueReferenceTests`,
       `ErrorCodeCatalogContractTests` and `CovenantApiDocumentationTests` GREEN.
-- [ ] `git commit -m "docs: record the answer a protected request gets during maintenance"`.
+- [x] `git commit -m "docs: record the answer a protected request gets during maintenance"`.
+
+---
+
+### What changed while implementing
+
+Five decisions were taken during the work that this plan did not anticipate. Each is in the code with
+its reasoning; they are collected here so the plan is not read as a description of something else.
+
+1. **Admission requires a `RouteEndpoint`, not merely a non-null endpoint.** Routing answers a method
+   mismatch with an endpoint of its own that no `Map` call produced, so a non-null test refused
+   `POST /api/probe` with `503` instead of leaving it a `405`. Caught by the RED for that case.
+2. **The holder is `IDisposable` as well as `IAsyncDisposable`.** A container scope disposed
+   *synchronously* throws outright on a service that implements only the async interface, and eleven
+   synchronous scopes exist under `src`. Releasing a request lease is synchronous work, so the second
+   implementation is honest rather than a blocking wrapper. Pinned by its own test.
+3. **Admission admits when no holder is registered.** A host that maps these endpoints without the
+   Arcanum infrastructure stack has no Grimoire to protect, and the two pre-binding stages below
+   answer an absent service the same way. That the composed host *does* register it is asserted by
+   `The_composed_host_registers_the_admission_holder_per_request` rather than defended by a throw in
+   the request path.
+4. **The abort proof landed over the real composition, not the coordinator harness.** The harness's
+   own gate could not be steered into a stage-one timeout without rebuilding it, so
+   `Factory_erasure_that_cannot_drain_reopens_ordinary_admission` drives a real catalog instead. Its
+   RED was confirmed by reverting the production branch and re-running.
+5. **Two source-ordering guards, not one.** The existing guard indexes from the top of the file, which
+   the anonymous branch's earlier call would satisfy however the authenticated one moved. The new
+   ordering test searches from the API-key check, and a second test pins that the anonymous 404-hide
+   still precedes admission.
 
 ---
 
 ### Task 9: Deliver
 
-- [ ] Build the solution in Release with zero warnings.
-- [ ] Run every filter this plan touched, plus the API suite, GREEN.
-- [ ] Mark this plan's tasks delivered.
-- [ ] Merge into `grimoire-fixes` with `--no-ff` as
+- [x] Build the solution in Release with zero warnings.
+- [x] Run every filter this plan touched, plus the API suite, GREEN.
+- [x] Mark this plan's tasks delivered.
+- [x] Merge into `grimoire-fixes` with `--no-ff` as
       `Merge issue #251: return stable maintenance-unavailable HTTP responses`, push, delete the
       feature branch, and close #251.
