@@ -95,6 +95,19 @@ opened after the pending fetch and before `EmbedBatchAsync`, closed after the la
 
 ### Task 7 — Verification
 
-- [ ] Focused `EntryWeavingServiceTests`.
-- [ ] Complete `RetroDownfall.Arcanum.Tests` and `RetroDownfall.Compendium.Tests` suites.
-- [ ] Warning-free Release solution build; `git diff --check`; clean tracked status.
+- [x] Focused `EntryWeavingServiceTests`.
+- [x] Complete `RetroDownfall.Arcanum.Tests` and `RetroDownfall.Compendium.Tests` suites.
+- [x] Warning-free Release solution build; `git diff --check`; clean tracked status.
+
+## Delivery evidence
+
+- Focused: `EntryWeavingServiceTests` 14/14; `WeaveServiceTests` 34/34;
+  `GrimoireConnectionAdmissionGateTests` 56/56; `CovenantArchitectureBoundaryTests`,
+  `GrimoireConnectionAcquisitionInventory`, `CovenantResetBootstrapBarrierTests` 75/75 together.
+- Complete `RetroDownfall.Arcanum.Tests`: 13683 passed, 0 failed, 59 skipped.
+- Complete `RetroDownfall.Compendium.Tests`: 181 passed, 0 failed.
+- Release solution build: 0 warnings, 0 errors.
+- `git diff --check` clean; no tracked changes outstanding.
+- Each of the three guards was mutation-checked: releasing the lease before the scope, ignoring the
+  effect-group refusal, and taking the lease after scope creation each fail a test that had
+  previously passed.

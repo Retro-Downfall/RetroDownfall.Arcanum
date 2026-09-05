@@ -1,6 +1,6 @@
 # Issue #253 Entry Weaving Work and Effect Lifetime Design
 
-**Status:** Approved for implementation.
+**Status:** Delivered.
 
 **Branch:** `codex/issue-253-entry-weaving-deferral`, cut from `grimoire-fixes` at
 `e5ff0f97` (one commit past the #252 merge `e8820721`).
