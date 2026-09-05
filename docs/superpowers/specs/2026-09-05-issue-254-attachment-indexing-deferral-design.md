@@ -333,10 +333,12 @@ closed period, and the reopen reordering keeps the original deferred request ahe
 `SessionAttachmentIndexDisposition`. Refused, it logs at `Debug` and does nothing — no scope, no
 transaction, no enqueue.
 
-Neither arm throws, so neither reaches the catch-all, which keeps its present meaning as the genuine
-product-failure path, with its `Warning` and its one-second backoff. Host cancellation keeps its
-present meaning as an `OperationCanceledException` with `stoppingToken` signalled. The three-way
-distinction §9.3 requires is therefore completed rather than restated.
+Neither maintenance arm throws. Per-request product failures are classified inside
+`ProcessOneAsync`, still within that request's work lease, and any automatic retry delay follows only
+after the lease has been released. The hosted loop's catch-all is therefore reserved for scheduler or
+reconciliation faults, with its `Warning` and one-second backoff. Host cancellation keeps its present
+meaning as an `OperationCanceledException` with `stoppingToken` signalled. The three-way distinction
+§9.3 requires is therefore completed rather than restated.
 
 ### 3.7 What revocation may and may not touch
 
@@ -425,9 +427,10 @@ requests remain bounded while admission is closed and retain FIFO processing ord
 including when the first re-signal pass fills the channel and retains an unwritten suffix.
 
 **Loop behaviour.** A repeatedly deferred worker logs nothing at `Error` or `Warning`, creates no
-scopes, calls no provider and increments nothing. A deferred reconciliation opens no scope. The
-existing genuine-failure and host-cancellation paths keep their current behaviour, pinning all three
-apart.
+scopes, calls no provider and increments nothing. A deferred reconciliation opens no scope. A
+provider-originated cancellation is durably classified inside its effect group, a request-level
+failure is handled inside `ProcessOneAsync`, and host cancellation propagates without either
+classification or retry, pinning all three apart.
 
 **Gate.** One work lease begins a second effect group after disposing its first, while ordinary — the
 sequential case §3.4 depends on and the gate suite does not currently cover.
