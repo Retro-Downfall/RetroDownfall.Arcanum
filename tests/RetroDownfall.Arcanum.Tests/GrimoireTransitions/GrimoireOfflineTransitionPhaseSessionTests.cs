@@ -412,6 +412,7 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             new FixedInstallationIdentity(Installation),
             _operations,
             _credentials,
+            new GrimoireOfflineTransitionUnparentedReceiptResolver(),
             _guarded);
 
     }
@@ -500,7 +501,8 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             Value(
                 GrimoireOfflineTransitionPhaseSession.ClosingOwner.ForVerifiedPublication(
                     Launch(kind),
-                    opened)));
+                    opened)),
+            parentReceipt: null);
 
     }
 

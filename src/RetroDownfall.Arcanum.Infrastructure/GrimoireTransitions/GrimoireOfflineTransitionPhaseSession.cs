@@ -119,7 +119,8 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
     internal GrimoireOfflineTransitionPhaseSession(
         GrimoireOfflineTransitionLifecycleStore lifecycle,
         ArcanumMaintenanceLock heldInstallationLock,
-        ClosingOwner admitted)
+        ClosingOwner admitted,
+        IGrimoireOfflineTransitionParentReceiptSink? parentReceipt)
     {
 
         _lifecycle = lifecycle ?? throw new ArgumentNullException(nameof(lifecycle));
@@ -133,7 +134,19 @@ internal sealed class GrimoireOfflineTransitionPhaseSession
 
         _current = admitted.Publication;
 
+        ParentReceipt = parentReceipt;
+
     }
+
+    /// <summary>
+    /// The broader workflow this transition is the nested arm of, or <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// Resolved from durable evidence when the session was admitted, not supplied by whoever started
+    /// the work, so a resumed transition finds the same answer a first entry did. A session whose
+    /// binding names a parent always has one here: the authority refuses to admit the pair otherwise.
+    /// </remarks>
+    internal IGrimoireOfflineTransitionParentReceiptSink? ParentReceipt { get; }
 
     /// <summary>The committed launch every publication this session makes is bound to.</summary>
     internal GrimoireOfflineTransitionLaunchBinding Launch { get; }

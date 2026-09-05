@@ -464,6 +464,12 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<IInstallationResetActiveStore>(provider =>
             provider.GetRequiredService<InstallationResetActiveStore>());
 
+        // The one production resolver. A nested transition learns it is nested by reading the broader
+        // record, so the same registration serves a first entry and a recovery in a fresh process.
+        services.TryAddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(provider =>
+            new InstallationResetNestedTransitionReceiptResolver(
+                provider.GetRequiredService<IInstallationResetActiveStore>()));
+
         services.TryAddScoped<IInstallationResetDatabaseIdentityReader>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
@@ -2044,6 +2050,14 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<ICovenantClosedPeriodLedgerConnection,
             CovenantClosedPeriodLedgerConnection>();
 
+        // The one production resolver, registered beside the authority that needs it. A nested
+        // transition learns it is nested by reading the broader record, so this same registration
+        // serves a first entry and a recovery in a fresh process.
+        services.TryAddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(
+            static sp => sp.GetService<IInstallationResetActiveStore>() is { } activeStore
+                ? new InstallationResetNestedTransitionReceiptResolver(activeStore)
+                : new GrimoireOfflineTransitionUnparentedReceiptResolver());
+
         services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
             static sp => new GrimoireOfflineTransitionPhaseAuthority(
                 sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
@@ -2052,6 +2066,7 @@ public static class ServiceCollectionExtensions
                     ?? sp.GetRequiredService<InstallationResetDatabaseIdentityReader>(),
                 sp.GetRequiredService<ILongRunningOperationStore>(),
                 sp.GetRequiredService<IOsCredentialStore>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionParentReceiptResolver>(),
                 ArcanumPaths.GrimoireDirectory));
 
         services.AddScoped(

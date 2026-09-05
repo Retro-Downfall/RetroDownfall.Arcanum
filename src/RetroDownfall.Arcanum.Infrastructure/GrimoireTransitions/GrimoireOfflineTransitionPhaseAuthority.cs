@@ -48,6 +48,7 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
     IInstallationResetDatabaseIdentityReader installationIdentities,
     ILongRunningOperationStore operations,
     IOsCredentialStore credentials,
+    IGrimoireOfflineTransitionParentReceiptResolver parentReceipts,
     string guardedDirectory) : IGrimoireOfflineTransitionPhaseAuthority
 {
 
@@ -65,6 +66,9 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
 
     private readonly IOsCredentialStore _credentials =
         credentials ?? throw new ArgumentNullException(nameof(credentials));
+
+    private readonly IGrimoireOfflineTransitionParentReceiptResolver _parentReceipts =
+        parentReceipts ?? throw new ArgumentNullException(nameof(parentReceipts));
 
     private readonly string _guardedDirectory = string.IsNullOrWhiteSpace(guardedDirectory)
         ? throw new ArgumentException("A guarded directory is required.", nameof(guardedDirectory))
@@ -138,7 +142,8 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
 
         }
 
-        return Resume(borrowed.Value, launch.Value, recovered.Value);
+        return await ResumeAsync(borrowed.Value, launch.Value, recovered.Value, cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
@@ -150,13 +155,45 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
     /// one describing a different launch would authorize this operation to continue somebody else's
     /// plan - which is the single thing the launch binding exists to make impossible.
     /// </remarks>
-    private Result<GrimoireOfflineTransitionPhaseSession> Resume(
+    private async Task<Result<GrimoireOfflineTransitionPhaseSession>> ResumeAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionLaunchBinding launch,
-        GrimoireOfflineTransitionTypedRecoveryState recovered) =>
-        recovered.Publication is not { } publication
-            ? Unresumable()
-            : Admit(heldInstallationLock, launch, publication);
+        GrimoireOfflineTransitionTypedRecoveryState recovered,
+        CancellationToken cancellationToken)
+    {
+
+        if (recovered.Publication is not { } publication)
+        {
+
+            return Unresumable();
+
+        }
+
+        // Resolved against the binding the journal already committed to, so a resumed transition
+        // proves its parent rather than rediscovering one. A journal that names a parent no record
+        // corroborates refuses here rather than continuing as standalone work.
+        Result<IGrimoireOfflineTransitionParentReceiptSink?> parent = await _parentReceipts
+            .ResolveAsync(
+                heldInstallationLock,
+                launch.Kind,
+                launch.EffectDigest,
+                publication.Payload.Binding.ParentReceiptBindingDigest,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (parent.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionPhaseSession>.Failure(parent.Error);
+
+        }
+
+        return publication.Payload.Binding.ParentReceiptBindingDigest is not null
+            && parent.Value is null
+                ? Unresumable()
+                : Admit(heldInstallationLock, launch, publication, parent.Value);
+
+    }
 
     /// <summary>
     /// Publishes the opening journal revision for a launch that has none yet.
@@ -214,6 +251,25 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
 
         }
 
+        // Resolved before the first publication, because the binding is part of what that publication
+        // commits to. A transition that discovered its parent afterwards would have to rewrite the one
+        // field the journal exists to make immutable.
+        Result<IGrimoireOfflineTransitionParentReceiptSink?> parent = await _parentReceipts
+            .ResolveAsync(
+                heldInstallationLock,
+                launch.Kind,
+                launch.EffectDigest,
+                committedBindingDigest: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (parent.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionPhaseSession>.Failure(parent.Error);
+
+        }
+
         Result<GrimoireOfflineTransitionTypedPublication> opened = await _lifecycle
             .BeginBoundAsync(
                 heldInstallationLock,
@@ -222,13 +278,17 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
                 launch.OperationId,
                 launch.Kind,
                 PayloadVersion,
-                slotEpoch => OpeningPayload(launch, current.Revision, slotEpoch),
+                slotEpoch => OpeningPayload(
+                    launch,
+                    current.Revision,
+                    slotEpoch,
+                    parent.Value?.BindingDigest),
                 cancellationToken)
             .ConfigureAwait(false);
 
         return opened.IsFailure
             ? Result<GrimoireOfflineTransitionPhaseSession>.Failure(opened.Error)
-            : Admit(heldInstallationLock, launch, opened.Value);
+            : Admit(heldInstallationLock, launch, opened.Value, parent.Value);
 
     }
 
@@ -279,7 +339,8 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
     private Result<GrimoireOfflineTransitionPhaseSession> Admit(
         ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionLaunchBinding launch,
-        GrimoireOfflineTransitionTypedPublication publication)
+        GrimoireOfflineTransitionTypedPublication publication,
+        IGrimoireOfflineTransitionParentReceiptSink? parentReceipt)
     {
 
         Result<GrimoireOfflineTransitionPhaseSession.ClosingOwner> admitted =
@@ -293,7 +354,8 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
                 new GrimoireOfflineTransitionPhaseSession(
                     _lifecycle,
                     heldInstallationLock,
-                    admitted.Value));
+                    admitted.Value,
+                    parentReceipt));
 
     }
 
@@ -325,7 +387,8 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
     private static Result<IGrimoireOfflineTransitionPayload> OpeningPayload(
         GrimoireOfflineTransitionLaunchBinding launch,
         long observedRevision,
-        ulong slotEpoch)
+        ulong slotEpoch,
+        CovenantDigest? parentReceiptBindingDigest)
     {
 
         Result<GrimoireOfflineTransitionBinding> binding = GrimoireOfflineTransitionLaunch.JournalBinding(
@@ -333,7 +396,7 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
             slotEpoch,
             PayloadVersion,
             observedRevision,
-            parentReceiptBindingDigest: null);
+            parentReceiptBindingDigest);
 
         if (binding.IsFailure)
         {

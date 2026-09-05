@@ -61,7 +61,9 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
 
     private readonly GrimoireOfflineTransitionPhaseAuthority _authority;
 
-    internal LocalOfflineTransitionPhaseAuthority(ILongRunningOperationStore operations)
+    internal LocalOfflineTransitionPhaseAuthority(
+        ILongRunningOperationStore operations,
+        IGrimoireOfflineTransitionParentReceiptResolver? parentReceipts = null)
     {
 
         _root = Path.Combine(
@@ -103,6 +105,7 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
             new FixedInstallationIdentity(),
             operations,
             credentials,
+            parentReceipts ?? new GrimoireOfflineTransitionUnparentedReceiptResolver(),
             Guarded);
 
     }
