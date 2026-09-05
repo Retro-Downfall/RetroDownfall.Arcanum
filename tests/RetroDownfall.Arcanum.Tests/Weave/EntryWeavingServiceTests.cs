@@ -4,8 +4,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -257,13 +259,12 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
             },
         };
 
-        IServiceScopeFactory scopeFactory = BuildScopeFactory();
-
         EntryWeavingService service = new(
             new TestOptionsMonitor<ArcanumSettings>(disabledSettings),
             weave,
             new WeaveIndexAvailability(),
-            scopeFactory,
+            BuildScopeFactory(),
+            OpenGate(),
             NullLogger<EntryWeavingService>.Instance);
 
         IHostedService hosted = service;
@@ -310,14 +311,288 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task RunTickAsync_AdmittedTick_ReportsWoven()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content to imprint");
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        Assert.Equal(
+            EntryWeavingTickOutcome.Woven,
+            await service.RunTickAsync(embeddings, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task RunTickAsync_DeniedItsWorkLease_MakesNoScopeProviderCallOrWrite()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content that must not be imprinted");
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        FakeWeaveService weave = new();
+
+        ObservingScopeFactory scopes = BuildScopeFactory();
+
+        EntryWeavingService service = CreateService(
+            weave,
+            out EmbeddingSettings embeddings,
+            gate,
+            scopes);
+
+        await using IGrimoireClosingOwner closing = BeginClosing(gate, 41);
+
+        Assert.Equal(
+            EntryWeavingTickOutcome.DeferredForMaintenance,
+            await service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.Equal(0, scopes.ScopesCreated);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        Assert.Equal(0, await CountEntryEmbeddingsAsync());
+
+    }
+
+    [SkippableFact]
+    public async Task RunTickAsync_RevocationWinsTheEffectRace_MakesNoProviderCallOrWrite()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content the frontier must refuse");
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        FakeWeaveService weave = new();
+
+        ObservingScopeFactory scopes = BuildScopeFactory();
+
+        IGrimoireClosingOwner? closing = null;
+
+        // Closing the gate here lands between the lease and the effect group, which is the exact
+        // window the frontier arbitrates. No sleep can place it as precisely.
+        scopes.OnScopeCreated = () => closing = BeginClosing(gate, 42);
+
+        EntryWeavingService service = CreateService(
+            weave,
+            out EmbeddingSettings embeddings,
+            gate,
+            scopes);
+
+        Assert.Equal(
+            EntryWeavingTickOutcome.DeferredForMaintenance,
+            await service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.Equal(1, scopes.ScopesCreated);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        Assert.Equal(0, await CountEntryEmbeddingsAsync());
+
+        await closing!.DisposeAsync();
+
+    }
+
+    [SkippableFact]
+    public async Task RunTickAsync_HoldsItsWorkLeaseUntilAfterTheScopeHasDisposed()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content imprinted while a closure waits");
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        FakeWeaveService weave = new();
+
+        ObservingScopeFactory scopes = BuildScopeFactory();
+
+        IGrimoireClosingOwner? closing = null;
+
+        Task<Result>? drain = null;
+
+        bool drainWasStillWaitingOnTheLease = false;
+
+        // The probe runs after the tick's scope is already disposed. A drain started there is a
+        // deterministic read of whether the work lease outlived it: the gate returns a completed
+        // task synchronously when no request or work lifetime remains, and an incomplete one while
+        // this tick's lease is still registered. Nothing here depends on a continuation having had
+        // time to run, which is what made an earlier IsCompleted-after-the-fact probe meaningless.
+        scopes.OnScopeDisposed = () =>
+        {
+
+            closing = BeginClosing(gate, 43);
+
+            Task<Result> started = gate
+                .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+                .AsTask();
+
+            drainWasStillWaitingOnTheLease = !started.IsCompleted;
+
+            drain = started;
+
+            return ValueTask.CompletedTask;
+
+        };
+
+        EntryWeavingService service = CreateService(
+            weave,
+            out EmbeddingSettings embeddings,
+            gate,
+            scopes);
+
+        Assert.Equal(
+            EntryWeavingTickOutcome.Woven,
+            await service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.True(
+            drainWasStillWaitingOnTheLease,
+            "The work lease was already released when the tick's scope finished disposing, so a closure could conclude its drain while the scoped context was still going back.");
+
+        Result drained = await drain!;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        await closing!.DisposeAsync();
+
+    }
+
+    [SkippableFact]
+    public async Task RunTickAsync_EffectStartWinsTheRace_IsNotCutAndTheClosureWaitsThroughIt()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content the frontier already admitted");
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        FakeWeaveService weave = new();
+
+        ObservingScopeFactory scopes = BuildScopeFactory();
+
+        IGrimoireClosingOwner? closing = null;
+
+        Task<Result>? drain = null;
+
+        // Closing the gate from inside the provider call is the losing half of the frontier race:
+        // the effect group is already open, so maintenance must wait it out rather than revoke it.
+        weave.OnEmbed = () =>
+        {
+
+            closing = BeginClosing(gate, 45);
+
+            drain = gate.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask();
+
+            return Task.CompletedTask;
+
+        };
+
+        EntryWeavingService service = CreateService(
+            weave,
+            out EmbeddingSettings embeddings,
+            gate,
+            scopes);
+
+        Assert.Equal(
+            EntryWeavingTickOutcome.Woven,
+            await service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Result drained = await drain!;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        // The write that the admitted provider call earned still landed. A revocation delivered into
+        // the group would have lost it, which is the billing failure the frontier exists to stop.
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        await closing!.DisposeAsync();
+
+    }
+
+    [SkippableFact]
+    public async Task ExecuteAsync_RepeatedlyDeferred_DoesNotLogAnErrorOrEnterTheFaultBackoff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content deferred for the whole window");
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        FakeWeaveService weave = new();
+
+        ObservingScopeFactory scopes = BuildScopeFactory();
+
+        TestCapturingLogger<EntryWeavingService> logger = new();
+
+        EntryWeavingService service = CreateService(
+            weave,
+            out _,
+            gate,
+            scopes,
+            logger);
+
+        await using IGrimoireClosingOwner closing = BeginClosing(gate, 44);
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+        await hosted.StopAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level == LogLevel.Error);
+
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level == LogLevel.Warning);
+
+        Assert.Equal(0, scopes.ScopesCreated);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        // The deferral takes the configured cadence, not the one-second fault backoff. Within 300ms
+        // a worker on the fault path would have logged and retried; one on the cadence path has not
+        // come back at all.
+        Assert.Equal(0, await CountEntryEmbeddingsAsync());
+
+    }
+
     private EntryWeavingService CreateService(
         FakeWeaveService weave,
-        out EmbeddingSettings embeddings)
+        out EmbeddingSettings embeddings,
+        IGrimoireConnectionAdmissionGate? gate = null,
+        ObservingScopeFactory? scopeFactory = null,
+        ILogger<EntryWeavingService>? logger = null)
     {
 
         embeddings = ArcanumRuntimeDefaults.Embeddings;
-
-        IServiceScopeFactory scopeFactory = BuildScopeFactory();
 
         return new EntryWeavingService(
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
@@ -338,19 +613,108 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
             }),
             weave,
             new WeaveIndexAvailability(),
-            scopeFactory,
-            NullLogger<EntryWeavingService>.Instance);
+            scopeFactory ?? BuildScopeFactory(),
+            gate ?? OpenGate(),
+            logger ?? NullLogger<EntryWeavingService>.Instance);
 
     }
 
-    private IServiceScopeFactory BuildScopeFactory()
+    private ObservingScopeFactory BuildScopeFactory()
     {
 
         ServiceCollection services = new();
 
         services.AddSingleton(_db!);
 
-        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        return new ObservingScopeFactory(
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>());
+
+    }
+
+    /// <summary>A gate whose ordinary admission is open, which is every pre-existing case here.</summary>
+    private static GrimoireConnectionAdmissionGate OpenGate() => new(TimeProvider.System);
+
+    private static CovenantExclusiveRecoveryOwner Owner(byte seed) =>
+        new(
+            Guid.Parse($"00000000-0000-0000-0000-{seed:D12}"),
+            CovenantExclusiveOperation.CovenantReset,
+            new CovenantDigest(Enumerable.Repeat(seed, 32).ToArray()));
+
+    private static IGrimoireClosingOwner BeginClosing(
+        GrimoireConnectionAdmissionGate gate,
+        byte seed)
+    {
+
+        Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(Owner(seed));
+
+        Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
+
+        return begun.Value;
+
+    }
+
+    /// <summary>
+    /// A scope factory that counts the scopes a tick creates and can act at their boundaries.
+    /// </summary>
+    /// <remarks>
+    /// Counting is what proves the "no scope" half of a maintenance deferral: a tick refused its
+    /// work lease must not reach the container at all, and an assertion on the provider call count
+    /// alone would pass for a tick that built a scope, opened a connection and then found nothing
+    /// pending.
+    ///
+    /// <para><see cref="OnScopeCreated"/> fires between the lease and the effect group, which is the
+    /// only window a test can close the gate in to make the frontier race deterministic without a
+    /// sleep. <see cref="OnScopeDisposed"/> fires once the inner scope is already gone, so a probe
+    /// there reads the one thing worth reading: whether the work lease outlived it.</para>
+    /// </remarks>
+    private sealed class ObservingScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
+    {
+
+        private int _scopesCreated;
+
+        internal int ScopesCreated => Volatile.Read(ref _scopesCreated);
+
+        internal Action? OnScopeCreated { get; set; }
+
+        internal Func<ValueTask>? OnScopeDisposed { get; set; }
+
+        public IServiceScope CreateScope()
+        {
+
+            _ = Interlocked.Increment(ref _scopesCreated);
+
+            IServiceScope scope = inner.CreateScope();
+
+            OnScopeCreated?.Invoke();
+
+            return new ObservingScope(scope, OnScopeDisposed);
+
+        }
+
+    }
+
+    private sealed class ObservingScope(
+        IServiceScope inner,
+        Func<ValueTask>? onDisposing) : IServiceScope, IAsyncDisposable
+    {
+
+        public IServiceProvider ServiceProvider => inner.ServiceProvider;
+
+        public void Dispose() => inner.Dispose();
+
+        public async ValueTask DisposeAsync()
+        {
+
+            inner.Dispose();
+
+            if (onDisposing is not null)
+            {
+
+                await onDisposing().ConfigureAwait(false);
+
+            }
+
+        }
 
     }
 
@@ -441,12 +805,22 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("EntryWeavingService only calls EmbedBatchAsync.");
 
-        public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
+        /// <summary>Runs inside the tick's effect group, before the provider result is produced.</summary>
+        public Func<Task>? OnEmbed { get; set; }
+
+        public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
 
             EmbedBatchCallCount++;
 
             LastBatch = [.. texts];
+
+            if (OnEmbed is not null)
+            {
+
+                await OnEmbed().ConfigureAwait(false);
+
+            }
 
             if (ThrowOnEmbed)
             {
@@ -458,8 +832,8 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
             if (FailNextBatch)
             {
 
-                return Task.FromResult(Result<Embedding<float>[]>.Failure(
-                    new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure.")));
+                return Result<Embedding<float>[]>.Failure(
+                    new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure."));
 
             }
 
@@ -472,7 +846,7 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
             }
 
-            return Task.FromResult(Result<Embedding<float>[]>.Success(generated));
+            return Result<Embedding<float>[]>.Success(generated);
 
         }
 
