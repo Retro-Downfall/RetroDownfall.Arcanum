@@ -119,7 +119,10 @@ key-by-key reference.
 - **One binary, no runtime to install.** Native AOT is a hard constraint on every line of code in
   this repository, not an aspiration. The CLI and host ship as a single self-contained executable.
 - **Local-first, and encrypted at rest.** State lives in a SQLCipher-encrypted store you hold the
-  key to. There is a real backup, key-rotation, and recovery story, and a real deletion story.
+  key to. There is a real backup, key-rotation, and recovery story, and a real deletion story. While
+  a deletion is actually taking the database offline, the host says so: new `/api` and `/v1` work is
+  refused with a stable, sanitized `503` before it runs, rather than failing somewhere further in
+  (issue #251).
 - **Your API, not a bespoke one.** An OpenAI Chat Completions compatibility subset means existing
   clients and SDKs work against `arcanum serve` unchanged.
 - **Bring the providers you already pay for.** Any OpenAI-compatible HTTP endpoint, plus opt-in
