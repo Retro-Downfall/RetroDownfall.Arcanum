@@ -206,6 +206,37 @@ erased, the gate reopens through the proven abort, and the operator gets a retry
 the checkpoint would be a shared decision across all three workers and belongs to #256 or #257, not
 here. This child records the consequence rather than pre-empting it.
 
+### 3.6 What a future migration inherits from this
+
+The parent's §3.1 says reset and migration are structurally the same lifecycle, and §3.4 says a
+migration adds its own kind, payload, and handler while reusing the journal and admission
+infrastructure unchanged. This child is the first worker-side half of that reuse, so its shape is
+the template the remaining workers follow and the thing a migration will actually depend on.
+
+The property that makes it reusable is a negative one, and it is worth stating so a later change
+does not quietly spend it: **the worker never learns which transition is running.** Its whole
+coupling is `TryAcquireWorkLease` and `TryBeginExternalEffectGroup`. It does not read the transition
+kind, the operation id, the Covenant lease, the journal, or the phase; it does not distinguish a
+direct reset from a healthy-catalog factory erasure, and it will not distinguish either from a
+migration. `DeferredForMaintenance` says maintenance owns admission, not what maintenance is doing,
+and its log line says the same. A migration therefore needs no change here at all — it closes the
+same gate through the same owner, and every adopted worker stands down for it exactly as written.
+
+Two things a migration should expect to revisit rather than inherit:
+
+- **The drain checkpoint.** §3.5 records that five seconds can be shorter than an embedding round
+  trip, and that a reset answers a `Grimoire.WorkDrainTimeout` with a retryable `503`. A migration
+  is likelier to run at startup or upgrade time, where "ask the operator to retry" is a worse
+  answer than it is for a reset an operator just requested. The checkpoint is code-owned and
+  already a separate constructor knob from the opening-attempt timeout, so raising it for a
+  worker-bearing process is a one-line change — but it is a shared decision across every adopted
+  worker, which is why it belongs to #256 or #257 rather than to this child.
+- **Resume latency.** §1.3 declines a next-open-generation waiter, so a deferred tick resumes on the
+  ordinary poll interval. That is right for a background indexer and would still be right after a
+  migration. A producer whose work is user-visible on reopen may want the waiter instead, and the
+  hazard §1.3 names — the signal is never completed under `KeepClosed` — is the thing such a
+  producer has to answer before taking one.
+
 ## 4. Testing strategy
 
 RED before GREEN for every behavioural claim. Barriers, not sleeps.
