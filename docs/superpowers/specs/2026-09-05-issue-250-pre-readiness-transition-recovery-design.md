@@ -8,7 +8,7 @@
 **Issue:** [#250 — Grimoire: recover authenticated offline transitions before readiness](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/250)
 
 **Parent design authority:** `docs/superpowers/specs/2026-08-31-issue-239-grimoire-admission-design.md`,
-§5.1 and §7. Where this document and the parent disagree, the parent governs except on the four
+§5.1 and §7. Where this document and the parent disagree, the parent governs except on the eight
 points §1.2 records as deliberate departures.
 
 ## 1. Decision
@@ -45,8 +45,9 @@ marked, and fails readiness closed on every shape that is not exactly one resuma
 
 ### 1.2 Deliberate departures from the parent design
 
-Four decisions in this child differ from, or resolve silence in, the parent design. Each is recorded
-here so the divergence is a decision rather than drift.
+Eight decisions in this child differ from, or resolve silence in, the parent design. The first four
+were taken before implementation; the last four during it, and each is recorded here so the divergence
+is a decision rather than drift.
 
 1. **The typed handler is dispatched through the registered recovery handler, not through the
    coordinator directly.** Parent §7 says startup "dispatch[es] the exact typed handler" without
@@ -79,6 +80,33 @@ here so the divergence is a decision rather than drift.
    the resumption: the adopted owner is handed to generic reconciliation, which runs after readiness.
    This child adds the pre-readiness resumption beside the adoption and leaves the scan where it is,
    because a second scanner over the same rows would be a second answer to one question.
+
+5. **The handoff is spent while the recovery probe is still open.** The design first placed the
+   physical close between the authority load and the handoff's consumption. Consumption reads the
+   authority row, the envelope state and the persisted canonical position, all of which need a
+   connection — so closing first would have meant a second opener for the same three reads. The probe
+   is closed once, after the closed posture is established and before the handler is dispatched, which
+   is the boundary that actually matters: the handler drains every enrolled handle, and a pass still
+   holding its own would be waiting for itself.
+
+6. **The lease adoption and the settle live behind one dispatch seam.** The recovery pass reads
+   external evidence and decides; running a handler needs a service scope and through it a database
+   context, which is the one thing the deciding pass must not own.
+   `IGrimoireOfflineTransitionHandlerDispatch` owns the scope, adopts the lease inside it, and settles
+   — so the pass has four steps rather than six, and the scope's lifetime is one component's business.
+
+7. **The host's dependency on the resuming pass is optional, with the #249 refusal as its fallback.**
+   A required parameter is the stronger shape and is what the parent-receipt resolver uses, but here
+   the absence of a recoverer has a correct answer that the required shape would have deleted: refuse,
+   exactly as #249 did. The parameter is therefore optional, the else arm is the old refusal, and the
+   optional-interface inventory carries the entry stating that a null resumes nothing and admits
+   nothing — with a test that fails if that stops being true.
+
+8. **The bootstrapper is given its own effect-handler table rather than the scoped registration.** The
+   registry is deliberately scoped so a handler cannot capture a scope it outlives. This pass runs
+   before any scope exists, so resolving that registration would be a captive dependency; it is
+   constructed instead from the same closed `Declared` list. What is shared is the declaration rather
+   than an instance, and the existing closure suite still compares both tables against `Declared`.
 
 ### 1.3 What this child does not deliver
 
@@ -114,7 +142,7 @@ erasure scope, preservation set, or the route and result contracts frozen by #12
   exact adopted launch row, and the readiness refusal on every other shape.
 - The generic long-running-operation reconciliation boundary: one exact-operation settle reusing the
   generic pass's own protocol, and the proof that the periodic pass is otherwise byte-identical.
-- Fault injection at each new boundary, and a fresh-process proof over a real encrypted Grimoire.
+- Fault injection at each new boundary, and a whole-chain proof over a real encrypted Grimoire.
 
 ### 2.2 Excluded
 
@@ -244,9 +272,10 @@ say which world it was minted in: the held lock's guarded root, the journal enve
 revision, and the journal envelope's digest.
 
 `ConsumeAsync` initializes the closed recovery posture and may be called exactly once, enforced by an
-`Interlocked` claim rather than by a flag a caller could read and race. It refuses when the guarded
-root it is presented with is not the one it was minted under, when the journal has since advanced
-past the exact revision it names, and when it has already been consumed. Consumption does three
+`Interlocked` claim rather than by a flag a caller could read and race. It runs while the recovery
+probe is still open, because every fact it publishes is read over that connection. It refuses when the
+guarded root it is presented with is not the one it was minted under, when the journal has since
+advanced past the exact revision it names, and when it has already been consumed. Consumption does three
 things in order and stops on the first failure:
 
 1. derives the envelope key generation and initializes `CovenantRuntimeGenerationProvider` with the
@@ -275,15 +304,16 @@ guarded directory, the database path, and #249's evidence outcome, and answers o
 - a content-free `Covenant.ManualRecoveryRequired` failure — every other ending.
 
 For `StandaloneTransition`, `NestedBound`, and `NestedReceiptStoredRetirementSuffix` it performs, in
-order: the recovery-only unlock; the authority load and verification; the physical close of the
-unlock and its pool clear; the handoff consumption; the lease adoption; the exact-operation settle;
-and the mapping above.
+order: the recovery-only unlock; the authority load and verification; the handoff consumption; the
+physical close of the unlock; the dispatch; and the mapping above.
 
-The order of the last two matters and is not interchangeable. The lease is adopted *before* the
-handler is dispatched because `IsActiveCheckpoint` compares the row's `LeaseOwner` with the owner the
-handler is given, and a handler dispatched under an owner the row does not name is refused by the
-coordinator after the gate has already been closed against an adopted owner — which strands the
-installation in exactly the posture this pass exists to leave.
+Two of those orderings are load-bearing. The probe closes before the dispatch because the handler
+closes the Grimoire and waits for every enrolled handle to close physically; a pass still holding its
+own would be waiting for itself, and a startup that hangs is worse than one that refuses. And inside
+the dispatch, the lease is adopted *before* the handler runs because `IsActiveCheckpoint` compares the
+row's `LeaseOwner` with the owner the handler is given — a handler dispatched under an owner the row
+does not name is refused by the coordinator after the gate has already closed around an adopted owner,
+which strands the installation in exactly the posture this pass exists to leave.
 
 ### 6.2 The lease adoption
 
@@ -300,7 +330,9 @@ ordinary acquisition by construction rather than by copy.
 
 ### 6.3 The exact-operation settle
 
-The handler dispatch reuses the generic reconciler's own per-operation protocol —
+`IGrimoireOfflineTransitionHandlerDispatch` owns one service scope per resumed operation, adopts the
+lease inside it, and settles. The handler dispatch reuses the generic reconciler's own per-operation
+protocol —
 `RecoverOneAsync`, the post-handler reread, the revision-bound `TryTransitionAsync` on
 `CancellationToken.None`, and the outcome classification — through a new
 `LongRunningOperationReconciler.SettleExactlyAsync(operationId, ownerId, cancellationToken)`. The
@@ -408,17 +440,22 @@ proofs use deterministic barriers or a manual time provider, never sleeps. Tests
 SQLCipher database stay skippable and join the existing serialized collections, because pool clearing
 is process-global.
 
-Three existing pins change deliberately rather than incidentally, and each gains its counterpart:
+Two existing inventories change deliberately rather than incidentally, and each is the change the
+inventory exists to force: the connection-acquisition catalog gains the recovery-only opener and
+renames the lease acquisition the extraction moved, and the optional-interface inventory gains the
+host's dependency on the resuming pass with the reason its absence is still a refusal.
 
-- `GrimoireDatabaseHostedServiceTests`' proof that an active journal refuses startup becomes a proof
-  that an active journal is *resumed*, beside a new proof that a parked one still refuses;
-- `CovenantErasureStartupRecoveryOwnerAdopterTests` keeps every refusal and gains the resumption; and
-- `CovenantErasureFreshProcessRecoveryTests` keeps its post-bootstrap adoption proof and gains a
-  sibling that crashes *inside* the closed period and proves the pre-bootstrap path resumes it.
+The eight acceptance cases the issue names are proved as a table: active, reconciliation-pending,
+retirement-pending, malformed, missing, conflicting, dual-record, and launch-gap. Ambiguous evidence
+fails closed in every one of them.
 
-The eight acceptance cases the issue names are proved as a table over the dispatcher: active,
-reconciliation-pending, retirement-pending, malformed, missing, conflicting, dual-record, and
-launch-gap. Ambiguous evidence fails closed in every one of them.
+The whole-chain proof runs over a real encrypted catalog with a real committed launch row: it proves
+the validate-only unlock opens the catalog, the authority load agrees with this installation's own
+`covenant_state` and `covenant_authority_state`, and spending the handoff leaves a real gate closed
+around the reconstructed owner with the probe already physically shut. What it deliberately does not
+re-prove is the erasure itself — that a resumed coordinator reaches the same ending from every phase
+boundary is the crash matrix's proof, and the entry point this chain dispatches into is the same
+registered handler that matrix drives.
 
 Repository-wide qualification remains #257's.
 

@@ -192,7 +192,7 @@ Several rules make persistence reliable:
 - transient SQLite busy/locked failures use capped per-delay backoff with a fresh transaction until success, non-transient failure, or cancellation;
 - transcript order uses explicit `Sequence`, not timestamp guesswork;
 - idempotency claims are durable before eligible work begins;
-- long-running operations checkpoint and reconcile after interruption;
+- long-running operations checkpoint and reconcile after interruption, and an interrupted rebuild of the database itself is finished by the next start before that start opens the database for anything else;
 - atomic files use owner-only staging, durable flush, replacement, and identity-owned cleanup;
 - security-sensitive reads use no-follow handles, size ceilings, and identity revalidation.
 

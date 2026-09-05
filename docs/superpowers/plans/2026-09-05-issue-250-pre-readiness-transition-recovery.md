@@ -51,21 +51,21 @@ adopted launch-gap row inside the bootstrap before readiness is marked.
 
 **Files:** new `Infrastructure/Hosting/GrimoireRecoveryOnlyUnlock.cs`, plus its tests.
 
-- [ ] RED: tests asserting the unlock refuses an absent database file, an existing database with no
+- [x] RED: tests asserting the unlock refuses an absent database file, an existing database with no
       KDF sidecar, a database with a *pending* KDF sidecar, an unreadable sidecar, and a passphrase
       that does not open the catalog — each with the content-free `Covenant.ManualRecoveryRequired`
       refusal and no file created.
-- [ ] GREEN: add `IGrimoireRecoveryOnlyUnlock`, `GrimoireRecoveryOnlyUnlock`, and the
+- [x] GREEN: add `IGrimoireRecoveryOnlyUnlock`, `GrimoireRecoveryOnlyUnlock`, and the
       `GrimoireRecoveryUnlockedCatalog` async-disposable handle. Resolve the passphrase from the
       existing sidecar and active secret only. Open with `SqliteOpenMode.ReadWrite`, `Pooling = false`,
       initialize through `CovenantSqliteConnectionMode.ReadOnly`, prove `SELECT 1`.
-- [ ] RED: a test asserting a successful unlock publishes the derived passphrase to
+- [x] RED: a test asserting a successful unlock publishes the derived passphrase to
       `IGrimoireDbPassphraseSource`, and that disposal physically closes and clears the pools.
-- [ ] GREEN: publish the passphrase and implement disposal.
-- [ ] RED: a test asserting the unlock asserts the held installation lock for the guarded root and
+- [x] GREEN: publish the passphrase and implement disposal.
+- [x] RED: a test asserting the unlock asserts the held installation lock for the guarded root and
       refuses a lock held for another root.
-- [ ] GREEN: assert the lock.
-- [ ] `git add` and `git commit -m "feat: open an existing catalog for recovery and nothing else"`.
+- [x] GREEN: assert the lock.
+- [x] `git add` and `git commit -m "feat: open an existing catalog for recovery and nothing else"`.
 
 ---
 
@@ -73,24 +73,24 @@ adopted launch-gap row inside the bootstrap before readiness is marked.
 
 **Files:** new `Infrastructure/Security/CovenantRecoveryAuthorityBootstrapper.cs`, plus its tests.
 
-- [ ] RED: a test asserting the bootstrapper reads the authority row, envelope state, persisted
+- [x] RED: a test asserting the bootstrapper reads the authority row, envelope state, persisted
       availability, and the named launch row over an unlocked catalog and writes nothing (proved by a
       before/after row-and-revision comparison).
-- [ ] GREEN: add `CovenantRecoveryAuthorityBootstrapper.LoadAsync` over the four existing projections.
-- [ ] RED: a table asserting all six verification refusals — a missing or wrong-version launch row, a
+- [x] GREEN: add `CovenantRecoveryAuthorityBootstrapper.LoadAsync` over the four existing projections.
+- [x] RED: a table asserting all six verification refusals — a missing or wrong-version launch row, a
       launch binding digest that is not the journal's, an effect digest that is not the journal's, an
       exclusive operation the effect-handler registry does not allow for the journal's kind, a row
       revision behind the launch's starting revision, and a persisted dataset generation that is
       neither the journal's source nor its target.
-- [ ] GREEN: add the verification.
-- [ ] RED: a test asserting an unpermitted host-tools runtime policy refuses rather than warns.
-- [ ] GREEN: add the gate.
-- [ ] RED: tests asserting `CovenantClosedRecoveryHandoff.ConsumeAsync` initializes the runtime
+- [x] GREEN: add the verification.
+- [x] RED: a test asserting an unpermitted host-tools runtime policy refuses rather than warns.
+- [x] GREEN: add the gate.
+- [x] RED: tests asserting `CovenantClosedRecoveryHandoff.ConsumeAsync` initializes the runtime
       provider and adopts the durable recovery owner, refuses a second consumption, refuses a
       different guarded root, refuses a journal revision that has moved, publishes no readiness, and
       leaves ordinary lease acquisition refused afterwards.
-- [ ] GREEN: add the handoff with its `Interlocked` one-use claim.
-- [ ] `git add` and `git commit -m "feat: verify the persisted authority against the journal that names it"`.
+- [x] GREEN: add the handoff with its `Interlocked` one-use claim.
+- [x] `git add` and `git commit -m "feat: verify the persisted authority against the journal that names it"`.
 
 ---
 
@@ -99,16 +99,16 @@ adopted launch-gap row inside the bootstrap before readiness is marked.
 **Files:** `Infrastructure/Data/LongRunningOperationStore.cs`, new
 `Infrastructure/Operations/ILongRunningOperationMaintenanceLeaseAdoption.cs`, plus tests.
 
-- [ ] RED: a test asserting the ordinary `TryAcquireLeaseAsync` still refuses an unexpired lease, and
+- [x] RED: a test asserting the ordinary `TryAcquireLeaseAsync` still refuses an unexpired lease, and
       that the new adoption takes it — same row, same state predicate, one revision advance.
-- [ ] GREEN: extract the shared UPDATE, add the adoption with the expiry predicate omitted, and expose
+- [x] GREEN: extract the shared UPDATE, add the adoption with the expiry predicate omitted, and expose
       it through the narrow Infrastructure interface implemented by the concrete store.
-- [ ] RED: a test asserting the adoption asserts the held installation lock and refuses without one.
-- [ ] GREEN: assert the lock before the write.
-- [ ] RED: a test asserting a terminal row is still not adoptable, and that the admitted
+- [x] RED: a test asserting the adoption asserts the held installation lock and refuses without one.
+- [x] GREEN: assert the lock before the write.
+- [x] RED: a test asserting a terminal row is still not adoptable, and that the admitted
       `ReconciliationRequired` kinds and terminal codes are exactly the ordinary path's.
-- [ ] GREEN: share the predicate rather than restating it.
-- [ ] `git add` and `git commit -m "feat: adopt one operation's lease from a provably dead owner"`.
+- [x] GREEN: share the predicate rather than restating it.
+- [x] `git add` and `git commit -m "feat: adopt one operation's lease from a provably dead owner"`.
 
 ---
 
@@ -116,17 +116,17 @@ adopted launch-gap row inside the bootstrap before readiness is marked.
 
 **Files:** `Infrastructure/Operations/LongRunningOperationReconciler.cs`, plus tests.
 
-- [ ] RED: a test asserting `SettleExactlyAsync` dispatches the registered handler for one named
+- [x] RED: a test asserting `SettleExactlyAsync` dispatches the registered handler for one named
       operation, rereads the row, transitions it on `CancellationToken.None`, and classifies the four
       durable outcomes.
-- [ ] GREEN: extract the generic pass's per-operation body and add `SettleExactlyAsync` over it with
+- [x] GREEN: extract the generic pass's per-operation body and add `SettleExactlyAsync` over it with
       the lease already adopted.
-- [ ] RED: a test asserting `SettleExactlyAsync` skips an operation this process has already claimed.
-- [ ] GREEN: keep the shared `ownership.IsClaimed` check in the extracted body.
-- [ ] RED: a characterization test asserting the generic pass's discovery, phases, paging, concurrency
+- [x] RED: a test asserting `SettleExactlyAsync` skips an operation this process has already claimed.
+- [x] GREEN: keep the shared `ownership.IsClaimed` check in the extracted body.
+- [x] RED: a characterization test asserting the generic pass's discovery, phases, paging, concurrency
       and outcomes are unchanged across the refactor.
-- [ ] GREEN: refactor without behavior change.
-- [ ] `git add` and `git commit -m "refactor: settle one named operation through the pass's own protocol"`.
+- [x] GREEN: refactor without behavior change.
+- [x] `git add` and `git commit -m "refactor: settle one named operation through the pass's own protocol"`.
 
 ---
 
@@ -135,22 +135,22 @@ adopted launch-gap row inside the bootstrap before readiness is marked.
 **Files:** new `Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionStartupRecovery.cs`, plus
 tests.
 
-- [ ] RED: a test asserting `NeitherActive`, `NestedNotStarted`, and `NestedRetired` return
+- [x] RED: a test asserting `NeitherActive`, `NestedNotStarted`, and `NestedRetired` return
       `NoActiveJournal` and perform no unlock, no load, and no dispatch.
-- [ ] GREEN: add the dispatcher and its three-valued outcome.
-- [ ] RED: a table over `StandaloneTransition`, `NestedBound`, and
+- [x] GREEN: add the dispatcher and its three-valued outcome.
+- [x] RED: a table over `StandaloneTransition`, `NestedBound`, and
       `NestedReceiptStoredRetirementSuffix` asserting the exact step order — unlock, load and verify,
       physical close, consume, adopt lease, settle — with a recording double proving the order and
       proving the unlock is closed before the handler is dispatched.
-- [ ] GREEN: implement the order.
-- [ ] RED: tests asserting a refusal from any step returns the content-free
+- [x] GREEN: implement the order.
+- [x] RED: tests asserting a refusal from any step returns the content-free
       `Covenant.ManualRecoveryRequired` failure, performs no later step, and leaves the gate with no
       adopted owner where the failure preceded consumption.
-- [ ] GREEN: add the short-circuits.
-- [ ] RED: a test asserting a handler outcome that is not terminal maps to the failure rather than to
+- [x] GREEN: add the short-circuits.
+- [x] RED: a test asserting a handler outcome that is not terminal maps to the failure rather than to
       `Resumed`.
-- [ ] GREEN: map the outcomes.
-- [ ] `git add` and `git commit -m "feat: resume an authenticated transition before the database opens"`.
+- [x] GREEN: map the outcomes.
+- [x] `git add` and `git commit -m "feat: resume an authenticated transition before the database opens"`.
 
 ---
 
@@ -159,17 +159,17 @@ tests.
 **Files:** `Infrastructure/Hosting/GrimoireDatabaseHostedService.cs`,
 `Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs`, plus tests.
 
-- [ ] RED: a test asserting a host started over an active journal now resumes it and goes on to
+- [x] RED: a test asserting a host started over an active journal now resumes it and goes on to
       bootstrap and readiness, where today it throws.
-- [ ] GREEN: call the dispatcher between the reset recovery and the bootstrap, delete
+- [x] GREEN: call the dispatcher between the reset recovery and the bootstrap, delete
       `InstallationResetHostStartupAdmission.LeavesTransitionUnfinished`, and proceed on `Resumed`.
-- [ ] RED: a test asserting a parked journal and each fail-closed matrix arm still refuse startup with
+- [x] RED: a test asserting a parked journal and each fail-closed matrix arm still refuse startup with
       the same sentence, and that readiness is marked failed.
-- [ ] GREEN: throw on the dispatcher's failure.
-- [ ] RED: a registration test asserting every new component is composed exactly once with the
+- [x] GREEN: throw on the dispatcher's failure.
+- [x] RED: a registration test asserting every new component is composed exactly once with the
       expected lifetime, and that the lock-free probe path reaches none of them.
-- [ ] GREEN: register the components.
-- [ ] `git add` and `git commit -m "feat: let the host finish the transition it refused to start over"`.
+- [x] GREEN: register the components.
+- [x] `git add` and `git commit -m "feat: let the host finish the transition it refused to start over"`.
 
 ---
 
@@ -178,19 +178,19 @@ tests.
 **Files:** `Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs`, new
 `Infrastructure/Data/Covenant/CovenantOfflineTransitionLaunchGapResumption.cs`, plus tests.
 
-- [ ] RED: a test asserting a committed launch row with no journal is resumed to a terminal durable
+- [x] RED: a test asserting a committed launch row with no journal is resumed to a terminal durable
       state *before* readiness is marked, rather than left for the generic pass.
-- [ ] GREEN: add the resumption and call it after the install connection closes and before
+- [x] GREEN: add the resumption and call it after the install connection closes and before
       `readiness.MarkReady()`.
-- [ ] RED: a test asserting the resumption runs only with a held installation lock and only for
+- [x] RED: a test asserting the resumption runs only with a held installation lock and only for
       exactly one adopted owner.
-- [ ] GREEN: gate it on both.
-- [ ] RED: tests asserting a second adoptable row, a legacy row, a malformed row, and a resumption
+- [x] GREEN: gate it on both.
+- [x] RED: tests asserting a second adoptable row, a legacy row, a malformed row, and a resumption
       that does not reach a terminal state each fail readiness closed.
-- [ ] GREEN: add the refusals.
-- [ ] RED: a test asserting an ordinary retention mutation row is untouched by the resumption.
-- [ ] GREEN: keep the adopter's ordinary-mutation early-out authoritative.
-- [ ] `git add` and `git commit -m "feat: close the launch gap before the host says it is ready"`.
+- [x] GREEN: add the refusals.
+- [x] RED: a test asserting an ordinary retention mutation row is untouched by the resumption.
+- [x] GREEN: keep the adopter's ordinary-mutation early-out authoritative.
+- [x] `git add` and `git commit -m "feat: close the launch gap before the host says it is ready"`.
 
 ---
 
@@ -198,15 +198,15 @@ tests.
 
 **Files:** test files only.
 
-- [ ] RED/GREEN: a table over the eight acceptance cases the issue names — active,
+- [x] RED/GREEN: a table over the eight acceptance cases the issue names — active,
       reconciliation-pending, retirement-pending, malformed, missing, conflicting, dual-record, and
       launch-gap — asserting each resolves before readiness and each ambiguity fails closed.
-- [ ] RED/GREEN: a skippable serialized integration test that crashes a real encrypted Grimoire inside
+- [x] RED/GREEN: a skippable serialized integration test that crashes a real encrypted Grimoire inside
       the closed period, starts a fresh process over it, and proves the pre-bootstrap path resumes the
       transition, retires the journal, reopens admission, and reaches readiness — with the old token
       families rejected and the dataset generation moved.
-- [ ] RED/GREEN: fault-injection cases at each boundary §8 of the spec names.
-- [ ] `git add` and `git commit -m "test: prove every ending of a transition that crossed a restart"`.
+- [x] RED/GREEN: fault-injection cases at each boundary §8 of the spec names.
+- [x] `git add` and `git commit -m "test: prove every ending of a transition that crossed a restart"`.
 
 ---
 
@@ -216,15 +216,15 @@ tests.
 `docs/Arcanum.Command.Reference.md`, `docs/Arcanum.OATH.md`, `docs/ArcanumOATH.Human.md`,
 `docs/Arcanum.Design.Human.md`, `docs/Arcanum.DEBUGGING.Human.md`.
 
-- [ ] DESIGN §10.20.3 and §10.20.4: the recovery-only unlock, the verified authority handoff, the
+- [x] DESIGN §10.20.3 and §10.20.4: the recovery-only unlock, the verified authority handoff, the
       pre-bootstrap dispatch, and the launch gap closing before readiness. §13.7: the new coverage.
-- [ ] Engineering: the issue #250 status paragraph, and the amendments the #249 and #244 paragraphs
+- [x] Engineering: the issue #250 status paragraph, and the amendments the #249 and #244 paragraphs
       need where they say startup dispatch is a later child's work.
-- [ ] Command Reference: the `serve` startup-admission paragraphs, which currently say an active
+- [x] Command Reference: the `serve` startup-admission paragraphs, which currently say an active
       journal keeps readiness closed.
-- [ ] OATH §2.1 (the delivered table), §15.3, §16; and the §15.3 correction the spec §10 records.
-- [ ] The three human documents, in their own registers.
-- [ ] `git add` and `git commit -m "docs: record the recovery that runs before anything opens"`.
+- [x] OATH §2.1 (the delivered table), §15.3, §16; and the §15.3 correction the spec §10 records.
+- [x] The three human documents, in their own registers.
+- [x] `git add` and `git commit -m "docs: record the recovery that runs before anything opens"`.
 
 ---
 
