@@ -17,7 +17,7 @@ internal enum GrimoireOfflineTransitionAnchorWriteStage : byte
 
 }
 
-internal sealed class GrimoireOfflineTransitionJournalAnchorStore
+internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 {
 
     private readonly IOsCredentialStore _credentials;

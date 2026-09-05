@@ -58,12 +58,22 @@ public sealed class GrimoireOfflineTransitionJournalKeyLeaseCallSiteTests
             "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/"
             + "GrimoireOfflineTransitionJournalAnchorStore.cs";
 
+        // The one file that may name both accounts and delete either of them. A full installation
+        // reset's final credential cleanup is the only path allowed to remove the pair, and it is
+        // allowed to only after a terminal proof; naming its exact file here is what keeps that
+        // permission from spreading. A folder or prefix exemption is refused for the same reason it
+        // always is: the next real deleter would slip in behind it.
+        string terminalRemoval =
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/"
+            + "GrimoireOfflineTransitionJournalAnchorStore.FullResetTerminal.cs";
+
         List<string> keyFactoryCallers =
         [
             .. ProductionSourceInventory.Sources()
                 .Where(source =>
                     !source.IsExactOwner(credentials)
                     && !source.IsExactOwner(keyProvider)
+                    && !source.IsExactOwner(terminalRemoval)
                     && source.Names("ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount("))
                 .Select(static source => source.RelativePath),
         ];
@@ -74,6 +84,7 @@ public sealed class GrimoireOfflineTransitionJournalKeyLeaseCallSiteTests
                 .Where(source =>
                     !source.IsExactOwner(credentials)
                     && !source.IsExactOwner(anchorStore)
+                    && !source.IsExactOwner(terminalRemoval)
                     && source.Names("ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount("))
                 .Select(static source => source.RelativePath),
         ];
@@ -82,7 +93,8 @@ public sealed class GrimoireOfflineTransitionJournalKeyLeaseCallSiteTests
         [
             .. ProductionSourceInventory.Sources()
                 .Where(source =>
-                    source.Names(".Delete(")
+                    !source.IsExactOwner(terminalRemoval)
+                    && source.Names(".Delete(")
                     && (source.Names("GrimoireTransitionJournalKeyAccount(")
                         || source.Names("GrimoireTransitionJournalAnchorAccount(")))
                 .Select(static source => source.RelativePath),
