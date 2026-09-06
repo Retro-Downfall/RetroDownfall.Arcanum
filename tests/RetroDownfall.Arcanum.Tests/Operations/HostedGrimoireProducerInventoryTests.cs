@@ -131,6 +131,80 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
+    [InlineData("stable", true)]
+    [InlineData("factory-authored-dispose", false)]
+    [InlineData("factory-authored-store", false)]
+    [InlineData("factory-opaque", false)]
+    [InlineData("constructor-authored-dispose", false)]
+    [InlineData("constructor-authored-store", false)]
+    [InlineData("constructor-opaque", false)]
+    [InlineData("completion-authored-store", false)]
+    [InlineData("completion-opaque", false)]
+    [InlineData("disposal-authored-store", false)]
+    [InlineData("disposal-opaque", false)]
+    public void R5CarrierOwnershipAllowsOnlyTheExactDirectTransferAndTerminals(string shape, bool complete)
+    {
+        const string helper = "static class WriterSink { public static RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter Saved=null!; public static void Dispose(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer) => writer.Dispose(); public static void Store(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer) { Saved=writer; } }";
+
+        string constructor = shape switch { "constructor-authored-dispose" => "WriterSink.Dispose(a); first=a; second=b;", "constructor-authored-store" => "WriterSink.Store(a); first=a; second=b;", "constructor-opaque" => "GC.KeepAlive(a); first=a; second=b;", _ => "first=a; second=b;" };
+
+        string beforeReturn = shape switch { "factory-authored-dispose" => "WriterSink.Dispose(a);", "factory-authored-store" => "WriterSink.Store(a);", "factory-opaque" => "GC.KeepAlive(a);", _ => "" };
+
+        string completion = shape switch { "completion-authored-store" => "first.CompleteAsync(); WriterSink.Store(first); second.CompleteAsync();", "completion-opaque" => "first.CompleteAsync(); GC.KeepAlive(first); second.CompleteAsync();", _ => "first.CompleteAsync(); second.CompleteAsync();" };
+
+        string disposal = shape switch { "disposal-authored-store" => "first.Dispose(); WriterSink.Store(first); second.Dispose();", "disposal-opaque" => "first.Dispose(); GC.KeepAlive(first); second.Dispose();", _ => "first.Dispose(); second.Dispose();" };
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R4CarrierSource(constructor, completion, disposal, beforeReturn: beforeReturn) + helper);
+
+        Assert.Equal(complete, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void R5AdmissionCachesSeparateDistinctTreesWithTheSamePathAndSpan(bool firstAdmitted)
+    {
+        static string Source(string worker, bool admitted)
+        {
+            string gate = admitted ? "TryBeginExternalEffectGroup" : "TryBeginExternalEffectGrouq";
+
+            string helper = "static class SharedHelper { public static void Run(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease) { if (!lease." + gate + "(out var group)) return; using var held=group; System.IO.File.Delete(\"path\"); } } static class SimilarGate { public static bool TryBeginExternalEffectGrouq(this RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease, out IDisposable group) { group=null!; return true; } }";
+
+            return R2Source(AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal) + " SharedHelper.Run(lease);", helper).Replace("Worker", worker, StringComparison.Ordinal);
+        }
+
+        CSharpCompilation first = Compile(Source("WorkerA", firstAdmitted)).WithAssemblyName("CacheContextA");
+
+        CSharpCompilation second = Compile(Source("WorkerB", !firstAdmitted)).WithAssemblyName("CacheContextB");
+
+        SyntaxTree firstTree = first.SyntaxTrees.Single();
+
+        SyntaxTree secondTree = second.SyntaxTrees.Single();
+
+        Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax firstHelper = firstTree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "Run");
+
+        Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax secondHelper = secondTree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "Run");
+
+        Assert.NotSame(firstTree, secondTree);
+
+        Assert.Equal(firstTree.FilePath, secondTree.FilePath);
+
+        Assert.Equal(firstHelper.Span, secondHelper.Span);
+
+        HostedProducerOperationEntry FirstRoot(string worker) => new(worker + ".StartAsync", "src/Fixture.cs", worker, "StartAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.WorkspaceIndexing, null, []);
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([first, second], new(["WorkerA", "WorkerB"], []), [new("WorkerA", [FirstRoot("WorkerA")]), new("WorkerB", [FirstRoot("WorkerB")])], []);
+
+        string admitted = firstAdmitted ? "WorkerA.StartAsync" : "WorkerB.StartAsync";
+
+        string unadmitted = firstAdmitted ? "WorkerB.StartAsync" : "WorkerA.StartAsync";
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.StartsWith(admitted, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.StartsWith(unadmitted, StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData("IDisposable alias; alias = group; alias.Dispose(); System.IO.File.Delete(\"path\");", false)]
     [InlineData("Helper.Use(held);", false)]
     [InlineData("Helper.Release(held); System.IO.File.Delete(\"path\");", false)]

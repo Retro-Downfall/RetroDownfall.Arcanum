@@ -394,7 +394,18 @@ internal static class HostedGrimoireProducerInventory
 
     private sealed class ProducerGraph
     {
-        private readonly Dictionary<string, AuthoredMember> members = new(StringComparer.Ordinal);
+        private readonly record struct MethodIdentity(IAssemblySymbol Assembly, string Method);
+
+        private sealed class MethodIdentityComparer : IEqualityComparer<MethodIdentity>
+        {
+            internal static MethodIdentityComparer Instance { get; } = new();
+
+            public bool Equals(MethodIdentity x, MethodIdentity y) => ReferenceEquals(x.Assembly, y.Assembly) && x.Method == y.Method;
+
+            public int GetHashCode(MethodIdentity value) => HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value.Assembly), StringComparer.Ordinal.GetHashCode(value.Method));
+        }
+
+        private readonly Dictionary<string, List<AuthoredMember>> members = new(StringComparer.Ordinal);
 
         private readonly Dictionary<string, HashSet<string>> bindings = new(StringComparer.Ordinal);
 
@@ -408,15 +419,19 @@ internal static class HostedGrimoireProducerInventory
 
         private HostedProducerOperationEntry[] declaredOperations = [];
 
-        private readonly Dictionary<string, InvocationExpressionSyntax[]> admissionCalls = new(StringComparer.Ordinal);
+        private readonly Dictionary<(int Compilation, int Tree, string Method, int SpanStart), InvocationExpressionSyntax[]> admissionCalls = [];
 
-        private readonly Dictionary<string, bool> admissionSeeds = new(StringComparer.Ordinal);
+        private readonly Dictionary<(int Compilation, int Tree, string Method, int SpanStart), bool> admissionSeeds = [];
 
-        private readonly Dictionary<string, IReadOnlySet<string>> admissionOrigins = new(StringComparer.Ordinal);
+        private readonly Dictionary<(int Compilation, int Tree, string Method, int MemberStart, int ExpressionStart, int ExpressionLength, string Bindings), IReadOnlySet<string>> admissionOrigins = [];
 
         private readonly Dictionary<string, List<SyntaxNode>> selectedRoots = new(StringComparer.Ordinal);
 
-        private readonly Dictionary<string, AuthoredMember?> resolvedMembers = new(StringComparer.Ordinal);
+        private readonly Dictionary<MethodIdentity, AuthoredMember?> resolvedMembers = new(MethodIdentityComparer.Instance);
+
+        private readonly Dictionary<Compilation, int> compilationIdentities = new(ReferenceEqualityComparer.Instance);
+
+        private readonly Dictionary<SyntaxTree, int> treeIdentities = new(ReferenceEqualityComparer.Instance);
 
         private long emittedSiteEvidence;
 
@@ -424,6 +439,8 @@ internal static class HostedGrimoireProducerInventory
         {
             foreach (CSharpCompilation compilation in compilations)
             {
+                _ = CompilationIdentity(compilation);
+
                 foreach (SyntaxTree tree in compilation.SyntaxTrees)
                 {
                     if (!tree.FilePath.StartsWith("src/", StringComparison.Ordinal) || tree.FilePath.Contains("/obj/", StringComparison.Ordinal))
@@ -433,16 +450,18 @@ internal static class HostedGrimoireProducerInventory
 
                     SemanticModel model = compilation.GetSemanticModel(tree);
 
+                    _ = TreeIdentity(tree);
+
                     foreach (SyntaxNode node in tree.GetRoot().DescendantNodes())
                     {
                         if (node is BaseMethodDeclarationSyntax or AccessorDeclarationSyntax or LocalFunctionStatementSyntax && model.GetDeclaredSymbol(node) is IMethodSymbol method)
                         {
-                            members[MethodKey(method)] = new(method, node, model);
+                            AddMember(new(method, node, model));
                         }
 
                         if (node is PropertyDeclarationSyntax { ExpressionBody.Expression: { } expression } property && model.GetDeclaredSymbol(property)?.GetMethod is { } getter)
                         {
-                            members[MethodKey(getter)] = new(getter, expression, model);
+                            AddMember(new(getter, expression, model));
                         }
 
                         if (node is InvocationExpressionSyntax invocation)
@@ -459,6 +478,48 @@ internal static class HostedGrimoireProducerInventory
                 ReadBinding(call, model);
             }
         }
+
+        private static MethodIdentity Identity(IMethodSymbol method) => new(method.ContainingAssembly, MethodKey(method));
+
+        private IEnumerable<AuthoredMember> AuthoredMembers => members.Values.SelectMany(static group => group);
+
+        private void AddMember(AuthoredMember member)
+        {
+            string key = MethodKey(member.Symbol);
+
+            if (!members.TryGetValue(key, out List<AuthoredMember>? candidates))
+            {
+                members.Add(key, candidates = []);
+            }
+
+            candidates.Add(member);
+        }
+
+        private int CompilationIdentity(Compilation compilation)
+        {
+            if (!compilationIdentities.TryGetValue(compilation, out int identity))
+            {
+                identity = compilationIdentities.Count;
+
+                compilationIdentities.Add(compilation, identity);
+            }
+
+            return identity;
+        }
+
+        private int TreeIdentity(SyntaxTree tree)
+        {
+            if (!treeIdentities.TryGetValue(tree, out int identity))
+            {
+                identity = treeIdentities.Count;
+
+                treeIdentities.Add(tree, identity);
+            }
+
+            return identity;
+        }
+
+        private (int Compilation, int Tree, string Method, int SpanStart) MemberIdentity(AuthoredMember member) => (CompilationIdentity(member.Model.Compilation), TreeIdentity(member.Syntax.SyntaxTree), MethodKey(member.Symbol), member.Syntax.SpanStart);
 
         private void ReadBinding(InvocationExpressionSyntax invocation, SemanticModel model)
         {
@@ -531,7 +592,7 @@ internal static class HostedGrimoireProducerInventory
 
             IEnumerable<ITypeSymbol?> resultTypes = [null];
 
-            if (symbol is IMethodSymbol factory && members.TryGetValue(MethodKey(factory), out AuthoredMember? authored))
+            if (symbol is IMethodSymbol factory && Resolve(factory) is { } authored)
             {
                 SyntaxNode? body = authored.Syntax switch { MethodDeclarationSyntax declaration => (SyntaxNode?)declaration.ExpressionBody ?? declaration.Body, LocalFunctionStatementSyntax local => (SyntaxNode?)local.ExpressionBody ?? local.Body, _ => null };
 
@@ -567,7 +628,7 @@ internal static class HostedGrimoireProducerInventory
 
             foreach (HostedProducerOperationEntry operation in declared)
             {
-                AuthoredMember[] roots = members.Values.Where(member => member.Syntax.SyntaxTree.FilePath == operation.SourcePath && TypeKey(member.Symbol.ContainingType) == operation.EnclosingType && member.Symbol.Name == operation.Member).ToArray();
+                AuthoredMember[] roots = AuthoredMembers.Where(member => member.Syntax.SyntaxTree.FilePath == operation.SourcePath && TypeKey(member.Symbol.ContainingType) == operation.EnclosingType && member.Symbol.Name == operation.Member).ToArray();
 
                 SyntaxNode? selection = roots.Length == 1 ? SelectRoot(roots[0], operation.OperationId) : null;
 
@@ -598,7 +659,7 @@ internal static class HostedGrimoireProducerInventory
                 }
             }
 
-            foreach (AuthoredMember root in members.Values.Where(member => hosted.Contains(member.Symbol.ContainingType.Name) && IsLifecycle(member.Symbol)))
+            foreach (AuthoredMember root in AuthoredMembers.Where(member => hosted.Contains(member.Symbol.ContainingType.Name) && IsLifecycle(member.Symbol)))
             {
                 Traverse(root, root.Symbol.ContainingType.Name, TypeKey(root.Symbol.ContainingType) + "." + root.Symbol.Name, new HashSet<string>(StringComparer.Ordinal), true);
             }
@@ -682,24 +743,28 @@ internal static class HostedGrimoireProducerInventory
 
         private AuthoredMember? Resolve(IMethodSymbol method)
         {
-            string key = MethodKey(method);
+            MethodIdentity identity = Identity(method);
 
-            if (resolvedMembers.TryGetValue(key, out AuthoredMember? cached))
+            if (resolvedMembers.TryGetValue(identity, out AuthoredMember? cached))
             {
                 return cached;
             }
 
-            if (members.TryGetValue(key, out AuthoredMember? authored) && authored.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null })
+            AuthoredMember[] candidates = members.TryGetValue(MethodKey(method), out List<AuthoredMember>? group) ? group.Where(static candidate => candidate.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null }).ToArray() : [];
+
+            AuthoredMember? authored = candidates.FirstOrDefault(candidate => ReferenceEquals(candidate.Symbol.ContainingAssembly, method.ContainingAssembly) && SymbolEqualityComparer.Default.Equals(candidate.Symbol, method)) ?? (candidates.Length == 1 ? candidates[0] : null);
+
+            if (authored is not null)
             {
-                return resolvedMembers[key] = authored;
+                return resolvedMembers[identity] = authored;
             }
 
             if (method.ContainingType.TypeKind == TypeKind.Interface && bindings.TryGetValue(TypeKey(method.ContainingType), out HashSet<string>? targets) && targets.Count == 1)
             {
-                return resolvedMembers[key] = members.Values.FirstOrDefault(candidate => TypeKey(candidate.Symbol.ContainingType) == targets.Single() && candidate.Symbol.ContainingType.AllInterfaces.SelectMany(static contract => contract.GetMembers()).OfType<IMethodSymbol>().Any(slot => MethodKey(slot) == key && candidate.Symbol.ContainingType.FindImplementationForInterfaceMember(slot) is IMethodSymbol implementation && MethodKey(implementation) == MethodKey(candidate.Symbol)));
+                return resolvedMembers[identity] = AuthoredMembers.FirstOrDefault(candidate => TypeKey(candidate.Symbol.ContainingType) == targets.Single() && candidate.Symbol.ContainingType.AllInterfaces.SelectMany(static contract => contract.GetMembers()).OfType<IMethodSymbol>().Any(slot => MethodKey(slot) == MethodKey(method) && candidate.Symbol.ContainingType.FindImplementationForInterfaceMember(slot) is IMethodSymbol implementation && MethodKey(implementation) == MethodKey(candidate.Symbol)));
             }
 
-            return resolvedMembers[key] = null;
+            return resolvedMembers[identity] = null;
         }
 
         private void Traverse(AuthoredMember member, string rootType, string operationId, HashSet<string> visited, bool lifecycle, string? inheritedWork = null, string? inheritedEffect = null, SyntaxNode? selection = null, IReadOnlySet<int>? fieldPublications = null, bool completionOwned = false)
@@ -991,7 +1056,7 @@ internal static class HostedGrimoireProducerInventory
                 return null;
             }
 
-            AuthoredMember[] owners = members.Values.Where(member => SymbolEqualityComparer.Default.Equals(member.Symbol.ContainingType, caller.Symbol.ContainingType)).ToArray();
+            AuthoredMember[] owners = AuthoredMembers.Where(member => SymbolEqualityComparer.Default.Equals(member.Symbol.ContainingType, caller.Symbol.ContainingType)).ToArray();
 
             bool RefersToField(AuthoredMember member, SyntaxNode syntax) => syntax.DescendantNodesAndSelf().OfType<ExpressionSyntax>().Any(expression => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(expression).Symbol, field));
 
@@ -1075,7 +1140,9 @@ internal static class HostedGrimoireProducerInventory
         {
             bool cacheable = path.Count == 0;
 
-            string key = member.Syntax.SyntaxTree.FilePath + "|" + MethodKey(member.Symbol) + "@" + member.Syntax.SpanStart + "|" + expression.SpanStart + ":" + expression.Span.Length + "|" + AdmissionBindingIdentity(member);
+            (int Compilation, int Tree, string Method, int MemberStart) memberIdentity = MemberIdentity(member);
+
+            var key = (memberIdentity.Compilation, memberIdentity.Tree, memberIdentity.Method, memberIdentity.MemberStart, ExpressionStart: expression.SpanStart, ExpressionLength: expression.Span.Length, Bindings: AdmissionBindingIdentity(member));
 
             if (cacheable && admissionOrigins.TryGetValue(key, out IReadOnlySet<string>? cached))
             {
@@ -1182,7 +1249,7 @@ internal static class HostedGrimoireProducerInventory
                 return true;
             }
 
-            string key = member.Syntax.SyntaxTree.FilePath + "|" + MethodKey(member.Symbol) + "@" + member.Syntax.SpanStart;
+            (int Compilation, int Tree, string Method, int SpanStart) key = MemberIdentity(member);
 
             if (!admissionSeeds.TryGetValue(key, out bool seeded))
             {
@@ -1416,36 +1483,74 @@ internal static class HostedGrimoireProducerInventory
 
             HashSet<int> mappedCreations = [];
 
-            bool References(AuthoredMember member, SyntaxNode node, ISymbol symbol) => node.DescendantNodesAndSelf().OfType<ExpressionSyntax>().Any(expression => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(expression).Symbol, symbol));
+            List<(IFieldSymbol Field, AssignmentExpressionSyntax Assignment)> mappedFields = [];
 
-            bool Escapes(AuthoredMember member, ISymbol symbol) => member.Syntax.DescendantNodes().Any(node => node is ArgumentSyntax { RefKindKeyword.RawKind: not 0 } argument && References(member, argument.Expression, symbol) || node is RefExpressionSyntax reference && References(member, reference.Expression, symbol));
+            AuthoredMember? mappedConstructor = null;
+
+            bool References(AuthoredMember member, SyntaxNode node, ISymbol symbol) => node.DescendantNodesAndSelf().OfType<ExpressionSyntax>().Any(expression => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(expression).Symbol, symbol));
 
             bool Written(AuthoredMember member, ISymbol symbol) => member.Syntax.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment => References(member, assignment.Left, symbol));
 
-            bool mapped = returns.Length == 1 && factory.Model.GetOperation(returns[0]) is IObjectCreationOperation { Constructor: { } constructor } creation && Resolve(constructor) is { } constructorBody && fields.All(field =>
+            ExpressionSyntax[] SymbolReferences(AuthoredMember member, ISymbol symbol) => member.Syntax.DescendantNodes().OfType<ExpressionSyntax>().Where(expression => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(expression).Symbol, symbol) && !expression.Ancestors().TakeWhile(ancestor => ancestor != member.Syntax).OfType<ExpressionSyntax>().Any(parent => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(parent).Symbol, symbol))).ToArray();
+
+            bool HasOnlyReferences(AuthoredMember member, ISymbol symbol, params ExpressionSyntax[] allowed) => SymbolReferences(member, symbol) is { } references && references.Length == allowed.Length && references.All(reference => allowed.Contains(reference));
+
+            bool mapped = returns.Length == 1 && factory.Model.GetOperation(returns[0]) is IObjectCreationOperation { Constructor: { } constructor } creation && Resolve(constructor) is { } constructorBody && SetMappedConstructor(constructorBody) && fields.All(field =>
             {
                 AssignmentExpressionSyntax[] writes = constructorBody.Syntax.DescendantNodes().OfType<AssignmentExpressionSyntax>().Where(assignment => References(constructorBody, assignment.Left, field)).ToArray();
 
-                if (!field.IsReadOnly || field.IsStatic || field.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is VariableDeclaratorSyntax { Initializer: not null }) || writes.Length != 1 || !writes[0].IsKind(SyntaxKind.SimpleAssignmentExpression) || !IsUnconditionalExecution(constructorBody, writes[0], constructorBody.Syntax.SpanStart) || !SymbolEqualityComparer.Default.Equals(constructorBody.Model.GetSymbolInfo(writes[0].Left).Symbol, field) || Escapes(constructorBody, field) || members.Values.Any(member => SymbolEqualityComparer.Default.Equals(member.Symbol.ContainingType, field.ContainingType) && MethodKey(member.Symbol) != MethodKey(constructorBody.Symbol) && (Written(member, field) || Escapes(member, field))))
+                if (!field.IsReadOnly || field.IsStatic || field.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is VariableDeclaratorSyntax { Initializer: not null }) || writes.Length != 1 || !writes[0].IsKind(SyntaxKind.SimpleAssignmentExpression) || !IsUnconditionalExecution(constructorBody, writes[0], constructorBody.Syntax.SpanStart) || !SymbolEqualityComparer.Default.Equals(constructorBody.Model.GetSymbolInfo(writes[0].Left).Symbol, field))
                 {
                     return false;
                 }
 
-                if (constructorBody.Model.GetSymbolInfo(writes[0].Right).Symbol is not IParameterSymbol parameter || Written(constructorBody, parameter) || Escapes(constructorBody, parameter) || creation.Arguments.SingleOrDefault(argument => argument.Parameter?.Ordinal == parameter.Ordinal)?.Value.Syntax is not ExpressionSyntax argument || factory.Model.GetSymbolInfo(argument).Symbol is not ILocalSymbol local || Written(factory, local) || Escapes(factory, local) || local.DeclaringSyntaxReferences.Single().GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer })
+                if (constructorBody.Model.GetSymbolInfo(writes[0].Right).Symbol is not IParameterSymbol parameter || Written(constructorBody, parameter) || !HasOnlyReferences(constructorBody, parameter, writes[0].Right) || creation.Arguments.SingleOrDefault(argument => argument.Parameter?.Ordinal == parameter.Ordinal)?.Value.Syntax is not ExpressionSyntax argument || factory.Model.GetSymbolInfo(argument).Symbol is not ILocalSymbol local || Written(factory, local) || !HasOnlyReferences(factory, local, argument) || local.DeclaringSyntaxReferences.Single().GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer })
                 {
                     return false;
                 }
 
                 InvocationExpressionSyntax[] creations = initializer.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().Where(call => factory.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && Normalize(method) == "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync").ToArray();
 
-                return creations.Length == 1 && IsUnconditionalExecution(factory, creations[0], factory.Syntax.SpanStart) && mappedCreations.Add(creations[0].SpanStart);
+                return creations.Length == 1 && IsUnconditionalExecution(factory, creations[0], factory.Syntax.SpanStart) && mappedCreations.Add(creations[0].SpanStart) && AddMappedField(field, writes[0]);
             });
 
-            bool FieldHasTerminal(IFieldSymbol field, string terminal, IEnumerable<AuthoredMember> targets) => targets.Any(member => member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(call => IsUnconditionalExecution(member, call, member.Syntax.SpanStart) && call.Expression is MemberAccessExpressionSyntax access && SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(access.Expression).Symbol, field) && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && (TypeKey(method.ReturnType) is not ("System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1") || CompletionPoint(member, call, true) is not null) && (terminal == "Dispose" ? Normalize(method) is "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.Dispose" or "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.DisposeAsync" or "System.IDisposable.Dispose" or "System.IAsyncDisposable.DisposeAsync" : Normalize(method) == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.CompleteAsync")));
+            bool SetMappedConstructor(AuthoredMember constructor)
+            {
+                mappedConstructor = constructor;
+
+                return true;
+            }
+
+            bool AddMappedField(IFieldSymbol field, AssignmentExpressionSyntax assignment)
+            {
+                mappedFields.Add((field, assignment));
+
+                return true;
+            }
+
+            IEnumerable<(AuthoredMember Member, ExpressionSyntax Receiver)> FieldTerminals(IFieldSymbol field, string terminal, IEnumerable<AuthoredMember> targets) => targets.SelectMany(member => member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => IsUnconditionalExecution(member, call, member.Syntax.SpanStart) && call.Expression is MemberAccessExpressionSyntax access && SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(access.Expression).Symbol, field) && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && (TypeKey(method.ReturnType) is not ("System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1") || CompletionPoint(member, call, true) is not null) && (terminal == "Dispose" ? Normalize(method) is "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.Dispose" or "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.DisposeAsync" or "System.IDisposable.Dispose" or "System.IAsyncDisposable.DisposeAsync" : Normalize(method) == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.CompleteAsync")).Select(call => (member, ((MemberAccessExpressionSyntax)call.Expression).Expression)));
+
+            bool FieldHasTerminal(IFieldSymbol field, string terminal, IEnumerable<AuthoredMember> targets) => FieldTerminals(field, terminal, targets).Any();
 
             bool AllFieldsTerminate(string terminal, IEnumerable<AuthoredMember> targets) => targets.Any(target => target.Syntax.DescendantNodes().OfType<StatementSyntax>().All(static statement => statement is BlockSyntax or ExpressionStatementSyntax or ReturnStatementSyntax or LocalDeclarationStatementSyntax) && fields.All(field => FieldHasTerminal(field, terminal, [target])));
 
-            bool valid = mapped && group is not null && disposalGroups.Count > 0 && disposalGroups.All(disposal => disposal == group) && ownerCalls.All(call => EffectAt(caller, call, operationId, inherited) == group) && AllFieldsTerminate("CompleteAsync", completionTargets) && AllFieldsTerminate("Dispose", disposalTargets);
+            bool FieldsHaveOnlyMappedTerminals() => mappedFields.All(mapping => AuthoredMembers.Where(member => SymbolEqualityComparer.Default.Equals(member.Symbol.ContainingType, mapping.Field.ContainingType)).All(member =>
+            {
+                List<ExpressionSyntax> allowed = [];
+
+                if (mappedConstructor is not null && SymbolEqualityComparer.Default.Equals(member.Symbol, mappedConstructor.Symbol))
+                {
+                    allowed.Add(mapping.Assignment.Left);
+                }
+
+                allowed.AddRange(FieldTerminals(mapping.Field, "CompleteAsync", [member]).Select(static terminal => terminal.Receiver));
+
+                allowed.AddRange(FieldTerminals(mapping.Field, "Dispose", [member]).Select(static terminal => terminal.Receiver));
+
+                return HasOnlyReferences(member, mapping.Field, [.. allowed]);
+            }));
+
+            bool valid = mapped && group is not null && disposalGroups.Count > 0 && disposalGroups.All(disposal => disposal == group) && ownerCalls.All(call => EffectAt(caller, call, operationId, inherited) == group) && AllFieldsTerminate("CompleteAsync", completionTargets) && AllFieldsTerminate("Dispose", disposalTargets) && FieldsHaveOnlyMappedTerminals();
 
             if (!valid)
             {
@@ -1584,7 +1689,7 @@ internal static class HostedGrimoireProducerInventory
         {
             int position = atPosition ?? site.SpanStart;
 
-            string memberKey = MethodKey(member.Symbol) + "@" + member.Syntax.SpanStart;
+            (int Compilation, int Tree, string Method, int SpanStart) memberKey = MemberIdentity(member);
 
             if (!admissionCalls.TryGetValue(memberKey, out InvocationExpressionSyntax[]? calls))
             {

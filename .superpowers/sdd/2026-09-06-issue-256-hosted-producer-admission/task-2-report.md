@@ -487,3 +487,43 @@ Final instrumentation-free evidence after scoped formatting:
 - The expression cache cannot cross-contaminate different call-edge bindings: binding identity is structural and length-prefixed, not hash-only; origins are sorted; immutable sets are stored; only top-level empty-path results are cached.
 - The terminal proof is deliberately conservative. A more elaborate correct carrier method may be refused, but mutually exclusive or unsupported control flow cannot silently count terminals from different paths. The one accepted carrier shape proves all mapped writers in the same exact completion/disposal member.
 - No production file, dependency, catalog row, suppression, addendum, or unrelated untracked file changed. The production umbrella remains intentionally RED for the later producer and Task 14 work.
+
+## Fix round 5: exclusive carrier transfer and cache object identity
+
+Reviewed `task-2-rereview-4.md` completely before changing the scanner. This final fix round closes the remaining Important false negative and the review's cache-isolation follow-up without a production edit or diagnostic waiver.
+
+### Round 5 implementation
+
+- Field-carrier ownership now uses a semantic reference allowlist rather than a ref-only escape predicate. Each created writer local must have exactly one reference: its exact bound constructor argument. Each constructor parameter must have exactly one reference: the right side of its one unconditional readonly-field assignment. Every carrier-field reference must be either that one assignment target or the direct receiver of an exact supported `CompleteAsync`, `Dispose`, or `DisposeAsync` terminal. Any authored/opaque by-value call, store, return, capture, alias, write, or ref use outside those nodes rejects the carrier proof.
+- Direct writer terminals in unrelated overloads remain harmless uses but cannot prove the invoked carrier terminal. The existing exact-invoked-member/common-path checks still require all mapped writers to terminate together in a caller-invoked completion member and language-selected disposal member.
+- Admission-call, seed, and origin caches now include integer identities assigned through reference-equality dictionaries for both the exact `Compilation` and exact `SyntaxTree`, followed by member/expression spans and the existing structural binding identity. Origin values remain immutable, and recursive partial-path lookups remain uncached.
+- Authored members retain every same-`MethodKey` context. Resolution first matches exact source assembly and semantic symbol identity; a metadata call across project compilations may fall back only to one unambiguous authored candidate. Multiple different source contexts with the same method key no longer overwrite one another or silently cross-bind.
+
+### Round 5 strict RED/GREEN evidence
+
+All new cases compile through `R2Discover`, which asserts zero compiler errors before discovery.
+
+| Increment | Observed RED | GREEN |
+| --- | --- | --- |
+| Exclusive local/parameter/field carrier flow | **10 failed / 1 passed**: factory and constructor authored dispose/store plus opaque by-value calls, and completion/disposal field stores/opaque calls were falsely accepted; the exact stable carrier remained GREEN | **11 passed** |
+| Same-path/same-span distinct-tree cache isolation | **2 failed / 0 passed**: one ordering treated both contexts as unadmitted and the reverse treated both as admitted | **2 passed** after exact compilation/tree identity and context-aware resolution |
+
+The cache fixture runs admitted and same-length non-admission helpers in separate compilations. It asserts distinct `SyntaxTree` objects, identical `src/Fixture.cs` paths, and identical helper spans, then proves each operation receives only its own effect-frontier result in both input orderings.
+
+The first cross-compilation implementation used assembly-reference identity as the only member lookup. The production-site inventory then changed incorrectly to 2,039 contextual / 381 physical / 564 root-specific sites, proving that metadata symbols in a consuming compilation still need the one exact authored definition from the producing project. A subsequent cold registration run exposed multiple syntax entries for one semantic method via `Sequence contains more than one matching element`. The final resolver uses exact semantic-symbol identity for same-compilation duplicates and the one-candidate cross-project fallback above. Both failures were corrected before final evidence.
+
+### Round 5 final verification
+
+- Scoped whitespace formatting: exit 0.
+- Clean no-incremental test-project build: **0 warnings, 0 errors**, 51.72 seconds.
+- Every `R2`/`R3`/`R4`/`R5` fixture after the final resolver correction: **115 passed, 0 failed, 0 skipped**, 12 seconds.
+- Complete non-umbrella inventory matrix after the final resolver correction: **301 passed, 0 failed, 0 skipped**, 26 seconds.
+- Cold registration umbrella: **1 passed**, 1m06s, within the prior round's 1m04s-1m05s baseline.
+- Production-site umbrella: **expected RED, 1 failed**, 1m07s. It still asserts `validation.IsValid`; no diagnostic is suppressed. The established inventory is restored exactly: **2,056 contextual sites / 381 physical sites / 570 physical sites per exact operation root**.
+
+### Round 5 self-review
+
+- The ten carrier negatives name the production mutation they catch: accepting a second local/parameter reference or a non-terminal field reference. Authored helpers actually dispose or store the real writer; opaque calls are intentionally unsupported ownership escapes. The stable carrier and production Batch fixture remain positive.
+- Field terminals in unrelated overloads are allowed only as exact direct writer-terminal receivers and never contribute proof unless the caller invokes that exact carrier member. Arbitrary overload bodies, callbacks, aliases, and by-value calls remain rejected.
+- Cache keys use object identity, not source path, source content, or a hash. Binding identity remains collision-safe and sorted; immutable cached sets cannot be mutated between call edges.
+- Reviewed the complete two-file diff and ran `git diff --check`. No production file, catalog entry, suppression, dependency, addendum, or unrelated untracked file changed.
