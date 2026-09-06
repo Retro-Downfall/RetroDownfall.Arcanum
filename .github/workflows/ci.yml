@@ -205,6 +205,14 @@ jobs:
       - name: Verify macOS AOT IL warnings and search regex smoke
         run: ./scripts/verify-aot-il-warnings.sh
 
+      - name: Build the Grimoire admission benchmark host
+        run: >-
+          dotnet build tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj
+          -c Debug --no-incremental
+
+      - name: Smoke the Native AOT Grimoire admission benchmark
+        run: ./scripts/benchmark-grimoire-admission.sh --smoke
+
       # The benchmark host is outside RetroDownfall.Arcanum.slnx, so nothing else in this workflow
       # compiles it. The gate below publishes it in Release, but a publish that fails reports as a
       # gate failure rather than as a compile break, and an incremental build hides the analyzer

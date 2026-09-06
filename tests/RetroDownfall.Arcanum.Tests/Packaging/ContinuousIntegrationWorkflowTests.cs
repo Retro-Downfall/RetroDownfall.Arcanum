@@ -15,6 +15,43 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private sealed record WorkflowJob(string Id, string RunsOn, bool IsConditional, string Body);
 
+    [Fact]
+    public void Unconditional_macos_aot_lane_builds_and_executes_the_dedicated_admission_smoke()
+    {
+
+        WorkflowJob[] matching = ContinuousIntegrationJobs(FindRepositoryRoot())
+            .Where(static job => job.RunsOn.StartsWith("macos", StringComparison.Ordinal))
+            .Where(static job => !job.IsConditional)
+            .Where(static job => job.Body.Contains(
+                "Build the Grimoire admission benchmark host",
+                StringComparison.Ordinal))
+            .ToArray();
+
+        WorkflowJob lane = Assert.Single(matching);
+
+        const string project = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/"
+            + "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj";
+
+        int lld = lane.Body.IndexOf("ld64.lld", StringComparison.Ordinal);
+
+        int build = lane.Body.IndexOf("dotnet build " + project, StringComparison.Ordinal);
+
+        int smoke = lane.Body.IndexOf(
+            "./scripts/benchmark-grimoire-admission.sh --smoke",
+            StringComparison.Ordinal);
+
+        Assert.True(lld >= 0, "The benchmark lane must install the Native AOT linker.");
+
+        Assert.True(build > lld, "The dedicated host must be built after linker setup.");
+
+        Assert.True(smoke > build, "The published Native AOT smoke must run after the clean host build.");
+
+        Assert.Contains("-c Debug", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("--no-incremental", lane.Body, StringComparison.Ordinal);
+
+    }
+
     /// <summary>
     /// The hermetic SQLCipher targets raise ARCSQLC002 before <c>CopyFilesToOutputDirectory</c>
     /// whenever the RID being built has no checked-in asset — deliberately, with no probe and no

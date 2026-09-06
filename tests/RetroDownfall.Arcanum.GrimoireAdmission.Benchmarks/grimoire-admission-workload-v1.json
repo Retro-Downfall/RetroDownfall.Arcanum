@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "operations": [
+    "request.finite",
+    "request.quiesceable",
+    "work.db-only",
+    "work.effect",
+    "open.failed",
+    "request.open",
+    "generation.read",
+    "ordinary.mixed",
+    "ef.pooled"
+  ],
+  "concurrency": [
+    { "id": "one", "workers": 1 },
+    { "id": "two", "workers": 2 },
+    { "id": "eight", "workers": 8 },
+    { "id": "logical", "workers": 0 }
+  ],
+  "profiles": [
+    {
+      "name": "qualification",
+      "warmupIterations": 20000,
+      "latencyBundleSize": 32,
+      "latencySampleCount": 2000,
+      "throughputIterations": 1000000,
+      "mixedSchedule": [
+        "request.finite",
+        "request.quiesceable",
+        "work.db-only",
+        "work.effect",
+        "open.failed",
+        "request.open",
+        "generation.read",
+        "request.finite"
+      ]
+    },
+    {
+      "name": "smoke",
+      "warmupIterations": 8,
+      "latencyBundleSize": 4,
+      "latencySampleCount": 4,
+      "throughputIterations": 32,
+      "mixedSchedule": [
+        "request.finite",
+        "work.effect",
+        "open.failed",
+        "request.open"
+      ]
+    }
+  ],
+  "materialImprovementOperation": "ordinary.mixed",
+  "materialImprovementConcurrency": "logical",
+  "thresholds": {
+    "singleThreadP50MaximumRatio": 1.05,
+    "p99MaximumRatio": 1.1,
+    "efMaximumRatio": 1.05,
+    "efAllocationMaximumRatio": 1.05,
+    "mixedThroughputMinimumRatio": 1.2
+  },
+  "bootstrap": {
+    "algorithm": "xorshift64star",
+    "seed": 9961637605035593215,
+    "replicateCount": 10000,
+    "lowerQuantile": 0.05
+  },
+  "sourceDifferenceAllowlist": [
+    "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionGate.cs",
+    "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionEpoch.cs"
+  ]
+}

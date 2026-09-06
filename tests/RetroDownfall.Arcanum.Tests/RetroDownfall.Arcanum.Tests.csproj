@@ -53,6 +53,20 @@
 
   <ItemGroup>
 
+    <Compile Include="..\RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\AdmissionBenchmarkContracts.cs" Link="Benchmarks\GrimoireAdmission\AdmissionBenchmarkContracts.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\AdmissionBenchmarkComparison.cs" Link="Benchmarks\GrimoireAdmission\AdmissionBenchmarkComparison.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\AdmissionBenchmarkEvidence.cs" Link="Benchmarks\GrimoireAdmission\AdmissionBenchmarkEvidence.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\AdmissionBenchmarkManifest.cs" Link="Benchmarks\GrimoireAdmission\AdmissionBenchmarkManifest.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\PersistentWorkerHarness.cs" Link="Benchmarks\GrimoireAdmission\PersistentWorkerHarness.cs" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
     <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Api\RetroDownfall.Arcanum.Api.csproj" />
 
     <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Api.DevHost\RetroDownfall.Arcanum.Api.DevHost.csproj" />

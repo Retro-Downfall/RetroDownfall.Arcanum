@@ -26,7 +26,8 @@ public sealed class InternalsVisibleToInventoryTests
     [InlineData(
         "src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj",
         "RetroDownfall.Arcanum.Api,RetroDownfall.Arcanum.Api.DevHost,RetroDownfall.Arcanum.Cli,"
-        + "RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.RegexAotSmoke,"
+        + "RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks,"
+        + "RetroDownfall.Arcanum.RegexAotSmoke,"
         + "RetroDownfall.Arcanum.Tests")]
 
     [InlineData(
