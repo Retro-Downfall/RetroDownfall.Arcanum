@@ -153,11 +153,16 @@ accepted only as an exact stopped-host path, never because a method is named `St
 
 ### 3.2 Bidirectional discovery and validation
 
-The inventory follows the existing Roslyn acquisition inventory rather than relying on comments.
+The inventory follows the existing Roslyn acquisition inventory rather than relying on comments. Its
+production validation builds the Infrastructure, Api, and Cli source compilations so hosted
+registrations, endpoint-invoked hosted operations, and live Backup command roots share one semantic
+call graph.
 Discovery covers:
 
 - direct `AddHostedService` registrations and the closed generic argument to
   `AddInstallationResetRecoveryAwareHostedService<T>`;
+- authored lifecycle roots for every discovered hosted service, exact externally invoked hosted
+  operations such as workspace `QueueIndexNow`, and the explicit non-hosted Backup/recovery roots;
 - `CreateScope` and `CreateAsyncScope` in hosted entry points and their catalogued collaborators;
 - the marked ordinary, maintenance, and stopped-host connection routes already discovered by the
   connection-acquisition scanner;
@@ -272,9 +277,11 @@ reconciliation does not advance its due marker on deferral.
 The on-demand endpoint is not request-bound today: it returns after discarding a `Task.Run` whose
 body uses `ApplicationStopping`. That detached operation moves into `WorkspaceIndexingService` as
 service-owned tracked work. It acquires `WorkspaceIndexing` like the scheduled paths, keeps its exact
-workspace identity across maintenance, and is observed and drained by `StopAsync`. The endpoint
-retains its immediate-response contract; it asks the service to queue the on-demand run rather than
-owning or discarding the task.
+workspace identity across maintenance, and is observed and drained by `StopAsync`. Shutdown first
+atomically closes on-demand enqueue admission and then drains every task admitted before that
+transition; a request racing or following the transition cannot publish a new task after the drain
+snapshot. The endpoint retains its immediate-response contract; it asks the service to queue the
+on-demand run rather than owning or discarding the task.
 
 ### 5.2 Tapestry weaving
 
@@ -310,9 +317,12 @@ mutate the filesystem, so it moves from the pre-loop path into the artifact-publ
 A closure between pages leaves completed line checkpoints and completed accounting durable. The next
 page is refused before preparation, reservation, or dispatch. If the batch was already claimed
 `InProgress`, its tracked `_inFlight` task retains the batch identity, releases all current scopes,
-waits without holding a lease, reacquires after reopening, and resumes from line checkpoints. It does
-not return normally and strand an `InProgress` row, reset it to a fresh paid attempt, or depend on a
-process restart.
+disposes the encrypted input enumerator/stream before releasing its work lease, waits without holding
+a lease, reacquires after reopening, and creates a fresh enumerator. The fresh pass deterministically
+rescans from the beginning and uses durable terminal line checkpoints to skip completed pages and
+lines, so no provider call or accounting is replayed. No filesystem handle survives outside the work
+lease. The task does not return normally and strand an `InProgress` row, reset it to a fresh paid
+attempt, or depend on a process restart.
 
 Encrypted output/error artifact construction and publication is a separate effect group. It spans
 stage-file creation, checkpoint projection, encrypted completion, `File.Move`, owner-only permission
@@ -371,8 +381,8 @@ reported as cancellation, policy failure, or `ReconciliationRequired`.
 ### 5.7 Loremaster
 
 The discovery sweep takes a `LoremasterSummarization` DB-only lease before its scope. Each queued
-Session is one effect group, spanning its exact source watermark, provider summary, rollup write, and
-scope disposal.
+Session is one effect group spanning its exact source watermark, provider summary, and rollup write.
+The group is disposed before the Session scope; the work lease remains held through scope disposal.
 
 `CampaignLoggerQueue` no longer removes its pending marker merely by yielding an id. The consumer
 concludes that identity only after success, a genuine terminal skip, or a genuine failure. A denied
@@ -417,10 +427,19 @@ startup, lazy request callers, and reload callers all join that same authority-b
 cancellation never releases its authority or creates a second initializer.
 
 The hosted service stores and observes its bootstrap waiter rather than discarding `Task.Run`. A
-denied shared operation waits for reopening under the manager's host lifetime. `StopAsync` cancels
-that manager-owned initialization lifetime, awaits and observes the actual `_globalInitOperation`,
-and only then stops initialized servers. `StopAllAsync` cannot race an initializer that is still
-creating them. Repeated Start/Stop and concurrent lazy initialization remain idempotent.
+denied shared operation waits for reopening under the manager's host lifetime. One manager-owned
+lifecycle admission gate covers every start-capable path: the actual shared initializer plus direct
+`StartAsync`, `RestartAsync`, and reload operations. Nested restart/reload logic uses core helpers so
+one public operation owns one lifecycle admission. `StopAsync` atomically closes that admission,
+cancels the manager lifetime, waits for every admitted start-capable operation and the actual
+`_globalInitOperation`, and only then stops initialized servers. No start-capable path can publish a
+process or client after shutdown begins, and calls after shutdown fail closed.
+
+Global surface publication is revision-stable. An initializer captures the generation before it
+projects the surface; after projection it publishes tagged with that captured generation only if the
+current generation is still equal. Otherwise it discards the projection and retries. An invalidation
+between scan and publication can therefore never bless a stale surface with a newer revision.
+Repeated Stop and concurrent lazy initialization remain idempotent.
 
 ## 6. Recovery, backup, and exact nonordinary classifications
 
@@ -440,22 +459,59 @@ into an owner-bound handler.
 Runtime reconciliation therefore classifies each concrete recovery attempt exactly:
 
 - an ordinary DB-only recovery takes `LongRunningOperationRecovery` before its per-operation scope;
-- an ordinary provider/filesystem recovery additionally takes one effect group around that handler
-  and its durable settlement; and
+- an ordinary provider/filesystem recovery begins one effect group before the per-operation scope and
+  durable row-lease acquisition, then keeps it through the handler and durable settlement; and
 - the two current offline-transition launch recoveries use only their exact authenticated
   owner/recovery path and never acquire ordinary work authority.
 
 The classification key is operation kind **and checkpoint version**, plus authenticated journal and
 owner evidence where the offline arm requires it. `DataRetentionMutation` V0 and V2 remain ordinary,
-V4 is an owner-bound offline launch, and unsupported V1/V3 are refused;
+V4 is an owner-bound offline launch, and unsupported V1/V3 are refused from handler execution;
 `DataRetentionFactoryReset` V0 remains ordinary while V2 is an owner-bound offline launch. Generic
-periodic reconciliation skips/refuses those V4/V2 instances unless the exact journal/owner recovery
-path has adopted them. A descriptor-level label cannot authorize both arms.
+periodic reconciliation leaves supported V4/V2 rows unchanged while they await the exact journal/owner
+path; absence of owner evidence is not reported as an unsupported version. Genuinely unsupported
+versions take DB-only ordinary authority solely to durably settle the row as
+`ReconciliationRequired` with `UnsupportedCheckpointVersion`, without invoking a recovery handler.
+The authenticated journal-startup and launch-gap paths pass an opaque full-owner capability to the
+exact operation dispatch. There is no generally callable mint method. The abstract capability has
+exactly two private, sealed, nested production issuers: one inside the journal startup path after a
+verified handoff is consumed, and one inside launch-gap resumption accepting only the adopter's own
+private-constructed owner token. Architecture tests pin that closed derived-type and construction
+set, so a general borrower of the installation lock cannot issue evidence. Both issuers assert the
+exact held installation lock and retain the complete `CovenantExclusiveRecoveryOwner` binding:
+operation id, operation kind, and effect digest, plus the authenticated row's pre-claim
+revision/kind/version fingerprint. Classification decodes the durable launch checkpoint and compares that complete binding
+against the loaded row; a missing capability or a mismatched id, kind, version, or digest is refused
+unchanged. The no-evidence exact-settlement entry is fail closed and cannot become an admission bypass.
+The pre-bootstrap erasure-owner adopter continues
+to refuse the retired mutation V3 shape before readiness; runtime durable settlement does not weaken
+that half-erased-family invariant. A descriptor-level label cannot authorize both arms.
+
+The generic discovery query excludes the two supported owner-bound tuples before applying its page
+limit. Leaving them unchanged after an in-memory page filter would let a full head page of offline rows
+permanently starve ordinary recoveries behind it. The pure classifier still pins the no-evidence
+`OwnerBoundAwaitingExactOwner` decision, while the query makes that skip non-blocking for the backlog.
+
+Every runtime dispatch uses an exact conditional lease claim over operation id plus the materialized
+pre-claim revision, kind, and checkpoint version. The statement returns the claimed row atomically.
+Failure changes no lease, revision, or attempt count; success must return the same identity/kind/version
+at exactly `preClaimRevision + 1`, because lease acquisition itself advances the revision once, and is
+then reclassified before a handler runs. The mutable lease revision is not part of the decoded
+full-owner equality after that successful claim. This prevents an ordinary discovery result from
+dispatching a row that changed into an owner-bound launch before acquisition, and applies equally to
+installation-lock adoption.
 
 The existing registry, handler, lease, checkpoint, settlement, priority, and #40 policy meanings do
 not change. The new classification is an execution guard, not a recovery redesign. The inventory
 tests require every descriptor exactly once, reject a default/wildcard classification, and prove the
 offline owner set against the production offline-transition handler registry.
+
+Starting the external group before `TryAcquireLeaseAsync` is intentional: that durable claim increments
+`AttemptCount`. If closure won between the claim and a later frontier, the refusal would have changed
+retry state and stranded a fresh lease without running its effect. A lost frontier therefore creates no
+scope or durable claim; a winning frontier owns claim, handler, and settlement. The group is then
+disposed before the private scope, while the work lease remains held through scope disposal. DB-only
+claims need no group because their work lease itself drains the complete database-only unit.
 
 ### 6.2 Backup
 
@@ -540,14 +596,17 @@ Additional RED/GREEN tests pin:
 - Batch's single group per 64-line page, group start before accounting, group end after accounting,
   exact repeatable input-read classification, filesystem preparation inside the independent artifact
   frontier, retained `InProgress` identity, checkpoint resume, and full task drain;
-- on-demand workspace indexing being service-owned, admission-protected, resumable, and drained;
+- on-demand workspace indexing being service-owned, admission-protected, resumable, and atomically
+  closed-before-drain against a concurrent enqueue;
 - Unseen Servant and Apprentice startup work being ordinary after `Task.Yield`;
-- outer long-running recovery discovery admission, kind-plus-version recovery classification, and
-  absence of offline-transition self-deadlock;
+- outer long-running recovery discovery admission, kind-plus-version recovery classification, opaque
+  full-owner capability validation including effect digest, and absence of offline-transition
+  self-deadlock;
 - Simulacrum child stamping and Shifting Fate before `CurrentStep`/checkpoint advance;
 - Loremaster pending-marker retention and direct reopen signal;
-- MCP shared-initializer admission through its actual terminal state, cancelled-waiter joining, task
-  ownership, fault observation, Stop race, and blocking-startup classification; and
+- MCP shared-initializer admission through its actual terminal state, cancelled-waiter joining,
+  stable-revision publication, task ownership, fault observation, direct start/restart/reload versus
+  Stop races, and blocking-startup classification; and
 - the backup live-source caller authority join.
 
 ## 8. Documentation and delivery
