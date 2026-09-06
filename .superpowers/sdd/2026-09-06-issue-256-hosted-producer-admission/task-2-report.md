@@ -629,3 +629,60 @@ Final expected-RED diagnostic counts after the correction:
 - Terminal acceptance is closed over the real production method and interface slots. Custom awaitables and merely compatible optional overloads cannot impersonate completion or cleanup.
 - No physical production site disappeared. The contextual increase is the intended consequence of removing cross-compilation graph-node collapse, not a discovery regression.
 - No production source, catalog row, dependency, suppression, plan/spec, ledger, or unrelated addendum was changed.
+
+## Final semantic consolidation: exact DI bindings and carrier terminals
+
+Read `task-2-graph-identity-rereview.md` before changing the scanner and verified both Important findings against the current code. The single architectural root cause was two parallel lossy semantic models bypassing the graph's exact identity and terminal contracts: dependency-injection fallback collapsed bindings to display strings and selected the first matching body, while carrier publication separately recognized terminals by method name and treated every unknown return as synchronous completion.
+
+### Strict RED/GREEN evidence
+
+All new fixtures compile through `R2Discover`, which first asserts that the entire multi-compilation fixture is compiler-error-free.
+
+- The aliased DI matrix uses two service compilations with the same interface/implementation full names and distinct sensitive bodies, two extern aliases, both compilation-list orders, and repeated calls. Before implementation all **4/4** cases failed: one order lost both expected `File.Exists` sites, the other invented an extra one, and neither unmappable twin emitted the two required unresolved diagnostics. After exact binding/resolution, all **4/4** pass.
+- The carrier matrix uses the production `CompleteAsync(CancellationToken = default) -> Task<EncryptedBlobDescriptor>` contract and inherited `MemoryStream` sync/async cleanup controls. Before implementation **6/7** cases failed: both valid Stream controls were rejected, while the optional completion overload, wrong Task result, custom awaitable, and wrong cleanup were accepted. The already-correct discarded-completion negative stayed GREEN. After consolidation all **7/7** pass.
+- One older Batch carrier control still modeled `CompleteAsync` as a synchronous `void` lookalike. It correctly went RED under the closed contract and was repaired to use and await the real production-shaped Task result; its retained/lost-group pair now passes **2/2**.
+
+### Implementation
+
+- DI registrations now retain exact contract and implementation identities: authored assembly identity, authored compilation identity when provable, and full type identity. Interface fallback collects every eligible exact implementation and accepts only one graph member; it never selects the first ambiguity. Calls whose referenced assembly cannot be mapped uniquely emit `HOSTED_CALL_TARGET_UNRESOLVED` on every occurrence and are never entered into a success cache.
+- Successful resolution caching is scoped to the exact consuming `Compilation` object, exact bound `IAssemblySymbol` object, and exact documentation method identity. This preserves distinct aliases and cache order. A separate negative cache applies only to method identities proved outside both the authored-member index and the registered-interface index; it cannot suppress an in-scope ambiguity.
+- Exact authored members are indexed by assembly, compilation, and containing type. This keeps the stricter DI fallback bounded to the eligible implementation type rather than repeatedly scanning the whole authored graph.
+- Carrier publication now reuses the closed writer predicates. Completion must bind the exact optional-token `Task<EncryptedBlobDescriptor>` slot and reach a proven Task/ValueTask join. Cleanup must bind the exact zero-argument `IDisposable.Dispose -> void` or `IAsyncDisposable.DisposeAsync -> ValueTask` slot for the writer's static type, including inherited `Stream` implementations. Unknown/custom returns are never presumed synchronous. The exact invoked and joined carrier completion plus language-selected cleanup still have to cover every readonly mapped field on one supported unconditional path and under the caller's retained effect group.
+
+### Performance correction
+
+The first correct reference-aware resolver regressed cold inventory from the established roughly 69-second bound to 94.894 seconds. Temporary counters printed only after the measured call showed **3,197,702** resolutions, **3,212,010** authored-map calls, **1,983,250** full mapping scans, and **2,449,987** definitely out-of-scope concrete misses. An exact early authored/registered-contract gate reduced map calls to 751,503 and scans to 18,562, but remained materially slower.
+
+A disposable clone at exact pre-change commit `a5a5d230` provided a contemporaneous baseline of **71.817s cold / 0.041ms warm** on the same host. Adding the exact authored-type implementation index and exact positive resolution cache produced **70.068s cold / 0.038ms warm** with instrumentation, then **69.330s cold / 0.069ms warm** after all counters/output were removed. Performance therefore returned to or slightly improved upon the actual pre-change baseline without caching ambiguity.
+
+### Final verification
+
+- Scoped whitespace formatting: exit 0.
+- Clean no-incremental Release test-project build: **0 warnings, 0 errors**, 53.18 seconds.
+- Focused final R8 semantic controls: **11 passed, 0 failed**.
+- Carrier/writer publication regression surface: **99 passed, 0 failed**.
+- Complete R2-R8 scanner matrix: **180 passed, 0 failed**.
+- Complete non-umbrella inventory matrix: **366 passed, 0 failed**, 31 seconds.
+- Registration umbrella: **1 passed**; cold inventory **69.330 seconds**, cached warm call **0.069 milliseconds**.
+- Production-site umbrella: expected RED, **1 failed**, 1m11s. It still asserts `validation.IsValid`; no category or catalog requirement is waived. Inventory and all prior diagnostic counts are unchanged: **2,152 contextual / 381 physical / 626 physical per exact operation root**. Evidence is in `/private/tmp/task2-r8-final-results/task2-r8-final-sites.trx`.
+
+Final expected-RED diagnostic counts:
+
+| Diagnostic | Count |
+| --- | ---: |
+| HOSTED_SITE_WORK_FRONTIER_MISSING | 158 |
+| HOSTED_CALLBACK_OWNERSHIP_UNPROVEN | 12,022 |
+| HOSTED_CALL_TARGET_UNRESOLVED | 124 |
+| HOSTED_SITE_EFFECT_FRONTIER_MISSING | 60 |
+| HOSTED_SITE_UNCLASSIFIED | 297 |
+| HOSTED_DISPOSAL_TARGET_UNRESOLVED | 185 |
+| HOSTED_ADMISSION_HANDLE_ESCAPE | 11 |
+| HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE | 6 |
+| HOSTED_EXTERNAL_OPERATION_UNCATALOGUED | 22 |
+| HOSTED_SITE_UNCATALOGUED | 2,152 |
+
+### Final self-review
+
+- Both list orders and repeated-call/cache-order controls are compile-clean. Exact known aliases cannot cross-bind; identical unmappable authored twins remain unresolved and uncached.
+- Carrier validity is closed over the production completion result and interface/Stream cleanup slots. Optional overloads, wrong Task results, custom awaitables, wrong cleanup returns, and discarded asynchronous completion all fail closed.
+- No temporary counter or timing output remains. `git diff --check` is clean. No production source, catalog row, suppression, dependency, addendum, ledger, or unrelated file changed.
