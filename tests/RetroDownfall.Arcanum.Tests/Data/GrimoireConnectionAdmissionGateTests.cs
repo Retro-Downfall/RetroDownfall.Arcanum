@@ -29,6 +29,66 @@ public sealed class GrimoireConnectionAdmissionGateTests
     /// </remarks>
     private static readonly TimeSpan BoundedWait = TimeSpan.FromSeconds(10);
 
+    public static TheoryData<object> HostedWorkKinds => new()
+    {
+        GrimoireWorkKind.SessionAttachmentIndexing,
+        GrimoireWorkKind.EntryWeaving,
+        GrimoireWorkKind.SagaExtraction,
+        GrimoireWorkKind.WorkspaceIndexing,
+        GrimoireWorkKind.TapestryWeaving,
+        GrimoireWorkKind.BatchProcessing,
+        GrimoireWorkKind.UnseenServant,
+        GrimoireWorkKind.ApprenticeExecution,
+        GrimoireWorkKind.DataRetentionSweep,
+        GrimoireWorkKind.LoremasterSummarization,
+        GrimoireWorkKind.A2ASendingLeaseRenewal,
+        GrimoireWorkKind.CovenantMaintenance,
+        GrimoireWorkKind.GrimoireSchemaTransition,
+        GrimoireWorkKind.LongRunningOperationRecovery,
+        GrimoireWorkKind.ProviderHealthProbe,
+        GrimoireWorkKind.McpServerBootstrap,
+    };
+
+    [Fact]
+    public void ExistingWorkKindValuesRemainStable()
+    {
+
+        Assert.Equal(1, (byte)GrimoireWorkKind.SessionAttachmentIndexing);
+
+        Assert.Equal(2, (byte)GrimoireWorkKind.EntryWeaving);
+
+        Assert.Equal(3, (byte)GrimoireWorkKind.SagaExtraction);
+
+    }
+
+    [Theory]
+    [MemberData(nameof(HostedWorkKinds))]
+    public async Task EveryHostedWorkKindIsAdmittedWhileOrdinary(object value)
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        GrimoireWorkKind kind = Assert.IsType<GrimoireWorkKind>(value);
+
+        Assert.True(gate.TryAcquireWorkLease(kind, out IGrimoireWorkLease? work));
+
+        await using IGrimoireWorkLease lease = work!;
+
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(17)]
+    public void ZeroAndUndefinedWorkKindsAreRejected(byte value)
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => gate.TryAcquireWorkLease((GrimoireWorkKind)value, out _));
+
+    }
+
     [Fact]
     public void Ordinary_open_ticket_is_available_before_closing()
     {

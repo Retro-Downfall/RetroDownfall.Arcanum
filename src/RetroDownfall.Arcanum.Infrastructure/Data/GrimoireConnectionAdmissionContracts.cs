@@ -267,6 +267,32 @@ internal enum GrimoireWorkKind : byte
 
     SagaExtraction = 3,
 
+    WorkspaceIndexing = 4,
+
+    TapestryWeaving = 5,
+
+    BatchProcessing = 6,
+
+    UnseenServant = 7,
+
+    ApprenticeExecution = 8,
+
+    DataRetentionSweep = 9,
+
+    LoremasterSummarization = 10,
+
+    A2ASendingLeaseRenewal = 11,
+
+    CovenantMaintenance = 12,
+
+    GrimoireSchemaTransition = 13,
+
+    LongRunningOperationRecovery = 14,
+
+    ProviderHealthProbe = 15,
+
+    McpServerBootstrap = 16,
+
 }
 
 /// <summary>

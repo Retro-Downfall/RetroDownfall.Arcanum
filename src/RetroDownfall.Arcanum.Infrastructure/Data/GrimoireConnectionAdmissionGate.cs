@@ -281,9 +281,28 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         out IGrimoireWorkLease? lease)
     {
 
-        if (kind is not GrimoireWorkKind.SessionAttachmentIndexing
-            and not GrimoireWorkKind.EntryWeaving
-            and not GrimoireWorkKind.SagaExtraction)
+        bool isKnownKind = kind switch
+        {
+            GrimoireWorkKind.SessionAttachmentIndexing => true,
+            GrimoireWorkKind.EntryWeaving => true,
+            GrimoireWorkKind.SagaExtraction => true,
+            GrimoireWorkKind.WorkspaceIndexing => true,
+            GrimoireWorkKind.TapestryWeaving => true,
+            GrimoireWorkKind.BatchProcessing => true,
+            GrimoireWorkKind.UnseenServant => true,
+            GrimoireWorkKind.ApprenticeExecution => true,
+            GrimoireWorkKind.DataRetentionSweep => true,
+            GrimoireWorkKind.LoremasterSummarization => true,
+            GrimoireWorkKind.A2ASendingLeaseRenewal => true,
+            GrimoireWorkKind.CovenantMaintenance => true,
+            GrimoireWorkKind.GrimoireSchemaTransition => true,
+            GrimoireWorkKind.LongRunningOperationRecovery => true,
+            GrimoireWorkKind.ProviderHealthProbe => true,
+            GrimoireWorkKind.McpServerBootstrap => true,
+            _ => false,
+        };
+
+        if (!isKnownKind)
         {
 
             throw new ArgumentOutOfRangeException(nameof(kind));
