@@ -448,3 +448,42 @@ There remain **381 physical sensitive sites / 570 physical sites per exact opera
 - The prior Important Task 14 closure work remains: typed callback relevance/binding and symmetric disposal capability contracts for the grouped physical rows. The new `WhenAll` and pure guard rows fit that same small-mechanism path. Catalog filling alone cannot make the umbrella GREEN. These are explicit reviewer/Task 14 concerns, not unverifiable source-text exemptions.
 - Carrier unconditional-terminal proof deliberately supports a narrow straight-line shape. Conditional cleanup or more elaborate successful-path control flow may require an executable exact contract or producer refactor. No same-name overload, uncalled member, arbitrary await ancestor, disposed alias, or replaced host task is accepted as proof by the new cases.
 - Two untracked, unrelated `docs/superpowers/{plans,specs}/2026-09-06-issue-256-turnstile-fast-path-addendum.md` files appeared during final verification. Their owner was notified; neither file was edited, staged, or removed. Only the three authorized Task 2 files will be committed. The review package covers the base-to-new-commit range and excludes those unrelated artifacts.
+
+## Fix round 4: receiver/composite origins and one-path carrier proof
+
+Reviewed `task-2-rereview-3.md` completely before continuing the recovered work. The scoped implementation closes both remaining Important findings without a waiver or production edit:
+
+- Admission actuals now come from Roslyn's semantic invocation arguments, including the reduced-extension receiver's exact formal binding. A bounded semantic value walk collects each local/parameter reference once for conditional, coalescing, switch, tuple, array/index, query, and other composite expressions; opaque instance receivers and heap-composed receivers fail closed. Exact `TryBeginExternalEffectGroup` use preserves its work-lease receiver, and an authored reduced extension such as `held.Keep()` retains authority only when its bound body proves the handle remains live.
+- Origin lookup has an exact cached zero-seed proof and collision-safe contextual expression cache. Seed discovery uses semantically normalized admission calls plus captured/local alias declarations. Cache keys include source path, exact member/span, expression span, and a length-prefixed stable parameter/sorted-origin binding identity; results are immutable. Recursive partial-path queries are never cached. Deferred nested function bodies are not scanned as composite values; source- or converted-type delegate recognition instead leaves opaque callback capture as an explicit ownership refusal.
+- Field-backed writer carriers require readonly instance fields, one unconditional simple constructor assignment per field, one unique unmodified factory local/creation per constructor parameter, and no ref/assignment escape. The exact invoked completion and language-selected disposal targets must contain every mapped writer terminal together in one supported straight-line successful path. Mutually exclusive `try`/`catch`, `try`/`finally`, conditionals, switches, loops, `goto`, locks, using containers, checked containers, later overwrites, conditional construction, mutable fields, and ref mutation all fail closed.
+
+### Round 4 strict RED/GREEN evidence
+
+All fixtures compile through `R2Discover`, whose first assertion requires zero compiler errors. The recovered local logs show the tests failing for behavior before each minimum scanner change:
+
+| Increment | Observed RED | GREEN |
+| --- | --- | --- |
+| Reduced receiver and composite may-origin binding | 7 failed / 4 passed (`/private/tmp/task2-r4-red1.log`) | 21 passed (`task2-r4-green1.log`) |
+| Stable writer-to-field mapping | 6 failed / 2 passed (`task2-r4-red2-behavior.log`) | 18 passed (`task2-r4-green2.log`) |
+| One common executable terminal path | 6 failed / 1 passed (`task2-r4-red3.log`) | 25 passed (`task2-r4-green3.log`) |
+| Opaque/heap-composed receiver supplement | 2 failed / 12 passed (`task2-r4-red1-receivers.log`) | included in final 36-case R4 GREEN |
+| Opaque callback captured behind object conversion | 1 failed / 33 passed after deferred-body pruning | included in final 36-case R4 GREEN via source-or-converted delegate refusal |
+
+The original unconditional descendant-identifier union made the cold production inventory exceed four minutes. Controlled isolation removed receiver evaluation without fixing the delay, then removed only that union and restored the 1m04s baseline. Instrumentation measured 1,753,088 origin calls and 1,308,632 semantic walks by roughly 60 seconds before cancellation. The exact contextual cache reduced the latest pre-completion sample to 2,520 semantic walks with 1,583,695 immutable cache hits across 1,609,728 calls; the instrumented registration umbrella then passed in 1m05s. All instrumentation was removed before final verification. The optimization briefly erased captured admission disposal; the existing two-case `R2CapturedAdmissionDisposalEndsInheritedAuthority` fixture went RED, and exact captured/local seed tracing restored both cases before the full matrix.
+
+### Round 4 final verification
+
+Final instrumentation-free evidence after scoped formatting:
+
+- Every `R2`/`R3`/`R4` fixture: **102 passed, 0 failed**.
+- Complete non-umbrella inventory matrix: **288 passed, 0 failed, 0 skipped**, 24 seconds.
+- Registration umbrella: **1 passed**, 1m04s.
+- Production-site umbrella: **expected RED, 1 failed**, 1m04s. It still requires `validation.IsValid`; no diagnostic is suppressed. Inventory remains **2,056 contextual sites / 381 physical sites / 570 physical sites per exact operation root**. Stricter source-type delegate recognition exposes **11,645 callback ownership refusals across 345 physical anchors** for Tasks 3-14 to close with executable evidence.
+- Clean no-incremental test-project build: **0 warnings, 0 errors**.
+
+### Round 4 self-review
+
+- Mutation coverage includes the exact reviewer counterexamples, named constructor arguments, parameter/local/field writes, semantic ref mutation, asynchronous terminal joins, a query-clause wrapper whose origin is behind non-expression syntax nodes, different binding sets through the same authored helper, and an opaque callback capture converted to `object`.
+- The expression cache cannot cross-contaminate different call-edge bindings: binding identity is structural and length-prefixed, not hash-only; origins are sorted; immutable sets are stored; only top-level empty-path results are cached.
+- The terminal proof is deliberately conservative. A more elaborate correct carrier method may be refused, but mutually exclusive or unsupported control flow cannot silently count terminals from different paths. The one accepted carrier shape proves all mapped writers in the same exact completion/disposal member.
+- No production file, dependency, catalog row, suppression, addendum, or unrelated untracked file changed. The production umbrella remains intentionally RED for the later producer and Task 14 work.

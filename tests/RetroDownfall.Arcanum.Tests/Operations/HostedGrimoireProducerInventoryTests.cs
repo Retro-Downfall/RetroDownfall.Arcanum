@@ -49,6 +49,88 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
+    [InlineData("held.Release();", false)]
+    [InlineData("held.ReleaseAndUse();", false)]
+    [InlineData("held.Keep();", true)]
+    [InlineData("held.ReleaseOther(other);", true)]
+    [InlineData("other.ReleaseOther(held);", false)]
+    [InlineData("Helper.Release(other); Helper.Release(held);", false)]
+    [InlineData("Helper.Keep(held); Helper.Release(other);", true)]
+    [InlineData("Helper.Release(condition ? held : other);", false)]
+    [InlineData("Helper.Release(other ?? held);", false)]
+    [InlineData("Helper.Release(condition switch { true => held, _ => other });", false)]
+    [InlineData("Helper.Release(new[] { held, other }[condition ? 0 : 1]);", false)]
+    [InlineData("Helper.Release((held, other).Item1);", false)]
+    [InlineData("GC.KeepAlive(condition ? held : other);", false)]
+    [InlineData("GC.KeepAlive(from item in new[] { held, other } select item);", false)]
+    [InlineData("held?.Release();", false)]
+    [InlineData("new Box(held).Release();", false)]
+    [InlineData("held.GetHashCode();", false)]
+    public void R4AdmissionOriginsIncludeReceiversAndCompositeArguments(string operation, bool retained)
+    {
+        string helpers = "static class Helper { public static void Release(this IDisposable handle) => handle.Dispose(); public static void ReleaseAndUse(this IDisposable handle) { handle.Dispose(); System.IO.File.Delete(\"inside\"); } public static void Keep(this IDisposable handle) {} public static void ReleaseOther(this IDisposable handle, IDisposable other) => other.Dispose(); } class Box(IDisposable handle) { public void Release() => handle.Dispose(); }";
+
+        string source = R2Source(R2Admission + "IDisposable other=null!; bool condition=DateTime.UtcNow.Ticks<0; " + operation + " System.IO.File.Delete(\"after\");", helpers);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(operation.StartsWith("GC.KeepAlive(from", StringComparison.Ordinal) ? "using System.Linq;" + source : source);
+
+        Assert.Equal(retained, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING");
+    }
+
+    [Fact]
+    public void R4OpaqueCallbackCaptureRemainsAnExplicitOwnershipRefusal()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "GC.KeepAlive((Action)(() => held.Dispose()));"));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+    }
+
+    private static string R4CarrierSource(string constructor, string completion = "first.CompleteAsync(); second.CompleteAsync();", string disposal = "first.Dispose(); second.Dispose();", bool readOnly = true, string beforeReturn = "", string arguments = "a,b") => R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var writers=Carrier.Create(store); writers.CompleteAsync();", R2Blobs + "class Carrier : IDisposable { private " + (readOnly ? "readonly " : "") + "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter first,second; private Carrier(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter a, RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter b) { " + constructor + " } public static Carrier Create(RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store) { var a=store.CreateWriterAsync(); var b=store.CreateWriterAsync(); " + beforeReturn + " return new Carrier(" + arguments + "); } public void CompleteAsync() { " + completion + " } public void Dispose() { " + disposal + " } }");
+
+    [Theory]
+    [InlineData("stable", true)]
+    [InlineData("overwrite", false)]
+    [InlineData("conditional", false)]
+    [InlineData("mutable", false)]
+    [InlineData("parameter-write", false)]
+    [InlineData("local-write", false)]
+    [InlineData("named-arguments", true)]
+    [InlineData("ref-field", false)]
+    public void R4CarrierMappingRequiresOneStableWriterPerReadonlyField(string shape, bool complete)
+    {
+        string constructor = shape switch { "overwrite" => "first=a; second=b; second=a;", "conditional" => "first=a; if (DateTime.UtcNow.Ticks<0) second=b;", "parameter-write" => "b=a; first=a; second=b;", "ref-field" => "first=a; second=b; System.Threading.Interlocked.Exchange(ref second,a);", _ => "first=a; second=b;" };
+
+        string source = R4CarrierSource(constructor, readOnly: shape != "mutable", beforeReturn: shape == "local-write" ? "b=a;" : "", arguments: shape == "named-arguments" ? "b:b,a:a" : "a,b");
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(complete, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+    }
+
+    [Theory]
+    [InlineData("first.CompleteAsync(); second.CompleteAsync();", true)]
+    [InlineData("try { first.CompleteAsync(); } catch { second.CompleteAsync(); }", false)]
+    [InlineData("try { first.CompleteAsync(); } finally { second.CompleteAsync(); }", false)]
+    [InlineData("if (DateTime.UtcNow.Ticks < 0) { first.CompleteAsync(); second.CompleteAsync(); }", false)]
+    [InlineData("switch (DateTime.UtcNow.Ticks) { case < 0: first.CompleteAsync(); second.CompleteAsync(); break; default: break; }", false)]
+    [InlineData("for (var index = 0; index < 1; index++) { first.CompleteAsync(); second.CompleteAsync(); }", false)]
+    [InlineData("first.CompleteAsync(); goto done; second.CompleteAsync(); done:;", false)]
+    [InlineData("lock (this) { first.CompleteAsync(); second.CompleteAsync(); }", false)]
+    [InlineData("using (var resource = new System.IO.MemoryStream()) { first.CompleteAsync(); second.CompleteAsync(); }", false)]
+    [InlineData("checked { first.CompleteAsync(); second.CompleteAsync(); }", false)]
+    public void R4CarrierTerminalsRequireOneSupportedExecutablePath(string terminals, bool complete)
+    {
+        foreach (bool disposal in new[] { false, true })
+        {
+            HostedProducerDiscovery<HostedProducerSite> result = R2Discover(disposal ? R4CarrierSource("first=a; second=b;", disposal: terminals.Replace("CompleteAsync", "Dispose", StringComparison.Ordinal)) : R4CarrierSource("first=a; second=b;", completion: terminals));
+
+            Assert.Equal(complete, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+        }
+    }
+
+    [Theory]
     [InlineData("IDisposable alias; alias = group; alias.Dispose(); System.IO.File.Delete(\"path\");", false)]
     [InlineData("Helper.Use(held);", false)]
     [InlineData("Helper.Release(held); System.IO.File.Delete(\"path\");", false)]
