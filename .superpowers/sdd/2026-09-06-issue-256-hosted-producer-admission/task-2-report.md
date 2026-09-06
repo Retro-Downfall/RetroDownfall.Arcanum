@@ -217,3 +217,166 @@ The 2,140 count is intentionally a count of exact contexts, not 2,140 independen
 - Cold generator evaluation is cached only within the test process via Lazy; warm queries reuse the same compilation/validation objects. No cross-run metadata cache was added, because that could conceal source/project/analyzer drift. Three evaluated project inputs are retained to preserve exactness; the dominant remaining cold cost is semantic call-path discovery, not repeated warm MSBuild evaluation. Member-symbol resolution is cached without caching/suppressing authority-sensitive traversal results.
 - Contextual path expansion remains deliberate: automatic/declared copies with the same exact identity deduplicate, but distinct nested edges and retained-work/effect identities remain separate. Unadmitted paths cannot be declared equivalent merely because both currently have null frontier state. A future safe reduction would need executable path-equivalence evidence; it must not resurrect the unsafe-sibling bug. Task 14 can review physical sites grouped by root and factor independently authored static catalog declarations, but must not generate its authority proof/catalog from scanner discovery.
 - The site umbrella remains RED because the producer implementations and final exact site catalog are intentionally unfinished. Unprotected scope/provider/publication sites and other unsupported exact bindings stay visible. No full-suite globally GREEN run is claimed.
+
+## Fix round 2 — callback, accessor, publication-instance, and authority ownership
+
+Review input: `task-2-rereview-1.md`, four Important findings. Base: `3da6a5336488152a16eaf3287812ed1b52d87818`. Only the two inventory test/support files and this report were edited; no production, project dependency, plan/spec, or Task 1 changes. No subagents/reviewers were dispatched.
+
+### Implementation
+
+- Callback bodies are no longer scanned by lexical containment. A bound synchronous delegate invocation, directly awaited `Task.Run`/`Parallel.ForEachAsync`, or an exact single-use local task joined in the immediately following statement can carry the caller's retained identities. Returning a task through a completion-owned helper is supported. Discarded tasks, detached async helpers, reassigned delegates, returned-delegate factories, unsupported external dispatch APIs, and an exception opportunity before a delayed join fail closed with `HOSTED_CALLBACK_OWNERSHIP_UNPROVEN`. Bound callback bodies are still inventoried without inherited authority when ownership is unproved. Captured admission aliases are checked for explicit/implicit disposal inside the callback. Anonymous-member cycle/admission caches now include the body's source span.
+- Property traversal selects the accessor actually executed: simple assignment/init uses the setter, reads use the getter, increment/decrement uses both, and logical negation does not invoke a setter. Expression `using` and `await using` resolve authored `Dispose`/`DisposeAsync` and evaluate work/effect retention at scope exit. Known writer cleanup goes through the checked sensitive-site recorder. An unknown `IDisposable` expression is not silently assumed to be an admission handle; an exact bound admission origin is required for that exception.
+- Field-backed publication returns a set of exact mapped writer-creation spans, not a factory-wide boolean exemption. Each returned field must map to its own creation; unmapped/orphan creations are independently checked for completion and disposal under the same retained group. Local writer instances remain independently checked. Explicit and implicit disposal of direct/transitive admission aliases permanently invalidates that handle, including nested `using` declarations and `using(group)` expressions; a later alias cannot resurrect it.
+- Whole-member declarations no longer suppress traversal from another caller authority. The only new canonical-root transfer is a typed `HostHandoffProof`: exact hosted `StartAsync`, bound `Task.Run` assignment to one owned Task field with one assignment, a callback containing only a call to one declared ordinary root, and one exact shutdown await of that field (directly or through `Task.WaitAsync`). Arbitrary conditional/loop joins are not accepted. The proof retains dispatch/join anchors and the bound task field; it transfers to the independently admitted root without inheriting startup work/effect handles. Automatic/declared traversal then deduplicates the same canonical identity. Direct callers still retain their own authority context.
+- The production-site umbrella now checks `validation.IsValid`, not merely the `HOSTED_SITE_` prefix: callback, disposal, root, aggregate, and unresolved-call diagnostics cannot be left behind while claiming the inventory is GREEN. Its output groups new ownership/disposal diagnostics by exact physical source anchor and semantically bound callee, in addition to contextual counts.
+
+### Strict TDD evidence
+
+Every new round-2 scanner regression uses normal C# xUnit fixtures. `R2Discover` first asserts that the fixture compilation has **zero error diagnostics**; assertion failures below therefore are behavioral RED, not missing-reference or malformed-fixture failures. Commands used the Release test project with `--no-restore --disable-build-servers -m:1` and the filters shown below. All logs are under `/private/tmp/`.
+
+| Increment / focused filter | Observed RED before scanner change | GREEN after minimum change |
+| --- | --- | --- |
+| `R2CallbacksRequireCompletionOwnership` (initial direct/helper/discard/local/delegate group) | 7 failed / 1 passed, `task2-r2-red1.log` | 8 passed, `task2-r2-green1.log` |
+| `R2ExecutedAccessorsAndExpressionDisposalAreInventoried` | 7 failed / 0 passed, `task2-r2-red2.log` | 7 passed, `task2-r2-green2.log` |
+| `R2CarrierProof` / `R2DisposedAdmission` / `R2EveryLocalWriter` | 3 failed / 5 passed (orphan + two implicit-alias losses), `task2-r2-red3.log` | 8 passed, `task2-r2-green3.log` |
+| `R2DeclaredAuthority` / `R2HostHandoff` | 4 failed / 0 passed, `task2-r2-red4.log` | 4 passed, `task2-r2-green4.log` |
+| Callback exception gap / `R2UnknownExpression` | 2 failed / 8 passed, `task2-r2-red5.log` | 10 passed, `task2-r2-green5.log` |
+| `R2CapturedAdmission` / `R2DiscardedAsync` | 3 failed / 0 passed, `task2-r2-red6.log` | 3 passed, `task2-r2-green6.log` |
+| `R2LogicalNegation` / conditional `R2HostHandoff` | 2 failed / 2 passed, `task2-r2-red7.log` | 4 passed, `task2-r2-green7.log` |
+| Unsupported `Task.Factory.StartNew` dispatch | 1 failed / 9 passed, `task2-r2-red8.log` | 10 passed, `task2-r2-green8.log` |
+| Factory-produced delegate is not the factory method group | 1 failed / 10 passed, `task2-r2-red9.log` | 11 passed, `task2-r2-green9.log` |
+| Final diagnostic audit: out delegate / synchronous `Func<int>` / detached `async void` | 3 failed / 11 passed, `task2-r2-red10.log` | 14 passed, `task2-r2-green10.log` |
+
+The valid multi-writer/finally-cleanup and negative one-writer-missing-completion cases were included in the publication increment; those existing per-local behaviors were already GREEN while the orphan/alias regressions were RED. The obsolete declaration-only authority-boundary fixture was replaced by compile-clean positive/negative caller-context and executable-handoff fixtures, rather than preserving its unsound expectation.
+
+The formatter initially failed because its MSBuild host could not open a sandboxed named pipe. The same narrowly scoped format command succeeded with approved local pipe access; that environmental failure is not counted as TDD evidence. Formatting was restricted to the two authorized test/support files.
+
+### Final verification (round 2)
+
+All commands ran from the requested worktree. Test invocations used approved local VSTest socket access.
+
+```sh
+dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-restore --no-incremental --disable-build-servers -m:1
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-build --no-restore --filter 'FullyQualifiedName~HostedGrimoireProducerInventoryTests&FullyQualifiedName!~EveryApplicationHostedServiceHasExactlyOneEntry&FullyQualifiedName!~EveryDiscoveredProducerSiteIsCataloguedExactlyOnce' --logger 'console;verbosity=detailed'
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-build --no-restore --filter 'FullyQualifiedName~EveryApplicationHostedServiceHasExactlyOneEntry' --logger 'console;verbosity=detailed'
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-build --no-restore --filter 'FullyQualifiedName~EveryDiscoveredProducerSiteIsCataloguedExactlyOnce' --logger 'console;verbosity=detailed'
+```
+
+- Non-incremental build: **exit 0, 0 warnings, 0 errors, 51.94 seconds**. Log: `/private/tmp/task2-r2-build-final.log`.
+- Complete fixture/registration/validator matrix excluding the two umbrellas: **exit 0, 225 passed, 0 failed, 0 skipped, 27.2854 seconds**. Log: `/private/tmp/task2-r2-fixtures-final.log`.
+- Separate 23-service registration umbrella: **exit 0, 1 passed**, total 1.1165 minutes. Cold inventory **65.609 seconds**, warm cached access **0.045 milliseconds**. Log: `/private/tmp/task2-r2-registration-final.log`.
+- Separate production-site umbrella: **exit 1, 1 failed**, expected RED, total 1.0871 minutes. Log: `/private/tmp/task2-r2-sites-final.log`. Its failure is now the full `validation.IsValid` assertion. No root-unresolved, aggregate-proof-missing, or generated-JSON-symbol errors were reported.
+- The final three test processes ran separately and concurrently after the successful build; these cold timings include that contention and are not controlled benchmarks. No global full-suite GREEN claim is made.
+
+Final production diagnostic summary:
+
+```text
+Uncatalogued contextual sites: 2056
+Unique physical sensitive sites: 381
+Physical sensitive sites per exact operation root: 570
+HOSTED_SITE_WORK_FRONTIER_MISSING: 158
+HOSTED_CALLBACK_OWNERSHIP_UNPROVEN: 11624
+HOSTED_CALL_TARGET_UNRESOLVED: 124
+HOSTED_SITE_EFFECT_FRONTIER_MISSING: 60
+HOSTED_SITE_UNCLASSIFIED: 297
+HOSTED_DISPOSAL_TARGET_UNRESOLVED: 183
+HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE: 3
+HOSTED_EXTERNAL_OPERATION_UNCATALOGUED: 17
+HOSTED_SITE_UNCATALOGUED: 2056
+Test Run Failed. Total tests: 1. Failed: 1.
+```
+
+The 2,056 site identities remain exact caller/root/frontier contexts, not independent physical effects. The decrease from round 1's 2,140 is not an equivalence-based relaxation: callback traversal now follows executable call paths, and the valid host handoff deduplicates its canonical independently admitted runtime root. Unsafe sibling paths still retain distinct edges. Tasks 3–13 still establish production admission; Task 14 owns catalog closure. The three publication diagnostics and ordinary scope/provider failures remain visible.
+
+### Important closure concerns and a bounded Task 14 path
+
+**Important: this fix round is ready for fresh review, not a declaration that Task 2 or the production inventory is approved/complete.** The scanner now exposes previously silent callback/disposal gaps. The initial 7,429 callback contexts expanded after unsupported external dispatches were also made fail-closed. Final counts are **11,624 callback diagnostics across 337 source-anchor/callee pairs at 313 distinct source offsets**, plus **183 disposal diagnostics across 22 source-anchor/callee pairs**. These are not 11,807 independent manual exemptions. The umbrella prints every physical pair and its contextual count as a `PHYSICAL` line; the complete per-source list is in `task2-r2-sites-final.log`. Callees are recorded from the actual bound symbol when the diagnostic is created, not reconstructed from a chain's first token.
+
+A satisfiable closure requires executable mechanisms, not prose or catalog rows that waive diagnostics:
+
+| Class | Concrete closure mechanism / production-shaped evidence | Current status |
+| --- | --- | --- |
+| Delegate parameters and stable delegate fields (118 physical pairs, 7,288 contexts) | Carry a call-edge binding environment keyed by the target's exact parameter/field symbol, substitute the bound caller lambda/local/method group, and check the invocation's synchronous/awaited completion. Preserve each edge and inherited-handle lifetime. Handle omitted nullable callbacks only when the actual argument/default and guard prove they do not execute. `SqliteBusyRetry.ExecuteAsync` has directly awaited `action`, `retrying`, and `delayAsync` parameters; `CovenantMaintenanceHostedService.RunSweepAsync` similarly awaits its `run` parameter. One supported parameter-binding mechanism can close repeated contexts at these exact source sites. Reassignment/escaping fields must remain unresolved. | **Not supported by the current model. Important reviewer/Task 14 work.** |
+| Eager framework callbacks (LINQ terminal predicates/aggregates, list predicates/comparisons, concurrent dictionary factories) | Add closed typed contracts keyed by full bound framework method/overload, asserting that supplied callbacks finish before the call returns; traverse each exact callback under the call's retained identities. Add positive and detached/async-void/reassigned negative fixtures per contract family. Concurrent factories may execute more than once; that does not authorize caching away their call-edge proof. No namespace/name-prefix exemption. | Not yet implemented. Existing false-positive execution assumptions were removed for `out` delegate outputs; remaining rows are conservative unsupported contracts. |
+| Deferred LINQ / iterator callbacks | Bind the deferred iterator recipe to an exact enumeration/terminal-consumption site, then prove disposal and caller retention through that consumption. Alternatively refactor a producer to a directly admitted explicit loop. Construction of `Where`/`Select`/`OrderBy` alone must never confer an effect lifetime on later enumeration. | **Not provable by the current model**; requires an executable iterator contract or producer refactor, not a manual exemption. |
+| Detached tasks, continuations, background loops, event/options callbacks, and SQLite registered callbacks | Use an exact completion-owned task-local/field join where applicable; otherwise give the callback an independently admitted declared root and a tested task-registration/lifetime-transfer contract. SQLite registered functions and options callbacks need exact registration-to-invocation ownership (or a proven sensitive-effect-free callback body). The existing LRO host handoff is one executable instance, not a blanket rule for all continuations. | General event/native/deferred callback ownership is **unproved**. Review must not infer that these contexts are safe from their names. |
+| Inherited authored cleanup (3 physical pairs, 22 contexts) | Resolve the inherited/explicit interface slot, then traverse the authored implementation. Both purpose-specific journal-key lease classes inherit `StableJournalKeyLease.Dispose` in `BackupRestoreJournalKeyProvider.cs`; it atomically takes and zeros the key. A base-slot resolver closes this shared class without a cleanup exemption. | Current expression resolver diagnoses inherited members; straightforward source-backed extension remains. |
+| `ConfiguredAsyncDisposable` (4 pairs, 10 contexts) | Unwrap the exact bound `IAsyncDisposable.ConfigureAwait` resource to its original value and traverse that value's disposal at the same exit state. | Not yet supported; no authority should be granted to the wrapper's name alone. |
+| Metadata file/handle cleanup (12 pairs, 145 contexts: SafeFileHandle 5/100, FileStream 6/44, Stream 1/1) | Use closed typed disposal contracts with exact creation provenance/capabilities (read-only handle versus flush/write/delete-on-close). A read-only close must not globally require an effect group; a mutating close must retain the publication group. Resolve derived writer cleanup from its actual owner when possible. | **Current model cannot prove arbitrary metadata Stream/handle effects.** Capability contracts or source-visible producer ownership are required. |
+| Returned `IDisposable` / enumerator cleanup (3 pairs, 6 contexts) | Reuse exact returned-expression dataflow to bind `TurnAccountingAmbient.Push` to its authored `RestorationScope.Dispose` (two Batch sites), and bind the workspace enumerator to an exact read-only enumeration/disposal contract. | Not yet implemented; a plain `IDisposable` or `IEnumerator<T>` label is insufficient. |
+
+The bounded mechanisms above demonstrate a feasible engineering path, but they are **not proofs already present in this commit**. In particular, arbitrary callback parameters/fields, deferred iterators, registered callbacks, and polymorphic metadata resources cannot be closed merely by filling today's catalog. Fresh review must decide whether Task 14 is the right place for those extensions or whether the harness needs another scoped fix round. No new production refactors were authorized or performed in this round.
+
+Exact bound-callee grouping (physical = source-anchor/callee pair, contexts = current authority/call-edge diagnostics):
+
+| Diagnostic | Bound callee | Physical | Contexts |
+| --- | --- | ---: | ---: |
+| Callback | ``System.Action`1.Invoke`` | 52 | 1177 |
+| Callback | ``System.Linq.Enumerable.Select`` | 50 | 257 |
+| Callback | ``System.Func`2.Invoke`` | 29 | 4591 |
+| Callback | ``System.Linq.Enumerable.Where`` | 27 | 94 |
+| Callback | ``System.Linq.Enumerable.Any`` | 27 | 3031 |
+| Callback | ``System.Func`1.Invoke`` | 20 | 542 |
+| Callback | ``System.Linq.Enumerable.OrderBy`` | 18 | 134 |
+| Callback | ``System.Collections.Concurrent.ConcurrentDictionary`2.GetOrAdd`` | 13 | 50 |
+| Callback | ``System.Linq.Enumerable.ToDictionary`` | 9 | 33 |
+| Callback | ``System.Action.Invoke`` | 8 | 42 |
+| Callback | ``System.Linq.Enumerable.Sum`` | 7 | 7 |
+| Callback | ``System.Collections.Concurrent.ConcurrentDictionary`2.AddOrUpdate`` | 6 | 40 |
+| Callback | ``System.Linq.Enumerable.FirstOrDefault`` | 6 | 239 |
+| Callback | ``System.Linq.Enumerable.ThenBy`` | 6 | 22 |
+| Disposal | ``Microsoft.Win32.SafeHandles.SafeFileHandle.Dispose`` | 5 | 100 |
+| Callback | ``System.Func`3.Invoke`` | 4 | 478 |
+| Callback | ``System.Threading.Tasks.Task.Run`` | 4 | 11 |
+| Callback | ``System.Linq.ImmutableArrayExtensions.FirstOrDefault`` | 4 | 11 |
+| Disposal | ``System.Runtime.CompilerServices.ConfiguredAsyncDisposable.DisposeAsync`` | 4 | 10 |
+| Disposal | ``System.IO.FileStream.DisposeAsync`` | 3 | 5 |
+| Disposal | ``System.IO.FileStream.Dispose`` | 3 | 39 |
+| Callback | ``System.Linq.ImmutableArrayExtensions.Select`` | 3 | 254 |
+| Callback | ``System.Linq.Enumerable.GroupBy`` | 3 | 22 |
+| Callback | ``System.Collections.Generic.List`1.Sort`` | 3 | 12 |
+| Callback | ``System.Linq.Enumerable.All`` | 2 | 7 |
+| Callback | ``System.Linq.Enumerable.Aggregate`` | 2 | 5 |
+| Callback | ``System.Func`4.Invoke`` | 2 | 448 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStore.ProveAllAbsentAsync`` | 2 | 4 |
+| Disposal | ``RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreJournalKeyLease.Dispose`` | 2 | 20 |
+| Disposal | ``System.IDisposable.Dispose`` | 2 | 2 |
+| Callback | ``System.Threading.Tasks.Task.ContinueWith`` | 2 | 12 |
+| Callback | ``System.Array.Exists`` | 2 | 12 |
+| Callback | ``System.Collections.Generic.List`1.FindIndex`` | 1 | 9 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunSimulacrumBranchAsync`` | 1 | 8 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync`` | 1 | 8 |
+| Callback | ``System.Linq.Enumerable.OrderByDescending`` | 1 | 6 |
+| Callback | ``System.Linq.Enumerable.Count`` | 1 | 5 |
+| Callback | ``System.Func`5.Invoke`` | 1 | 5 |
+| Disposal | ``System.Collections.Generic.IEnumerator<string>.Dispose`` | 1 | 4 |
+| Callback | ``System.Func`6.Invoke`` | 1 | 4 |
+| Callback | ``System.Linq.Enumerable.DistinctBy`` | 1 | 3 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Mcp.McpConnectionManager.RunGlobalInitOperationAsync`` | 1 | 3 |
+| Callback | ``Microsoft.Data.Sqlite.SqliteConnection.CreateFunction`` | 1 | 22 |
+| Disposal | ``RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionJournalKeyLease.Dispose`` | 1 | 2 |
+| Disposal | ``System.IO.Stream.DisposeAsync`` | 1 | 1 |
+| Callback | ``System.Linq.ImmutableArrayExtensions.Where`` | 1 | 1 |
+| Callback | ``System.Collections.Generic.List`1.RemoveAll`` | 1 | 1 |
+| Callback | ``System.Collections.Generic.List`1.ConvertAll`` | 1 | 1 |
+| Callback | ``System.Collections.Generic.HashSet`1.RemoveWhere`` | 1 | 1 |
+| Callback | ``System.Action`2.Invoke`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentTextExtractor.ReadChunksAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Mcp.McpConnectionManager.EnsureGlobalLoadedAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.RetryAfterDelayAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Hosting.Loremaster.RunSweepLoopAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Hosting.ChronicleHub.SubscribeAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Infrastructure.Hosting.CampaignLoggerQueue.ReadAllAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Core.Mcp.IMcpConnectionManager.StopAllAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.WatchForCancellationAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.EnumerateRequestPagesAsync`` | 1 | 1 |
+| Callback | ``RetroDownfall.Arcanum.Api.Intelligence.BatchJsonlRecordReader.ReadAsync`` | 1 | 1 |
+| Callback | ``Microsoft.Extensions.Options.IOptionsMonitor`1.OnChange`` | 1 | 1 |
+
+### Round 2 self-review
+
+- All four rereview findings have direct compile-clean RED/GREEN regression evidence, plus bounded audit cases. Existing Saga success-branch, deep unsafe sibling, exact selector, aggregate, generator-complete compilation, and registration fixtures remain GREEN.
+- Checked the complete scoped diff and `git diff --check`; only the two inventory files and this report changed. The closed vocabulary/catalog skeleton, production sources, plan/spec, and project dependencies are unchanged.
+- A diagnostic is a refusal to prove safety, not evidence of an actual production bug. The new grouped callback/disposal rows include supported-by-the-runtime but unsupported-by-this-analyzer shapes. They are deliberately retained, and the strengthened umbrella cannot pass with them outstanding.
+- No source-derived catalog generation, generic prose proof, factory-wide publication exemption, declaration-only authority cut, or namespace-wide callback/disposal waiver was introduced.
+- This is still a conservative supported-shape analyzer rather than a general alias/control-flow theorem prover. The Important closure work above is material and remains visible for the reviewer. The current site inventory and proof obligations are intentionally RED pending production admission and executable final closure.
