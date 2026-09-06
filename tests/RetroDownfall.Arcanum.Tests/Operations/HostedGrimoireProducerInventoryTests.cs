@@ -2,6 +2,8 @@ using Microsoft.CodeAnalysis;
 
 using Microsoft.CodeAnalysis.CSharp;
 
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -13,6 +15,8 @@ using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using System.Collections.Immutable;
 
 using Xunit.Abstractions;
 
@@ -87,7 +91,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
     }
 
-    private static string R4CarrierSource(string constructor, string completion = "first.CompleteAsync(); second.CompleteAsync();", string disposal = "first.Dispose(); second.Dispose();", bool readOnly = true, string beforeReturn = "", string arguments = "a,b") => R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var writers=Carrier.Create(store); writers.CompleteAsync();", R2Blobs + "class Carrier : IDisposable { private " + (readOnly ? "readonly " : "") + "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter first,second; private Carrier(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter a, RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter b) { " + constructor + " } public static Carrier Create(RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store) { var a=store.CreateWriterAsync(); var b=store.CreateWriterAsync(); " + beforeReturn + " return new Carrier(" + arguments + "); } public void CompleteAsync() { " + completion + " } public void Dispose() { " + disposal + " } }");
+    private static string R4CarrierSource(string constructor, string completion = "await first.CompleteAsync(); await second.CompleteAsync();", string disposal = "first.Dispose(); second.Dispose();", bool readOnly = true, string beforeReturn = "", string arguments = "a,b") => R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var writers=Carrier.Create(store); await writers.CompleteAsync();", R2Blobs + "class Carrier : IDisposable { private " + (readOnly ? "readonly " : "") + "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter first,second; private Carrier(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter a, RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter b) { " + constructor + " } public static Carrier Create(RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store) { var a=store.CreateWriterAsync(); var b=store.CreateWriterAsync(); " + beforeReturn + " return new Carrier(" + arguments + "); } public async Task CompleteAsync() { " + completion + " } public void Dispose() { " + disposal + " } }");
 
     [Theory]
     [InlineData("stable", true)]
@@ -110,21 +114,23 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
-    [InlineData("first.CompleteAsync(); second.CompleteAsync();", true)]
-    [InlineData("try { first.CompleteAsync(); } catch { second.CompleteAsync(); }", false)]
-    [InlineData("try { first.CompleteAsync(); } finally { second.CompleteAsync(); }", false)]
-    [InlineData("if (DateTime.UtcNow.Ticks < 0) { first.CompleteAsync(); second.CompleteAsync(); }", false)]
-    [InlineData("switch (DateTime.UtcNow.Ticks) { case < 0: first.CompleteAsync(); second.CompleteAsync(); break; default: break; }", false)]
-    [InlineData("for (var index = 0; index < 1; index++) { first.CompleteAsync(); second.CompleteAsync(); }", false)]
-    [InlineData("first.CompleteAsync(); goto done; second.CompleteAsync(); done:;", false)]
-    [InlineData("lock (this) { first.CompleteAsync(); second.CompleteAsync(); }", false)]
-    [InlineData("using (var resource = new System.IO.MemoryStream()) { first.CompleteAsync(); second.CompleteAsync(); }", false)]
-    [InlineData("checked { first.CompleteAsync(); second.CompleteAsync(); }", false)]
+    [InlineData("await first.CompleteAsync(); await second.CompleteAsync();", true)]
+    [InlineData("try { await first.CompleteAsync(); } catch { await second.CompleteAsync(); }", false)]
+    [InlineData("try { await first.CompleteAsync(); } finally { await second.CompleteAsync(); }", false)]
+    [InlineData("if (DateTime.UtcNow.Ticks < 0) { await first.CompleteAsync(); await second.CompleteAsync(); }", false)]
+    [InlineData("switch (DateTime.UtcNow.Ticks) { case < 0: await first.CompleteAsync(); await second.CompleteAsync(); break; default: break; }", false)]
+    [InlineData("for (var index = 0; index < 1; index++) { await first.CompleteAsync(); await second.CompleteAsync(); }", false)]
+    [InlineData("await first.CompleteAsync(); goto done; await second.CompleteAsync(); done:;", false)]
+    [InlineData("lock (this) { first.CompleteAsync().GetAwaiter().GetResult(); second.CompleteAsync().GetAwaiter().GetResult(); }", false)]
+    [InlineData("using (var resource = new System.IO.MemoryStream()) { await first.CompleteAsync(); await second.CompleteAsync(); }", false)]
+    [InlineData("checked { await first.CompleteAsync(); await second.CompleteAsync(); }", false)]
     public void R4CarrierTerminalsRequireOneSupportedExecutablePath(string terminals, bool complete)
     {
         foreach (bool disposal in new[] { false, true })
         {
-            HostedProducerDiscovery<HostedProducerSite> result = R2Discover(disposal ? R4CarrierSource("first=a; second=b;", disposal: terminals.Replace("CompleteAsync", "Dispose", StringComparison.Ordinal)) : R4CarrierSource("first=a; second=b;", completion: terminals));
+            string cleanup = terminals.Replace("await ", "", StringComparison.Ordinal).Replace(".GetAwaiter().GetResult()", "", StringComparison.Ordinal).Replace("CompleteAsync", "Dispose", StringComparison.Ordinal);
+
+            HostedProducerDiscovery<HostedProducerSite> result = R2Discover(disposal ? R4CarrierSource("first=a; second=b;", disposal: cleanup) : R4CarrierSource("first=a; second=b;", completion: terminals));
 
             Assert.Equal(complete, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
         }
@@ -150,7 +156,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         string beforeReturn = shape switch { "factory-authored-dispose" => "WriterSink.Dispose(a);", "factory-authored-store" => "WriterSink.Store(a);", "factory-opaque" => "GC.KeepAlive(a);", _ => "" };
 
-        string completion = shape switch { "completion-authored-store" => "first.CompleteAsync(); WriterSink.Store(first); second.CompleteAsync();", "completion-opaque" => "first.CompleteAsync(); GC.KeepAlive(first); second.CompleteAsync();", _ => "first.CompleteAsync(); second.CompleteAsync();" };
+        string completion = shape switch { "completion-authored-store" => "await first.CompleteAsync(); WriterSink.Store(first); await second.CompleteAsync();", "completion-opaque" => "await first.CompleteAsync(); GC.KeepAlive(first); await second.CompleteAsync();", _ => "await first.CompleteAsync(); await second.CompleteAsync();" };
 
         string disposal = shape switch { "disposal-authored-store" => "first.Dispose(); WriterSink.Store(first); second.Dispose();", "disposal-opaque" => "first.Dispose(); GC.KeepAlive(first); second.Dispose();", _ => "first.Dispose(); second.Dispose();" };
 
@@ -204,6 +210,106 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.StartsWith(unadmitted, StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void R7GraphIdentitySeparatesAliasedSamePathSameSpanHelpers()
+    {
+        static CSharpCompilation Helper(string assembly, string operation) => Compile("namespace RetroDownfall.Collision { public static class Shared { public static void Run() { System.IO.File." + operation + "(\"path\"); } } }").WithAssemblyName(assembly);
+
+        CSharpCompilation first = Helper("Collision.First", "Exists");
+
+        CSharpCompilation second = Helper("Collision.Second", "Delete");
+
+        MetadataReference firstReference = first.ToMetadataReference(ImmutableArray.Create("first"));
+
+        MetadataReference secondReference = second.ToMetadataReference(ImmutableArray.Create("second"));
+
+        string source = "extern alias first; extern alias second; " + FixtureSource("first::RetroDownfall.Collision.Shared.Run(); second::RetroDownfall.Collision.Shared.Run();");
+
+        CSharpCompilation producer = Compile(source).AddReferences(firstReference, secondReference).WithAssemblyName("Collision.Producer");
+
+        Assert.Empty(first.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(second.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(producer.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        MethodDeclarationSyntax firstRun = first.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+
+        MethodDeclarationSyntax secondRun = second.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+
+        Assert.Equal(firstRun.Span, secondRun.Span);
+
+        Assert.Equal(firstRun.SyntaxTree.FilePath, secondRun.SyntaxTree.FilePath);
+
+        Assert.Equal(first.GetSemanticModel(firstRun.SyntaxTree).GetDeclaredSymbol(firstRun)!.GetDocumentationCommentId(), second.GetSemanticModel(secondRun.SyntaxTree).GetDeclaredSymbol(secondRun)!.GetDocumentationCommentId());
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([first, second, producer], new(["Worker"], []), [new("Worker", [new("Worker.StartAsync", "src/Fixture.cs", "Worker", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null, null, [])])], []);
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void R7LifecycleMembershipCannotHideSameKeyNonLifecycleCaller()
+    {
+        const string prefix = "using Microsoft.Extensions.Hosting; using System.Threading; using System.Threading.Tasks; namespace RetroDownfall.Collision { public static class Shared { public static void Caller() { ";
+
+        string lifecycleSource = prefix + "Lifecycle.Run(); } } public static class Lifecycle { public static void Run() { System.IO.File.Exists(\"path\"); } } public class Worker : IHostedService { public Task StartAsync(CancellationToken token) { Shared.Caller(); return Task.CompletedTask; } public Task StopAsync(CancellationToken token) => Task.CompletedTask; } }";
+
+        string nonLifecycleSource = prefix + "HostedJob.Run(); } } public static class HostedJob { public static void Run() { System.IO.File.Delete(\"path\"); } } }";
+
+        CSharpCompilation lifecycle = Compile(lifecycleSource).WithAssemblyName("Collision.Lifecycle");
+
+        CSharpCompilation nonLifecycle = Compile(nonLifecycleSource).WithAssemblyName("Collision.NonLifecycle");
+
+        Assert.Empty(lifecycle.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(nonLifecycle.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        MethodDeclarationSyntax lifecycleCaller = lifecycle.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "Caller");
+
+        MethodDeclarationSyntax nonLifecycleCaller = nonLifecycle.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "Caller");
+
+        Assert.Equal(lifecycleCaller.Span, nonLifecycleCaller.Span);
+
+        Assert.Equal(lifecycle.GetSemanticModel(lifecycleCaller.SyntaxTree).GetDeclaredSymbol(lifecycleCaller)!.GetDocumentationCommentId(), nonLifecycle.GetSemanticModel(nonLifecycleCaller.SyntaxTree).GetDeclaredSymbol(nonLifecycleCaller)!.GetDocumentationCommentId());
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([lifecycle, nonLifecycle], new(["Worker", "HostedJob"], []), [], []);
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete" && site.OperationId.StartsWith("RetroDownfall.Collision.HostedJob.Run/", StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_EXTERNAL_OPERATION_UNCATALOGUED" && diagnostic.Detail == "RetroDownfall.Collision.HostedJob.Run");
+    }
+
+    [Fact]
+    public void R7AmbiguousFirstPartySameKeyCallEmitsUnresolved()
+    {
+        const string helper = "namespace RetroDownfall.Collision { public static class Shared { public static void Run() { System.IO.File.Exists(\"path\"); } } }";
+
+        CSharpCompilation first = Compile(helper).WithAssemblyName("Collision.Twin");
+
+        CSharpCompilation second = Compile(helper).WithAssemblyName("Collision.Twin");
+
+        using MemoryStream image = new();
+
+        Assert.True(first.Emit(image).Success);
+
+        MetadataReference reference = MetadataReference.CreateFromImage(image.ToArray(), MetadataReferenceProperties.Assembly.WithAliases(ImmutableArray.Create("twin")));
+
+        CSharpCompilation producer = Compile("extern alias twin; " + FixtureSource("twin::RetroDownfall.Collision.Shared.Run();")).AddReferences(reference).WithAssemblyName("Collision.Producer");
+
+        Assert.Empty(second.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(producer.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([first, second, producer], new(["Worker"], []), [new("Worker", [new("Worker.StartAsync", "src/Fixture.cs", "Worker", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null, null, [])])], []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "RetroDownfall.Collision.Shared.Run");
+    }
+
     [Theory]
     [InlineData("IDisposable alias; alias = group; alias.Dispose(); System.IO.File.Delete(\"path\");", false)]
     [InlineData("Helper.Use(held);", false)]
@@ -227,7 +333,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
-    [InlineData("both", true)]
+    [InlineData("both", false)]
     [InlineData("overload", false)]
     [InlineData("conditional", false)]
     [InlineData("unreachable", false)]
@@ -248,7 +354,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             helper = helper.Replace("public void CompleteAsync()", "public async Task CompleteAsync()", StringComparison.Ordinal).Replace("public void CompleteAsync(bool unused) => second.CompleteAsync();", "public Task CompleteAsync(bool unused) => second.CompleteAsync();", StringComparison.Ordinal);
         }
 
-        string blobs = asynchronous ? R2Blobs.Replace("public void CompleteAsync() {}", "public Task CompleteAsync() => Task.Delay(1);", StringComparison.Ordinal) : R2Blobs;
+        string blobs = R2Blobs;
 
         HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var writers=Carrier.Create(store); " + (asynchronous ? "await " : "") + "writers.CompleteAsync();", blobs + helper));
 
@@ -341,34 +447,33 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.DoesNotContain(result.Items, static site => site.Callee == "System.IO.File.Delete");
     }
 
-    private const string R2Blobs = "namespace RetroDownfall.Arcanum.Core.Storage { public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); } public class EncryptedBlobWriter : IDisposable { public void CompleteAsync() {} public void Dispose() {} } }";
+    private const string R2Blobs = "namespace RetroDownfall.Arcanum.Core.Storage { public sealed class EncryptedBlobDescriptor {} public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); } public class EncryptedBlobWriter : IDisposable { public Task<EncryptedBlobDescriptor> CompleteAsync(CancellationToken token=default) => Task.FromResult(new EncryptedBlobDescriptor()); public void Dispose() {} } }";
 
     private static string R6BlobTypes(string completion, string disposal = "ValueTask")
     {
         string completionBody = completion switch
         {
             "void" => "public void CompleteAsync() {} public void CompleteAsync(bool unused) {}",
-            "ValueTask" => "public ValueTask CompleteAsync(CancellationToken token=default) => ValueTask.CompletedTask; public ValueTask CompleteAsync(bool unused) => ValueTask.CompletedTask;",
-            _ => "public Task CompleteAsync(CancellationToken token=default) => Task.CompletedTask; public Task CompleteAsync(bool unused) => Task.CompletedTask;",
+            "ValueTask" => "public ValueTask<EncryptedBlobDescriptor> CompleteAsync(CancellationToken token=default) => ValueTask.FromResult(new EncryptedBlobDescriptor()); public ValueTask<EncryptedBlobDescriptor> CompleteAsync(bool unused) => ValueTask.FromResult(new EncryptedBlobDescriptor());",
+            _ => "public Task<EncryptedBlobDescriptor> CompleteAsync(CancellationToken token=default) => Task.FromResult(new EncryptedBlobDescriptor()); public Task<EncryptedBlobDescriptor> CompleteAsync(bool unused) => Task.FromResult(new EncryptedBlobDescriptor());",
         };
 
         string disposalBody = disposal == "Task"
             ? "public Task WriteAsync() => Task.CompletedTask; public void Dispose() {} public Task DisposeAsync() => Task.CompletedTask;"
             : "public Task WriteAsync() => Task.CompletedTask; public void Dispose() {} public ValueTask DisposeAsync() => ValueTask.CompletedTask;";
 
-        return "namespace RetroDownfall.Arcanum.Core.Storage { public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); } public class EncryptedBlobWriter : IDisposable" + (disposal == "ValueTask" ? ", IAsyncDisposable" : "") + " { " + completionBody + disposalBody + " } }";
+        return "namespace RetroDownfall.Arcanum.Core.Storage { public sealed class EncryptedBlobDescriptor {} public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); } public class EncryptedBlobWriter : IDisposable" + (disposal == "ValueTask" ? ", IAsyncDisposable" : "") + " { " + completionBody + disposalBody + " } }";
     }
 
     [Theory]
     [InlineData("straight", "void", "ValueTask", false)]
     [InlineData("await-task", "Task", "ValueTask", true)]
-    [InlineData("await-value-task", "ValueTask", "ValueTask", true)]
+    [InlineData("wrong-value-task-completion", "ValueTask", "ValueTask", false)]
     [InlineData("completion-configure-await", "Task", "ValueTask", true)]
     [InlineData("using", "Task", "ValueTask", true)]
-    [InlineData("await-using", "ValueTask", "ValueTask", true)]
+    [InlineData("await-using", "Task", "ValueTask", true)]
     [InlineData("try-finally-task", "Task", "ValueTask", true)]
-    [InlineData("try-finally-value-task", "ValueTask", "ValueTask", true)]
-    [InlineData("try-finally-dispose-task", "Task", "Task", true)]
+    [InlineData("try-finally-dispose-task", "Task", "Task", false)]
     [InlineData("try-finally-dispose-value-task", "Task", "ValueTask", true)]
     [InlineData("catch-cleanup-rethrow", "Task", "ValueTask", true)]
     [InlineData("catch-cleanup-fallthrough", "Task", "ValueTask", false)]
@@ -396,7 +501,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         string one = shape switch
         {
             "straight" => "var writer=store.CreateWriterAsync(); writer.CompleteAsync(); writer.Dispose();",
-            "await-task" or "await-value-task" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
+            "await-task" or "wrong-value-task-completion" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
             "completion-configure-await" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync().ConfigureAwait(false);",
             "using" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
             "await-using" => "await using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
@@ -421,7 +526,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             _ => "",
         };
 
-        if (shape == "try-finally-task" || shape == "try-finally-value-task")
+        if (shape == "try-finally-task")
         {
             one = "var first=store.CreateWriterAsync(); try { var second=store.CreateWriterAsync(); try { await first.CompleteAsync(); await second.CompleteAsync(); } finally { await second.DisposeAsync(); } } finally { await first.DisposeAsync(); }";
         }
@@ -442,6 +547,48 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         }
 
         HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; " + one, helpers));
+
+        Assert.Equal(valid, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+    }
+
+    [Theory]
+    [InlineData("exact", "sync", true)]
+    [InlineData("exact", "async", true)]
+    [InlineData("optional-overload", "sync", false)]
+    [InlineData("wrong-task-result", "sync", false)]
+    [InlineData("custom-awaitable", "sync", false)]
+    [InlineData("exact", "optional-overload", false)]
+    [InlineData("exact", "custom-awaitable", false)]
+    public void R7WriterTerminalsUseClosedProductionContracts(string completion, string cleanup, bool valid)
+    {
+        string completionMember = completion switch
+        {
+            "optional-overload" => "public Task<EncryptedBlobDescriptor> CompleteAsync(CancellationToken token=default, bool unrelated=false) => Task.FromResult(new EncryptedBlobDescriptor());",
+            "wrong-task-result" => "public Task<int> CompleteAsync(CancellationToken token=default) => Task.FromResult(0);",
+            "custom-awaitable" => "public CustomAwaitable CompleteAsync(CancellationToken token=default) => new();",
+            _ => "public Task<EncryptedBlobDescriptor> CompleteAsync(CancellationToken token=default) => Task.FromResult(new EncryptedBlobDescriptor());",
+        };
+
+        string interfaces = cleanup == "async" ? ", IAsyncDisposable" : "";
+
+        string cleanupMember = cleanup switch
+        {
+            "async" => "public ValueTask DisposeAsync() => ValueTask.CompletedTask;",
+            "optional-overload" => "public ValueTask DisposeAsync(bool unrelated=false) => ValueTask.CompletedTask;",
+            "custom-awaitable" => "public CustomAwaitable DisposeAsync() => new();",
+            _ => "",
+        };
+
+        string helpers = "namespace RetroDownfall.Arcanum.Core.Storage { public sealed class EncryptedBlobDescriptor {} public sealed class CustomAwaitable { public Awaiter GetAwaiter() => new(); public sealed class Awaiter : System.Runtime.CompilerServices.INotifyCompletion { public bool IsCompleted => true; public void OnCompleted(Action continuation) {} public void GetResult() {} } } public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); } public class EncryptedBlobWriter : IDisposable" + interfaces + " { " + completionMember + " public void Dispose() {} " + cleanupMember + " } }";
+
+        string body = cleanup switch
+        {
+            "sync" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
+            "async" => "await using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
+            _ => "var writer=store.CreateWriterAsync(); try { await writer.CompleteAsync(); } finally { await writer.DisposeAsync(); }",
+        };
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; " + body, helpers));
 
         Assert.Equal(valid, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
     }
@@ -489,7 +636,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     {
         string completed = awaitable == "Task" ? "Task.FromResult(new EncryptedBlobWriter())" : "ValueTask.FromResult(new EncryptedBlobWriter())";
 
-        string helpers = "namespace RetroDownfall.Arcanum.Core.Storage { public interface IEncryptedBlobStore { " + awaitable + "<EncryptedBlobWriter> CreateWriterAsync(); } public class Store : IEncryptedBlobStore { public " + awaitable + "<EncryptedBlobWriter> CreateWriterAsync() => " + completed + "; } public class EncryptedBlobWriter : IDisposable { public Task CompleteAsync() => Task.CompletedTask; public void Dispose() {} } }";
+        string helpers = "namespace RetroDownfall.Arcanum.Core.Storage { public sealed class EncryptedBlobDescriptor {} public interface IEncryptedBlobStore { " + awaitable + "<EncryptedBlobWriter> CreateWriterAsync(); } public class Store : IEncryptedBlobStore { public " + awaitable + "<EncryptedBlobWriter> CreateWriterAsync() => " + completed + "; } public class EncryptedBlobWriter : IDisposable { public Task<EncryptedBlobDescriptor> CompleteAsync(CancellationToken token=default) => Task.FromResult(new EncryptedBlobDescriptor()); public void Dispose() {} } }";
 
         string creation = joined
             ? "await store.CreateWriterAsync().ConfigureAwait(false)"
@@ -537,9 +684,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData(true)]
     public void R2CarrierProofNeverCoversAnOrphanWriter(bool orphan)
     {
-        string helper = "class Carrier : IDisposable { private readonly RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter first, second; private Carrier(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter a, RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter b) { first=a; second=b; } public static Carrier Create(RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store) { var a=store.CreateWriterAsync(); var b=store.CreateWriterAsync(); " + (orphan ? "var orphan=store.CreateWriterAsync();" : "") + " return new Carrier(a,b); } public void CompleteAsync() { first.CompleteAsync(); second.CompleteAsync(); } public void Dispose() { first.Dispose(); second.Dispose(); } }";
+        string helper = "class Carrier : IDisposable { private readonly RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter first, second; private Carrier(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter a, RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter b) { first=a; second=b; } public static Carrier Create(RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store) { var a=store.CreateWriterAsync(); var b=store.CreateWriterAsync(); " + (orphan ? "var orphan=store.CreateWriterAsync();" : "") + " return new Carrier(a,b); } public async Task CompleteAsync() { await first.CompleteAsync(); await second.CompleteAsync(); } public void Dispose() { first.Dispose(); second.Dispose(); } }";
 
-        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var writers=Carrier.Create(store); writers.CompleteAsync();", R2Blobs + helper));
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var writers=Carrier.Create(store); await writers.CompleteAsync();", R2Blobs + helper));
 
         Assert.Equal(orphan ? 1 : 0, result.Diagnostics.Count(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
     }
@@ -561,7 +708,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData(true)]
     public void R2EveryLocalWriterNeedsItsOwnTerminalAndExceptionCleanup(bool completeBoth)
     {
-        string body = R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; var first=store.CreateWriterAsync(); try { var second=store.CreateWriterAsync(); try { first.CompleteAsync(); " + (completeBoth ? "second.CompleteAsync();" : "") + " } finally { second.Dispose(); } } finally { first.Dispose(); }";
+        string body = R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; var first=store.CreateWriterAsync(); try { var second=store.CreateWriterAsync(); try { await first.CompleteAsync(); " + (completeBoth ? "await second.CompleteAsync();" : "") + " } finally { second.Dispose(); } } finally { first.Dispose(); }";
 
         Assert.Equal(completeBoth ? 0 : 1, R2Discover(R2Source(body, R2Blobs)).Diagnostics.Count(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
     }
@@ -791,25 +938,26 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("explicit", false)]
     public void BlobPublicationRequiresOneContinuousGroupThroughDisposal(string shape, bool valid)
     {
-        string declarations = AdmissionTypes + """
+        string declarations = """
             namespace RetroDownfall.Arcanum.Core.Storage
             {
                 public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); }
-                public class EncryptedBlobWriter : System.IDisposable { public void CompleteAsync() {} public void Dispose() {} }
+                public sealed class EncryptedBlobDescriptor {}
+                public class EncryptedBlobWriter : System.IDisposable { public Task<EncryptedBlobDescriptor> CompleteAsync(CancellationToken token=default) => Task.FromResult(new EncryptedBlobDescriptor()); public void Dispose() {} }
             }
             """;
 
         string create = shape.StartsWith("explicit", StringComparison.Ordinal) ? "var writer = store.CreateWriterAsync();" : "using var writer = store.CreateWriterAsync();";
 
-        string switchGroup = shape == "different" ? "held.Dispose(); if (!lease.TryBeginExternalEffectGroup(out var second)) return Task.CompletedTask; using var next = second;" : "";
+        string switchGroup = shape == "different" ? "held.Dispose(); if (!lease.TryBeginExternalEffectGroup(out var second)) return; using var next = second;" : "";
 
         string loss = shape.EndsWith("after-loss", StringComparison.Ordinal) ? "held.Dispose();" : "";
 
         string dispose = shape.StartsWith("explicit", StringComparison.Ordinal) ? "writer.Dispose();" : "";
 
-        string body = AcquireWork + " RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store = null!; if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; " + create + switchGroup + " writer.CompleteAsync(); " + loss + dispose;
+        string body = R2Admission + " RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store = null!; " + create + switchGroup + " await writer.CompleteAsync(); " + loss + dispose;
 
-        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(FixtureSource(body, declarations), OrdinaryRoot());
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(R2Source(body, declarations), OrdinaryRoot());
 
         Assert.Equal(valid, !result.Diagnostics.Any(static d => d.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
 

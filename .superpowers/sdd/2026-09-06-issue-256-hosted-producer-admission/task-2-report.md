@@ -581,3 +581,51 @@ Final expected-RED diagnostic counts:
 - The proof intentionally supports only lexical using, nested protected-finally state flow, and exact catch-cleanup-rethrow state flow. Unsupported control flow yields `HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE`; it cannot combine terminals from mutually exclusive paths.
 - Lexical using accepts only a straight-line region and an optional final method return. The language-generated cleanup therefore still covers both normal return and exceptions, while a terminal after a loop or conditional cannot be borrowed as proof.
 - `git diff --check` is clean. No production source, catalog row, dependency, suppression, plan/spec, or unrelated addendum was changed.
+
+## Whole-rereview correction: exact graph identity and closed writer terminals
+
+### Root cause and strict RED
+
+The whole-rereview identity matrix was compile-clean and initially failed **3/3** tests. Graph state used documentation ID, source path, and span without authored assembly identity, so distinct methods from separate compilations could collapse into one lifecycle member, selected root, visited node, or cached admission lifetime. Target resolution also compared assembly symbols by object identity and then silently returned no target when multiple same-key first-party candidates existed.
+
+The terminal-contract matrix was compile-clean and initially failed **4/7** controls: an optional extra completion parameter, the wrong Task result, a custom completion awaitable, and a custom cleanup awaitable were accepted. That proved the scanner was recognizing lookalikes rather than the closed production contract.
+
+### Implementation and regression findings
+
+One exact graph-member identity now carries authored AssemblyIdentity, compilation identity, syntax-tree identity, method documentation ID, and member span. Lifecycle membership, selected roots, overlap, recursion, admission lifetime, origins, and caches all use that identity. Consuming symbols resolve through authored assembly identity plus documentation ID. Exact source-symbol matches win; a unique retargeted authored body is accepted; ambiguous in-scope first-party candidates fail closed with HOSTED_CALL_TARGET_UNRESOLVED.
+
+The first GREEN attempt exposed a real regression: bodyless interface declarations occupied the identity index and caused **10 failures out of 355** in interface, aggregate, and factory fixtures. Restricting the index to executable authored bodies and retaining the exact dependency-injection bound-implementation fallback when no executable candidate exists restored those cases; the focused interface group then passed **15/15**.
+
+Writer completion is now the exact zero-or-one optional CancellationToken production slot returning Task<EncryptedBlobDescriptor>. Cleanup is the exact zero-argument IDisposable.Dispose returning void or IAsyncDisposable.DisposeAsync returning ValueTask slot, including the corresponding exact EncryptedBlobWriter implementation slot. Positive fixtures use those signatures. Optional-overload, wrong-result, Task cleanup, and custom-awaitable fixtures remain explicit negatives.
+
+### Final correction verification
+
+- Focused identity, terminal-contract, and interface regression set: **25 passed / 0 failed**.
+- R2-R7 scanner matrix: **169 passed / 0 failed** in 14 seconds.
+- Complete non-umbrella inventory suite: **355 passed / 0 failed** in 29 seconds.
+- Clean no-incremental Release build: **0 warnings / 0 errors** in 49.99 seconds.
+- Cold registration umbrella: **1 passed**; cold inventory **68.995 seconds**, cached call **0.042 milliseconds**. This remains near the established roughly 1m05 cold bound and improves the interim 73.590-second resolver.
+- Production-site umbrella: expected RED, **1 failed**, about 1m09s. Physical discovery remains exactly **381 sites**. Exact graph identity exposes previously collapsed contexts, so contextual/root counts honestly rise to **2,152 contextual / 626 physical per exact operation root**. Evidence is recorded in `/private/tmp/task2-r7-final-sites.trx`.
+
+Final expected-RED diagnostic counts after the correction:
+
+| Diagnostic | Count |
+| --- | ---: |
+| HOSTED_SITE_WORK_FRONTIER_MISSING | 158 |
+| HOSTED_CALLBACK_OWNERSHIP_UNPROVEN | 12,022 |
+| HOSTED_CALL_TARGET_UNRESOLVED | 124 |
+| HOSTED_SITE_EFFECT_FRONTIER_MISSING | 60 |
+| HOSTED_SITE_UNCLASSIFIED | 297 |
+| HOSTED_DISPOSAL_TARGET_UNRESOLVED | 185 |
+| HOSTED_ADMISSION_HANDLE_ESCAPE | 11 |
+| HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE | 6 |
+| HOSTED_EXTERNAL_OPERATION_UNCATALOGUED | 22 |
+| HOSTED_SITE_UNCATALOGUED | 2,152 |
+
+### Correction self-review
+
+- The three-compilation aliases remain distinct even with identical source path, span, and documentation ID. A lifecycle member cannot hide a same-key non-lifecycle caller, and ambiguous concrete first-party targets produce a diagnostic rather than a silent skip.
+- Ambiguous resolution is never cached. The common unique-identity path retains one cached lookup, keeping the cold scanner close to its prior bound.
+- Terminal acceptance is closed over the real production method and interface slots. Custom awaitables and merely compatible optional overloads cannot impersonate completion or cleanup.
+- No physical production site disappeared. The contextual increase is the intended consequence of removing cross-compilation graph-node collapse, not a discovery regression.
+- No production source, catalog row, dependency, suppression, plan/spec, ledger, or unrelated addendum was changed.
