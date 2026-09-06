@@ -2,17 +2,37 @@
 
 ## Status
 
-DONE
+SUPERSEDED — ARCHITECTURE-BREAKER REMEDIATION IN PROGRESS
 
-The dedicated benchmark instrument is implemented without changing
-`GrimoireConnectionAdmissionGate.cs`, adding an epoch candidate, or changing production admission
-behavior. The reviewed commit should treat
-`659a3441d90aa25d5050cf8dd561ed3d88816edc` as the proposed `H`. The earlier
-`6acacc3c9fa36e538380fbb357d49c15b8576505` is superseded because calibration exposed and the next
-normal commit fixed a script variable-collision bug. No commit was amended.
+The implementation at `659a3441d90aa25d5050cf8dd561ed3d88816edc` is not H. Its calibration is
+invalid and superseded and must never be used as baseline, candidate, qualification, acceptance, or
+later calibration evidence. The earlier `6acacc3c9fa36e538380fbb357d49c15b8576505` remains
+superseded as well. No commit was amended.
 
-The one run at proposed `H` was calibration only. It is not baseline, candidate, qualification, or
-acceptance evidence.
+Independent whole review found an architecture-breaking measurement defect: the controller and
+early-completing workers busy-spin during the measured process interval, while the ordered probe
+replays a synthetic ideal order rather than actual transition stamps. The same review verified
+ceiling-expanded non-divisible totals; incomplete profile/count/checksum enforcement; terminal
+callback bracketing that omits warmup and latency; truncated allocation comparison; EF exclusion
+from the universal p99 gate; non-finite derived-math gaps; a dynamically discovered, incomplete
+input identity that omits every schema SQL resource and accepts matching malformed digests; no
+linked watchdog; hard-coded waiter evidence; cumulative historical-churn points; undisposed direct
+connections; no executed symlink/reparse cleanup attack; qualification cancellation rewritten to
+exit 2; and a shell pipeline that accepts the digest of empty toolchain output.
+
+The corrected design uses one maximum-size persistent worker set with precreated and warmed
+kernel-backed wait handles, real preallocated monotonic transition stamps, exact quotient/remainder
+work partitions, and a blocked controller/completed-worker rendezvous. One last-completer signal
+occurs after every worker timing/allocation terminal; the controller then records process terminals
+and emits one shared release. Primary timing and per-thread allocation exclude handle calls.
+Process-wide Gen0/contention deliberately includes this fixed nonallocating/non-`Monitor`
+rendezvous and remains diagnostic only.
+
+The corrected evidence design adds exact phase totals and checksums, rational allocation numerators,
+finite overflow-safe comparison, every-cell p99, and a two-level independently derived input
+catalog. A new normal implementation commit may become proposed H only after strict RED/GREEN,
+complete qualification, and real Native AOT smoke. A fresh calibration-only run must then replace
+the invalid run below.
 
 ## What was added
 
@@ -101,7 +121,10 @@ Additional integration findings fixed before proposed H:
   `dotnet restore <benchmark-project> --locked-mode` succeeded through every project reference and
   left only the benchmark-local lockfile; a packaging assertion now pins that boundary.
 
-## Verification evidence
+## Superseded verification evidence
+
+Everything in this section records what ran before the architecture-breaking defects were found. It
+does not validate H and none of its calibration data is reusable.
 
 Focused and aggregate checks:
 
@@ -150,7 +173,7 @@ Grimoire admission Native AOT smoke passed (36 cells).
 The publish emitted only the repository's existing third-party EF/DependencyModel IL/AOT warnings
 and linker environment warnings; no first-party IL/AOT warning was emitted.
 
-Clean proposed-H calibration-only run:
+Invalidated former calibration-only run:
 
 ```text
 ./scripts/benchmark-grimoire-admission.sh \
@@ -160,9 +183,8 @@ Clean proposed-H calibration-only run:
 exit 0
 ```
 
-The atomic calibration file is 294,329 bytes and has SHA-256
-`a369f468e451cb9f0b5a6d947693ef9d6edf27f16df22f87b06f21d104c7ec58`. A closed `jq -e`
-validation confirmed:
+The former artifact and its hash are intentionally not retained as valid evidence. Its structural
+checks passed only under the superseded schema:
 
 - revision `659a3441d90aa25d5050cf8dd561ed3d88816edc`, clean tree, role `H`, profile
   `qualification`;
@@ -191,7 +213,6 @@ This calibration file is diagnostic only and intentionally remains outside the r
 
 ## Concerns
 
-No blocking concern. Native AOT publish continues to report the already-known third-party EF and
-DependencyModel warnings; the host emitted no first-party IL/AOT warning and the published workload
-completed successfully. The proposed-H calibration is one process and therefore must not be used as
-performance-decision evidence.
+Task A remains blocked from declaring H until remediation, independent review, Native AOT smoke, and
+fresh calibration complete. The correction does not require production gate behavior, the epoch
+candidate, Covenant benchmark assets, or a wider two-file candidate allowlist.
