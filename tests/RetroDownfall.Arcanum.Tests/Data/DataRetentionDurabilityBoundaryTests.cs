@@ -203,8 +203,8 @@ public sealed partial class DataRetentionServiceTests
         await ExecuteAsync(
             """
             INSERT INTO saga_extraction_watermarks
-                (SessionId, LastExtractedEntryCreatedAt)
-            VALUES (@sessionId, @at)
+                (SessionId, LastExtractedEntryCreatedAt, LastExtractedEntrySequence)
+            VALUES (@sessionId, @at, 0)
             """,
             ("@sessionId", sessionId.ToString()),
             ("@at", OldTimestamp));
@@ -215,8 +215,8 @@ public sealed partial class DataRetentionServiceTests
             AFTER DELETE ON saga_extraction_watermarks
             BEGIN
                 INSERT INTO saga_extraction_watermarks
-                    (SessionId, LastExtractedEntryCreatedAt)
-                VALUES (OLD.SessionId, OLD.LastExtractedEntryCreatedAt);
+                    (SessionId, LastExtractedEntryCreatedAt, LastExtractedEntrySequence)
+                VALUES (OLD.SessionId, OLD.LastExtractedEntryCreatedAt, OLD.LastExtractedEntrySequence);
             END;
             """);
 

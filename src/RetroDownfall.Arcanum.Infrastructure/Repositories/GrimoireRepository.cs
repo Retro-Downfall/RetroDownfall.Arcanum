@@ -253,6 +253,19 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         string fullContent,
         CancellationToken cancellationToken = default)
     {
+
+        _ = await FinalizeAssistantEntryWithFrontierAsync(
+            assistantEntryId,
+            fullContent,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<long?> FinalizeAssistantEntryWithFrontierAsync(
+        Guid assistantEntryId,
+        string fullContent,
+        CancellationToken cancellationToken = default)
+    {
         Guid sessionId = await _db.Entries
             .AsNoTracking()
             .Where(m => m.Id == assistantEntryId)
@@ -261,6 +274,12 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             .ConfigureAwait(false);
 
         using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        long? throughEntrySequence = await _db.Entries
+            .AsNoTracking()
+            .Where(entry => entry.SessionId == sessionId)
+            .MaxAsync(entry => (long?)entry.Sequence, cancellationToken)
+            .ConfigureAwait(false);
 
         int updated = await SqliteBusyRetry.ExecuteAsync(
             () => _db.Entries
@@ -279,6 +298,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             throw new InvalidOperationException(
                 "Assistant entry could not be finalized; no matching row was updated in Grimoire.");
         }
+
+        return throughEntrySequence;
+
     }
 
     public async Task DiscardAssistantEntryAsync(
@@ -1309,6 +1331,65 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
 
         return entries;
+    }
+
+    public async Task<List<Entry>> GetSagaExtractionEntriesAsync(
+        Guid sessionId,
+        long afterSequence,
+        long throughSequence,
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (throughSequence <= afterSequence)
+        {
+
+            return [];
+
+        }
+
+        int target = Math.Max(1, batchSize);
+
+        int selectedCount = await EntryTemporalQueries
+            .CountSagaExtractionPage(
+                _db,
+                sessionId,
+                afterSequence,
+                throughSequence,
+                target)
+            .FirstAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        List<Entry> entries = await EntryTemporalQueries
+            .LoadSagaExtractionPage(
+                _db,
+                sessionId,
+                afterSequence,
+                throughSequence,
+                target,
+                selectedCount)
+            .AsNoTracking()
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (entries.Count != selectedCount)
+        {
+
+            throw new InvalidOperationException(
+                $"Saga extraction for session {sessionId} changed while its sequence-bounded "
+                + $"window was being read (expected {selectedCount} entries, materialized "
+                + $"{entries.Count}). The cursor was not advanced; retry after active writes finish.");
+
+        }
+
+        return entries;
+
     }
 
     public Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>

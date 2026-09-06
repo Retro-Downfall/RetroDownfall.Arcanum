@@ -134,19 +134,19 @@ explain_publish_failure() {
   local rid="$1"
   local log="$2"
 
-  if rg -q "Cross-OS native compilation is not supported" "$log"; then
+  if rg --no-config -q "Cross-OS native compilation is not supported" "$log"; then
     echo "  Publish failed: Cross-OS native compilation is not supported." >&2
     echo "  Build $rid on a $(rid_os_family "$rid") host or in CI (e.g. GitHub Actions)." >&2
     return
   fi
 
-  if rg -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
+  if rg --no-config -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
     echo "  Publish failed: symbol stripping tool (llvm-objcopy or objcopy) not found in PATH." >&2
     echo "  Install llvm/binutils (e.g. apt install llvm) or publish with -p:StripSymbols=false." >&2
     return
   fi
 
-  if rg -q "invalid linker name.*-fuse-ld=bfd|fuse-ld=bfd" "$log"; then
+  if rg --no-config -q "invalid linker name.*-fuse-ld=bfd|fuse-ld=bfd" "$log"; then
     echo "  Publish failed: Linux linker (-fuse-ld=bfd) is unavailable on this host." >&2
     echo "  Build $rid on Linux (native or CI) — macOS hosts cannot complete the Linux AOT link step." >&2
     return
@@ -159,10 +159,13 @@ explain_publish_failure() {
 publish_cli_rid() {
   local rid="$1"
   local log="$2"
+  local artifacts
+  artifacts="$(mktemp -d)"
   local -a publish_args=(
     publish "$PROJECT"
     -c Release
     -r "$rid"
+    --artifacts-path "$artifacts"
   )
 
   echo "  Publishing $rid via Native AOT — this performs native compilation and can take several minutes..." >&2
@@ -170,19 +173,22 @@ publish_cli_rid() {
   # Stream publish output to the screen while capturing it for IL-warning analysis.
   # pipefail (set at top) makes the pipeline surface dotnet's exit status, not tee's.
   if dotnet "${publish_args[@]}" 2>&1 | tee "$log"; then
+    rm -rf "$artifacts"
     return 0
   fi
 
-  if rg -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
+  if rg --no-config -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
     echo "  Symbol stripper missing; retrying $rid with StripSymbols=false..." >&2
 
-    if dotnet "${publish_args[@]}" -p:StripSymbols=false 2>&1 | tee "$log"; then
+    if dotnet "${publish_args[@]}" -p:StripSymbols=false 2>&1 | tee -a "$log"; then
       echo "  Publish succeeded after disabling symbol stripping." >&2
+      rm -rf "$artifacts"
       return 0
     fi
   fi
 
   explain_publish_failure "$rid" "$log"
+  rm -rf "$artifacts"
   return 1
 }
 
@@ -191,26 +197,29 @@ publish_regex_smoke_rid() {
   local log="$2"
   local output
   output="$(mktemp -d)"
+  local artifacts
+  artifacts="$(mktemp -d)"
   local -a publish_args=(
     publish "$REGEX_SMOKE_PROJECT"
     -c Release
     -r "$rid"
     -o "$output"
+    --artifacts-path "$artifacts"
   )
 
   echo "  Publishing runtime-regex Native-AOT smoke for $rid..." >&2
 
   if ! dotnet "${publish_args[@]}" 2>&1 | tee -a "$log"; then
-    if rg -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
+    if rg --no-config -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
       echo "  Symbol stripper missing; retrying regex smoke with StripSymbols=false..." >&2
 
       if ! dotnet "${publish_args[@]}" -p:StripSymbols=false 2>&1 | tee -a "$log"; then
-        rm -rf "$output"
+        rm -rf "$output" "$artifacts"
         explain_publish_failure "$rid" "$log"
         return 1
       fi
     else
-      rm -rf "$output"
+      rm -rf "$output" "$artifacts"
       explain_publish_failure "$rid" "$log"
       return 1
     fi
@@ -226,7 +235,7 @@ publish_regex_smoke_rid() {
     echo "  Running runtime-regex Native-AOT smoke for $rid..." >&2
 
     if ! "$executable" 2>&1 | tee -a "$log"; then
-      rm -rf "$output"
+      rm -rf "$output" "$artifacts"
       echo "  Runtime-regex Native-AOT smoke failed for $rid." >&2
       return 1
     fi
@@ -234,7 +243,7 @@ publish_regex_smoke_rid() {
     echo "  Regex smoke published but not run because $rid is not the host RID." >&2
   fi
 
-  rm -rf "$output"
+  rm -rf "$output" "$artifacts"
   return 0
 }
 
@@ -300,15 +309,16 @@ rg_capture() {
   shift
 
   local out
-  local status
+  local rg_exit
 
-  set +e
-  out="$(rg "$pattern" "$@")"
-  status=$?
-  set -e
+  if out="$(rg --no-config "$pattern" "$@")"; then
+    rg_exit=0
+  else
+    rg_exit=$?
+  fi
 
-  if [[ "$status" -gt 1 ]]; then
-    echo "  ripgrep failed (exit $status) while scanning: $*" >&2
+  if [[ "$rg_exit" -gt 1 ]]; then
+    echo "  ripgrep failed (exit $rg_exit) while scanning: $*" >&2
     return 1
   fi
 

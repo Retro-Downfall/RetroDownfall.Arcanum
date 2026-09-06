@@ -128,7 +128,9 @@ key-by-key reference.
   batch it then loses, and picks up on its own once the database is back (issue #253). A file you
   attached that was part way through being indexed keeps its exact pending request and checkpoint —
   same attempt, nothing marked failed, and every batch already paid for still on disk — and resumes
-  from where it stopped rather than starting over (issue #254).
+  from where it stopped rather than starting over (issue #254). Saga extraction now does the same at
+  page boundaries: committed pages stay paid for, ordered per-turn provenance intervals wait through
+  maintenance, and provider work resumes at the first unpaid page after reopening (issue #255).
 - **Your API, not a bespoke one.** An OpenAI Chat Completions compatibility subset means existing
   clients and SDKs work against `arcanum serve` unchanged.
 - **Bring the providers you already pay for.** Any OpenAI-compatible HTTP endpoint, plus opt-in

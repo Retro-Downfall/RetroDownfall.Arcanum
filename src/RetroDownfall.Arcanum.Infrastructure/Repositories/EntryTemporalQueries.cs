@@ -238,4 +238,108 @@ internal static class EntryTemporalQueries
 
     }
 
+    /// <summary>
+    /// Loads a contiguous sequence window bounded by an extraction request's inclusive frontier.
+    /// The target row's complete timestamp group is retained within that frontier, while the
+    /// sequence cursor prevents a later row sharing the timestamp from being skipped.
+    /// </summary>
+    public static IQueryable<Entry> LoadSagaExtractionPage(
+        ArcanumDbContext db,
+        Guid sessionId,
+        long afterSequence,
+        long throughSequence,
+        int targetLimit,
+        int maxRows)
+    {
+
+        int boundaryOffset = Math.Max(0, targetLimit - 1);
+
+        return db.Entries.FromSql(
+            $"""
+            WITH "Boundary" AS
+            (
+                SELECT "CreatedAt"
+                FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND "Sequence" > {afterSequence}
+                  AND "Sequence" <= {throughSequence}
+                ORDER BY "Sequence"
+                LIMIT 1 OFFSET {boundaryOffset}
+            ),
+            "BoundaryEnd" AS
+            (
+                SELECT MAX("Sequence") AS "Value"
+                FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND "Sequence" > {afterSequence}
+                  AND "Sequence" <= {throughSequence}
+                  AND "CreatedAt" = (SELECT "CreatedAt" FROM "Boundary")
+            ),
+            "Selected" AS
+            (
+                SELECT e.*
+                FROM "Entries" AS e
+                WHERE e."SessionId" = {sessionId}
+                  AND e."Sequence" > {afterSequence}
+                  AND e."Sequence" <= {throughSequence}
+                  AND
+                  (
+                      NOT EXISTS (SELECT 1 FROM "Boundary")
+                      OR e."Sequence" <= (SELECT "Value" FROM "BoundaryEnd")
+                  )
+            )
+            SELECT s.*
+            FROM "Selected" AS s
+            WHERE (SELECT COUNT(*) FROM "Selected") <= {maxRows}
+            ORDER BY s."Sequence"
+            LIMIT {maxRows}
+            """);
+
+    }
+
+    public static IQueryable<int> CountSagaExtractionPage(
+        ArcanumDbContext db,
+        Guid sessionId,
+        long afterSequence,
+        long throughSequence,
+        int targetLimit)
+    {
+
+        int boundaryOffset = Math.Max(0, targetLimit - 1);
+
+        return db.Database.SqlQuery<int>(
+            $"""
+            WITH "Boundary" AS
+            (
+                SELECT "CreatedAt"
+                FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND "Sequence" > {afterSequence}
+                  AND "Sequence" <= {throughSequence}
+                ORDER BY "Sequence"
+                LIMIT 1 OFFSET {boundaryOffset}
+            ),
+            "BoundaryEnd" AS
+            (
+                SELECT MAX("Sequence") AS "Value"
+                FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND "Sequence" > {afterSequence}
+                  AND "Sequence" <= {throughSequence}
+                  AND "CreatedAt" = (SELECT "CreatedAt" FROM "Boundary")
+            )
+            SELECT COUNT(*) AS "Value"
+            FROM "Entries" AS e
+            WHERE e."SessionId" = {sessionId}
+              AND e."Sequence" > {afterSequence}
+              AND e."Sequence" <= {throughSequence}
+              AND
+              (
+                  NOT EXISTS (SELECT 1 FROM "Boundary")
+                  OR e."Sequence" <= (SELECT "Value" FROM "BoundaryEnd")
+              )
+            """);
+
+    }
+
 }

@@ -287,7 +287,6 @@ internal sealed class SessionAttachmentIndexProcessor(
                 return await ConcludeInterruptedBatchAsync(ex).ConfigureAwait(false);
 
             }
-
             catch (Exception ex)
             {
 

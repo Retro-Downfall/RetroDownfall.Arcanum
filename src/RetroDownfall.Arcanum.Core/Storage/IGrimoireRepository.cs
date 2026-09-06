@@ -18,6 +18,23 @@ public interface IGrimoireRepository
         string fullContent,
         CancellationToken cancellationToken = default);
 
+    async Task<long?> FinalizeAssistantEntryWithFrontierAsync(
+        Guid assistantEntryId,
+        string fullContent,
+        CancellationToken cancellationToken = default)
+    {
+
+        await FinalizeAssistantEntryAsync(
+            assistantEntryId,
+            fullContent,
+            cancellationToken).ConfigureAwait(false);
+
+        // Compatibility implementations can still finalize, but null explicitly means there is no
+        // exact committed frontier and callers must not enqueue Saga extraction for this turn.
+        return null;
+
+    }
+
     Task DiscardAssistantEntryAsync(
         Guid assistantEntryId,
         CancellationToken cancellationToken = default);
@@ -150,6 +167,22 @@ public interface IGrimoireRepository
         DateTime watermark,
         int batchSize,
         CancellationToken cancellationToken = default);
+
+    Task<List<Entry>> GetSagaExtractionEntriesAsync(
+        Guid sessionId,
+        long afterSequence,
+        long throughSequence,
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromException<List<Entry>>(
+            new NotSupportedException(
+                "This Grimoire repository does not expose sequence-bounded Saga extraction pages."));
+
+    }
 
     Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default);
 

@@ -813,7 +813,7 @@ public sealed class IdentitySpellingEvolutionTests
 
         _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
-            GrimoireSchemaVersionChains.Default,
+            CoreSchemaVersionFiveFixture.ChainSet(),
             1536,
             CancellationToken.None);
 

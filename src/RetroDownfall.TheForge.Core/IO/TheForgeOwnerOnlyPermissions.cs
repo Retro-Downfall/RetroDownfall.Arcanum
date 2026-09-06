@@ -11,6 +11,35 @@ namespace RetroDownfall.TheForge.Core.IO;
 public static class TheForgeOwnerOnlyPermissions
 {
 
+    /// <summary>
+    /// Creates a new asynchronous write-through file whose POSIX mode is owner-only in the creation
+    /// syscall, before any potentially sensitive content can be written.
+    /// </summary>
+    internal static FileStream CreateOwnerOnlyWriteThroughFile(string path)
+    {
+
+        FileStreamOptions options = new()
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            BufferSize = 4096,
+            Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+        };
+
+        // Windows has no UnixCreateMode equivalent. Its owner-only restriction is applied by the
+        // existing ACL step after writing; POSIX platforms must close the create-then-chmod window.
+        if (!OperatingSystem.IsWindows())
+        {
+
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        }
+
+        return new FileStream(path, options);
+
+    }
+
     public static void TrySetFile(string path)
     {
 

@@ -63,7 +63,11 @@ public sealed class LongRunningOperationSpellingEvolutionTests
         // step that was refused leaves the counts exactly as a step that ran and repaired nothing, and
         // the difference between those two is the whole of what this suite is for.
         GrimoireSchemaInstallResult evolved =
-            await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+            await GrimoireSchemaTestInstaller.InstallAsync(
+                connection,
+                CoreSchemaVersionSixFixture.ChainSet(),
+                1536,
+                CancellationToken.None);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.Core.Health);
 
@@ -79,7 +83,11 @@ public sealed class LongRunningOperationSpellingEvolutionTests
         // head file in any shape but the one ALTER produces normalizes differently here and refuses
         // with DefinitionDrift, on every evolved installation and on none of the fresh ones.
         GrimoireSchemaInstallResult converged =
-            await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+            await GrimoireSchemaTestInstaller.InstallAsync(
+                connection,
+                CoreSchemaVersionSixFixture.ChainSet(),
+                1536,
+                CancellationToken.None);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, converged.Core.Health);
 

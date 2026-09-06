@@ -787,10 +787,12 @@ internal sealed partial class SagaMemoryStore(
 
     }
 
-    public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken)
+    public async Task<SagaExtractionCursor?> GetExtractionCursorAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
     {
 
-        return SqliteBusyRetry.ExecuteAsync(
+        return await SqliteBusyRetry.ExecuteAsync<SagaExtractionCursor?>(
             async () =>
             {
 
@@ -800,17 +802,81 @@ internal sealed partial class SagaMemoryStore(
 
                 cmd.CommandText =
                     """
-                    INSERT INTO "saga_extraction_watermarks" ("SessionId", "LastExtractedEntryCreatedAt")
-                    VALUES (@sessionId, @lastExtractedEntryCreatedAt)
-                    ON CONFLICT("SessionId") DO UPDATE SET
-                        "LastExtractedEntryCreatedAt" = @lastExtractedEntryCreatedAt
+                    SELECT "LastExtractedEntrySequence", "LastExtractedEntryCreatedAt"
+                    FROM "saga_extraction_watermarks"
+                    WHERE "SessionId" = @sessionId
+                    LIMIT 1
                     """;
 
                 AddParameter(cmd, "@sessionId", sessionId.ToString());
 
-                AddParameter(cmd, "@lastExtractedEntryCreatedAt", lastExtractedEntryCreatedAt.ToString("o", CultureInfo.InvariantCulture));
+                await using DbDataReader reader =
+                    await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    return null;
+
+                }
+
+                return new SagaExtractionCursor(
+                    reader.GetInt64(0),
+                    DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture));
+
+            },
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public Task SetExtractionCursorAsync(
+        Guid sessionId,
+        SagaExtractionCursor cursor,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(cursor);
+
+        ArgumentOutOfRangeException.ThrowIfNegative(cursor.EntrySequence);
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await UpsertExtractionCursorAsync(
+                    connection,
+                    sessionId,
+                    cursor,
+                    cancellationToken).ConfigureAwait(false);
+
+            },
+            cancellationToken);
+
+    }
+
+    public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken)
+    {
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                long sequence = await SagaExtractionCursorResolver.ResolveContiguousPrefixAsync(
+                    connection,
+                    transaction: null,
+                    sessionId.ToString(),
+                    lastExtractedEntryCreatedAt,
+                    cancellationToken).ConfigureAwait(false);
+
+                await UpsertExtractionCursorAsync(
+                    connection,
+                    sessionId,
+                    new SagaExtractionCursor(sequence, lastExtractedEntryCreatedAt),
+                    cancellationToken).ConfigureAwait(false);
 
             },
             cancellationToken);
@@ -829,6 +895,38 @@ internal sealed partial class SagaMemoryStore(
         }
 
         return connection;
+
+    }
+
+    private static async Task UpsertExtractionCursorAsync(
+        DbConnection connection,
+        Guid sessionId,
+        SagaExtractionCursor cursor,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            INSERT INTO "saga_extraction_watermarks"
+                ("SessionId", "LastExtractedEntryCreatedAt", "LastExtractedEntrySequence")
+            VALUES (@sessionId, @lastExtractedEntryCreatedAt, @lastExtractedEntrySequence)
+            ON CONFLICT("SessionId") DO UPDATE SET
+                "LastExtractedEntryCreatedAt" = @lastExtractedEntryCreatedAt,
+                "LastExtractedEntrySequence" = @lastExtractedEntrySequence
+            """;
+
+        AddParameter(cmd, "@sessionId", sessionId.ToString());
+
+        AddParameter(
+            cmd,
+            "@lastExtractedEntryCreatedAt",
+            cursor.EntryCreatedAt.ToString("o", CultureInfo.InvariantCulture));
+
+        AddParameter(cmd, "@lastExtractedEntrySequence", cursor.EntrySequence);
+
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

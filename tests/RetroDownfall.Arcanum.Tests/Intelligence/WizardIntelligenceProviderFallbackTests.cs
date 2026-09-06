@@ -1212,6 +1212,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new SagaExtractionService(
                 new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
                 new TestOptionsMonitor<ArcanumSettings>(settings),
+                new GrimoireConnectionAdmissionGate(TimeProvider.System),
                 NullLogger<SagaExtractionService>.Instance),
             new SemanticSpellRouter(
                 new SpellWeaveCache(new NoopWeaveService(), new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SpellWeaveCache>.Instance),
