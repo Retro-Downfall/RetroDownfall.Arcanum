@@ -673,6 +673,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("custom-completion-awaitable", false)]
     [InlineData("wrong-cleanup", false)]
     [InlineData("discarded-completion", false)]
+    [InlineData("explicit-none-completion", false)]
+    [InlineData("cancelable-completion", false)]
     public void R8CarrierFieldsUseTheSameExactCompletionJoinAndStreamCleanupContracts(string shape, bool valid)
     {
         string completion = shape switch
@@ -683,15 +685,19 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             _ => "public Task<EncryptedBlobDescriptor> CompleteAsync(CancellationToken token=default) => Task.FromResult(new EncryptedBlobDescriptor());",
         };
 
-        bool inheritedStreamCleanup = shape is "production-sync" or "production-async" or "discarded-completion";
+        bool inheritedStreamCleanup = shape is "production-sync" or "production-async" or "discarded-completion" or "explicit-none-completion" or "cancelable-completion";
 
         string writerBase = inheritedStreamCleanup ? " : System.IO.MemoryStream" : "";
 
         string writerCleanup = shape == "wrong-cleanup" ? "public Task DisposeAsync() => Task.CompletedTask; public void Dispose() {}" : inheritedStreamCleanup ? "" : "public void Dispose() {}";
 
-        string completionCalls = shape == "discarded-completion"
-            ? "_ = first.CompleteAsync(); _ = second.CompleteAsync();"
-            : "await first.CompleteAsync(); await second.CompleteAsync();";
+        string completionCalls = shape switch
+        {
+            "discarded-completion" => "_ = first.CompleteAsync(); _ = second.CompleteAsync();",
+            "explicit-none-completion" => "await first.CompleteAsync(CancellationToken.None); await second.CompleteAsync(CancellationToken.None);",
+            "cancelable-completion" => "var token=new CancellationToken(true); await first.CompleteAsync(token); await second.CompleteAsync(token);",
+            _ => "await first.CompleteAsync(); await second.CompleteAsync();",
+        };
 
         bool asynchronousCleanup = shape is "production-async" or "wrong-cleanup";
 

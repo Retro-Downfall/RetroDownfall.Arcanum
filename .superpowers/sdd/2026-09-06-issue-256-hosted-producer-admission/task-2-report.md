@@ -686,3 +686,27 @@ Final expected-RED diagnostic counts:
 - Both list orders and repeated-call/cache-order controls are compile-clean. Exact known aliases cannot cross-bind; identical unmappable authored twins remain unresolved and uncached.
 - Carrier validity is closed over the production completion result and interface/Stream cleanup slots. Optional overloads, wrong Task results, custom awaitables, wrong cleanup returns, and discarded asynchronous completion all fail closed.
 - No temporary counter or timing output remains. `git diff --check` is clean. No production source, catalog row, suppression, dependency, addendum, ledger, or unrelated file changed.
+
+## Carrier explicit-argument closure
+
+Read `task-2-semantic-consolidation-rereview.md` completely and verified its remaining Important finding: direct local completion required zero supplied arguments, but the mapped field terminal predicate did not. The carrier path could therefore accept the exact production method with either `CancellationToken.None` or a cancelable token, even though the latter can abort durable publication.
+
+### TDD evidence and implementation
+
+The carrier matrix now includes both exact-method calls. Each uses the inherited `MemoryStream` cleanup control so cleanup remains independently valid, the outer carrier completion remains zero-argument and joined, and only the inner supplied completion argument differs. An initial fixture draft did not inherit Stream and therefore failed closed through cleanup; that draft was corrected before recording RED.
+
+With the valid cleanup control in place, the compile-clean matrix produced the exact behavioral RED: **2 failed / 7 passed**. Both `CompleteAsync(CancellationToken.None)` and `CompleteAsync(new CancellationToken(true))` were falsely accepted (`expected false / actual true`). The minimum implementation adds `call.ArgumentList.Arguments.Count == 0` to mapped writer completion, beside the same exact writer symbol and join checks already shared with direct locals. No cleanup rule, control-flow rule, resolver, cache, or production code changed. The focused matrix then passed **9/9**.
+
+### Final verification
+
+- Scoped whitespace formatting: exit 0.
+- Clean no-incremental Release test-project build: **0 warnings, 0 errors**, 53.43 seconds.
+- Complete R8 matrix: **13 passed, 0 failed**.
+- Carrier/writer publication regression surface: **101 passed, 0 failed**.
+- Complete R2-R8 scanner matrix: **182 passed, 0 failed**.
+- Complete non-umbrella inventory matrix: **368 passed, 0 failed**, 31 seconds.
+- Registration umbrella: **1 passed**; cold inventory **68.765 seconds**, cached warm call **0.039 milliseconds**.
+- Production-site umbrella: expected RED, **1 failed**, 1m10s. It still requires `validation.IsValid`; no diagnostic is suppressed. Inventory and diagnostic counts remain exactly stable at **2,152 contextual / 381 physical / 626 physical per exact operation root**, with counts 158 work-frontier, 12,022 callback, 124 unresolved-call, 60 effect-frontier, 297 unclassified, 185 disposal-target, 11 handle-escape, 6 publication-region, 22 external-operation, and 2,152 uncatalogued.
+- Production audit evidence: `/private/tmp/task2-r8-argument-final-results/task2-r8-argument-final-sites.trx`.
+
+`git diff --check` is clean. The scoped change touches only the two inventory files and this report; no production source, catalog row, dependency, suppression, addendum, or ledger changed.
