@@ -527,3 +527,57 @@ The first cross-compilation implementation used assembly-reference identity as t
 - Field terminals in unrelated overloads are allowed only as exact direct writer-terminal receivers and never contribute proof unless the caller invokes that exact carrier member. Arbitrary overload bodies, callbacks, aliases, and by-value calls remain rejected.
 - Cache keys use object identity, not source path, source content, or a hash. Binding identity remains collision-safe and sorted; immutable cached sets cannot be mutated between call edges.
 - Reviewed the complete two-file diff and ran `git diff --check`. No production file, catalog entry, suppression, dependency, addendum, or unrelated untracked file changed.
+
+## Local publication proof completion
+
+Reviewed `task-2-final-review.md` completely and replaced the remaining member-wide local-writer terminal-presence check with one conservative semantic lifetime proof. This bounded correction changes only the two inventory files and this report; production and the unrelated turnstile addendum remain untouched.
+
+### Strict RED and implementation
+
+The first compile-clean R6 matrix ran before the scanner change. `R2Discover` asserted zero compilation errors for every fixture. The current scanner produced **21 failed / 9 passed** across 30 cases. Confirmed false negatives included every by-value/opaque/alias/field/callback/return escape, conditional and unsupported creation, conditional and unreachable completion, disposal before completion, discarded Task/ValueTask completion, discarded Task/ValueTask disposal, duplicate terminals, wrong overloads, and unsafe straight-line completion/disposal. Existing group-loss negatives and awaited/using controls provided non-regression baselines.
+
+The completed proof now requires:
+
+- one exact local initialized directly by synchronous creation or by an exact Task/ValueTask await; only the framework Task/ValueTask `ConfigureAwait` chain is transparent;
+- an exclusive semantic reference allowlist containing only the exact completion and cleanup receivers—aliasing, storing, returning, capturing, opaque calls, authored calls, and unrelated writer operations all fail closed;
+- the exact bound zero-supplied-argument `CompleteAsync`, including the real optional-cancellation-token signature, completion-owned through a direct await when it returns Task/ValueTask;
+- exactly one language-selected lexical cleanup, one exact protected-finally cleanup, or the narrow exact catch-cleanup-and-rethrow plus normal-cleanup state shape; asynchronous cleanup must also be directly awaited;
+- one retained effect-group identity at creation, completion, and every cleanup point.
+
+Straight-line `CompleteAsync; Dispose` is deliberately invalid because a completion exception skips cleanup. Lexical `using`/`await using` is valid because the compiler generates the cleanup `finally`. Explicit multi-writer cleanup uses nested acquisition and nested `try/finally`: the first writer is protected before the second creation starts, and each writer owns one cleanup level, so a later creation, completion, or cleanup exception cannot skip an already-live writer's cleanup. Sequential sibling disposals in one `finally` are not accepted because the first disposal could throw before the second runs. An exact catch with awaited cleanup and bare rethrow is accepted on the exceptional path; catch fallthrough is rejected as possible use-after-disposal.
+
+The old multi-writer fixture no longer double-disposes `using` locals. It now uses ordinary locals in the nested exhaustive shape. The old plain explicit-disposal positive was corrected to negative. Field-carrier proof still owns its existing exclusive transfer contract; no local exemption was added for Batch. Batch's exact `StreamWriter(..., leaveOpen: true)` borrow and Completed/Aborted artifact owner remain Task 5 work, so conditional-empty publication stays visible rather than being blessed here.
+
+A final fail-closed self-review added a lexical-using loop before completion. It was compile-clean and initially produced **1 failed / 30 passed**, proving the first implementation still borrowed a terminal after unsupported control flow. Restricting the supported lexical region to straight-line expression/local-declaration statements (plus the containing method's final return, whose language cleanup is guaranteed) made that case GREEN. The existing ordinary using fixture then exposed an over-restriction because `FixtureSource` appends its final `return Task.CompletedTask`; that focused regression was observed RED and corrected without permitting conditionals, loops, switches, or deferred bodies.
+
+### Final evidence
+
+- Focused publication matrix: **52 passed, 0 failed, 0 skipped**, 5 seconds.
+- All R2-R6 fixtures: **160 passed, 0 failed, 0 skipped**, 13 seconds.
+- Complete non-umbrella inventory matrix: **346 passed, 0 failed, 0 skipped**, 27 seconds.
+- Clean no-incremental test-project build: **0 warnings, 0 errors**, 51.97 seconds.
+- Cold registration umbrella: **1 passed**, cold inventory 64.730 seconds and cached call 0.040 milliseconds—within the established roughly 1m05 cold bound.
+- Production-site umbrella: expected RED, **1 failed**, 1m06s. It still asserts `validation.IsValid`; no category is waived. Site discovery remains exactly **2,056 contextual / 381 physical / 570 physical per exact operation root**. Publication refusals remain visible at 3; all diagnostic counts are recorded in `/private/tmp/task2-r6-final-sites.trx`.
+
+Final expected-RED diagnostic counts:
+
+| Diagnostic | Count |
+| --- | ---: |
+| HOSTED_SITE_WORK_FRONTIER_MISSING | 158 |
+| HOSTED_CALLBACK_OWNERSHIP_UNPROVEN | 11,645 |
+| HOSTED_CALL_TARGET_UNRESOLVED | 124 |
+| HOSTED_SITE_EFFECT_FRONTIER_MISSING | 60 |
+| HOSTED_SITE_UNCLASSIFIED | 297 |
+| HOSTED_DISPOSAL_TARGET_UNRESOLVED | 183 |
+| HOSTED_ADMISSION_HANDLE_ESCAPE | 11 |
+| HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE | 3 |
+| HOSTED_EXTERNAL_OPERATION_UNCATALOGUED | 17 |
+| HOSTED_SITE_UNCATALOGUED | 2,056 |
+
+### Final self-review
+
+- Read the complete scoped diff after formatting. The exact semantic local reference allowlist is shared with the field-carrier proof; cache identities and the cold production scan path were not duplicated or weakened.
+- Conditional/unreachable terminals cannot be borrowed from deferred local functions or lambdas. Direct Task/ValueTask creation, completion, and cleanup joins are tested; blocking `GetResult`, discarded awaitables, custom/opaque uses, explicit completion arguments, wrong overloads/instances, cross-writer substitutions, duplicate terminals, and group loss all fail closed.
+- The proof intentionally supports only lexical using, nested protected-finally state flow, and exact catch-cleanup-rethrow state flow. Unsupported control flow yields `HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE`; it cannot combine terminals from mutually exclusive paths.
+- Lexical using accepts only a straight-line region and an optional final method return. The language-generated cleanup therefore still covers both normal return and exceptions, while a terminal after a loop or conditional cannot be borrowed as proof.
+- `git diff --check` is clean. No production source, catalog row, dependency, suppression, plan/spec, or unrelated addendum was changed.

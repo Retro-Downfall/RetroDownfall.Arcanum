@@ -1437,6 +1437,45 @@ internal static class HostedGrimoireProducerInventory
             }
         }
 
+        private static ExpressionSyntax[] SymbolReferences(AuthoredMember member, ISymbol symbol) => member.Syntax.DescendantNodes().OfType<ExpressionSyntax>().Where(expression => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(expression).Symbol, symbol) && !expression.Ancestors().TakeWhile(ancestor => ancestor != member.Syntax).OfType<ExpressionSyntax>().Any(parent => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(parent).Symbol, symbol))).ToArray();
+
+        private static bool HasOnlyReferences(AuthoredMember member, ISymbol symbol, params ExpressionSyntax[] allowed) => SymbolReferences(member, symbol) is { } references && references.Length == allowed.Length && references.All(reference => allowed.Contains(reference));
+
+        private static bool IsAwaitable(ITypeSymbol type) => TypeKey(type) is "System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1";
+
+        private static bool IsExactWriterCompletion(IMethodSymbol method) => TypeKey(method.ContainingType) == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter" && method.Name == "CompleteAsync" && method.Parameters.All(static parameter => parameter.IsOptional);
+
+        private static bool IsExactWriterCleanup(IMethodSymbol method) => method.Parameters.Length == 0 && (TypeKey(method.ContainingType) is "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter" or "System.IO.Stream" && method.Name is "Dispose" or "DisposeAsync" || TypeKey(method.ContainingType) == "System.IDisposable" && method.Name == "Dispose" || TypeKey(method.ContainingType) == "System.IAsyncDisposable" && method.Name == "DisposeAsync");
+
+        private static IMethodSymbol[] SelectCleanupMembers(ITypeSymbol type, string name)
+        {
+            for (INamedTypeSymbol? current = type as INamedTypeSymbol; current is not null; current = current.BaseType)
+            {
+                IMethodSymbol[] candidates = current.GetMembers(name).OfType<IMethodSymbol>().Where(static method => method.Parameters.Length == 0).ToArray();
+
+                if (candidates.Length != 0)
+                {
+                    return candidates;
+                }
+            }
+
+            return [];
+        }
+
+        private static ExpressionStatementSyntax? ExactTerminalStatement(AuthoredMember member, InvocationExpressionSyntax call)
+        {
+            SyntaxNode expression = CompletionPreservingExpression(call, member.Model);
+
+            if (expression.Parent is AwaitExpressionSyntax awaited)
+            {
+                expression = awaited;
+            }
+
+            return expression.Parent is ExpressionStatementSyntax statement && statement.Expression == expression ? statement : null;
+        }
+
+        private static bool HasExactCompletionJoin(AuthoredMember member, InvocationExpressionSyntax call, IMethodSymbol method) => !IsAwaitable(method.ReturnType) || CompletionPoint(member, call, false) is AwaitExpressionSyntax awaited && awaited.Parent is ExpressionStatementSyntax;
+
         private IReadOnlySet<int> VerifyFieldPublication(AuthoredMember caller, InvocationExpressionSyntax factoryCall, AuthoredMember factory, string operationId, string? inherited)
         {
             ITypeSymbol result = factory.Symbol.ReturnType;
@@ -1490,10 +1529,6 @@ internal static class HostedGrimoireProducerInventory
             bool References(AuthoredMember member, SyntaxNode node, ISymbol symbol) => node.DescendantNodesAndSelf().OfType<ExpressionSyntax>().Any(expression => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(expression).Symbol, symbol));
 
             bool Written(AuthoredMember member, ISymbol symbol) => member.Syntax.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment => References(member, assignment.Left, symbol));
-
-            ExpressionSyntax[] SymbolReferences(AuthoredMember member, ISymbol symbol) => member.Syntax.DescendantNodes().OfType<ExpressionSyntax>().Where(expression => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(expression).Symbol, symbol) && !expression.Ancestors().TakeWhile(ancestor => ancestor != member.Syntax).OfType<ExpressionSyntax>().Any(parent => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(parent).Symbol, symbol))).ToArray();
-
-            bool HasOnlyReferences(AuthoredMember member, ISymbol symbol, params ExpressionSyntax[] allowed) => SymbolReferences(member, symbol) is { } references && references.Length == allowed.Length && references.All(reference => allowed.Contains(reference));
 
             bool mapped = returns.Length == 1 && factory.Model.GetOperation(returns[0]) is IObjectCreationOperation { Constructor: { } constructor } creation && Resolve(constructor) is { } constructorBody && SetMappedConstructor(constructorBody) && fields.All(field =>
             {
@@ -1655,32 +1690,193 @@ internal static class HostedGrimoireProducerInventory
         {
             InvocationExpressionSyntax[] calls = member.Syntax.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().ToArray();
 
+            bool DirectCreationInitializer(VariableDeclaratorSyntax variable, InvocationExpressionSyntax create)
+            {
+                if (variable.Initializer is null || member.Model.GetSymbolInfo(create).Symbol is not IMethodSymbol factory)
+                {
+                    return false;
+                }
+
+                SyntaxNode expression = CompletionPreservingExpression(create, member.Model);
+
+                if (IsAwaitable(factory.ReturnType))
+                {
+                    if (expression.Parent is not AwaitExpressionSyntax awaited)
+                    {
+                        return false;
+                    }
+
+                    expression = awaited;
+                }
+
+                return expression == variable.Initializer.Value;
+            }
+
+            bool TryCreatedWriter(LocalDeclarationStatementSyntax declaration, out ILocalSymbol writer, out InvocationExpressionSyntax create)
+            {
+                writer = null!;
+
+                create = null!;
+
+                if (declaration.UsingKeyword.RawKind != 0 || declaration.Declaration.Variables is not [VariableDeclaratorSyntax variable] || member.Model.GetDeclaredSymbol(variable) is not ILocalSymbol local)
+                {
+                    return false;
+                }
+
+                InvocationExpressionSyntax[] creations = variable.Initializer?.Value.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().Where(call => member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && Normalize(method) == "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync").ToArray() ?? [];
+
+                if (creations is not [InvocationExpressionSyntax exact] || !DirectCreationInitializer(variable, exact))
+                {
+                    return false;
+                }
+
+                writer = local;
+
+                create = exact;
+
+                return true;
+            }
+
+            bool DirectReceiver(InvocationExpressionSyntax call, ISymbol writer) => call.Expression is MemberAccessExpressionSyntax access && SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(access.Expression).Symbol, writer);
+
+            bool SupportedRootStatement(StatementSyntax statement) => !statement.Ancestors().TakeWhile(ancestor => ancestor != member.Syntax).Any(static ancestor => ancestor is StatementSyntax and not BlockSyntax || ancestor is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+
+            bool ExactCompletion(InvocationExpressionSyntax call) => call.ArgumentList.Arguments.Count == 0 && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && IsExactWriterCompletion(method) && HasExactCompletionJoin(member, call, method) && ExactTerminalStatement(member, call) is not null;
+
+            bool ExactCleanup(InvocationExpressionSyntax call) => member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && IsExactWriterCleanup(method) && HasExactCompletionJoin(member, call, method) && ExactTerminalStatement(member, call) is not null;
+
+            bool ValidProtectedTry(TryStatementSyntax statement, ILocalSymbol protectedWriter)
+            {
+                if (statement.Catches.Count != 0 || statement.Finally?.Block.Statements is not [ExpressionStatementSyntax cleanupStatement] || cleanupStatement.Expression.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().ToArray() is not [InvocationExpressionSyntax cleanup] || !DirectReceiver(cleanup, protectedWriter) || !ExactCleanup(cleanup))
+                {
+                    return false;
+                }
+
+                for (int index = 0; index < statement.Block.Statements.Count; index++)
+                {
+                    StatementSyntax current = statement.Block.Statements[index];
+
+                    if (current is ExpressionStatementSyntax terminal && terminal.Expression.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().ToArray() is [InvocationExpressionSyntax completion] && ExactCompletion(completion) && completion.Expression is MemberAccessExpressionSyntax completionAccess && member.Model.GetSymbolInfo(completionAccess.Expression).Symbol is ILocalSymbol)
+                    {
+                        continue;
+                    }
+
+                    if (current is LocalDeclarationStatementSyntax nestedDeclaration && index + 1 < statement.Block.Statements.Count && statement.Block.Statements[index + 1] is TryStatementSyntax nestedTry && TryCreatedWriter(nestedDeclaration, out ILocalSymbol nestedWriter, out _) && ValidProtectedTry(nestedTry, nestedWriter))
+                    {
+                        index++;
+
+                        continue;
+                    }
+
+                    return false;
+                }
+
+                return true;
+            }
+
+            bool ExactRootProtectedShape(LocalDeclarationStatementSyntax declaration, ILocalSymbol writer, TryStatementSyntax protector)
+            {
+                TryStatementSyntax root = protector;
+
+                while (root.Parent is BlockSyntax containingBody && containingBody.Parent is TryStatementSyntax containingTry && containingTry.Block == containingBody)
+                {
+                    root = containingTry;
+                }
+
+                if (root.Parent is not BlockSyntax rootBlock)
+                {
+                    return false;
+                }
+
+                int rootIndex = rootBlock.Statements.IndexOf(root);
+
+                if (rootIndex < 1 || rootBlock.Statements[rootIndex - 1] is not LocalDeclarationStatementSyntax rootDeclaration || !TryCreatedWriter(rootDeclaration, out ILocalSymbol rootWriter, out _) || !SupportedRootStatement(rootDeclaration))
+                {
+                    return false;
+                }
+
+                return ValidProtectedTry(root, rootWriter) && declaration.Parent is BlockSyntax declarationBlock && declarationBlock.Statements.IndexOf(declaration) is int declarationIndex && declarationIndex >= 0 && declarationIndex + 1 < declarationBlock.Statements.Count && declarationBlock.Statements[declarationIndex + 1] == protector && ValidProtectedTry(protector, writer);
+            }
+
+            bool ExactCatchCleanupRethrowShape(LocalDeclarationStatementSyntax declaration, ILocalSymbol writer, InvocationExpressionSyntax completion, InvocationExpressionSyntax[] cleanups)
+            {
+                if (!SupportedRootStatement(declaration) || declaration.Parent is not BlockSyntax block)
+                {
+                    return false;
+                }
+
+                int index = block.Statements.IndexOf(declaration);
+
+                if (index < 0 || index + 2 >= block.Statements.Count || block.Statements[index + 1] is not TryStatementSyntax { Finally: null, Catches: [CatchClauseSyntax caught] } guarded || block.Statements[index + 2] is not ExpressionStatementSyntax normalCleanupStatement || guarded.Block.Statements is not [ExpressionStatementSyntax completionStatement] || caught.Filter is not null || caught.Block.Statements is not [ExpressionStatementSyntax exceptionalCleanupStatement, ThrowStatementSyntax { Expression: null }])
+                {
+                    return false;
+                }
+
+                if (completionStatement.Expression.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().ToArray() is not [InvocationExpressionSyntax exactCompletion] || exactCompletion != completion || normalCleanupStatement.Expression.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().ToArray() is not [InvocationExpressionSyntax normalCleanup] || exceptionalCleanupStatement.Expression.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().ToArray() is not [InvocationExpressionSyntax exceptionalCleanup])
+                {
+                    return false;
+                }
+
+                return cleanups.Length == 2 && cleanups.Contains(normalCleanup) && cleanups.Contains(exceptionalCleanup) && DirectReceiver(normalCleanup, writer) && DirectReceiver(exceptionalCleanup, writer) && ExactCleanup(normalCleanup) && ExactCleanup(exceptionalCleanup);
+            }
+
             foreach (InvocationExpressionSyntax create in calls.Where(call => fieldPublications?.Contains(call.SpanStart) != true && selection.Span.Contains(call.Span) && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && Normalize(method) == "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync"))
             {
                 VariableDeclaratorSyntax? variable = create.Ancestors().OfType<VariableDeclaratorSyntax>().FirstOrDefault();
 
-                ISymbol? writer = variable is null ? null : member.Model.GetDeclaredSymbol(variable);
+                ILocalSymbol? writer = variable is null ? null : member.Model.GetDeclaredSymbol(variable) as ILocalSymbol;
 
                 string? creationGroup = EffectAt(member, create, operationId, inherited);
 
-                bool ReceiverIsWriter(InvocationExpressionSyntax call) => call.Expression is MemberAccessExpressionSyntax access && SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(access.Expression).Symbol, writer);
+                InvocationExpressionSyntax[] completions = calls.Where(call => writer is not null && DirectReceiver(call, writer) && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && IsExactWriterCompletion(method)).ToArray();
 
-                InvocationExpressionSyntax[] completions = calls.Where(call => writer is not null && ReceiverIsWriter(call) && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "CompleteAsync" }).ToArray();
+                InvocationExpressionSyntax[] disposals = calls.Where(call => writer is not null && DirectReceiver(call, writer) && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && IsExactWriterCleanup(method)).ToArray();
 
-                InvocationExpressionSyntax[] disposals = calls.Where(call => writer is not null && ReceiverIsWriter(call) && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Dispose" or "DisposeAsync" }).ToArray();
+                List<ExpressionSyntax> allowedReferences = [];
 
-                List<string?> terminalGroups = disposals.Select(call => EffectAt(member, call, operationId, inherited)).ToList();
+                allowedReferences.AddRange(completions.Select(static call => ((MemberAccessExpressionSyntax)call.Expression).Expression));
+
+                allowedReferences.AddRange(disposals.Select(static call => ((MemberAccessExpressionSyntax)call.Expression).Expression));
+
+                bool exactOwnership = writer is not null && variable is not null && DirectCreationInitializer(variable, create) && HasOnlyReferences(member, writer, [.. allowedReferences]);
+
+                bool exactCompletion = completions is [InvocationExpressionSyntax completion] && ExactCompletion(completion) && EffectAt(member, completion, operationId, inherited) == creationGroup;
+
+                bool valid = false;
 
                 if (variable?.Parent is VariableDeclarationSyntax declaration && (declaration.Parent is LocalDeclarationStatementSyntax { UsingKeyword.RawKind: not 0 } || declaration.Parent is UsingStatementSyntax))
                 {
-                    terminalGroups.Add(EffectAt(member, declaration, operationId, inherited, DisposalPosition(declaration), declaration));
+                    bool asynchronous = declaration.Parent is LocalDeclarationStatementSyntax { AwaitKeyword.RawKind: not 0 } or UsingStatementSyntax { AwaitKeyword.RawKind: not 0 };
+
+                    string cleanupName = asynchronous ? "DisposeAsync" : "Dispose";
+
+                    IMethodSymbol[] selectedCleanups = writer is null ? [] : SelectCleanupMembers(writer.Type, cleanupName);
+
+                    ExpressionStatementSyntax? completionStatement = completions.Length == 1 ? ExactTerminalStatement(member, completions[0]) : null;
+
+                    bool lexical = declaration.Parent switch
+                    {
+                        LocalDeclarationStatementSyntax local when local.Parent is BlockSyntax block => completionStatement?.Parent == block && completionStatement.SpanStart > local.Span.End && block.Statements.Skip(block.Statements.IndexOf(local) + 1).All(statement => statement is ExpressionStatementSyntax or LocalDeclarationStatementSyntax || statement == block.Statements[^1] && statement is ReturnStatementSyntax),
+                        UsingStatementSyntax statement when statement.Statement is BlockSyntax block => completionStatement?.Parent == block && block.Statements.All(nested => nested is ExpressionStatementSyntax or LocalDeclarationStatementSyntax || nested == block.Statements[^1] && nested is ReturnStatementSyntax),
+                        _ => false,
+                    };
+
+                    valid = exactOwnership && exactCompletion && disposals.Length == 0 && declaration.Variables.Count == 1 && selectedCleanups is [IMethodSymbol selected] && IsExactWriterCleanup(selected) && lexical && completions is [InvocationExpressionSyntax completed] && IsUnconditionalExecution(member, completed, create.Span.End) && declaration.Parent is StatementSyntax usingStatement && SupportedRootStatement(usingStatement) && EffectAt(member, declaration, operationId, inherited, DisposalPosition(declaration), declaration) == creationGroup;
+                }
+                else if (variable?.Parent?.Parent is LocalDeclarationStatementSyntax local && writer is not null && local.Parent is BlockSyntax block)
+                {
+                    int declarationIndex = block.Statements.IndexOf(local);
+
+                    TryStatementSyntax? protector = declarationIndex >= 0 && declarationIndex + 1 < block.Statements.Count ? block.Statements[declarationIndex + 1] as TryStatementSyntax : null;
+
+                    bool sameCleanupGroup = disposals.All(cleanup => EffectAt(member, cleanup, operationId, inherited) == creationGroup);
+
+                    valid = creationGroup is not null && exactOwnership && exactCompletion && sameCleanupGroup && (disposals is [InvocationExpressionSyntax cleanup] && ExactCleanup(cleanup) && protector is not null && protector.Block.Span.Contains(completions[0].Span) && ExactRootProtectedShape(local, writer, protector) || completions is [InvocationExpressionSyntax completed] && ExactCatchCleanupRethrowShape(local, writer, completed, disposals));
                 }
 
-                bool incomplete = writer is null || creationGroup is null || completions.Length == 0 || terminalGroups.Count == 0 || completions.Any(call => EffectAt(member, call, operationId, inherited) != creationGroup) || terminalGroups.Any(group => group != creationGroup);
-
-                if (incomplete)
+                if (!valid || creationGroup is null)
                 {
-                    diagnostics.Add(new("HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE", operationId + "/site@" + Location(create), "Creation, completion, and every disposal must retain the same effect-group instance continuously."));
+                    diagnostics.Add(new("HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE", operationId + "/site@" + Location(create), "A local writer requires one completion-owned creation, exclusive references, and exact joined completion plus exhaustive cleanup under the same retained group."));
                 }
             }
         }

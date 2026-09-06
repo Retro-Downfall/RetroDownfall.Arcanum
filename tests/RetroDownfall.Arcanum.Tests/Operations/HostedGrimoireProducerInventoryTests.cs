@@ -343,6 +343,165 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
     private const string R2Blobs = "namespace RetroDownfall.Arcanum.Core.Storage { public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); } public class EncryptedBlobWriter : IDisposable { public void CompleteAsync() {} public void Dispose() {} } }";
 
+    private static string R6BlobTypes(string completion, string disposal = "ValueTask")
+    {
+        string completionBody = completion switch
+        {
+            "void" => "public void CompleteAsync() {} public void CompleteAsync(bool unused) {}",
+            "ValueTask" => "public ValueTask CompleteAsync(CancellationToken token=default) => ValueTask.CompletedTask; public ValueTask CompleteAsync(bool unused) => ValueTask.CompletedTask;",
+            _ => "public Task CompleteAsync(CancellationToken token=default) => Task.CompletedTask; public Task CompleteAsync(bool unused) => Task.CompletedTask;",
+        };
+
+        string disposalBody = disposal == "Task"
+            ? "public Task WriteAsync() => Task.CompletedTask; public void Dispose() {} public Task DisposeAsync() => Task.CompletedTask;"
+            : "public Task WriteAsync() => Task.CompletedTask; public void Dispose() {} public ValueTask DisposeAsync() => ValueTask.CompletedTask;";
+
+        return "namespace RetroDownfall.Arcanum.Core.Storage { public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); } public class EncryptedBlobWriter : IDisposable" + (disposal == "ValueTask" ? ", IAsyncDisposable" : "") + " { " + completionBody + disposalBody + " } }";
+    }
+
+    [Theory]
+    [InlineData("straight", "void", "ValueTask", false)]
+    [InlineData("await-task", "Task", "ValueTask", true)]
+    [InlineData("await-value-task", "ValueTask", "ValueTask", true)]
+    [InlineData("completion-configure-await", "Task", "ValueTask", true)]
+    [InlineData("using", "Task", "ValueTask", true)]
+    [InlineData("await-using", "ValueTask", "ValueTask", true)]
+    [InlineData("try-finally-task", "Task", "ValueTask", true)]
+    [InlineData("try-finally-value-task", "ValueTask", "ValueTask", true)]
+    [InlineData("try-finally-dispose-task", "Task", "Task", true)]
+    [InlineData("try-finally-dispose-value-task", "Task", "ValueTask", true)]
+    [InlineData("catch-cleanup-rethrow", "Task", "ValueTask", true)]
+    [InlineData("catch-cleanup-fallthrough", "Task", "ValueTask", false)]
+    [InlineData("conditional-completion", "Task", "ValueTask", false)]
+    [InlineData("loop-before-completion", "Task", "ValueTask", false)]
+    [InlineData("unreachable-completion", "Task", "ValueTask", false)]
+    [InlineData("dispose-before-completion", "Task", "ValueTask", false)]
+    [InlineData("discarded-completion-task", "Task", "ValueTask", false)]
+    [InlineData("discarded-completion-value-task", "ValueTask", "ValueTask", false)]
+    [InlineData("discarded-disposal-task", "Task", "Task", false)]
+    [InlineData("discarded-disposal-value-task", "Task", "ValueTask", false)]
+    [InlineData("duplicate-completion", "Task", "ValueTask", false)]
+    [InlineData("duplicate-disposal", "Task", "ValueTask", false)]
+    [InlineData("wrong-completion-overload", "Task", "ValueTask", false)]
+    [InlineData("explicit-completion-argument", "Task", "ValueTask", false)]
+    [InlineData("wrong-disposal-overload", "Task", "ValueTask", false)]
+    [InlineData("completion-after-group-loss", "Task", "ValueTask", false)]
+    [InlineData("disposal-after-group-loss", "Task", "ValueTask", false)]
+    [InlineData("cross-writer-completion", "Task", "ValueTask", false)]
+    [InlineData("cross-writer-disposal", "Task", "ValueTask", false)]
+    [InlineData("conditional-create", "Task", "ValueTask", false)]
+    [InlineData("unsupported-create-path", "Task", "ValueTask", false)]
+    public void R6LocalWriterPublicationRequiresOneExactSupportedLifetime(string shape, string completion, string disposal, bool valid)
+    {
+        string one = shape switch
+        {
+            "straight" => "var writer=store.CreateWriterAsync(); writer.CompleteAsync(); writer.Dispose();",
+            "await-task" or "await-value-task" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
+            "completion-configure-await" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync().ConfigureAwait(false);",
+            "using" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
+            "await-using" => "await using var writer=store.CreateWriterAsync(); await writer.CompleteAsync();",
+            "try-finally-dispose-task" or "try-finally-dispose-value-task" => "var writer=store.CreateWriterAsync(); try { await writer.CompleteAsync(); } finally { await writer.DisposeAsync(); }",
+            "catch-cleanup-rethrow" => "var writer=store.CreateWriterAsync(); try { await writer.CompleteAsync(); } catch { await writer.DisposeAsync(); throw; } writer.Dispose();",
+            "catch-cleanup-fallthrough" => "var writer=store.CreateWriterAsync(); try { await writer.CompleteAsync(); } catch { await writer.DisposeAsync(); } writer.Dispose();",
+            "conditional-completion" => "using var writer=store.CreateWriterAsync(); if (DateTime.UtcNow.Ticks<0) await writer.CompleteAsync();",
+            "loop-before-completion" => "using var writer=store.CreateWriterAsync(); while (DateTime.UtcNow.Ticks<0) { } await writer.CompleteAsync();",
+            "unreachable-completion" => "using var writer=store.CreateWriterAsync(); return; await writer.CompleteAsync();",
+            "dispose-before-completion" => "var writer=store.CreateWriterAsync(); writer.Dispose(); await writer.CompleteAsync();",
+            "discarded-completion-task" or "discarded-completion-value-task" => "using var writer=store.CreateWriterAsync(); _=writer.CompleteAsync();",
+            "discarded-disposal-task" or "discarded-disposal-value-task" => "var writer=store.CreateWriterAsync(); await writer.CompleteAsync(); _=writer.DisposeAsync();",
+            "duplicate-completion" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync(); await writer.CompleteAsync();",
+            "duplicate-disposal" => "var writer=store.CreateWriterAsync(); await writer.CompleteAsync(); writer.Dispose(); writer.Dispose();",
+            "wrong-completion-overload" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync(true);",
+            "explicit-completion-argument" => "using var writer=store.CreateWriterAsync(); await writer.CompleteAsync(CancellationToken.None);",
+            "wrong-disposal-overload" => "var writer=store.CreateWriterAsync(); await writer.CompleteAsync(); writer.Dispose(true);",
+            "completion-after-group-loss" => "using var writer=store.CreateWriterAsync(); held.Dispose(); await writer.CompleteAsync();",
+            "disposal-after-group-loss" => "var writer=store.CreateWriterAsync(); await writer.CompleteAsync(); held.Dispose(); writer.Dispose();",
+            "conditional-create" => "using var writer=DateTime.UtcNow.Ticks<0 ? store.CreateWriterAsync() : store.CreateWriterAsync(); await writer.CompleteAsync();",
+            "unsupported-create-path" => "if (DateTime.UtcNow.Ticks<0) { using var writer=store.CreateWriterAsync(); await writer.CompleteAsync(); }",
+            _ => "",
+        };
+
+        if (shape == "try-finally-task" || shape == "try-finally-value-task")
+        {
+            one = "var first=store.CreateWriterAsync(); try { var second=store.CreateWriterAsync(); try { await first.CompleteAsync(); await second.CompleteAsync(); } finally { await second.DisposeAsync(); } } finally { await first.DisposeAsync(); }";
+        }
+        else if (shape == "cross-writer-completion")
+        {
+            one = "var first=store.CreateWriterAsync(); var second=store.CreateWriterAsync(); await first.CompleteAsync(); await first.CompleteAsync(); first.Dispose(); second.Dispose();";
+        }
+        else if (shape == "cross-writer-disposal")
+        {
+            one = "var first=store.CreateWriterAsync(); try { var second=store.CreateWriterAsync(); try { await first.CompleteAsync(); await second.CompleteAsync(); } finally { first.Dispose(); } } finally { first.Dispose(); }";
+        }
+
+        string helpers = R6BlobTypes(completion, disposal);
+
+        if (shape == "wrong-disposal-overload")
+        {
+            helpers = helpers.Replace("public void Dispose() {}", "public void Dispose() {} public void Dispose(bool unused) {}", StringComparison.Ordinal);
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; " + one, helpers));
+
+        Assert.Equal(valid, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+    }
+
+    [Theory]
+    [InlineData("authored-store")]
+    [InlineData("authored-dispose")]
+    [InlineData("opaque")]
+    [InlineData("alias")]
+    [InlineData("field")]
+    [InlineData("callback")]
+    [InlineData("return")]
+    [InlineData("local-function")]
+    [InlineData("lambda")]
+    [InlineData("detached-write")]
+    public void R6LocalWriterPublicationRejectsEveryOwnershipEscape(string shape)
+    {
+        string use = shape switch
+        {
+            "authored-store" => "WriterSink.Store(writer);",
+            "authored-dispose" => "WriterSink.Dispose(writer);",
+            "opaque" => "GC.KeepAlive(writer);",
+            "alias" => "var alias=writer; GC.KeepAlive(alias);",
+            "field" => "WriterSink.Saved=writer;",
+            "callback" => "Action callback=()=>GC.KeepAlive(writer); GC.KeepAlive(callback);",
+            "local-function" => "void CompleteLater() => writer.CompleteAsync(); GC.KeepAlive((Action)CompleteLater);",
+            "lambda" => "Action completeLater=()=>writer.CompleteAsync(); GC.KeepAlive(completeLater);",
+            "detached-write" => "_=writer.WriteAsync();",
+            _ => "_ = WriterSink.Return(writer);",
+        };
+
+        string helpers = R6BlobTypes("Task") + " static class WriterSink { public static RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter Saved=null!; public static void Store(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer) { Saved=writer; } public static void Dispose(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer) => writer.Dispose(); public static RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter Return(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer) => writer; }";
+
+        string body = R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var writer=store.CreateWriterAsync(); " + use + " await writer.CompleteAsync();";
+
+        Assert.Contains(R2Discover(R2Source(body, helpers)).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE");
+    }
+
+    [Theory]
+    [InlineData("Task", true)]
+    [InlineData("ValueTask", true)]
+    [InlineData("Task", false)]
+    [InlineData("ValueTask", false)]
+    public void R6WriterCreationMustCompleteThroughAnExactAwaitBeforeOwnershipStarts(string awaitable, bool joined)
+    {
+        string completed = awaitable == "Task" ? "Task.FromResult(new EncryptedBlobWriter())" : "ValueTask.FromResult(new EncryptedBlobWriter())";
+
+        string helpers = "namespace RetroDownfall.Arcanum.Core.Storage { public interface IEncryptedBlobStore { " + awaitable + "<EncryptedBlobWriter> CreateWriterAsync(); } public class Store : IEncryptedBlobStore { public " + awaitable + "<EncryptedBlobWriter> CreateWriterAsync() => " + completed + "; } public class EncryptedBlobWriter : IDisposable { public Task CompleteAsync() => Task.CompletedTask; public void Dispose() {} } }";
+
+        string creation = joined
+            ? "await store.CreateWriterAsync().ConfigureAwait(false)"
+            : "store.CreateWriterAsync().GetAwaiter().GetResult()";
+
+        string body = R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=new RetroDownfall.Arcanum.Core.Storage.Store(); using var writer=" + creation + "; await writer.CompleteAsync();";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body, helpers));
+
+        Assert.Equal(joined, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+    }
+
     [Fact]
     public void R2UnknownExpressionDisposalFailsClosed()
     {
@@ -402,7 +561,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData(true)]
     public void R2EveryLocalWriterNeedsItsOwnTerminalAndExceptionCleanup(bool completeBoth)
     {
-        string body = R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var first=store.CreateWriterAsync(); using var second=store.CreateWriterAsync(); try { first.CompleteAsync(); " + (completeBoth ? "second.CompleteAsync();" : "") + " } finally { first.Dispose(); second.Dispose(); }";
+        string body = R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; var first=store.CreateWriterAsync(); try { var second=store.CreateWriterAsync(); try { first.CompleteAsync(); " + (completeBoth ? "second.CompleteAsync();" : "") + " } finally { second.Dispose(); } } finally { first.Dispose(); }";
 
         Assert.Equal(completeBoth ? 0 : 1, R2Discover(R2Source(body, R2Blobs)).Diagnostics.Count(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
     }
@@ -629,7 +788,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("different", false)]
     [InlineData("implicit-after-loss", false)]
     [InlineData("explicit-after-loss", false)]
-    [InlineData("explicit", true)]
+    [InlineData("explicit", false)]
     public void BlobPublicationRequiresOneContinuousGroupThroughDisposal(string shape, bool valid)
     {
         string declarations = AdmissionTypes + """
