@@ -428,6 +428,107 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
     }
 
+    [Fact]
+    public async Task Calibration_keeps_the_requested_result_path_after_publish()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        string root = FindRepositoryRoot();
+
+        string fixture = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-admission-calibration-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(fixture);
+
+        try
+        {
+
+            string fakeBin = Path.Combine(fixture, "bin");
+
+            Directory.CreateDirectory(fakeBin);
+
+            string log = Path.Combine(fixture, "calls.log");
+
+            string result = Path.Combine(fixture, "calibration.json");
+
+            string hostTemplate = Path.Combine(fixture, "host-template");
+
+            await WriteExecutableAsync(
+                hostTemplate,
+                "#!/bin/sh\n" +
+                "printf 'host:%s\\n' \"$*\" >> \"$BENCHMARK_FIXTURE_LOG\"\n" +
+                "previous=''\n" +
+                "for argument in \"$@\"; do\n" +
+                "  if [ \"$previous\" = '--out' ]; then printf '{}\\n' > \"$argument\"; fi\n" +
+                "  previous=$argument\n" +
+                "done\n" +
+                "exit 0\n");
+
+            await WriteExecutableAsync(
+                Path.Combine(fakeBin, "dotnet"),
+                "#!/bin/sh\n" +
+                "case \"$1\" in --version) printf '10.0.400\\n'; exit 0;; --info) printf 'fake toolchain\\n'; exit 0;; esac\n" +
+                "output=''\n" +
+                "previous=''\n" +
+                "for argument in \"$@\"; do if [ \"$previous\" = '-o' ]; then output=$argument; fi; previous=$argument; done\n" +
+                "mkdir -p \"$output\"\n" +
+                "cp \"$BENCHMARK_FAKE_HOST\" \"$output/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\"\n");
+
+            string revision = new('c', 40);
+
+            await WriteExecutableAsync(
+                Path.Combine(fakeBin, "git"),
+                "#!/bin/sh\n" +
+                "case \"$3\" in status) exit 0;; rev-parse) printf '%s\\n' '" + revision + "'; exit 0;; esac\n" +
+                "exit 2\n");
+
+            ProcessStartInfo start = new(
+                "/bin/sh",
+                Path.Combine(root, "scripts", "benchmark-grimoire-admission.sh")
+                    + " --calibrate --revision " + revision
+                    + " --out " + result)
+            {
+                WorkingDirectory = root,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+
+            start.Environment["PATH"] = fakeBin + ":/usr/bin:/bin";
+
+            start.Environment["BENCHMARK_FIXTURE_LOG"] = log;
+
+            start.Environment["BENCHMARK_FAKE_HOST"] = hostTemplate;
+
+            start.Environment.Remove("ARCANUM_TEST_HOME");
+
+            using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
+
+            await process.WaitForExitAsync();
+
+            Assert.Equal(0, process.ExitCode);
+
+            Assert.True(File.Exists(result));
+
+            Assert.Contains("--out " + result, await File.ReadAllTextAsync(log), StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            Directory.Delete(fixture, recursive: true);
+
+        }
+
+    }
+
     private static async Task WriteExecutableAsync(string path, string contents)
     {
 

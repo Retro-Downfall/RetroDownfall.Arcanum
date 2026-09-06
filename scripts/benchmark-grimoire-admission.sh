@@ -54,17 +54,17 @@ rid()
 
 publish_host()
 {
-    source_root=$1
-    output=$2
-    benchmark_project="$source_root/tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj"
-    benchmark_rid=$(rid) || return 2
+    publish_source_root=$1
+    publish_output=$2
+    publish_project="$publish_source_root/tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj"
+    publish_rid=$(rid) || return 2
 
-    dotnet publish "$benchmark_project" \
+    dotnet publish "$publish_project" \
         -c Release \
-        -r "$benchmark_rid" \
+        -r "$publish_rid" \
         --self-contained true \
         -p:RestoreLockedMode=true \
-        -o "$output"
+        -o "$publish_output"
 }
 
 run_host()
