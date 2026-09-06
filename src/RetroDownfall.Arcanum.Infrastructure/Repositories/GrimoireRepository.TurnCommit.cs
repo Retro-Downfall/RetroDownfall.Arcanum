@@ -102,7 +102,7 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             // Resolve the guard before anything else. A retry after a committed response has to
             // recover the durable answer rather than run a second, partial finalization.
-            AssistantFinalizationOutcome? existing = await ReadFinalizationGuardAsync(
+            FinalizationGuard? existing = await ReadFinalizationGuardAsync(
                 connection,
                 sqliteTransaction,
                 request,
@@ -115,11 +115,16 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
                 await PauseAfterTurnTransactionAsync(
                     GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
-                    resolved,
+                    resolved.Outcome,
                     cancellationToken).ConfigureAwait(false);
 
                 return Result<TurnCommitReceipt>.Success(
-                    new TurnCommitReceipt(request.AssistantEntryId, resolved, Replayed: true, []));
+                    new TurnCommitReceipt(
+                        request.AssistantEntryId,
+                        resolved.Outcome,
+                        Replayed: true,
+                        [],
+                        resolved.ThroughEntrySequence));
 
             }
 
@@ -209,10 +214,15 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             }
 
+            long? throughEntrySequence = await ReadLatestEntrySequenceAsync(
+                request.SessionId,
+                cancellationToken).ConfigureAwait(false);
+
             await InsertFinalizationGuardAsync(
                 connection,
                 sqliteTransaction,
                 request,
+                throughEntrySequence,
                 cancellationToken).ConfigureAwait(false);
 
             await efTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -227,7 +237,8 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                     request.AssistantEntryId,
                     request.Outcome,
                     Replayed: false,
-                    receipts));
+                    receipts,
+                    throughEntrySequence));
 
         }
         catch
@@ -245,6 +256,15 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         }
 
     }
+
+    private async Task<long?> ReadLatestEntrySequenceAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken) =>
+        await _db.Entries
+            .AsNoTracking()
+            .Where(entry => entry.SessionId == sessionId)
+            .MaxAsync(entry => (long?)entry.Sequence, cancellationToken)
+            .ConfigureAwait(false);
 
     private static ValueTask PauseAfterTurnTransactionAsync(
         GrimoireScopedConsumerFinalUseKind kind,
@@ -489,7 +509,7 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
     /// Reads the one-shot guard, failing closed when the same entry is replayed with a different
     /// request.
     /// </summary>
-    private static async Task<AssistantFinalizationOutcome?> ReadFinalizationGuardAsync(
+    private static async Task<FinalizationGuard?> ReadFinalizationGuardAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         TurnCommitRequest request,
@@ -501,7 +521,7 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         command.Transaction = transaction;
 
         command.CommandText = """
-            SELECT OutcomeCode, RequestDigest
+            SELECT OutcomeCode, RequestDigest, ThroughEntrySequence
             FROM assistant_entry_finalizations
             WHERE AssistantEntryId = $assistantEntryId;
             """;
@@ -527,7 +547,9 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
         }
 
-        return (AssistantFinalizationOutcome)reader.GetInt64(0);
+        return new FinalizationGuard(
+            (AssistantFinalizationOutcome)reader.GetInt64(0),
+            reader.IsDBNull(2) ? null : reader.GetInt64(2));
 
     }
 
@@ -535,6 +557,7 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         SqliteConnection connection,
         SqliteTransaction transaction,
         TurnCommitRequest request,
+        long? throughEntrySequence,
         CancellationToken cancellationToken)
     {
 
@@ -552,7 +575,8 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 RequestDigest,
                 FinalReceiptDigest,
                 SourceEvidenceDigest,
-                FinalizedAtUtc)
+                FinalizedAtUtc,
+                ThroughEntrySequence)
             VALUES (
                 $assistantEntryId,
                 $sessionId,
@@ -562,7 +586,8 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 $requestDigest,
                 $finalReceiptDigest,
                 NULL,
-                $finalizedAtUtc);
+                $finalizedAtUtc,
+                $throughEntrySequence);
             """;
 
         _ = command.Parameters.AddWithValue("$assistantEntryId", request.AssistantEntryId);
@@ -591,8 +616,16 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             "$finalizedAtUtc",
             DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
 
+        _ = command.Parameters.AddWithValue(
+            "$throughEntrySequence",
+            throughEntrySequence is { } sequence ? sequence : DBNull.Value);
+
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
+
+    private sealed record FinalizationGuard(
+        AssistantFinalizationOutcome Outcome,
+        long? ThroughEntrySequence);
 
 }

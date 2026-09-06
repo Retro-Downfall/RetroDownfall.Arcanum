@@ -128,6 +128,8 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     [InlineData("CountAfter")]
     [InlineData("LoadAfterWatermarkThroughTimestampGroup")]
     [InlineData("CountAfterWatermarkThroughTimestampGroup")]
+    [InlineData("LoadSagaExtractionPage")]
+    [InlineData("CountSagaExtractionPage")]
     public async Task Every_transcript_read_plans_exactly_as_pinned(string read)
     {
 
@@ -212,6 +214,44 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
 
                 """,
 
+            "LoadSagaExtractionPage" =>
+                """
+                SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SCALAR SUBQUERY 4
+                MATERIALIZE <object>
+                SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SCAN <object>
+                SCALAR SUBQUERY 5
+                MATERIALIZE <object>
+                SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SCALAR SUBQUERY 2
+                SCAN <object>
+                SCAN <object>
+                SCALAR SUBQUERY 7
+                SEARCH <object> USING COVERING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SCALAR SUBQUERY 4
+                SCAN <object>
+                SCALAR SUBQUERY 5
+                SCAN <object>
+
+                """,
+
+            "CountSagaExtractionPage" =>
+                """
+                SEARCH <object> USING COVERING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SCALAR SUBQUERY 4
+                MATERIALIZE <object>
+                SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SCAN <object>
+                SCALAR SUBQUERY 5
+                CO-ROUTINE <object>
+                SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SCALAR SUBQUERY 2
+                SCAN <object>
+                SCAN <object>
+
+                """,
+
             _ => throw new ArgumentOutOfRangeException(nameof(read), read, "No plan is pinned for that read."),
         };
 
@@ -244,6 +284,12 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
 
             "CountAfterWatermarkThroughTimestampGroup" =>
                 EntryTemporalQueries.CountAfterWatermarkThroughTimestampGroup(db, sessionId, watermark, 10),
+
+            "LoadSagaExtractionPage" =>
+                EntryTemporalQueries.LoadSagaExtractionPage(db, sessionId, 0, 200, 10, 200),
+
+            "CountSagaExtractionPage" =>
+                EntryTemporalQueries.CountSagaExtractionPage(db, sessionId, 0, 200, 10),
 
             _ => throw new ArgumentOutOfRangeException(nameof(read), read, "Unknown transcript read."),
         };

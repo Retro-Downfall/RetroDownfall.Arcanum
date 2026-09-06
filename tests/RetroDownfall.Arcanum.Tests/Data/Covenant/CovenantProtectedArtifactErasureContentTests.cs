@@ -319,7 +319,7 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             _ = services.AddSingleton<IWeaveService>(new FixedEmbeddingWeaveService());
 
             _ = services.AddSingleton<IArcanumIntelligenceProvider>(
-                new FixedConclusionIntelligenceProvider($$"""{ "memories": ["{{conclusion}}"] }"""));
+                new FixedConclusionIntelligenceProvider($$"""{ "memories": [{ "content": "{{conclusion}}", "attachmentId": null }] }"""));
 
             _ = services.AddSingleton<ISagaMemoryStore, SagaMemoryStore>();
 
@@ -344,16 +344,36 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
             await using ServiceProvider provider = services.BuildServiceProvider();
 
+            GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
             SagaExtractionService extraction = new(
                 new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
                 new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+                gate,
                 NullLogger<SagaExtractionService>.Instance);
+
+            Assert.True(gate.TryAcquireWorkLease(
+                GrimoireWorkKind.SagaExtraction,
+                out IGrimoireWorkLease? workLease));
+
+            await using IGrimoireWorkLease lease = workLease!;
 
             await using AsyncServiceScope scope = provider
                 .GetRequiredService<IServiceScopeFactory>()
                 .CreateAsyncScope();
 
-            await extraction.ExtractForSessionAsync(scope.ServiceProvider, sessionId, embeddings, settings, Token);
+            await extraction.ExtractForSessionAsync(
+                scope.ServiceProvider,
+                lease,
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: _sequence),
+                embeddings,
+                settings,
+                Token);
 
             // Read back rather than remembered: the identity under test is the one the extraction path
             // chose, and a value this method had supplied would prove nothing about the spelling

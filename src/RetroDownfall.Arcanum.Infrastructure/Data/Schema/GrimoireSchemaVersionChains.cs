@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 6 and declares five steps, Covenant canonical is at version 3 and declares two,
+/// Core is at version 7 and declares six steps, Covenant canonical is at version 3 and declares two,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -15,12 +15,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// the version the step leaves. The pin must be copied from the tier's <i>currently published</i>
 /// fingerprint before any object file is edited, because nothing can recompute it afterwards.</para>
 ///
-/// <para>Every pin below was taken with <see cref="GrimoireSchemaCatalog.ComputeRawSourceFingerprint"/>,
-/// which is what an installation at that version actually recorded. Core moved its published value to
-/// the normalized computation at version 6 and the two Covenant tiers have not moved theirs, so a tier
-/// authoring its next step still pins the raw value it published, and may switch its own published
-/// computation only in that same change - a tier whose head fingerprint moved at a version it is not
-/// leaving would refuse every installation sitting at that version.</para>
+/// <para>The pins through Core version 6 and every Covenant pin were taken with
+/// <see cref="GrimoireSchemaCatalog.ComputeRawSourceFingerprint"/>, which is what those installations
+/// recorded. Core moved its published value to the normalized computation at version 6, so the pin for
+/// the step leaving version 6 is normalized too. A tier always pins the exact computation its source
+/// version published; choosing the other one would refuse every installation at that version.</para>
 /// </remarks>
 internal static class GrimoireSchemaVersionChains
 {
@@ -58,8 +57,17 @@ internal static class GrimoireSchemaVersionChains
     /// <c>workspace_file_chunks</c> a <c>FileLength</c> column, because mtime equality alone cannot
     /// tell a rewritten file from an unchanged one when a filesystem hands back the timestamp it
     /// started with.</para>
+    ///
+    /// <para>Version 7 gives each Saga extraction watermark the exact Grimoire entry sequence it has
+    /// committed and records each new native assistant finalization's extraction frontier on its
+    /// durable replay guard. Its bounded sweep pages through each timestamp-only inherited watermark's
+    /// Entries in sequence order and journals the last proven sequence between transactions. The first
+    /// timestamp after the watermark ends that conservative prefix, so non-monotonic timestamps can
+    /// cause replay but never skip an unpaid entry. Inherited finalization guards keep a null frontier
+    /// because a later turn may already have made their original boundary impossible to reconstruct
+    /// safely.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 6;
+    internal const int CoreSchemaVersion = 7;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -122,6 +130,16 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 6)] =
                 "EFD0E3F2981B3462337E83BAAD2BE696AD3279452E85A11903CA6B636AC1B6F9",
 
+            // Read out of the normalized Core version-6 head tree immediately before
+            // saga_extraction_watermarks.sql gained its sequence cursor and
+            // assistant_entry_finalizations.sql gained its replay frontier. Core has published
+            // normalized fingerprints since version 6, so this pin deliberately uses the normalized
+            // computation rather than the raw computation used by the older pins.
+            // CoreSchemaVersionSixFixture reconstructs that tree and proves the literal below still
+            // identifies it.
+            [(GrimoireSchemaTransactionTier.Core, 7)] =
+                "410CB4FD182E22CB7FA72955E337296177A2A0E92ACB4AF73137236285B0D8CB",
+
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture
             // reconstructs that tree by removing those objects from the shipped list and a test hashes
@@ -166,6 +184,14 @@ internal static class GrimoireSchemaVersionChains
             // inside one transaction because members of it join to the parent with no foreign key and
             // nothing but the sweep's own declaration pairs them.
             [(GrimoireSchemaTransactionTier.Core, 5)] = new IdentitySpellingBackfill(),
+
+            // The added sequence column begins null only while this sweep is pending. Each bounded
+            // Entry page journals the Session and last proven sequence in the same transaction; only a
+            // page that reaches the first later timestamp or the end replaces the transition-only value
+            // with that conservative prefix (or zero where the first Entry is later or none exists).
+            // The version is not published until no null remains, and the new write guards prevent a
+            // later row from re-entering that state.
+            [(GrimoireSchemaTransactionTier.Core, 7)] = new SagaExtractionCursorBackfill(),
 
         };
 

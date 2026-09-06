@@ -2,9 +2,9 @@
 # Unit tests for verify-aot-il-warnings.sh.
 #
 # The gate is the only thing standing between a first-party AOT/trim warning and a published
-# build, and both of its historic failure modes were silent: a warning classified as third-party
-# because an allow-list token appeared in the *file path*, and an "ILC ran" assertion satisfied by
-# a different project's publish output. Both are pinned here.
+# build, and its historic failure modes were silent: warning ownership confused by an allow-list
+# token in a file path, ILC evidence borrowed from another publish leg, scans affected by caller
+# ripgrep configuration, and incremental reuse that supplied no fresh analysis. All are pinned here.
 #
 # The publish legs are driven through a stub `dotnet` on PATH, so nothing here compiles anything.
 # Requires ripgrep, the same as the gate itself.
@@ -136,6 +136,33 @@ expect_eq \
   "0" \
   "$(violations_for 'Build succeeded.')"
 
+# A caller-controlled ripgrep config must not be able to break the gate's scans. In particular,
+# ripgrep can report a missing config with the same exit code it uses for "no match", which makes a
+# banned-pattern scan look clean unless the gate explicitly disables external configuration.
+BROKEN_RG_CONFIG="$WORK/broken-ripgrep-config"
+printf '%s\n' '--definitely-not-a-real-ripgrep-option' >"$BROKEN_RG_CONFIG"
+CONFIG_PROBE_LOG="$WORK/config-probe.log"
+printf 'Build succeeded.\n' >"$CONFIG_PROBE_LOG"
+
+CONFIG_ISOLATED_OUTPUT="$(
+  export RIPGREP_CONFIG_PATH="$BROKEN_RG_CONFIG"
+
+  # shellcheck disable=SC1090
+  source "$GATE" >/dev/null 2>&1
+
+  if rg_capture 'Build succeeded' "$CONFIG_PROBE_LOG" 2>/dev/null; then
+    capture_exit=0
+  else
+    capture_exit=$?
+  fi
+  printf '\nexit=%s' "$capture_exit"
+)"
+
+expect_eq \
+  "gate scans ignore caller ripgrep configuration" \
+  $'Build succeeded.\nexit=0' \
+  "$CONFIG_ISOLATED_OUTPUT"
+
 # ---------------------------------------------------------------------------
 # ILC evidence, per publish leg
 # ---------------------------------------------------------------------------
@@ -161,6 +188,12 @@ case "${1:-}" in
     exit 0
     ;;
   publish)
+    if [[ "${STUB_REQUIRE_ISOLATED_ARTIFACTS:-0}" == 1 ]] \
+      && ! printf '%s\n' "$@" | grep -qx -- '--artifacts-path'; then
+      echo "Publish reused the project's incremental outputs."
+      exit 0
+    fi
+
     if printf '%s\n' "$@" | grep -q "RegexAotSmoke"; then
       cat "$STUB_SMOKE_LOG"
     else
@@ -239,6 +272,21 @@ if [[ "$OUTPUT" == *"exit=0"* && "$OUTPUT" == *"AOT IL gate passed"* ]]; then
   pass "a publish with ILC output on both legs passes"
 else
   fail "a healthy AOT publish should pass: $OUTPUT"
+fi
+
+# A real second publish can otherwise reuse both native outputs and emit no ILC marker, making the
+# gate fail closed without actually performing the analysis it was invoked to verify. Fresh artifact
+# roots force both legs through their build and native-analysis pipelines without deleting repo output.
+export STUB_REQUIRE_ISOLATED_ARTIFACTS=1
+
+OUTPUT="$(run_gate_for_rid linux-x64 true "$CLI_LOG_WITH_ILC" "$SMOKE_LOG_WITH_ILC")"
+
+unset STUB_REQUIRE_ISOLATED_ARTIFACTS
+
+if [[ "$OUTPUT" == *"exit=0"* && "$OUTPUT" == *"AOT IL gate passed"* ]]; then
+  pass "both publish legs use isolated artifact roots"
+else
+  fail "the AOT audit must isolate both publish legs from incremental outputs: $OUTPUT"
 fi
 
 echo

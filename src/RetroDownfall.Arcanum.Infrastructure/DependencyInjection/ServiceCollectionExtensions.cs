@@ -1168,7 +1168,12 @@ public static class ServiceCollectionExtensions
         // successful turn), not polling, so registering it unconditionally is safe on the hot path.
         // Registered as a singleton (not just a hosted service) so the hub can resolve it directly to
         // call EnqueueExtraction, mirroring WorkspaceIndexingService's singleton+hosted-factory pattern.
-        services.AddSingleton<SagaExtractionService>();
+        services.AddSingleton<SagaExtractionService>(static sp =>
+            new SagaExtractionService(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                sp.GetRequiredService<ILogger<SagaExtractionService>>()));
         services.AddInstallationResetRecoveryAwareHostedService<SagaExtractionService>();
 
         // The Tapestry (§21.11) — idles unless Arcanum:Features:Tapestry is enabled, so registering it

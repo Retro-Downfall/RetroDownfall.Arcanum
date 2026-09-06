@@ -22,6 +22,21 @@ public sealed class GrimoireSchemaSourceFingerprintTests
 {
 
     [Fact]
+    public void Version_six_reconstruction_matches_the_pinned_fingerprint()
+    {
+
+        Assert.Equal(
+            "410CB4FD182E22CB7FA72955E337296177A2A0E92ACB4AF73137236285B0D8CB",
+            CoreSchemaVersionSixFixture.Fingerprint);
+
+        GrimoireSchemaVersionChain core =
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        Assert.Equal(CoreSchemaVersionSixFixture.Fingerprint, core.SourceDefinitionFingerprintFor(6));
+
+    }
+
+    [Fact]
     public void A_reindented_and_recommented_head_tree_publishes_the_same_core_fingerprint()
     {
 

@@ -122,6 +122,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.Core, 4),
                         (GrimoireSchemaTransactionTier.Core, 5),
                         (GrimoireSchemaTransactionTier.Core, 6),
+                        (GrimoireSchemaTransactionTier.Core, 7),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 2),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 3),
                     ]);
@@ -210,6 +211,10 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "SessionAttachments_SessionId_norm_index",
                 "SessionAttachments_Id_norm_index",
                 "workspace_file_chunks_file_length",
+                "saga_extraction_watermarks_entry_sequence",
+                "assistant_entry_finalizations_through_entry_sequence",
+                "saga_extraction_watermarks_validate_insert",
+                "saga_extraction_watermarks_validate_update",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",

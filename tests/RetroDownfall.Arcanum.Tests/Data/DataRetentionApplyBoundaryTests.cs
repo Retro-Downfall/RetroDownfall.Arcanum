@@ -444,9 +444,9 @@ public sealed partial class DataRetentionServiceTests
         await ExecuteAsync(
             """
             INSERT INTO saga_extraction_watermarks
-                (SessionId, LastExtractedEntryCreatedAt)
+                (SessionId, LastExtractedEntryCreatedAt, LastExtractedEntrySequence)
             VALUES
-                (@sessionId, @at)
+                (@sessionId, @at, 0)
             """,
             ("@sessionId", sessionId.ToString().ToUpperInvariant()),
             ("@at", OldTimestamp));

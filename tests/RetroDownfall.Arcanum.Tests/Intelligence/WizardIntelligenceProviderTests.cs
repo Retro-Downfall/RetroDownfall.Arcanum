@@ -1132,9 +1132,52 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     {
         const string toolName = "record_progress";
         Guid sessionId = Guid.Parse("22000000-0000-0000-0000-000000000001");
-        FakeGrimoireRepository grimoire = new() { FixedSessionId = sessionId };
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            PreRequestHistoryRevision = 40,
+        };
         ScriptingChatClient chat = new();
         FakeMcpConnectionManager mcp = new();
+
+        ArcanumSettings settings = DefaultSettings();
+
+        settings.Features.Saga = true;
+
+        settings.Features.SagaExtraction = true;
+
+        SagaExtractionService extraction = new(
+            new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
+            NullLogger<SagaExtractionService>.Instance);
+
+        SessionTurnConcurrencyGate turnGate = new();
+
+        GrimoireTurnWriter concurrentWriter = new(
+            new FakeGrimoireRepository(),
+            new FakeSessionTurnBeginStore(),
+            new SessionEventHub(NullLogger<SessionEventHub>.Instance),
+            NullLogger<GrimoireTurnWriter>.Instance,
+            sessionTurnGate: turnGate);
+
+        Result<GrimoireTurnWriter.TurnHandle>? concurrentBegin = null;
+
+        extraction.EnqueuedForTests = _ =>
+        {
+
+            concurrentBegin = concurrentWriter.BeginBufferedAssistantReplyAsync(
+                    BaseRequest() with { SessionId = sessionId },
+                    InvocationContexts.AttendedSession(),
+                    "overlapping turn",
+                    ModelName,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+
+        };
+
+        grimoire.OnFinalize = () => Assert.Empty(extraction.PendingRequestsForTests);
 
         mcp.Tools.Add(CreateProgressMcpTool(toolName));
         chat.EnqueueStreamToolCall(
@@ -1147,7 +1190,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new Dictionary<string, object?> { ["evidence"] = 2 });
         chat.EnqueueStreamTokens("completed");
 
-        WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire, mcp: mcp);
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire,
+            mcp: mcp,
+            sagaExtractionService: extraction,
+            sessionTurnGate: turnGate);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
@@ -1189,7 +1238,38 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal(2, toolCalls.Count);
         Assert.Equal(2, toolResults.Count);
         Assert.Equal(2, grimoire.ToolInteractions.Count);
+        Assert.Equal(1, grimoire.FinalizeCallCount);
         Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Error);
+
+        SagaExtractionRequest extractionRequest = Assert.Single(
+            extraction.PendingRequestsForTests);
+
+        Assert.Equal(sessionId, extractionRequest.SessionId);
+
+        Assert.Equal(40, extractionRequest.AfterEntrySequenceExclusive);
+
+        Assert.Equal(46, extractionRequest.ThroughEntrySequence);
+
+        Assert.NotNull(concurrentBegin);
+
+        Assert.True(concurrentBegin!.IsFailure);
+
+        Assert.Equal(ErrorCodes.Hub.SessionTurnBusy, concurrentBegin.Error.Code);
+
+        Result<GrimoireTurnWriter.TurnHandle> admittedAfterHandoff =
+            await concurrentWriter.BeginBufferedAssistantReplyAsync(
+                BaseRequest() with { SessionId = sessionId },
+                InvocationContexts.AttendedSession(),
+                "next turn",
+                ModelName,
+                CancellationToken.None);
+
+        Assert.True(admittedAfterHandoff.IsSuccess);
+
+        Assert.True(await concurrentWriter.ResolveInterruptedAndMarkFinalizedAsync(
+            admittedAfterHandoff.Value,
+            streamedContent: null,
+            CancellationToken.None));
 
         for (int index = 0; index < toolCalls.Count; index++)
         {
@@ -8848,7 +8928,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ISessionAttachmentStore? sessionAttachmentStore = null,
         FixtureOrdinaryConnectionFactory? ordinaryConnections = null,
         IModelTokenEstimator? modelTokenEstimator = null,
-        IHumanPromptRegistry? humanPrompts = null)
+        IHumanPromptRegistry? humanPrompts = null,
+        SessionTurnConcurrencyGate? sessionTurnGate = null)
     {
         settings ??= DefaultSettings();
 
@@ -8886,6 +8967,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         sagaExtractionService ??= new SagaExtractionService(
             new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<SagaExtractionService>.Instance);
 
         semanticSpellRouter ??= new SemanticSpellRouter(
@@ -8913,7 +8995,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             grimoire,
             grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
             new SessionEventHub(NullLogger<SessionEventHub>.Instance),
-            NullLogger<GrimoireTurnWriter>.Instance);
+            NullLogger<GrimoireTurnWriter>.Instance,
+            sessionTurnGate: sessionTurnGate);
 
         return new WizardIntelligenceProvider(
             factory,
@@ -9948,6 +10031,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Guid? FixedSessionId { get; init; }
 
+        public long PreRequestHistoryRevision { get; init; }
+
         public Guid? LastAssistantEntryId { get; private set; }
 
         public MandatoryToolInteractionAppendOutcome MandatoryAppendOutcome
@@ -9975,6 +10060,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public int FinalizeCallCount { get; private set; }
 
         public int AppendToolInteractionCallCount { get; private set; }
+
+        public Action? OnFinalize { get; set; }
 
         public Func<CancellationToken, Task>?
             AppendToolInteractionHandler { get; init; }
@@ -10039,12 +10126,18 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     sessionId,
                     Guid.NewGuid(),
                     assistantEntryId,
-                    new SessionTurnInputPreflight(sessionId, campaign.Binding, 0, 0)));
+                    new SessionTurnInputPreflight(
+                        sessionId,
+                        campaign.Binding,
+                        PreRequestHistoryRevision,
+                        0)));
 
         }
 
         public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default)
         {
+
+            OnFinalize?.Invoke();
 
             FinalizeCallCount++;
             LastFinalizedContent = fullContent;
@@ -10055,6 +10148,23 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             }
 
             return Task.CompletedTask;
+
+        }
+
+        public async Task<long?> FinalizeAssistantEntryWithFrontierAsync(
+            Guid assistantEntryId,
+            string fullContent,
+            CancellationToken cancellationToken = default)
+        {
+
+            await FinalizeAssistantEntryAsync(
+                assistantEntryId,
+                fullContent,
+                cancellationToken);
+
+            return PreRequestHistoryRevision
+                + 2L
+                + (ToolInteractions.Count * 2L);
 
         }
 

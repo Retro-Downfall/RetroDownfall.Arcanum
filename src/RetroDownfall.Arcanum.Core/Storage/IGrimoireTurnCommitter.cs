@@ -190,7 +190,8 @@ public sealed record TurnCommitReceipt(
     Guid AssistantEntryId,
     AssistantFinalizationOutcome Outcome,
     bool Replayed,
-    ImmutableArray<CovenantMutationReceipt> MutationReceipts);
+    ImmutableArray<CovenantMutationReceipt> MutationReceipts,
+    long? ThroughEntrySequence = null);
 
 /// <summary>
 /// The single writer of assistant finalization and Covenant publication.

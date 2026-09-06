@@ -137,6 +137,8 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
             Assert.True(committed.IsSuccess, committed.Error.Message);
 
+            Assert.Equal(2, committed.Value.ThroughEntrySequence);
+
             Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
 
         }
@@ -174,6 +176,8 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         Assert.True(replayed.Value.Replayed);
 
+        Assert.Equal(2, replayed.Value.ThroughEntrySequence);
+
         Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
 
     }
@@ -207,6 +211,45 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal("The sigil is cobalt.", assistantEntry!.Content);
 
         Assert.True(await repository.SessionExistsAsync(sessionId, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task FinalizeAssistantEntryWithFrontierAsync_IncludesToolInteractionsCommittedBeforeFinalization()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "Use both tools.",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.AppendToolInteractionAsync(
+            sessionId,
+            "first_tool",
+            "{}",
+            "first result",
+            "test-model",
+            CancellationToken.None);
+
+        await repository.AppendToolInteractionAsync(
+            sessionId,
+            "second_tool",
+            "{}",
+            "second result",
+            "test-model",
+            CancellationToken.None);
+
+        long? throughEntrySequence = await repository.FinalizeAssistantEntryWithFrontierAsync(
+            assistantEntryId,
+            "Both tools completed.",
+            CancellationToken.None);
+
+        Assert.Equal(6, throughEntrySequence);
 
     }
 
@@ -796,6 +839,66 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(0, updated.UnsummarizedEntryCount);
 
         Assert.Equal(tiedTimestamp.UtcDateTime, updated.LastSummarizedMessageAt);
+
+    }
+
+    [SkippableFact]
+    public async Task GetSagaExtractionEntriesAsync_UsesSequenceCursorAcrossSharedTimestampFrontiers()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        DateTimeOffset sharedCreatedAt = new(2026, 7, 3, 1, 0, 0, TimeSpan.Zero);
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Title = "shared timestamp frontiers",
+            Status = "active",
+            CreatedAt = sharedCreatedAt,
+            UpdatedAt = sharedCreatedAt,
+            UnsummarizedEntryCount = 4,
+        });
+
+        for (int sequence = 1; sequence <= 4; sequence++)
+        {
+
+            _db.Entries.Add(new Entry
+            {
+                Id = EntryId(sequence),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = $"entry-{sequence}",
+                ModelUsed = "test-model",
+                CreatedAt = sharedCreatedAt,
+                Sequence = sequence,
+            });
+
+        }
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+
+        List<Entry> first = await repository.GetSagaExtractionEntriesAsync(
+            sessionId,
+            afterSequence: 0,
+            throughSequence: 2,
+            batchSize: 1,
+            CancellationToken.None);
+
+        List<Entry> second = await repository.GetSagaExtractionEntriesAsync(
+            sessionId,
+            afterSequence: 2,
+            throughSequence: 4,
+            batchSize: 1,
+            CancellationToken.None);
+
+        Assert.Equal([1L, 2L], first.Select(entry => entry.Sequence));
+
+        Assert.Equal([3L, 4L], second.Select(entry => entry.Sequence));
 
     }
 

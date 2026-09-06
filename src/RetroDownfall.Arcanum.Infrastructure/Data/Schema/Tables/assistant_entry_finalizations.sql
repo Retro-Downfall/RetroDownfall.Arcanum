@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS assistant_entry_finalizations (
     FinalReceiptDigest BLOB NULL CHECK (FinalReceiptDigest IS NULL OR length(FinalReceiptDigest) = 32),
     SourceEvidenceDigest BLOB NULL CHECK (SourceEvidenceDigest IS NULL OR length(SourceEvidenceDigest) = 32),
     FinalizedAtUtc TEXT NOT NULL,
+    ThroughEntrySequence INTEGER NULL CHECK (ThroughEntrySequence IS NULL OR ThroughEntrySequence >= 0),
     -- CommittedImported and CommittedForked are produced by an atomic copy transaction and are
     -- explicitly non-replayable, so each one names the evidence it was copied from. A native
     -- Committed or Discarded row has no source and must not borrow one, because a source digest is

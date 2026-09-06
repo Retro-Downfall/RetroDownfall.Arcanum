@@ -422,6 +422,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<PromptRenderer>();
 
+        services.AddSingleton<SessionTurnConcurrencyGate>();
+
         services.AddScoped<GrimoireTurnWriter>();
 
         services.AddScoped<IContextCompressionService, ContextCompressionService>();

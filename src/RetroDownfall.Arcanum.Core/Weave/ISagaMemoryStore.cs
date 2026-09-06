@@ -180,6 +180,35 @@ public interface ISagaMemoryStore
     /// <summary>Aggregate counts and timestamp bounds across all Saga memories.</summary>
     Task<SagaStats> GetStatsAsync(CancellationToken cancellationToken);
 
+    /// <summary>The exact Grimoire entry through which Saga extraction has committed, or <c>null</c>.</summary>
+    Task<SagaExtractionCursor?> GetExtractionCursorAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromException<SagaExtractionCursor?>(
+            new NotSupportedException(
+                "This Saga memory store does not expose an exact extraction sequence cursor."));
+
+    }
+
+    /// <summary>Upserts the exact committed extraction cursor for a session.</summary>
+    Task SetExtractionCursorAsync(
+        Guid sessionId,
+        SagaExtractionCursor cursor,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromException(
+            new NotSupportedException(
+                "This Saga memory store does not persist an exact extraction sequence cursor."));
+
+    }
+
     /// <summary>The <c>CreatedAt</c> of the most recently extracted Grimoire entry for a session, or <c>null</c> when no extraction has occurred yet.</summary>
     Task<DateTimeOffset?> GetWatermarkAsync(Guid sessionId, CancellationToken cancellationToken);
 

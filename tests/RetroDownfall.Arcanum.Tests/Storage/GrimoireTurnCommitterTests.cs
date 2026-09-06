@@ -85,9 +85,37 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
         (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
         IGrimoireTurnCommitter committer = Committer();
 
-        _ = await committer.CommitTurnAsync(
+        Result<TurnCommitReceipt> committed = await committer.CommitTurnAsync(
             Request(sessionId, assistantEntryId, "the answer"),
             CancellationToken.None);
+
+        Assert.Equal(2, committed.Value.ThroughEntrySequence);
+
+        DateTimeOffset later = DateTimeOffset.UtcNow.AddTicks(1);
+
+        _ = _db!.Entries.Add(new Entry
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            Role = MessageRole.User,
+            Content = "a later turn",
+            ModelUsed = "test-model",
+            CreatedAt = later,
+            Sequence = 3L,
+        });
+
+        _ = _db.Entries.Add(new Entry
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            Role = MessageRole.Assistant,
+            Content = "a later answer",
+            ModelUsed = "test-model",
+            CreatedAt = later,
+            Sequence = 4L,
+        });
+
+        _ = await _db.SaveChangesAsync(CancellationToken.None);
 
         Result<TurnCommitReceipt> replay = await committer.CommitTurnAsync(
             Request(sessionId, assistantEntryId, "a second, different answer"),
@@ -96,6 +124,7 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
         Assert.True(replay.IsSuccess, replay.Error.Message);
         Assert.True(replay.Value.Replayed);
         Assert.Equal(AssistantFinalizationOutcome.Committed, replay.Value.Outcome);
+        Assert.Equal(2, replay.Value.ThroughEntrySequence);
         Assert.Equal("the answer", await ReadContentAsync(assistantEntryId));
     }
 

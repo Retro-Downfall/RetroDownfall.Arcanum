@@ -1525,9 +1525,20 @@ public sealed partial class WizardIntelligenceProvider(
             return;
         }
 
-        await grimoireTurnWriter
-            .TryResolveInterruptedOnStreamExitAsync(deferred, null)
-            .ConfigureAwait(false);
+        try
+        {
+
+            await grimoireTurnWriter
+                .TryResolveInterruptedOnStreamExitAsync(deferred, null)
+                .ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            grimoireTurnWriter.CompleteSagaExtractionHandoff(deferred);
+
+        }
     }
 
     /// <summary>
@@ -4220,6 +4231,32 @@ public sealed partial class WizardIntelligenceProvider(
             yield break;
         }
 
+        IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance = [];
+
+        try
+        {
+
+            // This handoff is the final part of the Session turn's ordering boundary. It must happen
+            // before any ancillary cancellable await, while the same-Session gate is still held, or a
+            // later turn could enqueue a wider frontier first and classify these entries under its
+            // provenance.
+            attachmentProvenance = AttachmentMemoryGateAmbient.Snapshot();
+
+            TryEnqueueSagaExtraction(
+                grimoireTurn.SessionId,
+                attachmentProvenance,
+                AttachmentMemoryGateAmbient.HasUnprovenancedAttachmentContent,
+                grimoireTurn.SagaExtractionAfterSequenceExclusive,
+                grimoireTurn.SagaExtractionThroughSequence);
+
+        }
+        finally
+        {
+
+            grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
+
+        }
+
         await TryIncrementSessionTokensAsync(
                 grimoireTurn.SessionId,
                 streamAccumulatedUsage,
@@ -4230,18 +4267,10 @@ public sealed partial class WizardIntelligenceProvider(
                 inferenceToken)
             .ConfigureAwait(false);
 
-        IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance =
-            AttachmentMemoryGateAmbient.Snapshot();
-
         await TryRecordAttachmentConsultationsAsync(
             grimoireTurn.AssistantEntryId,
             attachmentProvenance,
             inferenceToken).ConfigureAwait(false);
-
-        TryEnqueueSagaExtraction(
-            grimoireTurn.SessionId,
-            attachmentProvenance,
-            AttachmentMemoryGateAmbient.HasUnprovenancedAttachmentContent);
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
 
@@ -4332,16 +4361,31 @@ public sealed partial class WizardIntelligenceProvider(
                     classification,
                     streamAccumulator.Length))
             {
-                // Reached after a failed finalize as well as after a genuine interrupt, and the
-                // handle is still unfinalized in both. Passing the staged batch is what stops this
-                // cleanup from committing the answer a moment after the atomic arm refused to.
-                await grimoireTurnWriter
-                    .TryResolveInterruptedOnStreamExitAsync(
-                        grimoireTurn,
-                        streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
-                        covenantScope?.DerivedSensitivity,
-                        covenantScope?.StagedCommit())
-                    .ConfigureAwait(false);
+
+                try
+                {
+
+                    // Reached after a failed finalize as well as after a genuine interrupt, and the
+                    // handle is still unfinalized in both. Passing the staged batch is what stops this
+                    // cleanup from committing the answer a moment after the atomic arm refused to.
+                    await grimoireTurnWriter
+                        .TryResolveInterruptedOnStreamExitAsync(
+                            grimoireTurn,
+                            streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
+                            covenantScope?.DerivedSensitivity,
+                            covenantScope?.StagedCommit())
+                        .ConfigureAwait(false);
+
+                }
+                finally
+                {
+
+                    // Idempotent after the successful handoff; a necessary backstop for every path
+                    // that exits before reaching it.
+                    grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
+
+                }
+
             }
         }
     }
@@ -7953,9 +7997,11 @@ public sealed partial class WizardIntelligenceProvider(
     private void TryEnqueueSagaExtraction(
         Guid? sessionId,
         IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance,
-        bool hadUnprovenancedAttachmentContent)
+        bool hadUnprovenancedAttachmentContent,
+        long afterEntrySequenceExclusive,
+        long? throughEntrySequence)
     {
-        if (!sessionId.HasValue)
+        if (!sessionId.HasValue || !throughEntrySequence.HasValue)
         {
             return;
         }
@@ -7973,7 +8019,9 @@ public sealed partial class WizardIntelligenceProvider(
                 new SagaExtractionRequest(
                     sessionId.Value,
                     attachmentProvenance,
-                    hadUnprovenancedAttachmentContent));
+                    hadUnprovenancedAttachmentContent,
+                    afterEntrySequenceExclusive,
+                    throughEntrySequence.Value));
         }
         catch (Exception ex)
         {

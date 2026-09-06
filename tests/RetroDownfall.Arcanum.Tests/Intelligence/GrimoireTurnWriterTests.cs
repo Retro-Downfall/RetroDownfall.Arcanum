@@ -99,6 +99,129 @@ public sealed class GrimoireTurnWriterTests
     }
 
     [Fact]
+    public async Task BeginBufferedAssistantReplyAsync_SameSessionTurnInFlight_ReturnsBusyUntilFinalized()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionTurnConcurrencyGate turnGate = new();
+
+        GrimoireTurnWriter firstWriter = CreateWriter(
+            new TrackingGrimoireRepository(),
+            turnGate);
+
+        GrimoireTurnWriter secondWriter = CreateWriter(
+            new TrackingGrimoireRepository(),
+            turnGate);
+
+        PingRequest request = new(
+            Prompt: "hello",
+            Model: "test-model",
+            WorkingDirectory: string.Empty,
+            SessionId: sessionId);
+
+        GrimoireTurnWriter.TurnHandle first = (await firstWriter.BeginBufferedAssistantReplyAsync(
+            request,
+            InvocationContexts.AttendedSession(),
+            "hello",
+            "test-model",
+            CancellationToken.None)).Value;
+
+        Result<GrimoireTurnWriter.TurnHandle> busy = await secondWriter.BeginBufferedAssistantReplyAsync(
+            request,
+            InvocationContexts.AttendedSession(),
+            "hello",
+            "test-model",
+            CancellationToken.None);
+
+        Assert.True(busy.IsFailure);
+
+        Assert.Equal(ErrorCodes.Hub.SessionTurnBusy, busy.Error.Code);
+
+        Assert.True(await firstWriter.TryFinalizeBufferedAssistantEntryAsync(
+            first,
+            "done",
+            "test-model",
+            CancellationToken.None));
+
+        Result<GrimoireTurnWriter.TurnHandle> busyBeforeHandoff =
+            await secondWriter.BeginBufferedAssistantReplyAsync(
+                request,
+                InvocationContexts.AttendedSession(),
+                "hello",
+                "test-model",
+                CancellationToken.None);
+
+        Assert.True(busyBeforeHandoff.IsFailure);
+
+        Assert.Equal(ErrorCodes.Hub.SessionTurnBusy, busyBeforeHandoff.Error.Code);
+
+        firstWriter.CompleteSagaExtractionHandoff(first);
+
+        Result<GrimoireTurnWriter.TurnHandle> admitted = await secondWriter.BeginBufferedAssistantReplyAsync(
+            request,
+            InvocationContexts.AttendedSession(),
+            "hello",
+            "test-model",
+            CancellationToken.None);
+
+        Assert.True(admitted.IsSuccess);
+
+        Assert.True(await secondWriter.ResolveInterruptedAndMarkFinalizedAsync(
+            admitted.Value,
+            streamedContent: null,
+            CancellationToken.None));
+
+    }
+
+    [Fact]
+    public async Task Dispose_ReleasesAnUnfinishedSessionTurnLease()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionTurnConcurrencyGate turnGate = new();
+
+        GrimoireTurnWriter firstWriter = CreateWriter(
+            new TrackingGrimoireRepository(),
+            turnGate);
+
+        PingRequest request = new(
+            Prompt: "hello",
+            Model: "test-model",
+            WorkingDirectory: string.Empty,
+            SessionId: sessionId);
+
+        _ = (await firstWriter.BeginBufferedAssistantReplyAsync(
+            request,
+            InvocationContexts.AttendedSession(),
+            "hello",
+            "test-model",
+            CancellationToken.None)).Value;
+
+        firstWriter.Dispose();
+
+        GrimoireTurnWriter secondWriter = CreateWriter(
+            new TrackingGrimoireRepository(),
+            turnGate);
+
+        Result<GrimoireTurnWriter.TurnHandle> admitted = await secondWriter.BeginBufferedAssistantReplyAsync(
+            request,
+            InvocationContexts.AttendedSession(),
+            "hello",
+            "test-model",
+            CancellationToken.None);
+
+        Assert.True(admitted.IsSuccess);
+
+        Assert.True(await secondWriter.ResolveInterruptedAndMarkFinalizedAsync(
+            admitted.Value,
+            streamedContent: null,
+            CancellationToken.None));
+
+    }
+
+    [Fact]
     public async Task TryFinalizeBufferedAssistantEntryAsync_SetsFinalizedFlag()
     {
 
@@ -117,6 +240,10 @@ public sealed class GrimoireTurnWriterTests
             "test-model",
             CancellationToken.None)).Value;
 
+        Assert.Equal(0, handle.SagaExtractionAfterSequenceExclusive);
+
+        Assert.Null(handle.SagaExtractionThroughSequence);
+
         bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
 
         Assert.True(ok);
@@ -126,6 +253,10 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(1, grimoire.FinalizeCallCount);
 
         Assert.Equal(1, grimoire.EntryByIdPublishCount);
+
+        // Compatibility repositories can finalize without an exact frontier, but that must remain
+        // explicit so the Wizard skips extraction instead of guessing from a later live MAX.
+        Assert.Null(handle.SagaExtractionThroughSequence);
 
     }
 
@@ -828,6 +959,16 @@ public sealed class GrimoireTurnWriterTests
         IGrimoireRepository grimoire,
         FakeSessionTurnBeginStore? beginStore = null) =>
         CreateWriter(grimoire, NullLogger<GrimoireTurnWriter>.Instance, beginStore);
+
+    private static GrimoireTurnWriter CreateWriter(
+        IGrimoireRepository grimoire,
+        SessionTurnConcurrencyGate turnGate) =>
+        new(
+            grimoire,
+            new FakeSessionTurnBeginStore(),
+            CreateHub(),
+            NullLogger<GrimoireTurnWriter>.Instance,
+            sessionTurnGate: turnGate);
 
     private static GrimoireTurnWriter CreateWriter(
         IGrimoireRepository grimoire,
