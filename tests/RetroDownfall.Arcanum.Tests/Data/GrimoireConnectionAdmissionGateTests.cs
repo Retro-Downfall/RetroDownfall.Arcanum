@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -86,6 +87,39 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => gate.TryAcquireWorkLease((GrimoireWorkKind)value, out _));
+
+    }
+
+    [Fact]
+    public async Task Throwing_work_lease_disposal_callback_still_releases_the_inner_lease()
+    {
+
+        GrimoireConnectionAdmissionGate inner = CreateGate();
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner)
+        {
+            BeforeWorkLeaseDisposalAsync = static () =>
+                ValueTask.FromException(new InvalidOperationException("Expected test callback failure.")),
+        };
+
+        Assert.True(gate.TryAcquireWorkLease(
+            GrimoireWorkKind.WorkspaceIndexing,
+            out IGrimoireWorkLease? work));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await work!.DisposeAsync());
+
+        await using IGrimoireClosingOwner closing = Begin(inner, Owner(59));
+
+        Task<Result> drain = inner.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None).AsTask();
+
+        Assert.True(drain.IsCompleted);
+
+        Result drained = await drain;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
     }
 

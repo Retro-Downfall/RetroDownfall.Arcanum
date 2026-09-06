@@ -133,9 +133,18 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         public async ValueTask DisposeAsync()
         {
 
-            await gate.BeforeWorkLeaseDisposalAsync();
+            try
+            {
 
-            await inner.DisposeAsync();
+                await gate.BeforeWorkLeaseDisposalAsync();
+
+            }
+            finally
+            {
+
+                await inner.DisposeAsync();
+
+            }
 
         }
 
