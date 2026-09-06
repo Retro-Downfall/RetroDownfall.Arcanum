@@ -34,6 +34,95 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
+    [InlineData("await pending;", true)]
+    [InlineData("await pending.ConfigureAwait(false);", true)]
+    [InlineData("await (DateTime.UtcNow.Ticks < 0 ? pending : Task.CompletedTask);", false)]
+    [InlineData("await Task.WhenAny(pending, Task.CompletedTask);", false)]
+    [InlineData("if (DateTime.UtcNow.Ticks < 0) await pending;", false)]
+    public void R3TaskLocalRequiresExactUnconditionalJoin(string join, bool owned)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "var pending = Task.Run(() => System.IO.File.Delete(\"path\")); " + join));
+
+        Assert.Equal(owned, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+
+        Assert.Equal(owned, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"));
+    }
+
+    [Theory]
+    [InlineData("IDisposable alias; alias = group; alias.Dispose(); System.IO.File.Delete(\"path\");", false)]
+    [InlineData("Helper.Use(held);", false)]
+    [InlineData("Helper.Release(held); System.IO.File.Delete(\"path\");", false)]
+    [InlineData("Helper.Forward(held); System.IO.File.Delete(\"path\");", false)]
+    [InlineData("Helper.Escape(ref group); System.IO.File.Delete(\"path\");", false)]
+    [InlineData("Helper.Replace(out group); System.IO.File.Delete(\"path\");", false)]
+    [InlineData("var alias = Helper.Return(held); alias.Dispose(); System.IO.File.Delete(\"path\");", false)]
+    [InlineData("Helper.Store(held); Helper.Saved.Dispose(); System.IO.File.Delete(\"path\");", false)]
+    [InlineData("Helper.Keep(held);", true)]
+    [InlineData("IDisposable alias; alias = group; Helper.Keep(alias);", true)]
+    public void R3AdmissionIdentitySurvivesAssignmentsAndFormalParameters(string body, bool retained)
+    {
+        string helper = "static class Helper { public static IDisposable Saved=null!; public static IDisposable Return(IDisposable handle) => handle; public static void Store(IDisposable handle) { Saved=handle; } public static void Use(IDisposable handle) { handle.Dispose(); System.IO.File.Delete(\"path\"); } public static void Release(IDisposable handle) { handle.Dispose(); } public static void Forward(IDisposable handle) { IDisposable alias; alias=handle; Release(alias); } public static void Escape(ref IDisposable handle) { handle = null!; } public static void Replace(out IDisposable handle) { handle = null!; } public static void Keep(IDisposable handle) { System.IO.File.Delete(\"path\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + body, helper));
+
+        Assert.Equal(retained, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING");
+    }
+
+    [Theory]
+    [InlineData("both", true)]
+    [InlineData("overload", false)]
+    [InlineData("conditional", false)]
+    [InlineData("unreachable", false)]
+    [InlineData("detached", false)]
+    [InlineData("joined", true)]
+    public void R3EachWriterRequiresTheActuallyInvokedCarrierTerminals(string shape, bool complete)
+    {
+        string completion = shape switch { "both" or "detached" => "first.CompleteAsync(); second.CompleteAsync();", "joined" => "await first.CompleteAsync(); await second.CompleteAsync();", "overload" => "first.CompleteAsync();", "conditional" => "first.CompleteAsync(); if (DateTime.UtcNow.Ticks < 0) second.CompleteAsync();", _ => "first.CompleteAsync(); return; second.CompleteAsync();" };
+
+        string disposal = shape switch { "both" or "detached" or "joined" => "first.Dispose(); second.Dispose();", "overload" => "first.Dispose();", "conditional" => "first.Dispose(); if (DateTime.UtcNow.Ticks < 0) second.Dispose();", _ => "first.Dispose(); return; second.Dispose();" };
+
+        string helper = "class Carrier : IDisposable { private readonly RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter first, second; private Carrier(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter a, RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter b) { first=a; second=b; } public static Carrier Create(RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store) { var a=store.CreateWriterAsync(); var b=store.CreateWriterAsync(); return new Carrier(a,b); } public void CompleteAsync() { " + completion + " } public void CompleteAsync(bool unused) => second.CompleteAsync(); public void Dispose() { " + disposal + " } public void Dispose(bool unused) => second.Dispose(); }";
+
+        bool asynchronous = shape is "detached" or "joined";
+
+        if (asynchronous)
+        {
+            helper = helper.Replace("public void CompleteAsync()", "public async Task CompleteAsync()", StringComparison.Ordinal).Replace("public void CompleteAsync(bool unused) => second.CompleteAsync();", "public Task CompleteAsync(bool unused) => second.CompleteAsync();", StringComparison.Ordinal);
+        }
+
+        string blobs = asynchronous ? R2Blobs.Replace("public void CompleteAsync() {}", "public Task CompleteAsync() => Task.Delay(1);", StringComparison.Ordinal) : R2Blobs;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; using var writers=Carrier.Create(store); " + (asynchronous ? "await " : "") + "writers.CompleteAsync();", blobs + helper));
+
+        Assert.Equal(complete, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+    }
+
+    [Theory]
+    [InlineData("", true)]
+    [InlineData("Interlocked.Exchange(ref background, Task.CompletedTask);", false)]
+    [InlineData("Helper.Replace(ref background);", false)]
+    [InlineData("Helper.Set(out background);", false)]
+    [InlineData("ref Task? alias = ref background; alias = Task.CompletedTask;", false)]
+    [InlineData("int ignored; (background, ignored) = (Task.CompletedTask, 0);", false)]
+    public void R3HostHandoffJoinsTheExactDispatchedTask(string mutation, bool owned)
+    {
+        string source = R2Source("background = Task.Run(() => ContinueAsync(token)); " + mutation, "static class Helper { public static void Replace(ref Task? task) { task=Task.CompletedTask; } public static void Set(out Task? task) { task=Task.CompletedTask; } }")
+            .Replace("public Task StopAsync(CancellationToken token) => Task.CompletedTask;", "private Task? background; private async Task ContinueAsync(CancellationToken token) { " + R2Admission + " System.IO.File.Delete(\"path\"); } public async Task StopAsync(CancellationToken token) { if (background is not null) await background; }", StringComparison.Ordinal);
+
+        HostedProducerOperationEntry startup = OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null, Proof = "Worker.StartAsync: readiness" };
+
+        HostedProducerOperationEntry runtime = OrdinaryRoot("Worker.ContinueAsync") with { Member = "ContinueAsync" };
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source, startup, runtime);
+
+        Assert.Equal(owned, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+
+        Assert.Equal(owned ? 1 : 2, result.Items.Count(static site => site.Callee == "System.IO.File.Delete"));
+    }
+
+    [Theory]
     [InlineData("_ = Task.Run(() => System.IO.File.Delete(\"path\"));", false)]
     [InlineData("_ = Task.Factory.StartNew(() => System.IO.File.Delete(\"path\"));", false)]
     [InlineData("await Task.Run(() => System.IO.File.Delete(\"path\"));", true)]

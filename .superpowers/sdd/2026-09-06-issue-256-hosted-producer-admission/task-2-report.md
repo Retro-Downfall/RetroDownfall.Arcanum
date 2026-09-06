@@ -380,3 +380,71 @@ Exact bound-callee grouping (physical = source-anchor/callee pair, contexts = cu
 - A diagnostic is a refusal to prove safety, not evidence of an actual production bug. The new grouped callback/disposal rows include supported-by-the-runtime but unsupported-by-this-analyzer shapes. They are deliberately retained, and the strengthened umbrella cannot pass with them outstanding.
 - No source-derived catalog generation, generic prose proof, factory-wide publication exemption, declaration-only authority cut, or namespace-wide callback/disposal waiver was introduced.
 - This is still a conservative supported-shape analyzer rather than a general alias/control-flow theorem prover. The Important closure work above is material and remains visible for the reviewer. The current site inventory and proof obligations are intentionally RED pending production admission and executable final closure.
+
+## Fix round 3: exact joins, cross-call handles, carrier terminals, and handoff writes
+
+Reviewed `task-2-rereview-2.md` completely before changes. Base commit: `d36e0bc9242d75da0e3bc127700a868e12817cf4`. Only the two inventory files and this report belong to this fix. No production, plan, spec, Task 1, or dependency edits were made; no subagents/reviewers were dispatched.
+
+### Round 3 implementation
+
+- Completion ownership now accepts an exact awaited task, parentheses, and semantically bound framework `Task`/`ValueTask.ConfigureAwait` only. A stored task's one join must be a standalone unconditional statement in the declaration block with no intervening statement. Conditional operands, `WhenAny`, and conditional join statements cannot lend caller authority to the callback.
+- Authored call edges carry semantic actual-to-formal admission-origin bindings. Simple declaration and later assignment aliases form conservative may-alias sets; explicit/implicit disposal and nested helper disposal invalidate only the matching work/effect instance, both inside the callee and after returning to the caller. May-alias information can invalidate authority but never establish retention. Ref/out and opaque escapes fail closed; returned or heap-stored handles also end the supported lifetime continuation. Recursion-path tracking prevents cycles from silently preserving a handle.
+- Field-carrier publication proof binds only the completion overload actually invoked and the disposal implementation selected by the language's `IDisposable`/`IAsyncDisposable` slot. Each mapped field must have exact bound writer completion and disposal calls in those executable targets. Conditional/unreachable terminals do not count. Both the caller-to-carrier and carrier-to-writer asynchronous terminal must have a completion-preserving join; discarded asynchronous leaves do not count. Orphan creation checks remain independent.
+- The host handoff rejects any semantic reference to the tracked task field passed by ref/out/in, exposed through a ref expression/address, or written through a further assignment/compound/deconstruction target. The supported single-dispatch/exact Stop join still yields one runtime-root traversal; task replacement retains the unsafe caller context and emits the callback diagnostic.
+
+### Round 3 strict compile-clean RED/GREEN evidence
+
+Every new case is normal C# compiled by `R2Discover`, which asserts zero compiler errors before discovery. Each regression group was run and its behavioral assertion failure inspected before the corresponding scanner edit. Common command prefix: `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-restore --disable-build-servers -m:1 --filter`.
+
+| Increment/filter | Observed pre-fix RED | Post-fix GREEN | Local evidence |
+| --- | --- | --- | --- |
+| `FullyQualifiedName~R3TaskLocalRequiresExactUnconditionalJoin` | 3 failed / 2 passed: conditional await, WhenAny, conditional statement falsely owned | 18 passed including previous callback ownership forms | `/private/tmp/task2-r3-red1.log`, `task2-r3-green1.log` |
+| `FullyQualifiedName~R3AdmissionIdentitySurvivesAssignmentsAndFormalParameters` | 6 failed / 2 passed: assigned aliases, formal disposal, returned caller state, nested forwarding, ref/out escape falsely retained effect authority | 14 passed including previous captured/disposed alias cases | `/private/tmp/task2-r3-red2.log`, `task2-r3-green2.log` |
+| `FullyQualifiedName~R3EachWriterRequiresTheActuallyInvokedCarrierTerminals` | 3 failed / 1 passed: unrelated overloads, conditional and unreachable second-writer terminals falsely completed | 8 passed including previous mapped/orphan carrier fixtures | `/private/tmp/task2-r3-red3.log`, `task2-r3-green3.log` |
+| `FullyQualifiedName~R3HostHandoffJoinsTheExactDispatchedTask` | 5 failed / 1 passed: Interlocked, ref, out, ref-local, deconstruction replacements falsely owned | 11 passed including previous authority/handoff fixtures | `/private/tmp/task2-r3-red4.log`, `task2-r3-green4.log` |
+| Publication self-review supplement, same R3 carrier filter | 1 failed / 5 passed: discarded asynchronous writer completion falsely counted | 10 passed with previous carrier/Batch fixtures; directly awaited leaf also covered | `/private/tmp/task2-r3-red3-async.log`, `task2-r3-green3-async.log` |
+| Alias self-review supplement, same R3 alias filter | 2 failed / 8 passed: returned and heap-stored retained parameter falsely survived later disposal | 10 passed | `/private/tmp/task2-r3-red2-escape.log`, `task2-r3-green2-escape.log` |
+
+The first complete matrix after the four required groups was 248 passed (`/private/tmp/task2-r3-fixtures-first.log`). The bounded self-review supplements add four cases. The successful callback/local join, no-disposal formal helper, multi-writer carrier, and exact host handoff positives protect against blanket rejection. Alias negatives also assert that an unrelated work lease remains retained when only its effect group ends.
+
+### Round 3 final verification
+
+```bash
+dotnet format whitespace tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --no-restore --include tests/RetroDownfall.Arcanum.Tests/Support/HostedGrimoireProducerInventory.cs tests/RetroDownfall.Arcanum.Tests/Operations/HostedGrimoireProducerInventoryTests.cs --verbosity quiet
+dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-restore --no-incremental --disable-build-servers -m:1
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-build --no-restore --filter 'FullyQualifiedName~HostedGrimoireProducerInventoryTests&FullyQualifiedName!~EveryApplicationHostedServiceHasExactlyOneEntry&FullyQualifiedName!~EveryDiscoveredProducerSiteIsCataloguedExactlyOnce' --logger 'console;verbosity=detailed'
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-build --no-restore --filter 'FullyQualifiedName~EveryApplicationHostedServiceHasExactlyOneEntry' --logger 'console;verbosity=detailed'
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-build --no-restore --filter 'FullyQualifiedName~EveryDiscoveredProducerSiteIsCataloguedExactlyOnce' --logger 'console;verbosity=detailed'
+```
+
+- Formatting: exit 0, scoped to the two inventory files.
+- Clean/no-incremental build: exit 0, **0 warnings, 0 errors**, 52.23 seconds. `/private/tmp/task2-r3-build-final.log`.
+- Complete scanner/registration/validator fixture matrix excluding the two umbrellas: exit 0, **252 passed, 0 failed, 0 skipped**, 26.9272 seconds. `/private/tmp/task2-r3-fixtures-final.log`.
+- Separate 23-service registration umbrella: exit 0, **1 passed**, 1.1566 minutes; cold first inventory 68.151 seconds, cached warm call 0.038 milliseconds. `/private/tmp/task2-r3-registration-final.log`. The two umbrella processes ran concurrently, so the cold number includes resource contention; caching was not weakened.
+- Separate production-site umbrella: expected exit 1, **1 failed**, 1.1654 minutes. `/private/tmp/task2-r3-sites-final.log`. The failing assertion still requires `validation.IsValid`; no category is waived. No globally GREEN full suite was run or claimed.
+
+Final staged-RED categories:
+
+| Diagnostic | Count |
+| --- | ---: |
+| HOSTED_SITE_WORK_FRONTIER_MISSING | 158 |
+| HOSTED_CALLBACK_OWNERSHIP_UNPROVEN | 11,625 |
+| HOSTED_CALL_TARGET_UNRESOLVED | 124 |
+| HOSTED_SITE_EFFECT_FRONTIER_MISSING | 60 |
+| HOSTED_SITE_UNCLASSIFIED | 297 |
+| HOSTED_DISPOSAL_TARGET_UNRESOLVED | 183 |
+| HOSTED_ADMISSION_HANDLE_ESCAPE | 1 |
+| HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE | 3 |
+| HOSTED_EXTERNAL_OPERATION_UNCATALOGUED | 17 |
+| HOSTED_SITE_UNCATALOGUED | 2,056 |
+
+There remain **381 physical sensitive sites / 570 physical sites per exact operation root**, unchanged from round 2. Callback refusals cover **338 unique physical anchor/callee pairs** (one more); disposal refusals remain **22 pairs**. There are no new root, aggregate, generated-symbol, or service-registration diagnostics. The production catalog remains intentionally empty at the site level until final executable proof closure.
+
+### Round 3 self-review and Important Task 14 concerns
+
+- Read the scoped scanner diff and verified `git diff --check`. Existing accessor/setter/init, expression disposal, Saga success branch, mixed-selector, deep sibling, generator, registration, and validator tests remain GREEN in the 252-case matrix. Exact site identities and independent discovery/validation were preserved.
+- The newly rejected production callback is `Loremaster.ExecuteAsync -> ConsumeQueueAsync` at `Loremaster.cs:1377` (source offset), whose task is joined through `Task.WhenAll`. This is a conservative supported-shape refusal, not evidence of a production race. Task 14 needs an exact all-input-tasks completion contract, including exception and group-lifetime proof; merely appearing beneath `await` remains insufficient. This adds one contextual callback row, not a catalog explosion.
+- The new handle-escape row is `SessionAttachmentIndexProcessor.cs:2738` (source offset), the exact `System.ArgumentNullException.ThrowIfNull(workLease)` call. The current opaque-callee rule conservatively refuses to preserve a passed authority handle even though this framework guard is non-escaping on normal return. Task 14 must add an exact bound non-escaping handle-call contract (with a positive fixture and a wrong-symbol/escaping negative), or a producer shape avoiding the unsupported pass. It must not erase all opaque-handle diagnostics. Returning/storing authority handles is also conservatively rejected; broad heap alias analysis is not claimed.
+- The prior Important Task 14 closure work remains: typed callback relevance/binding and symmetric disposal capability contracts for the grouped physical rows. The new `WhenAll` and pure guard rows fit that same small-mechanism path. Catalog filling alone cannot make the umbrella GREEN. These are explicit reviewer/Task 14 concerns, not unverifiable source-text exemptions.
+- Carrier unconditional-terminal proof deliberately supports a narrow straight-line shape. Conditional cleanup or more elaborate successful-path control flow may require an executable exact contract or producer refactor. No same-name overload, uncalled member, arbitrary await ancestor, disposed alias, or replaced host task is accepted as proof by the new cases.
+- Two untracked, unrelated `docs/superpowers/{plans,specs}/2026-09-06-issue-256-turnstile-fast-path-addendum.md` files appeared during final verification. Their owner was notified; neither file was edited, staged, or removed. Only the three authorized Task 2 files will be committed. The review package covers the base-to-new-commit range and excludes those unrelated artifacts.
