@@ -20,6 +20,448 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 
 public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper output)
 {
+    private const string AdmissionTypes = """
+        namespace RetroDownfall.Arcanum.Infrastructure.Data
+        {
+            public enum GrimoireWorkKind { WorkspaceIndexing = 4 }
+            public interface IGrimoireWorkLease : System.IDisposable { bool TryBeginExternalEffectGroup(out System.IDisposable group); }
+            public interface IGrimoireConnectionAdmissionGate { bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease lease); }
+        }
+        """;
+
+    private const string AcquireWork = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) return Task.CompletedTask; using var lease = work;";
+
+    [Fact]
+    public void DeclaredAuthorityRootIsNotAlsoTraversedUnderItsCaller()
+    {
+        string source = FixtureSource("_ = ContinueAsync(token);").Replace("public Task StopAsync", "private Task ContinueAsync(CancellationToken token) { System.IO.File.Delete(\"path\"); return Task.CompletedTask; } public Task StopAsync", StringComparison.Ordinal);
+
+        HostedProducerOperationEntry startup = OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null, Proof = "Worker.StartAsync: readiness" };
+
+        HostedProducerOperationEntry runtime = OrdinaryRoot("Worker.ContinueAsync") with { Member = "ContinueAsync" };
+
+        HostedProducerDiscovery<HostedProducerSite> discovery = DiscoverWithRoots(source, startup, runtime);
+
+        HostedProducerSite site = Assert.Single(discovery.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.StartsWith(runtime.OperationId + "/", site.OperationId, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UncalledLocalFunctionDoesNotInheritLexicalAuthority()
+    {
+        Assert.DoesNotContain(Discover(FixtureSource("void Cold() { System.IO.File.Delete(\"path\"); }")).Items, static site => site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void GeneratorOutputSuppliesSymbolsWithoutInventingAuthoredProducerSites()
+    {
+        CSharpCompilation compilation = Compile(FixtureSource("Generated.Read();")).AddSyntaxTrees(CSharpSyntaxTree.ParseText("static class Generated { public static void Read() { System.IO.File.Exists(\"generated\"); } }", path: "ExampleGenerator/Generated.g.cs"));
+
+        Assert.Empty(HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [], []).Items);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OnlyJoinedCallbacksExecuteUnderTheirCallers(bool joined)
+    {
+        string body = joined ? "_ = Task.Run(() => System.IO.File.Delete(\"path\"));" : "Action cold = () => System.IO.File.Delete(\"path\");";
+
+        Assert.Equal(joined, Discover(FixtureSource(body)).Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+    }
+
+    [Fact]
+    public void AmbiguousSensitiveInterfaceSlotsFailClosed()
+    {
+        string helpers = "namespace RetroDownfall.Arcanum.Core.Storage { public interface IEncryptedBlobStore { void OpenReadAsync(); } public interface ISessionAttachmentStore { void OpenReadAsync(); } } class Both : RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore, RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentStore { public void OpenReadAsync() {} }";
+
+        Assert.Contains(Discover(FixtureSource("new Both().OpenReadAsync();", helpers)).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void NestedTypesAndUnqualifiedGettersKeepTheirExactIdentity()
+    {
+        string source = FixtureSource("_ = Bytes;")
+            .Replace("public Task StartAsync", "private long Bytes => Outer.Helper.Read(); public Task StartAsync", StringComparison.Ordinal)
+            + "static class Outer { public static class Helper { public static long Read() => new System.IO.FileInfo(\"path\").Length; } }";
+
+        Assert.Contains(Discover(source).Items, static site => site.Callee == "System.IO.FileInfo.Length" && site.EnclosingType == "Outer.Helper");
+    }
+
+    [Fact]
+    public void ImplicitStreamDisposalAfterGroupLossFailsTheSharedFrontierCheck()
+    {
+        string body = AcquireWork + " if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; using var writer = new System.IO.StreamWriter(System.IO.Stream.Null); held.Dispose();";
+
+        Assert.Contains(DiscoverWithRoots(FixtureSource(body, AdmissionTypes), OrdinaryRoot()).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.StreamWriter.Dispose");
+    }
+
+    [Fact]
+    public void InheritedBlobWriterDisposalIsStillAnExplicitPublicationEffect()
+    {
+        Assert.Contains(Discover(FixtureSource("RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer = null!; _ = writer.DisposeAsync();")).Items, static site => site.Callee == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.DisposeAsync" && site.Kind == HostedProducerSiteKind.FileSystemEffect);
+    }
+
+    [Fact]
+    public void ValidatorRejectsPublicationEndpointsWithDifferentGroupIdentities()
+    {
+        HostedProducerSite create = new("Worker", "Worker.StartAsync/effect@one/site@src/Fixture.cs:10", "src/Fixture.cs", "Worker", "StartAsync", HostedProducerSiteKind.FileSystemEffect, "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync");
+
+        HostedProducerSite complete = create with { OperationId = "Worker.StartAsync/effect@two/site@src/Fixture.cs:20", Callee = "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.CompleteAsync" };
+
+        HostedProducerSite dispose = create with { OperationId = "Worker.StartAsync/effect@two/site@src/Fixture.cs:30", Callee = "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.Dispose" };
+
+        Assert.Contains(HostedGrimoireProducerInventory.Validate([new("Worker", [OrdinaryRoot() with { Sites = [create, complete, dispose] }])], [], new(["Worker"], []), new([create, complete, dispose], [])).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE");
+    }
+
+    [Theory]
+    [InlineData("work", "HOSTED_SITE_WORK_FRONTIER_MISSING")]
+    [InlineData("effect-free", "HOSTED_SITE_AUTHORITY_INVALID")]
+    [InlineData("root", "HOSTED_SITE_ROOT_MISMATCH")]
+    public void ValidatorDoesNotTrustUnrelatedFrontiersOrAuthorityLabels(string mutation, string expected)
+    {
+        HostedProducerSite read = new("Worker", "Worker.StartAsync/work@other/site@src/Fixture.cs:20", "src/Fixture.cs", "Worker", "StartAsync", HostedProducerSiteKind.FileSystemRead, "System.IO.File.Exists");
+
+        HostedProducerSite frontier = read with { OperationId = "Worker.StartAsync/work@one/workKind=WorkspaceIndexing/site@src/Fixture.cs:10", Kind = HostedProducerSiteKind.EffectFrontier, Callee = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease" };
+
+        HostedProducerOperationEntry operation = OrdinaryRoot();
+
+        if (mutation == "effect-free") operation = operation with { Authority = HostedProducerAuthorityKind.EffectFree, WorkKind = null, Proof = "Worker.StartAsync: claimed no work" };
+
+        if (mutation == "root") read = read with { OperationId = "Other.StartAsync/work@one/site@src/Fixture.cs:20" };
+
+        Assert.Contains(HostedGrimoireProducerInventory.Validate([new("Worker", [operation with { Sites = [read, frontier] }])], [], new(["Worker"], []), new([read, frontier], [])).Diagnostics, diagnostic => diagnostic.Code == expected);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PositiveAdmissionGuardProtectsOnlyItsSuccessfulBranch(bool success)
+    {
+        string body = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; if (gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) { using var lease = work; " + (success ? "System.IO.File.Exists(\"path\");" : "") + " } else { " + (success ? "" : "System.IO.File.Exists(\"path\");") + " }";
+
+        Assert.Equal(success, !DiscoverWithRoots(FixtureSource(body, AdmissionTypes), OrdinaryRoot()).Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"));
+    }
+
+    [Fact]
+    public void ProductionCompilationsResolveGeneratedJsonSymbols()
+    {
+        foreach (CSharpCompilation compilation in HostedGrimoireProducerInventory.ProductionCompilations)
+        {
+            INamedTypeSymbol[] contexts = compilation.SyntaxTrees.SelectMany(tree => tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax>().Select(declaration => compilation.GetSemanticModel(tree).GetDeclaredSymbol(declaration))).OfType<INamedTypeSymbol>().Where(static type => type.BaseType?.ToDisplayString() == "System.Text.Json.Serialization.JsonSerializerContext").ToArray();
+
+            Assert.NotEmpty(contexts);
+
+            Assert.All(contexts, static context => Assert.NotEmpty(context.GetMembers("Default")));
+
+            Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+        }
+    }
+
+    [Theory]
+    [InlineData("sp => new Helper(sp.GetRequiredService<Dependency>())", true)]
+    [InlineData("sp => DateTime.Now.Ticks > 0 ? new Helper(null!) : new Helper(null!)", true)]
+    [InlineData("sp => DateTime.Now.Ticks > 0 ? new Helper(null!) : new Other()", false)]
+    [InlineData("sp => Make(sp)", true)]
+    [InlineData("Make", true)]
+    [InlineData("factory", true)]
+    [InlineData("sp => { IHelper item = new Helper(null!); return item; }", true)]
+    [InlineData("sp => Unknown(sp)", false)]
+    public void FactoryBindingFollowsReturnedImplementation(string factory, bool resolved)
+    {
+        string helpers = "interface IHelper { void Run(); } class Dependency {} class Helper(Dependency dependency) : IHelper { public void Run() { System.IO.File.Delete(\"path\"); } } class Other : IHelper { public void Run() { System.IO.File.Exists(\"other\"); } }";
+
+        string source = FixtureSource("IHelper helper = null!; helper.Run();", helpers)
+            .Replace("services.AddHostedService<Worker>();", "services.AddHostedService<Worker>(); Func<IServiceProvider,IHelper> factory = Make; services.AddSingleton<IHelper>(" + factory + ");", StringComparison.Ordinal)
+            .Replace("public static void Configure", "static IHelper Make(IServiceProvider sp) => new Helper(sp.GetRequiredService<Dependency>()); static IHelper Unknown(IServiceProvider sp) => throw new NotImplementedException(); public static void Configure", StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Equal(resolved, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        Assert.Equal(!resolved, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "IHelper.Run"));
+    }
+
+    [Theory]
+    [InlineData("bound", true)]
+    [InlineData("missing", false)]
+    [InlineData("empty", false)]
+    [InlineData("drifted", false)]
+    public void ExactAggregateBoundaryExecutesItsBoundSourceContract(string shape, bool proven)
+    {
+        const string boundary = "RetroDownfall.Arcanum.Api.Intelligence.IBatchRecoveryService";
+
+        string helpers = "namespace RetroDownfall.Arcanum.Api.Intelligence { public interface IBatchRecoveryService { void ReconcileStrandedAsync(); } public class Recovery : IBatchRecoveryService { public void ReconcileStrandedAsync() { " + (shape == "empty" ? "" : "System.IO.File.Delete(\"stranded\");") + " } } public class Unrelated { public void ReconcileStrandedAsync() { System.IO.File.Delete(\"decoy\"); } } }";
+
+        string binding = shape == "missing" ? "" : "services.AddSingleton<" + boundary + ", RetroDownfall.Arcanum.Api.Intelligence." + (shape == "drifted" ? "Unrelated" : "Recovery") + ">();";
+
+        string source = FixtureSource(boundary + " recovery = null!; recovery.ReconcileStrandedAsync();", helpers).Replace("services.AddHostedService<Worker>();", "services.AddHostedService<Worker>();" + binding, StringComparison.Ordinal);
+
+        HostedProducerOperationEntry root = OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null, Proof = "Worker.StartAsync: awaited recovery" };
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(source, root);
+
+        Assert.Equal(proven, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_AGGREGATE_PROOF_MISSING"));
+
+        if (proven)
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete" && site.EnclosingType == "RetroDownfall.Arcanum.Api.Intelligence.Recovery" && site.OperationId.Contains("/call@", StringComparison.Ordinal));
+        }
+    }
+
+    [Theory]
+    [InlineData("same", true)]
+    [InlineData("different", false)]
+    [InlineData("implicit-after-loss", false)]
+    [InlineData("explicit-after-loss", false)]
+    [InlineData("explicit", true)]
+    public void BlobPublicationRequiresOneContinuousGroupThroughDisposal(string shape, bool valid)
+    {
+        string declarations = AdmissionTypes + """
+            namespace RetroDownfall.Arcanum.Core.Storage
+            {
+                public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); }
+                public class EncryptedBlobWriter : System.IDisposable { public void CompleteAsync() {} public void Dispose() {} }
+            }
+            """;
+
+        string create = shape.StartsWith("explicit", StringComparison.Ordinal) ? "var writer = store.CreateWriterAsync();" : "using var writer = store.CreateWriterAsync();";
+
+        string switchGroup = shape == "different" ? "held.Dispose(); if (!lease.TryBeginExternalEffectGroup(out var second)) return Task.CompletedTask; using var next = second;" : "";
+
+        string loss = shape.EndsWith("after-loss", StringComparison.Ordinal) ? "held.Dispose();" : "";
+
+        string dispose = shape.StartsWith("explicit", StringComparison.Ordinal) ? "writer.Dispose();" : "";
+
+        string body = AcquireWork + " RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store = null!; if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; " + create + switchGroup + " writer.CompleteAsync(); " + loss + dispose;
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(FixtureSource(body, declarations), OrdinaryRoot());
+
+        Assert.Equal(valid, !result.Diagnostics.Any(static d => d.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+
+        if (valid)
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.Dispose");
+        }
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void BatchWriterFieldsRemainInTheCallersContinuousPublicationRegion(bool loseGroup, bool valid)
+    {
+        string helpers = AdmissionTypes + """
+            namespace RetroDownfall.Arcanum.Core.Storage
+            {
+                public interface IEncryptedBlobStore { EncryptedBlobWriter CreateWriterAsync(); }
+                public class EncryptedBlobWriter : System.IDisposable { public void CompleteAsync() {} public void Dispose() {} }
+            }
+            sealed class BatchJsonlWriters : System.IDisposable
+            {
+                private readonly RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter _writer;
+                private BatchJsonlWriters(RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer) { _writer = writer; }
+                public static BatchJsonlWriters CreateAsync(RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store)
+                {
+                    var writer = store.CreateWriterAsync();
+                    return new BatchJsonlWriters(writer);
+                }
+                public void CompleteAsync() { _writer.CompleteAsync(); }
+                public void Dispose() { _writer.Dispose(); }
+            }
+            """;
+
+        string body = AcquireWork + " if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store = null!; using var writers = BatchJsonlWriters.CreateAsync(store); writers.CompleteAsync(); " + (loseGroup ? "held.Dispose();" : "");
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(FixtureSource(body, helpers), OrdinaryRoot());
+
+        Assert.Equal(valid, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+
+        Assert.Contains(result.Items, static site => site.Callee == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.Dispose");
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void PropertyReadsAndExpressionGettersRequireRetainedAuthority(bool throughGetter, bool admitted)
+    {
+        string guard = admitted ? AcquireWork : "";
+
+        string read = throughGetter ? "_ = Helper.Bytes;" : "_ = new System.IO.FileInfo(\"path\").Length;";
+
+        string source = FixtureSource(guard + read, AdmissionTypes + "static class Helper { public static long Bytes => new System.IO.FileInfo(\"path\").Length; }");
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(source, OrdinaryRoot());
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.FileInfo.Length");
+
+        Assert.DoesNotContain(result.Diagnostics, static d => d.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && d.Detail == "System.IO.FileInfo.Length");
+
+        Assert.Equal(admitted, !result.Diagnostics.Any(static d => d.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && d.Detail == "System.IO.FileInfo.Length"));
+    }
+
+    [Fact]
+    public void ValidatorAllowsWorkAdmittedFilesystemReadsWithoutEffectGroup()
+    {
+        HostedProducerSite read = new("Worker", "Worker.StartAsync", "src/Fixture.cs", "Worker", "StartAsync", HostedProducerSiteKind.FileSystemRead, "System.IO.FileInfo.Length");
+
+        HostedProducerSite lease = read with { Kind = HostedProducerSiteKind.EffectFrontier, Callee = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease", OperationId = "Worker.StartAsync/workKind=WorkspaceIndexing" };
+
+        HostedProducerOperationEntry operation = OrdinaryRoot() with { Sites = [read, lease] };
+
+        Assert.DoesNotContain(HostedGrimoireProducerInventory.Validate([new("Worker", [operation])], [], new(["Worker"], []), new([read, lease], [])).Diagnostics, static d => d.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING");
+    }
+
+    [Fact]
+    public void DeepSiblingCallAfterGroupDisposalIsDiscoveredAndRejected()
+    {
+        string helpers = """
+            static class Outer
+            {
+                public static void Run(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease)
+                {
+                    if (!lease.TryBeginExternalEffectGroup(out var group)) return;
+                    using (group) { Middle.Run(); }
+                    Middle.Run();
+                }
+            }
+            static class Middle { public static void Run() { Leaf.Run(); } }
+            static class Leaf { public static void Run() { System.IO.File.Delete("path"); } }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(FixtureSource(AcquireWork + " Outer.Run(lease);", AdmissionTypes + helpers), OrdinaryRoot());
+
+        Assert.Equal(2, result.Items.Count(static site => site.Callee == "System.IO.File.Delete"));
+
+        Assert.Single(result.Diagnostics, static d => d.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && d.Detail == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void DiamondAndRecursiveHelpersKeepEveryDistinctNoncyclicCallEdge()
+    {
+        string helpers = "static class Left { public static void Run() { Leaf.Run(); } } static class Right { public static void Run() { Leaf.Run(); } } static class Leaf { public static void Run() { Left.Run(); System.IO.File.Exists(\"path\"); } }";
+
+        HostedProducerSite[] sites = Discover(FixtureSource("Left.Run(); Right.Run();", helpers)).Items.Where(static site => site.Callee == "System.IO.File.Exists").ToArray();
+
+        Assert.Equal(2, sites.Length);
+
+        Assert.Equal(2, sites.Select(static site => site.OperationId).Distinct().Count());
+    }
+
+    [Fact]
+    public void AggregateBoundaryTableContainsExactlyTheSixApprovedContracts()
+    {
+        Assert.Equal(new[] {
+            "RetroDownfall.Arcanum.Infrastructure.InstallationReset.IInstallationResetStartupRecovery.RecoverBeforeBootstrapAsync",
+            "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.IGrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync",
+            "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseBootstrapper.EnsureInitializedAsync",
+            "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationReconciler.ReconcileAsync",
+            "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexProcessor.ProcessAsync",
+            "RetroDownfall.Arcanum.Api.Intelligence.IBatchRecoveryService.ReconcileStrandedAsync"
+        }.Order(StringComparer.Ordinal), HostedGrimoireProducerInventory.AggregateBoundaries.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void SuccessfulElseRetainsBothWorkAndEffectOwnership()
+    {
+        string body = "bool deferred = false; RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) { deferred = true; } else { using var lease = work; if (!lease.TryBeginExternalEffectGroup(out var group)) { deferred = true; } else { using var held = group; System.IO.File.Delete(\"path\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(FixtureSource(body, AdmissionTypes), OrdinaryRoot());
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Diagnostics, static d => d.Code is "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING");
+    }
+
+    private static HostedProducerOperationEntry OrdinaryRoot(string identity = "Worker.StartAsync") => new(identity, "src/Fixture.cs", "Worker", "StartAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.WorkspaceIndexing, null, []);
+
+    private static string CallRoot(string source, string callee, int occurrence = 0)
+    {
+        CSharpCompilation compilation = Compile(source);
+
+        SyntaxTree tree = compilation.SyntaxTrees.Single();
+
+        Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>().Where(call => compilation.GetSemanticModel(tree).GetSymbolInfo(call).Symbol is IMethodSymbol symbol && symbol.ContainingType.ToDisplayString() + "." + symbol.Name == callee).ElementAt(occurrence);
+
+        return "Worker.StartAsync::call:" + callee + "#" + occurrence + "@" + call.Span.Start + ":" + call.Span.Length;
+    }
+
+    [Fact]
+    public void ExactSourceAnchorRejectsInsertedSiblingRatherThanRetargeting()
+    {
+        string source = FixtureSource("System.IO.File.Exists(\"one\"); System.IO.File.Exists(\"two\");");
+
+        HostedProducerOperationEntry root = OrdinaryRoot(CallRoot(source, "System.IO.File.Exists", 1));
+
+        Assert.DoesNotContain(DiscoverWithRoots(source, root).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED");
+
+        Assert.Contains(DiscoverWithRoots(source.Replace("System.IO.File.Exists(\"one\");", "System.IO.File.Exists(\"inserted\"); System.IO.File.Exists(\"one\");", StringComparison.Ordinal), root).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED");
+    }
+
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverWithRoots(string source, params HostedProducerOperationEntry[] roots)
+    {
+        CSharpCompilation compilation = Compile(source);
+
+        return HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", roots)], []);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ExactCallSelectorsDoNotCrossScanMixedAuthorityBranches(bool protectedRuntime)
+    {
+        string admission = protectedRuntime ? AcquireWork + " if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group;" : "";
+
+        string source = FixtureSource("if (DateTime.Now.Ticks > 0) { System.IO.File.Exists(\"startup\"); } else { " + admission + " System.IO.File.Delete(\"runtime\"); }", AdmissionTypes);
+
+        HostedProducerOperationEntry startup = new(CallRoot(source, "System.IO.File.Exists"), "src/Fixture.cs", "Worker", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null, "Worker.StartAsync: awaited startup branch", []);
+
+        HostedProducerOperationEntry runtime = OrdinaryRoot(CallRoot(source, "System.IO.File.Delete"));
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(source, startup, runtime);
+
+        Assert.Single(result.Items, site => site.Callee == "System.IO.File.Exists" && site.OperationId.StartsWith(startup.OperationId, StringComparison.Ordinal));
+
+        Assert.Single(result.Items, site => site.Callee == "System.IO.File.Delete" && site.OperationId.StartsWith(runtime.OperationId, StringComparison.Ordinal));
+
+        Assert.DoesNotContain(result.Items, site => site.Callee == "System.IO.File.Delete" && site.OperationId.StartsWith(startup.OperationId, StringComparison.Ordinal));
+
+        Assert.Equal(protectedRuntime, !result.Diagnostics.Any(static d => d.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"));
+    }
+
+    [Fact]
+    public void SelectedOperationRoundTripsItsExactRetainedFrontiers()
+    {
+        string source = FixtureSource(AcquireWork + " if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; System.IO.File.Delete(\"path\");", AdmissionTypes);
+
+        HostedProducerOperationEntry root = OrdinaryRoot(CallRoot(source, "System.IO.File.Delete"));
+
+        HostedProducerDiscovery<HostedProducerSite> discovery = DiscoverWithRoots(source, root);
+
+        HostedProducerSite[] selected = discovery.Items.Where(site => site.OperationId.StartsWith(root.OperationId, StringComparison.Ordinal)).ToArray();
+
+        Assert.Contains(selected, static site => site.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal));
+
+        Assert.Contains(selected, static site => site.Callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal));
+
+        Assert.Empty(HostedGrimoireProducerInventory.Validate([new("Worker", [root with { Sites = selected }])], [], new(["Worker"], []), new(selected, discovery.Diagnostics)).Diagnostics);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OverlappingAuthorityClaimsAreRejected(bool wholeMember)
+    {
+        string source = FixtureSource("System.IO.File.Delete(\"path\");");
+
+        HostedProducerOperationEntry ordinary = OrdinaryRoot(CallRoot(source, "System.IO.File.Delete"));
+
+        HostedProducerOperationEntry startup = ordinary with { OperationId = wholeMember ? "Worker.StartAsync" : ordinary.OperationId, Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null, Proof = "Worker.StartAsync: startup" };
+
+        Assert.Contains(DiscoverWithRoots(source, ordinary, startup).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_OVERLAP");
+    }
+
     [Fact]
     public void SensitiveReadPropertySetterCannotBeClassifiedAsRead()
     {
@@ -107,8 +549,18 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Fact]
     public void EveryApplicationHostedServiceHasExactlyOneEntry()
     {
+        System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
         HostedProducerInventoryValidation validation =
             HostedGrimoireProducerInventory.ValidateProductionTree();
+
+        output.WriteLine($"Cold/in-process-first inventory: {stopwatch.Elapsed.TotalSeconds:F3}s");
+
+        stopwatch.Restart();
+
+        Assert.Same(validation, HostedGrimoireProducerInventory.ValidateProductionTree());
+
+        output.WriteLine($"Warm inventory: {stopwatch.Elapsed.TotalMilliseconds:F3}ms");
 
         Assert.DoesNotContain(
             validation.Diagnostics,
@@ -120,6 +572,12 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     {
         HostedProducerInventoryValidation validation =
             HostedGrimoireProducerInventory.ValidateProductionTree();
+
+        string[][] contextualSites = validation.Diagnostics.Where(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCATALOGUED").Select(static diagnostic => diagnostic.Identity.Split('|')).ToArray();
+
+        string PhysicalSite(string[] fields) => fields[1][fields[1].LastIndexOf("/site@", StringComparison.Ordinal)..] + "|" + string.Join("|", fields.Skip(2));
+
+        output.WriteLine($"Uncatalogued contextual sites: {contextualSites.Length}; unique physical sites: {contextualSites.Select(PhysicalSite).Distinct(StringComparer.Ordinal).Count()}; physical sites per exact operation root: {contextualSites.Select(fields => fields[0] + "|" + fields[1].Split('/')[0] + "|" + PhysicalSite(fields)).Distinct(StringComparer.Ordinal).Count()}");
 
         foreach (IGrouping<string, HostedProducerInventoryDiagnostic> group in validation.Diagnostics.GroupBy(static diagnostic => diagnostic.Code))
         {
@@ -141,9 +599,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData(true)]
     public void OrdinaryScopeRequiresItsDeclaredWorkFrontier(bool frontier)
     {
-        HostedProducerSite scope = new("Worker", "Worker.StartAsync", "src/Fixture.cs", "Worker", "StartAsync", HostedProducerSiteKind.ScopeCreation, "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateScope");
+        HostedProducerSite scope = new("Worker", "Worker.StartAsync/work@lease/site@src/Fixture.cs:20", "src/Fixture.cs", "Worker", "StartAsync", HostedProducerSiteKind.ScopeCreation, "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateScope");
 
-        HostedProducerSite lease = scope with { Kind = HostedProducerSiteKind.EffectFrontier, Callee = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease", OperationId = "Worker.StartAsync/workKind=WorkspaceIndexing" };
+        HostedProducerSite lease = scope with { Kind = HostedProducerSiteKind.EffectFrontier, Callee = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease", OperationId = "Worker.StartAsync/work@lease/workKind=WorkspaceIndexing/site@src/Fixture.cs:10" };
 
         HostedProducerSite[] sites = frontier ? [scope, lease] : [scope];
 
