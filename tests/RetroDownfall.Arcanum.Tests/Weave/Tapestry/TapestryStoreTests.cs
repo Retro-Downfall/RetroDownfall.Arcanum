@@ -381,6 +381,32 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task AbandonAfterPublicationPreservesTheCompleteGenerationAndItsNodes()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string published = await BeginAsync();
+
+        await _store!.AppendNodesAsync([Leaf(published, "published-leaf", "c1", "alpha")], CancellationToken.None);
+
+        await _store.PublishGenerationAsync(published, 1, 1, 1, TapestryTerminalReason.LeafOnly, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        // Publication can commit before its caller observes cancellation or a completion failure.
+        // Best-effort abandonment must not erase the generation readers already see as current.
+        await _store.AbandonGenerationAsync(published, CancellationToken.None);
+
+        await _store.AbandonGenerationAsync(published, CancellationToken.None);
+
+        Assert.Equal(published, (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))?.GenerationId);
+
+        Assert.Equal("published-leaf", Assert.Single(await _store.GetLayerNodesAsync(published, 0, CancellationToken.None)).NodeId);
+
+        Assert.Contains("published-leaf", await _store.GetNodeEmbeddingsAsync(["published-leaf"], CancellationToken.None));
+
+    }
+
+    [SkippableFact]
     public async Task ReconcileRemovesEverythingThatIsNotTheCurrentCompleteGeneration()
     {
 

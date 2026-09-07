@@ -711,7 +711,7 @@ internal sealed class TapestryStore(
                 await DeleteGenerationsAsync(
                     connection,
                     transaction,
-                    "\"GenerationId\" = @generationId",
+                    "\"GenerationId\" = @generationId AND \"Status\" = 'Building'",
                     command => AddParameter(command, "@generationId", generationId),
                     cancellationToken).ConfigureAwait(false);
 

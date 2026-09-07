@@ -151,6 +151,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         TapestryWeavingService sweeper = new(
             provider.GetRequiredService<IServiceScopeFactory>(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<TapestryWeavingService>.Instance);
 
         _ = await sweeper.RunSweepAsync(embeddings, CancellationToken.None);
@@ -672,13 +673,23 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         await SeedTenChunksAsync(this);
 
+        TapestryWeaver weaver = CreateWeaver();
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        TapestryGeneration prior = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        await SeedChunksAsync(("provider-down-new", "new.cs", "an edit requiring a rebuild"));
+
         _weave!.Available = false;
 
-        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
 
         Assert.Equal(TapestryWeaveStatus.EmbeddingUnavailable, outcome.Status);
 
-        Assert.Null(await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None));
+        Assert.Equal(prior, await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None));
+
+        Assert.Equal(0, await CountGenerationsWithStatusAsync("Building"));
 
     }
 

@@ -165,22 +165,24 @@ internal sealed class TapestryWeaver(
                 bounds,
                 cancellationToken).ConfigureAwait(false);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (outcome.Status != TapestryWeaveStatus.Woven)
             {
 
-                await store.AbandonGenerationAsync(generationId, CancellationToken.None).ConfigureAwait(false);
+                await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
             }
 
             return outcome;
 
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
 
-            // Host shutdown or an explicit cancel: the staging generation is dropped so the last
-            // complete generation stays current and the next sweep starts clean.
-            await store.AbandonGenerationAsync(generationId, CancellationToken.None).ConfigureAwait(false);
+            // Host shutdown or an explicit cancel: drop only Building state. Publication may already
+            // have committed, in which case the new complete generation must remain current.
+            await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
             throw;
 
@@ -190,13 +192,33 @@ internal sealed class TapestryWeaver(
 
             logger.LogWarning(
                 ex,
-                "Tapestry weave failed for {ScopeKind} {ScopeId}; the previous complete generation remains current.",
+                "Tapestry weave failed for {ScopeKind} {ScopeId}; completed generations are preserved.",
                 scope.Kind,
                 scope.Id);
 
-            await store.AbandonGenerationAsync(generationId, CancellationToken.None).ConfigureAwait(false);
+            await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
             return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed);
+
+        }
+
+    }
+
+    private async Task AbandonGenerationBestEffortAsync(string generationId)
+    {
+
+        try
+        {
+
+            await store.AbandonGenerationAsync(generationId, CancellationToken.None).ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            // Cleanup must not replace the primary cancellation/failure. A Building generation is
+            // invisible and is retried by reconciliation; a committed Complete generation is retained.
+            logger.LogWarning(ex, "Tapestry generation {GenerationId} abandonment failed; reconciliation will retry.", generationId);
 
         }
 
