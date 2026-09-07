@@ -315,10 +315,11 @@ internal static class DaemonEndpoints
                 UnseenServantJob? configured = configuredJobs.FirstOrDefault(
                     job => string.Equals(job.Name.Trim(), trimmedName, StringComparison.Ordinal));
 
-                if (configured is null)
+                if (configured is null
+                    || !await pacer.SetDynamicIntervalAsync(trimmedName, body.IntervalMinutes, cancellationToken).ConfigureAwait(false))
                 {
 
-                    // UnseenServantPacer.SetDynamicInterval is deliberately a no-op for an unconfigured name,
+                    // UnseenServantPacer.SetDynamicIntervalAsync is deliberately a no-op for an unconfigured name,
                     // so reporting 200 with a fabricated status would tell the operator a typo had landed.
                     Result<UnseenServantJobStatusDto> missing = Result<UnseenServantJobStatusDto>.Failure(
                         new Error(
@@ -332,8 +333,6 @@ internal static class DaemonEndpoints
                         statusCode: StatusCodes.Status404NotFound);
 
                 }
-
-                pacer.SetDynamicInterval(trimmedName, body.IntervalMinutes);
 
                 UnseenServantJobStatusDto dto = ToUnseenServantJobStatusDto(configured, pacer, tracker);
 

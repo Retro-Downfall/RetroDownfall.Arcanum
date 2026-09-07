@@ -20,8 +20,7 @@ public interface IUnseenServantJobTracker
     /// <summary>
     /// Seeds in-memory last-run state from persisted <see cref="UnseenServantWatermark"/> rows on
     /// scheduler startup. Overdue jobs (persisted <c>LastRunAt + EffectiveIntervalMinutes</c> already
-    /// in the past) are seeded with the current time instead of the stale value, so they wait one
-    /// full interval before firing rather than triggering a restart-storm.
+    /// in the past) retain the real timestamp, so they remain due on the first scheduler tick.
     /// </summary>
     Task HydrateAsync(IReadOnlyList<UnseenServantWatermark> watermarks, CancellationToken cancellationToken = default);
 

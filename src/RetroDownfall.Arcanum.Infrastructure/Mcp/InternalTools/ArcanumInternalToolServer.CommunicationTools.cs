@@ -65,12 +65,10 @@ internal sealed partial class ArcanumInternalToolServer
         }
     }
 
-    private Task<McpToolsCallResultWire> ExecuteAdjustInitiativeAsync(
+    private async Task<McpToolsCallResultWire> ExecuteAdjustInitiativeAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-        _ = cancellationToken;
-
         AdjustInitiativeArgs? args;
 
         try
@@ -81,39 +79,37 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "adjust_initiative argument deserialization failed.");
 
-            return Task.FromResult(ToolError("Invalid arguments for adjust_initiative."));
+            return ToolError("Invalid arguments for adjust_initiative.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.JobName))
         {
-            return Task.FromResult(ToolError("adjust_initiative requires a non-empty 'job_name'."));
+            return ToolError("adjust_initiative requires a non-empty 'job_name'.");
         }
 
         string jobName = args.JobName.Trim();
 
         int clamped = ArcanumSettingClamps.UnseenServantIntervalMinutes(args.IntervalMinutes);
 
-        if (!_pacer.SetDynamicInterval(jobName, args.IntervalMinutes))
+        if (!await _pacer.SetDynamicIntervalAsync(jobName, args.IntervalMinutes, cancellationToken).ConfigureAwait(false))
         {
-            return Task.FromResult(
-                ToolError(
-                    $"adjust_initiative: no Unseen Servant job named '{jobName}' is configured under Arcanum:Daemon:Jobs; "
-                    + "list the configured jobs on the daemon surface before retrying."));
+            return ToolError(
+                $"adjust_initiative: no Unseen Servant job named '{jobName}' is configured under Arcanum:Daemon:Jobs; "
+                + "list the configured jobs on the daemon surface before retrying.");
         }
 
         string text = clamped == args.IntervalMinutes
             ? $"Unseen Servant job '{jobName}' polling interval set to {clamped} minutes."
             : $"Unseen Servant job '{jobName}' polling interval set to {clamped} minutes (clamped to the allowed range from {args.IntervalMinutes}).";
 
-        return Task.FromResult(
-            new McpToolsCallResultWire
-            {
-                Content =
-                [
-                    new McpToolContentTextWire { Text = text },
-                ],
-                IsError = false,
-            });
+        return new McpToolsCallResultWire
+        {
+            Content =
+            [
+                new McpToolContentTextWire { Text = text },
+            ],
+            IsError = false,
+        };
     }
 
     private async Task<McpToolsCallResultWire> ExecuteSendCommlinkAlertAsync(

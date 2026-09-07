@@ -27,7 +27,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 [Collection("WorkspacePathPolicy")]
-public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
+public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 {
 
     private const string SentinelToken = "ARCANUM_TEST_SENTINEL";
@@ -4504,7 +4504,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         CodingToolsSettings? codingToolsSettings = null,
         IWorkspaceCheckRuntime? workspaceCheckRuntime = null,
         IGrimoireRepository? grimoireRepository = null,
-        ResourceLimits? resourceLimits = null)
+        ResourceLimits? resourceLimits = null,
+        IUnseenServantPacer? suppliedPacer = null)
     {
 
         string? normalizedRoot = configureWorkspace
@@ -4555,7 +4556,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         IHumanPromptRegistry humanPrompts = new HumanPromptRegistry();
 
-        IUnseenServantPacer pacer = new UnseenServantPacer(
+        IUnseenServantPacer pacer = suppliedPacer ?? new UnseenServantPacer(
             new FakeEventBus(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
             scopeFactory,

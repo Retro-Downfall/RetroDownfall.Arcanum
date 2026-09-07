@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
+public sealed partial class UnseenServantWatermarkStoreTests : IAsyncLifetime
 {
 
     private readonly GrimoireFixture _fixture;

@@ -26,7 +26,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// that is not in <c>Arcanum:Daemon:Jobs</c>, so the endpoint must not report success for one — a typo'd
 /// job name previously returned 200 with a fabricated status and the operator believed the change landed.
 /// </summary>
-public sealed class DaemonInitiativeEndpointTests
+public sealed partial class DaemonInitiativeEndpointTests
 {
 
     private const string ConfiguredJob = "saga-extraction";
@@ -123,7 +123,7 @@ public sealed class DaemonInitiativeEndpointTests
 
     }
 
-    private static async Task<(WebApplication App, RecordingPacer Pacer)> CreateHostAsync()
+    private static async Task<(WebApplication App, RecordingPacer Pacer)> CreateHostAsync(IUnseenServantPacer? suppliedPacer = null)
     {
 
         RecordingPacer pacer = new();
@@ -149,7 +149,7 @@ public sealed class DaemonInitiativeEndpointTests
 
         builder.WebHost.UseTestServer();
 
-        builder.Services.AddSingleton<IUnseenServantPacer>(pacer);
+        builder.Services.AddSingleton<IUnseenServantPacer>(suppliedPacer ?? pacer);
 
         builder.Services.AddSingleton<IUnseenServantJobTracker>(new InertTracker());
 
@@ -174,12 +174,14 @@ public sealed class DaemonInitiativeEndpointTests
 
         public List<(string JobName, int IntervalMinutes)> Applied { get; } = [];
 
-        public bool SetDynamicInterval(string jobName, int intervalMinutes)
+        public bool Accepted { get; set; } = true;
+
+        public Task<bool> SetDynamicIntervalAsync(string jobName, int intervalMinutes, CancellationToken cancellationToken = default)
         {
 
             Applied.Add((jobName, intervalMinutes));
 
-            return true;
+            return Task.FromResult(Accepted);
 
         }
 

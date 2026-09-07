@@ -162,7 +162,7 @@ public sealed class UnseenServantDaemonJobTests
     private sealed class FakeUnseenServantPacer : IUnseenServantPacer
     {
 
-        public bool SetDynamicInterval(string jobName, int intervalMinutes) => true;
+        public Task<bool> SetDynamicIntervalAsync(string jobName, int intervalMinutes, CancellationToken cancellationToken = default) => Task.FromResult(true);
 
         public int GetEffectiveInterval(UnseenServantJob job) => job.IntervalMinutes;
 

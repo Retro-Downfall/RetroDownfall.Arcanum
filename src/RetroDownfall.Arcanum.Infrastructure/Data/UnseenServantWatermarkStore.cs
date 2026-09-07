@@ -52,7 +52,17 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
         string jobKey,
         DateTimeOffset lastRunAt,
         int effectiveIntervalMinutes,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        SaveFieldsAsync(jobKey, lastRunAt, effectiveIntervalMinutes,
+            "\"LastRunAt\" = @lastRunAt, \"EffectiveIntervalMinutes\" = @interval", cancellationToken);
+
+    public Task SaveLastRunAsync(string jobKey, DateTimeOffset lastRunAt, int initialIntervalMinutes, CancellationToken cancellationToken = default) =>
+        SaveFieldsAsync(jobKey, lastRunAt, initialIntervalMinutes, "\"LastRunAt\" = @lastRunAt", cancellationToken);
+
+    public Task SaveIntervalAsync(string jobKey, DateTimeOffset initialLastRunAt, int effectiveIntervalMinutes, CancellationToken cancellationToken = default) =>
+        SaveFieldsAsync(jobKey, initialLastRunAt, effectiveIntervalMinutes, "\"EffectiveIntervalMinutes\" = @interval", cancellationToken);
+
+    private Task SaveFieldsAsync(string jobKey, DateTimeOffset lastRunAt, int effectiveIntervalMinutes, string updateClause, CancellationToken cancellationToken)
     {
 
         return SqliteBusyRetry.ExecuteAsync(
@@ -63,12 +73,10 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
                 await using DbCommand cmd = connection.CreateCommand();
 
                 cmd.CommandText =
-                    """
+                    $"""
                     INSERT INTO "UnseenServantWatermarks" ("JobKey", "LastRunAt", "EffectiveIntervalMinutes")
                     VALUES (@jobKey, @lastRunAt, @interval)
-                    ON CONFLICT("JobKey") DO UPDATE SET
-                        "LastRunAt" = @lastRunAt,
-                        "EffectiveIntervalMinutes" = @interval
+                    ON CONFLICT("JobKey") DO UPDATE SET {updateClause}
                     """;
 
                 AddParameter(cmd, "@jobKey", jobKey);
