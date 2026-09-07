@@ -251,3 +251,35 @@ the epoch/phase recheck, completed shard scan, `_sync`-to-shard promotion, exact
 atomic ambient liveness, full-fence signal publication, decrement-before-signal load, abort/reopen
 isolation, hybrid monitor-work boundary, deterministic proof quality, and exact H/allowlist scope.
 Work/effect sharding remains Task C2; the candidate is not yet final and has not been benchmarked.
+
+## Task C2 implementation handoff
+
+Task C2 implemented from clean start `68305e4157677194523c4950444347889e828510` as normal
+implementation commit `09da72dad77dc5b829f688f33ed6b8562621aa8d`. Scoped C2 review and final
+whole-candidate review are pending. This SHA is not yet an accepted benchmark candidate.
+
+Completed: work admission and exact intrusive membership on the reviewed fixed shards; captured
+epoch/shard scope and effect synchronization; unified full-shard close scan; pending revocation
+through abort/reclose; terminal unlink/decrement before outside-shard zero signaling and callbacks;
+and the complete request/work description in DESIGN. The physical-open path, cold maintenance
+state, CurrentGeneration, public contracts, producers, H, and all benchmark/build/native inputs
+remain unchanged. No C1 production assumption required correction.
+
+Strict TDD captured 3 structural, 20 hot-path/frontier, 6 epoch/callback/ambient, and 1 compiled
+signal-order RED failures before production changed. The coherent migration passed all 30 focused
+cases and the then-complete 256-case slice. Further passing characterization added mixed internal
+zero windows, real gate-object reachability after churn, 2,048 seeded model actions plus maintenance
+orders, and exact sibling/successor disposal. C2 adds 42 tests and strengthens the candidate-only C1
+compiled zero-order proof; every original B test stays byte-identical.
+
+Final qualification: fresh nonincremental solution and benchmark-host builds each had 0 warnings
+and errors; gate/interceptor/request-scope 269 passed; transition/coordinator/request/reset slice
+474 passed with 3 existing Windows skips; benchmark ordinary/packaging contracts 119 passed.
+Format, blank-line, staged/unstaged diff, immutable H, 1,641 catalog inputs, exact production
+allowlist, B-test identity, candidate-only inventory, and ancestry audits passed. The two final
+staged EOF blank-line corrections changed no executable statements. No acceptance pairs were run.
+
+Full evidence and self-review are in `task-C2-evidence.md` and `task-C2-report.md`, committed with
+this ledger separately from the implementation. Exact H remains
+`f51ac3f84c3b408510e448311d7a5e15bdbc041e`; reviewed B remains
+`b0be2b4df8855e56f2dcfcaf155dfacddc51b88a`.
