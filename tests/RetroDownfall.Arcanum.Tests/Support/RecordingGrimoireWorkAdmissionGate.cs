@@ -11,11 +11,49 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
     IGrimoireConnectionAdmissionGate inner) : IGrimoireConnectionAdmissionGate
 {
 
-    internal List<GrimoireWorkKind> RequestedWorkKinds { get; } = [];
+    private readonly object _observationsGate = new();
 
-    internal List<IGrimoireWorkLease> InnerWorkLeases { get; } = [];
+    private readonly List<GrimoireWorkKind> _requestedWorkKinds = [];
 
-    internal int EffectGroupAttempts { get; private set; }
+    private readonly List<IGrimoireWorkLease> _innerWorkLeases = [];
+
+    private int _effectGroupAttempts;
+
+    internal IReadOnlyList<GrimoireWorkKind> RequestedWorkKinds
+    {
+
+        get
+        {
+
+            lock (_observationsGate)
+            {
+
+                return _requestedWorkKinds.ToArray();
+
+            }
+
+        }
+
+    }
+
+    internal IReadOnlyList<IGrimoireWorkLease> InnerWorkLeases
+    {
+
+        get
+        {
+
+            lock (_observationsGate)
+            {
+
+                return _innerWorkLeases.ToArray();
+
+            }
+
+        }
+
+    }
+
+    internal int EffectGroupAttempts => Volatile.Read(ref _effectGroupAttempts);
 
     internal Func<ValueTask> BeforeWorkLeaseDisposalAsync { get; set; } =
         static () => ValueTask.CompletedTask;
@@ -35,7 +73,12 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         out IGrimoireWorkLease? lease)
     {
 
-        RequestedWorkKinds.Add(kind);
+        lock (_observationsGate)
+        {
+
+            _requestedWorkKinds.Add(kind);
+
+        }
 
         if (!inner.TryAcquireWorkLease(kind, out IGrimoireWorkLease? admitted))
         {
@@ -46,7 +89,12 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
         }
 
-        InnerWorkLeases.Add(admitted!);
+        lock (_observationsGate)
+        {
+
+            _innerWorkLeases.Add(admitted!);
+
+        }
 
         lease = new RecordingWorkLease(this, admitted!);
 
@@ -113,7 +161,7 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             out IGrimoireExternalEffectGroup? effectGroup)
         {
 
-            gate.EffectGroupAttempts++;
+            Interlocked.Increment(ref gate._effectGroupAttempts);
 
             if (!inner.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admitted))
             {
