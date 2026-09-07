@@ -176,6 +176,99 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
     }
 
     [Fact]
+    public async Task Unpromoted_old_request_cannot_be_promoted_out_of_the_next_generation_census()
+    {
+
+        ManualTimeProvider clock = new();
+
+        GrimoireConnectionAdmissionGate gate = CreateGate(clock);
+
+        Assert.True(gate.TryAcquireRequestLease(GrimoireRequestKind.Finite, out IGrimoireRequestLease? acquired));
+
+        await using IGrimoireRequestLease old = acquired!;
+
+        Assert.Equal(1, old.Generation);
+
+        await using IGrimoireClosingOwner first = Begin(gate, Owner(82));
+
+        await TimeoutAndAbort(gate, clock, first);
+
+        using SqliteConnection exact = new();
+
+        using SqliteConnection foreign = new();
+
+        Task<long> nextOpen = gate.WaitForNextOpenGenerationAsync(2, CancellationToken.None);
+
+        Result<IGrimoireClosingOwner> stalePromotion = gate.BeginOrResumeExclusive(Owner(83), old, exact);
+
+        Assert.True(stalePromotion.IsFailure);
+
+        Assert.Equal("Grimoire.AdmissionLifecycleConflict", stalePromotion.Error.Code);
+
+        Assert.Equal(2, gate.CurrentGeneration);
+
+        Assert.False(nextOpen.IsCompleted);
+
+        Assert.True(gate.TryAcquireRequestLease(GrimoireRequestKind.Finite, out IGrimoireRequestLease? currentRequest));
+
+        await using IGrimoireRequestLease current = currentRequest!;
+
+        Assert.Equal(2, current.Generation);
+
+        await using IAsyncDisposable ordinaryWork = AcquireLifetime(gate, work: true);
+
+        using (IGrimoireConnectionOpenTicket ordinaryOpen = gate.AcquireOrdinaryOpen(exact))
+        {
+
+            Assert.Equal(2, ordinaryOpen.Generation);
+
+            ordinaryOpen.MarkFailed();
+
+        }
+
+        await ordinaryWork.DisposeAsync();
+
+        await current.DisposeAsync();
+
+        await using IGrimoireClosingOwner second = Begin(gate, Owner(84));
+
+        Assert.Equal(2, second.Generation);
+
+        Assert.Throws<GrimoireMaintenanceUnavailableException>(() => gate.AcquireOrdinaryOpen(exact));
+
+        Assert.Throws<GrimoireMaintenanceUnavailableException>(() => gate.AcquireOrdinaryOpen(foreign));
+
+        Task<Result> drain = gate.DrainRequestAndWorkAsync(second, CancellationToken.None).AsTask();
+
+        Assert.False(drain.IsCompleted);
+
+        Result<IGrimoireExclusiveClosedLease> prematureClose = await gate.CloseConnectionAdmissionAsync(second, CancellationToken.None);
+
+        Assert.True(prematureClose.IsFailure);
+
+        Assert.Equal("Grimoire.AdmissionLifecycleConflict", prematureClose.Error.Code);
+
+        await old.DisposeAsync();
+
+        Assert.True((await drain.WaitAsync(BoundedWait)).IsSuccess);
+
+        Result<IGrimoireExclusiveClosedLease> closed = await gate.CloseConnectionAdmissionAsync(second, CancellationToken.None);
+
+        Assert.True(closed.IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+        Assert.Equal(3, lease.Generation);
+
+        Assert.False(nextOpen.IsCompleted);
+
+        Assert.True((await lease.CompleteAsync(CovenantExclusiveLeaseDisposition.CommitAndReopen, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(3, await nextOpen.WaitAsync(BoundedWait));
+
+    }
+
+    [Fact]
     public async Task Revoked_old_work_remains_in_the_next_close_census_after_proven_abort()
     {
 

@@ -406,6 +406,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                     if (initiatingRequest is not RequestLease request
                         || !ReferenceEquals(request.Gate, this)
+                        || request.Generation != _generation
                         || request.IsReleased
                         || request.IsPromoted
                         || !_requestLeases.Contains(request))
