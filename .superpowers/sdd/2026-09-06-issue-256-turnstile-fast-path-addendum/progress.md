@@ -256,7 +256,8 @@ Work/effect sharding remains Task C2; the candidate is not yet final and has not
 
 Task C2 implemented from clean start `68305e4157677194523c4950444347889e828510` as normal
 implementation commit `09da72dad77dc5b829f688f33ed6b8562621aa8d`. Scoped C2 review and final
-whole-candidate review are pending. This SHA is not yet an accepted benchmark candidate.
+whole-candidate review status: scoped C2 review is clean; final whole-candidate review is pending.
+This SHA is not yet an accepted benchmark candidate.
 
 Completed: work admission and exact intrusive membership on the reviewed fixed shards; captured
 epoch/shard scope and effect synchronization; unified full-shard close scan; pending revocation
@@ -283,3 +284,9 @@ Full evidence and self-review are in `task-C2-evidence.md` and `task-C2-report.m
 this ledger separately from the implementation. Exact H remains
 `f51ac3f84c3b408510e448311d7a5e15bdbc041e`; reviewed B remains
 `b0be2b4df8855e56f2dcfcaf155dfacddc51b88a`.
+
+Task C2 scoped review: complete with no Critical, Important, or Minor findings. Independent review
+verified exact work epoch/shard admission, full close scan, scope/effect terminal conjunction,
+successor-group identity, deferred cancellation through abort/reclose, terminal/signal/callback
+ordering outside locks, mixed closure isolation, deterministic model/reclamation proof quality, and
+the cold-state/H boundary. Whole-candidate review and measurement remain mandatory.
