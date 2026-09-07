@@ -14,7 +14,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
-public sealed class GrimoireConnectionAdmissionGateTests
+public sealed partial class GrimoireConnectionAdmissionGateTests
 {
 
     private static readonly TimeSpan OpeningTimeout = TimeSpan.FromSeconds(1);

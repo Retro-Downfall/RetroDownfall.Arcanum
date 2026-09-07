@@ -262,7 +262,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 this,
                 kind,
                 _generation,
-                CurrentOrdinaryLifetime.Value);
+                SkipReleasedLifetimes(CurrentOrdinaryLifetime.Value));
 
             _requestLeases.Add(admitted);
 
@@ -325,7 +325,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 this,
                 kind,
                 _generation,
-                CurrentOrdinaryLifetime.Value);
+                SkipReleasedLifetimes(CurrentOrdinaryLifetime.Value));
 
             _workLeases.Add(admitted);
 
@@ -449,10 +449,21 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                             request.Kind == GrimoireRequestKind.QuiesceableStream)
                         .Select(static request => request.Revocation));
 
-                revocations.AddRange(
-                    _workLeases
-                        .Where(static work => work.ActiveEffectGroup is null)
-                        .Select(static work => work.Revocation));
+                foreach (WorkLease work in _workLeases)
+                {
+
+                    // An effect winner finishes its durable group before cancellation. The
+                    // obligation belongs to the lease and survives a proven stage-one abort.
+                    work.RevocationPending = true;
+
+                    if (work.ActiveEffectGroup is null)
+                    {
+
+                        revocations.Add(work.Revocation);
+
+                    }
+
+                }
 
             }
             else if (_closure is null || _closure.Owner != owner)
@@ -863,15 +874,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
+            openGeneration = checked(_generation + 1);
+
             token.Closure.ActiveClosingOwner = null;
 
             _state = GateState.Ordinary;
 
             _closure = null;
 
-            _generation = checked(_generation + 1);
-
-            openGeneration = _generation;
+            _generation = openGeneration;
 
             opened = _nextOpenGeneration;
 
@@ -1046,6 +1057,20 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         }
 
         return false;
+
+    }
+
+    private static OrdinaryLifetime? SkipReleasedLifetimes(OrdinaryLifetime? lifetime)
+    {
+
+        while (lifetime is { IsReleased: true })
+        {
+
+            lifetime = lifetime.Previous;
+
+        }
+
+        return lifetime;
 
     }
 
@@ -1284,6 +1309,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private void ReleaseExternalEffectGroup(ExternalEffectGroup effectGroup)
     {
 
+        CancellationTokenSource? revocation = null;
+
         lock (_sync)
         {
 
@@ -1294,9 +1321,35 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                 lease.ActiveEffectGroup = null;
 
+                if (lease.RevocationPending)
+                {
+
+                    revocation = lease.Revocation;
+
+                }
+
             }
 
             CompleteWorkLeaseIfDrainedWhileLocked(lease);
+
+        }
+
+        if (revocation is not null)
+        {
+
+            try
+            {
+
+                revocation.Cancel();
+
+            }
+            catch (AggregateException)
+            {
+
+                // Durable disposition has completed. A consumer callback cannot undo it or
+                // prevent the work lifetime from draining.
+
+            }
 
         }
 
@@ -2300,7 +2353,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 if (ReferenceEquals(CurrentOrdinaryLifetime.Value, Lifetime))
                 {
 
-                    CurrentOrdinaryLifetime.Value = Lifetime.Previous;
+                    CurrentOrdinaryLifetime.Value = SkipReleasedLifetimes(Lifetime.Previous);
 
                 }
 
@@ -2353,6 +2406,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal bool ScopeDisposed { get; set; }
 
+        internal bool RevocationPending { get; set; }
+
         internal ExternalEffectGroup? ActiveEffectGroup { get; set; }
 
         internal Task Terminal => _terminal.Task;
@@ -2378,7 +2433,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 if (ReferenceEquals(CurrentOrdinaryLifetime.Value, Lifetime))
                 {
 
-                    CurrentOrdinaryLifetime.Value = Lifetime.Previous;
+                    CurrentOrdinaryLifetime.Value = SkipReleasedLifetimes(Lifetime.Previous);
 
                 }
 
