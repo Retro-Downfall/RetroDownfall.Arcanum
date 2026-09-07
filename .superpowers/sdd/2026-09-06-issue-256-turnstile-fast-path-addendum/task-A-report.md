@@ -2,18 +2,20 @@
 
 ## Status
 
-DONE — CORRECTED PROPOSED H READY FOR INDEPENDENT REVIEW
+DONE — INDEPENDENT-REVIEW FIX ROUND 1 COMPLETE
 
-The corrected benchmark instrument is committed at
-`092869fdc4f746850115ab0a17bfc08dce490751`. This is proposed H, not yet the
-independently accepted immutable H. A fresh calibration-only run from that exact clean commit
-completed successfully and replaced the invalid calibration described below. It is instrument
-calibration only; it is not baseline/candidate evidence and makes no performance acceptance claim.
+The review-fixed benchmark instrument is committed at
+`0eee1f46e9f8ea3fa710cf531291c30472ef21e2`. This new normal commit supersedes
+`092869fdc4f746850115ab0a17bfc08dce490751` as proposed H and is not yet the independently accepted
+immutable H. A fresh calibration-only run from the exact clean new commit completed successfully.
+It is instrument calibration only; it is not baseline/candidate evidence and makes no performance
+acceptance claim.
 
-The implementation at `659a3441d90aa25d5050cf8dd561ed3d88816edc` is not H. Its calibration is
-invalid and superseded and must never be used as baseline, candidate, qualification, acceptance, or
-later calibration evidence. The earlier `6acacc3c9fa36e538380fbb357d49c15b8576505` remains
-superseded as well. No commit was amended.
+The implementations at `092869fdc4f746850115ab0a17bfc08dce490751` and
+`659a3441d90aa25d5050cf8dd561ed3d88816edc` are not H. Their calibrations are invalid and superseded
+and must never be used as baseline, candidate, qualification, acceptance, or later calibration
+evidence. The earlier `6acacc3c9fa36e538380fbb357d49c15b8576505` remains superseded as well. No
+commit was amended.
 
 Independent whole review found an architecture-breaking measurement defect: the controller and
 early-completing workers busy-spin during the measured process interval, while the ordered probe
@@ -173,7 +175,125 @@ The remediation used focused compile-clean RED before each implementation cluste
    still passed exact counts. The new `wrong-worker-count` fixture failed with valid evidence, then
    GREEN bound every cell to its manifest concurrency or the recorded logical processor count.
 
-## Corrected verification evidence
+## Independent-review fix round 1 TDD record
+
+The seven Important review findings were closed one cluster at a time with a focused behavioral RED
+before the corresponding implementation change:
+
+1. Required JSON metrics: the reviewer-proven omitted-property acceptance was preserved as RED.
+   `[JsonRequired]` now closes every cell metric and the final-state and historical-churn metric
+   records. The 9 cell, 7 final-state, and 5 churn omission cases are GREEN and fail during JSON
+   parsing rather than defaulting to zero.
+2. EF allocation: `ef.pooled@two` with a doubled exact allocation numerator was accepted at RED and
+   rejected at GREEN. The 5% rational allocation gate now applies to every EF concurrency cell.
+3. Derived arithmetic: six finite `double.MaxValue` mixed ratios overflowed the old mean at RED.
+   Incremental overflow-safe means and explicit finite aggregate validation are GREEN.
+4. Native-host closure: a published host initially accepted source-root drift. It now enumerates C#
+   roots, schema SQL, fixed project/build/lock/native inputs, and the optional epoch independently of
+   the checked catalog, then matches the exact embedded SQL resource set. The published positive,
+   extra-C#, extra-SQL, and missing-SQL cases are GREEN.
+5. Teardown: deterministic delegate/TCS fixtures proved the earlier drain-first short circuit and
+   incomplete worker cleanup. The independent 10-second cleanup deadline now always attempts
+   pre-drain, provider disposal, final drain, and pool clearing; worker teardown attempts every
+   wake, bounded join, and handle disposal; incomplete lifecycle retains the home; cancellation
+   remains exit 130. Final state is sampled only after measured connections are disposed.
+6. Host invariants: the inherited focused baseline was 94 passed and 6 RED cases for wrong/missing
+   churn, wrong final live/reopen state, and terminal waiters. The shared validator now enforces the
+   exact 36-cell set, phase totals, workers, successes, checksums, allocation fractions, zero
+   failures/callbacks, exact final-live/drain/reopen state, and exact finite 0/64/640 churn. The
+   complete comparison slice is GREEN 36/36, and the actual Native AOT smoke invokes the validator.
+7. Qualification refusal paths: the former empty-success Git/cmp fakes were replaced by a complete
+   controlled 1,641-path revision snapshot and the system `cmp`. The positive case, exit-130 case,
+   H ancestry refusal, extra-C# refusal, extra-SQL refusal, H/B byte refusal, H/C byte refusal, and
+   caller-byte refusal are all GREEN after being driven RED individually.
+
+The two Minor review items were deliberately not changed in this round and are recorded for final
+triage in `progress.md`: a non-degenerate literal bootstrap golden fixture, and a stronger real
+worker-one completion transition before the asymmetric test releases worker zero.
+
+## Final review-fix verification evidence
+
+Review-fixed proposed-H implementation:
+
+```text
+0eee1f46e9f8ea3fa710cf531291c30472ef21e2
+test(grimoire): close admission benchmark review gaps
+```
+
+Focused and aggregate checks on the exact implementation bytes:
+
+```text
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+  --no-restore -m:1 \
+  --filter 'FullyQualifiedName~GrimoireAdmission|FullyQualifiedName~ContinuousIntegrationWorkflowTests|FullyQualifiedName~InternalsVisibleToInventoryTests'
+Passed: 165, Failed: 0, Skipped: 0
+
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+  --no-restore -m:1 \
+  --filter FullyQualifiedName~GrimoireAdmissionBenchmarkPackagingTests
+Passed: 19, Failed: 0, Skipped: 0
+
+dotnet restore \
+  tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj \
+  --locked-mode -r osx-arm64
+Succeeded; all projects were up to date and no production lockfile was created.
+
+dotnet build \
+  tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj \
+  -c Debug --no-restore --no-incremental -m:1
+Build succeeded, 0 warnings, 0 errors.
+
+dotnet format tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+  --verify-no-changes --no-restore --include <six Task A test files>
+Succeeded.
+
+dotnet format \
+  tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj \
+  --verify-no-changes --no-restore
+Succeeded.
+
+sh -n scripts/benchmark-grimoire-admission.sh
+git diff --check
+forbidden production/Covenant/workflow-file audit
+forbidden host-pattern and lockfile-boundary audits
+Succeeded.
+
+./scripts/benchmark-grimoire-admission.sh --smoke
+exit 0
+Grimoire admission Native AOT smoke passed (36 cells).
+```
+
+The Native AOT publish emitted only third-party EF/DependencyModel analysis and local linker
+environment warnings. No first-party warning was emitted, and the published host completed all 36
+cells with its exact invariant validator.
+
+Fresh calibration-only run from the exact clean new proposed H:
+
+```text
+./scripts/benchmark-grimoire-admission.sh \
+  --calibrate \
+  --revision 0eee1f46e9f8ea3fa710cf531291c30472ef21e2 \
+  --out /private/tmp/grimoire-admission-calibration-0eee1f46e9f8.json
+exit 0
+
+shasum -a 256 /private/tmp/grimoire-admission-calibration-0eee1f46e9f8.json
+5d0f4c484661721970048e71443530ebb4b1aaa073a68a95d4574d8ff714d62d
+```
+
+The artifact is 405,999 bytes. A closed `jq -e` validation confirmed the exact revision, clean
+tree, calibration session, role H, qualification profile, exit 0, 36 unique operation/concurrency
+cells, exact 20,000 warmup + 64,000 latency + 1,000,000 throughput operations per cell, exact
+manifest/environment workers, 1,084,000 successes and zero failures per cell, independently
+derived deterministic checksums, exact allocation fractions, finite ordered metrics, zero terminal
+callbacks, zero live resources and waiters, successful drain/reopen, finite successful 0/64/640
+churn observations, dynamic code disabled, the pinned catalog-shape digest, and the exact sorted
+1,641-entry catalog path/presence/digest map. The artifact remains outside the repository and is
+calibration-only, not B/C qualification or acceptance evidence.
+
+## Superseded pre-fix verification evidence
+
+The evidence below belongs to `092869fdc4f746850115ab0a17bfc08dce490751`, which independent
+review rejected. It is retained only as history and is not valid H evidence.
 
 Corrected docs and architecture-breaker ruling:
 
@@ -357,8 +477,9 @@ This calibration file is diagnostic only and intentionally remains outside the r
 
 ## Concerns
 
-No implementation blocker remains. `092869fdc4f746850115ab0a17bfc08dce490751` is deliberately
-called proposed H until independent review accepts it as the immutable instrument. The correction
-required no production gate behavior, epoch candidate, Covenant benchmark asset, or wider two-file
-candidate allowlist. Calibration is valid only as an instrument sanity check; no B/C performance
-claim exists yet.
+No implementation blocker remains. `0eee1f46e9f8ea3fa710cf531291c30472ef21e2` is deliberately
+called proposed H until independent review accepts it as the immutable instrument. The review fix
+required no production gate behavior, epoch candidate, Covenant benchmark asset, workflow edit, or
+wider two-file candidate allowlist. Calibration is valid only as an instrument sanity check; no B/C
+performance claim exists yet. The Native AOT publish continues to emit known third-party
+EF/DependencyModel and local linker-environment warnings; the first-party host build is warning-free.

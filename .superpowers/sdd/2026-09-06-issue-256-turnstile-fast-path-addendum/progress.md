@@ -70,3 +70,34 @@ Ruling: remediation requires a new normal proposed-H commit, new Native AOT smok
 Task A remediation: complete. Docs invalidation/correction commit `ea2aabe5`; corrected proposed-H implementation commit `092869fdc4f746850115ab0a17bfc08dce490751`; Task A aggregate 124/124; packaging 12/12; locked restore clean; no production-project lockfiles; clean host build 0 warnings/errors; both format checks, shell syntax, and diff check clean; real published Native AOT smoke exit 0 with 36 cells.
 
 Task A calibration: exact clean proposed H `092869fdc4f746850115ab0a17bfc08dce490751`; calibration-only exit 0; artifact `/private/tmp/grimoire-admission-calibration-092869fdc4f7.json`; 405,969 bytes; SHA-256 `81fbea3ba095b03389dbef67f7e8422ae767c398789c52371631aa92825bcbe5`. Closed validation passed exact revision/profile/36-cell accounting/checksum/worker/allocation/final-state/churn/runtime and all 1,641 sorted catalog inputs. This is not B/C qualification or acceptance evidence; proposed H remains subject to independent review.
+
+## Task A independent-review fix round 1
+
+Ruling: `092869fdc4f746850115ab0a17bfc08dce490751` and its calibration are superseded
+and are not H evidence. The new normal implementation commit
+`0eee1f46e9f8ea3fa710cf531291c30472ef21e2` closes all seven Important review findings:
+required JSON metric presence; every-EF-cell allocation bounds; overflow-safe finite aggregates;
+host-independent C#/SQL/fixed/optional closure and embedded-resource equality; bounded teardown with
+positive deletion witnesses; actual smoke/calibration exact-accounting/final-state enforcement; and
+controlled qualification ancestry/catalog/H-caller-B-C byte refusal paths.
+
+Task A review-fix verification: aggregate Task A slice 165/165; standalone packaging 19/19; locked
+osx-arm64 restore clean; nonincremental host build 0 warnings/errors; both format verifiers, shell
+syntax, diff check, lockfile boundary, forbidden pattern, forbidden production/Covenant/workflow
+audits clean; real published Native AOT smoke exit 0 with all 36 cells. No production gate/epoch,
+Covenant benchmark, workflow, spec, or plan bytes changed.
+
+Task A review-fix calibration: exact clean proposed H
+`0eee1f46e9f8ea3fa710cf531291c30472ef21e2`; calibration-only exit 0; artifact
+`/private/tmp/grimoire-admission-calibration-0eee1f46e9f8.json`; 405,999 bytes; SHA-256
+`5d0f4c484661721970048e71443530ebb4b1aaa073a68a95d4574d8ff714d62d`. Closed validation passed
+the exact revision/session/profile, 36-cell phase totals/checksums/workers/allocation/callbacks,
+zero-live final state, drain/reopen, finite 0/64/640 churn, Native AOT runtime, and exact sorted
+1,641-entry catalog path/presence/digest map. This is not B/C qualification or acceptance evidence;
+proposed H remains subject to independent review.
+
+Deferred Minor review findings for final triage (not changed in fix round 1):
+
+- Add a non-degenerate literal golden bootstrap fixture with unequal pair ratios.
+- Strengthen the asymmetric completion-order test so worker one's real completion transition is
+  established before worker zero is released.
