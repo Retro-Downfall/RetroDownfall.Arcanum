@@ -51,7 +51,7 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
             drain,
             new Paths(Path.Combine(Path.GetTempPath(), "arcanum-admission-smoke.db")));
 
-        DirectState state = new(gate, 2);
+        using DirectState state = new(gate, 2);
 
         long callbackBaseline = gate.MaterializedTerminalCallbacks;
 
@@ -66,9 +66,9 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
                     state.Execute),
                 CancellationToken.None);
 
-            Assert.Equal(56, result.OperationCount);
+            Assert.Equal(28, result.OperationCount);
 
-            Assert.Equal(56, result.SuccessCount);
+            Assert.Equal(28, result.SuccessCount);
 
             Assert.Equal(0, result.FailureCount);
 
@@ -274,7 +274,7 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
 
     private sealed class DirectState(
         GrimoireConnectionAdmissionGate gate,
-        int workerCount)
+        int workerCount) : IDisposable
     {
 
         private readonly SqliteConnection[] _connections = Enumerable.Range(0, workerCount)
@@ -296,6 +296,18 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
         internal long LiveEffects => Interlocked.Read(ref _liveEffects);
 
         internal long LiveOpens => Interlocked.Read(ref _liveOpens);
+
+        public void Dispose()
+        {
+
+            foreach (SqliteConnection connection in _connections)
+            {
+
+                connection.Dispose();
+
+            }
+
+        }
 
         internal bool Execute(
             int worker,

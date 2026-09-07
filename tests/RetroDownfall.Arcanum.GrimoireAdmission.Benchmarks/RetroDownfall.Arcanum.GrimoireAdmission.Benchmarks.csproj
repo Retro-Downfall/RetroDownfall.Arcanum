@@ -37,6 +37,8 @@
 
     <EmbeddedResource Include="grimoire-admission-workload-v1.json" />
 
+    <EmbeddedResource Include="grimoire-admission-input-catalog-v1.txt" />
+
   </ItemGroup>
 
   <ItemGroup>

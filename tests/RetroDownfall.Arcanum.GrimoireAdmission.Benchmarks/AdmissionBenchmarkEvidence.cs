@@ -1,3 +1,9 @@
+using System.Buffers.Binary;
+
+using System.Security.Cryptography;
+
+using System.Text;
+
 using System.Text.Json;
 
 using System.Text.Json.Serialization.Metadata;
@@ -80,17 +86,17 @@ internal static class AdmissionBenchmarkEvidence
 
             ValidateRun(reference, pair.Candidate, manifest, errors);
 
-            CompareSources(pair.Baseline.Inputs.CompiledSources, pair.Candidate.Inputs.CompiledSources, manifest, errors);
+            CompareSources(pair.Baseline.Inputs.Inputs, pair.Candidate.Inputs.Inputs, manifest, errors);
 
             CompareSameRoleSources(
-                reference.Inputs.CompiledSources,
-                pair.Baseline.Inputs.CompiledSources,
+                reference.Inputs.Inputs,
+                pair.Baseline.Inputs.Inputs,
                 "baseline-source",
                 errors);
 
             CompareSameRoleSources(
-                candidateReference.Inputs.CompiledSources,
-                pair.Candidate.Inputs.CompiledSources,
+                candidateReference.Inputs.Inputs,
+                pair.Candidate.Inputs.Inputs,
                 "candidate-source",
                 errors);
 
@@ -201,7 +207,23 @@ internal static class AdmissionBenchmarkEvidence
 
         }
 
-        ValidateSourceMap(run.Inputs.CompiledSources, manifest, errors);
+        if (string.IsNullOrWhiteSpace(run.Environment.RuntimeIdentifier)
+            || string.IsNullOrWhiteSpace(run.Environment.ProcessArchitecture)
+            || string.IsNullOrWhiteSpace(run.Environment.OsArchitecture)
+            || string.IsNullOrWhiteSpace(run.Environment.OsVersion)
+            || string.IsNullOrWhiteSpace(run.Environment.RuntimeVersion)
+            || string.IsNullOrWhiteSpace(run.Environment.SdkVersion)
+            || string.IsNullOrWhiteSpace(run.Environment.CpuIdentity)
+            || run.Environment.LogicalProcessorCount <= 0
+            || run.Environment.StopwatchFrequency <= 0
+            || run.Environment.DynamicCodeSupported)
+        {
+
+            errors.Add("environment-shape: runtime or machine identity is incomplete or unsupported.");
+
+        }
+
+        ValidateInputMap(run.Inputs, manifest, errors);
 
         foreach (AdmissionBenchmarkCellResult cell in run.Cells)
         {
@@ -231,6 +253,20 @@ internal static class AdmissionBenchmarkEvidence
         AdmissionBenchmarkInputIdentity actual,
         ICollection<string> errors)
     {
+
+        if (actual.CatalogShapeDigest != expected.CatalogShapeDigest)
+        {
+
+            errors.Add("catalog-shape: input catalog shape changed.");
+
+        }
+
+        if (actual.ImmutableContentDigest != expected.ImmutableContentDigest)
+        {
+
+            errors.Add("immutable-content: immutable benchmark or product input changed.");
+
+        }
 
         if (actual.HarnessDigest != expected.HarnessDigest)
         {
@@ -277,14 +313,18 @@ internal static class AdmissionBenchmarkEvidence
 
     }
 
-    private static void ValidateSourceMap(
-        AdmissionBenchmarkDigestEntry[] sources,
+    private static void ValidateInputMap(
+        AdmissionBenchmarkInputIdentity identity,
         AdmissionBenchmarkManifest manifest,
         ICollection<string> errors)
     {
 
+        AdmissionBenchmarkDigestEntry[] sources = identity.Inputs;
+
         if (sources is null
-            || sources.Select(static source => source.Path).Distinct(StringComparer.Ordinal).Count() != sources.Length)
+            || sources.Length == 0
+            || sources.Select(static source => source.Path).Distinct(StringComparer.Ordinal).Count() != sources.Length
+            || !sources.SequenceEqual(sources.OrderBy(static source => source.Path, StringComparer.Ordinal)))
         {
 
             errors.Add("duplicate-source: compiled-source map contains duplicate paths.");
@@ -297,13 +337,36 @@ internal static class AdmissionBenchmarkEvidence
         {
 
             if (string.IsNullOrWhiteSpace(source.Path)
-                || source.Present && string.IsNullOrWhiteSpace(source.Digest)
-                || !source.Present && source.Digest.Length != 0)
+                || Path.IsPathFullyQualified(source.Path)
+                || source.Path.Contains('\\')
+                || source.Path.Split('/').Any(static segment => segment is "" or "." or "..")
+                || source.Present && !IsDigest(source.Digest)
+                || !source.Present && source.Digest.Length != 0
+                || !source.Present && source.Path != manifest.SourceDifferenceAllowlist[1])
             {
 
                 errors.Add("source-map: compiled-source presence and digest disagree.");
 
             }
+
+        }
+
+        string shapeDigest = ShapeDigest(sources, manifest.SourceDifferenceAllowlist[1]);
+
+        if (!IsDigest(identity.CatalogShapeDigest)
+            || identity.CatalogShapeDigest != manifest.InputCatalogShapeDigest
+            || shapeDigest != identity.CatalogShapeDigest
+            || !IsDigest(identity.ImmutableContentDigest)
+            || !IsDigest(identity.ManifestDigest)
+            || !IsDigest(identity.HarnessDigest)
+            || !IsDigest(identity.ProjectDigest)
+            || !IsDigest(identity.LockfileDigest)
+            || !IsDigest(identity.ToolchainDigest)
+            || !IsDigest(identity.NativeManifestDigest)
+            || !IsDigest(identity.NativeBinaryDigest))
+        {
+
+            errors.Add("input-digest: input identity contains a malformed or mismatched digest.");
 
         }
 
@@ -429,5 +492,37 @@ internal static class AdmissionBenchmarkEvidence
     private static bool IsCommit(string value) =>
         value is { Length: 40 }
         && value.All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static bool IsDigest(string value) =>
+        value is { Length: 64 }
+        && value.All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static string ShapeDigest(
+        IEnumerable<AdmissionBenchmarkDigestEntry> entries,
+        string optionalPath)
+    {
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        Span<byte> length = stackalloc byte[sizeof(int)];
+
+        foreach (AdmissionBenchmarkDigestEntry entry in entries)
+        {
+
+            byte[] path = Encoding.UTF8.GetBytes(entry.Path);
+
+            BinaryPrimitives.WriteInt32LittleEndian(length, path.Length);
+
+            hash.AppendData(length);
+
+            hash.AppendData(path);
+
+            hash.AppendData([entry.Path == optionalPath ? (byte)1 : (byte)0]);
+
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+
+    }
 
 }

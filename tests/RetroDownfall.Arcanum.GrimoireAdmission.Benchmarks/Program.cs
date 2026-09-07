@@ -1,6 +1,10 @@
+using System.Buffers.Binary;
+
 using System.Runtime;
 
 using System.Runtime.CompilerServices;
+
+using System.Runtime.InteropServices;
 
 using System.Security.Cryptography;
 
@@ -18,6 +22,15 @@ internal static class Program
     internal static async Task<int> Main(string[] args)
     {
 
+        if (RuntimeFeature.IsDynamicCodeSupported)
+        {
+
+            Console.Error.WriteLine("The Grimoire admission benchmark must run as published Native AOT.");
+
+            return InvalidEvidence;
+
+        }
+
         if (global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME") is not null)
         {
 
@@ -33,6 +46,30 @@ internal static class Program
 
         int exitCode;
 
+        using CancellationTokenSource processCancellation = new();
+
+        ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+        {
+
+            eventArgs.Cancel = true;
+
+            processCancellation.Cancel();
+
+        };
+
+        Console.CancelKeyPress += cancelHandler;
+
+        using PosixSignalRegistration termination = PosixSignalRegistration.Create(
+            PosixSignal.SIGTERM,
+            context =>
+            {
+
+                context.Cancel = true;
+
+                processCancellation.Cancel();
+
+            });
+
         try
         {
 
@@ -42,26 +79,29 @@ internal static class Program
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", home.ChildPath);
 
-            if (RuntimeFeature.IsDynamicCodeSupported)
-            {
-
-                Console.Error.WriteLine("The Grimoire admission benchmark must run as published Native AOT.");
-
-                return InvalidEvidence;
-
-            }
-
             AdmissionBenchmarkManifest manifest = AdmissionBenchmarkManifestLoader.Load();
 
             RunSchemaSelfTest(manifest, home);
 
-            exitCode = await ExecuteModeAsync(args, manifest, sessionId).ConfigureAwait(false);
+            exitCode = await ExecuteModeAsync(
+                args,
+                manifest,
+                sessionId,
+                processCancellation.Token).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (processCancellation.IsCancellationRequested)
+        {
+
+            exitCode = 130;
 
         }
         catch (OperationCanceledException)
         {
 
-            exitCode = 130;
+            Console.Error.WriteLine("The benchmark watchdog expired or a participant failed to reach a bounded terminal state.");
+
+            exitCode = InvalidEvidence;
 
         }
         catch (Exception exception)
@@ -74,6 +114,8 @@ internal static class Program
         }
         finally
         {
+
+            Console.CancelKeyPress -= cancelHandler;
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", null);
 
@@ -97,7 +139,8 @@ internal static class Program
     private static async Task<int> ExecuteModeAsync(
         string[] args,
         AdmissionBenchmarkManifest manifest,
-        string sessionId)
+        string sessionId,
+        CancellationToken processCancellation)
     {
 
         if (args.Length == 1 && args[0] == "--smoke")
@@ -111,7 +154,8 @@ internal static class Program
                 0,
                 0,
                 "H",
-                Directory.GetCurrentDirectory()).ConfigureAwait(false);
+                Directory.GetCurrentDirectory(),
+                processCancellation).ConfigureAwait(false);
 
             Console.WriteLine($"Grimoire admission Native AOT smoke passed ({run.Cells.Length} cells).");
 
@@ -151,7 +195,8 @@ internal static class Program
                 pair,
                 order,
                 role,
-                sourceRoot).ConfigureAwait(false);
+                sourceRoot,
+                processCancellation).ConfigureAwait(false);
 
             WriteAtomic(
                 output,
@@ -330,7 +375,8 @@ internal static class Program
         int pairIndex,
         int orderPosition,
         string role,
-        string sourceRoot)
+        string sourceRoot,
+        CancellationToken processCancellation)
     {
 
         AdmissionBenchmarkProfile profile = manifest.Profiles.SingleOrDefault(
@@ -351,24 +397,43 @@ internal static class Program
 
         }
 
-        await using BenchmarkComposition composition = BenchmarkComposition.Create();
+        using CancellationTokenSource watchdog = new(
+            TimeSpan.FromSeconds(profile.MaximumDurationSeconds));
 
-        GrimoireAdmissionWorkloadBed bed = new(composition);
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            processCancellation,
+            watchdog.Token);
 
-        AdmissionBenchmarkCellResult[] cells = bed.Run(manifest, profile, CancellationToken.None);
+        CancellationToken cancellationToken = linked.Token;
+
+        await using BenchmarkComposition composition = BenchmarkComposition.Create(cancellationToken);
+
+        using GrimoireAdmissionWorkloadBed bed = new(composition);
+
+        AdmissionBenchmarkCellResult[] cells = bed.Run(manifest, profile, cancellationToken);
 
         AdmissionBenchmarkHistoricalChurnResult[] historicalChurn = await bed
-            .MeasureHistoricalChurnAsync(CancellationToken.None)
+            .MeasureHistoricalChurnAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        AdmissionBenchmarkFinalState finalState = await bed.ValidateFinalStateAsync(CancellationToken.None)
+        AdmissionBenchmarkFinalState finalState = await bed.ValidateFinalStateAsync(cancellationToken)
             .ConfigureAwait(false);
 
         string digest = Sha256Hex(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
             manifest,
             AdmissionBenchmarkJsonContext.Default.AdmissionBenchmarkManifest)));
 
-        AdmissionBenchmarkInputIdentity inputs = CreateInputIdentity(sourceRoot, digest);
+        AdmissionBenchmarkInputIdentity inputs = CreateInputIdentity(sourceRoot, manifest, digest);
+
+        IReadOnlyDictionary<string, object> gcConfiguration = GC.GetConfigurationVariables();
+
+        if (!gcConfiguration.TryGetValue("ConcurrentGC", out object? concurrentGcValue)
+            || concurrentGcValue is not bool concurrentGc)
+        {
+
+            throw new InvalidDataException("The runtime did not expose an exact Boolean ConcurrentGC configuration.");
+
+        }
 
         AdmissionBenchmarkEnvironmentIdentity environment = new(
             System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier,
@@ -381,7 +446,7 @@ internal static class Program
             global::System.Environment.ProcessorCount,
             System.Diagnostics.Stopwatch.Frequency,
             GCSettings.IsServerGC,
-            GCSettings.LatencyMode != GCLatencyMode.Batch,
+            concurrentGc,
             RuntimeFeature.IsDynamicCodeSupported);
 
         return new(
@@ -410,31 +475,45 @@ internal static class Program
         string sessionId)
     {
 
-        AdmissionBenchmarkConcurrency[] concurrency = AdmissionBenchmarkManifest.CreateDefault().Concurrency;
+        AdmissionBenchmarkManifest manifest = AdmissionBenchmarkManifest.CreateDefault();
+
+        AdmissionBenchmarkConcurrency[] concurrency = manifest.Concurrency;
+
+        AdmissionBenchmarkProfile profile = manifest.Profiles[0];
 
         AdmissionBenchmarkCellResult[] cells = AdmissionBenchmarkOperations.All
             .SelectMany(
-                _ => concurrency,
-                static (operation, concurrency) => new AdmissionBenchmarkCellResult(
+                operation => concurrency.Select(concurrency => new AdmissionBenchmarkCellResult(
                     operation,
                     concurrency.Id,
                     concurrency.Workers == 0 ? 1 : concurrency.Workers,
+                    profile.WarmupIterations,
+                    profile.LatencySampleCount,
+                    checked((long)profile.LatencySampleCount * profile.LatencyBundleSize),
+                    profile.ThroughputIterations,
                     100,
                     10,
                     10,
                     10,
                     0,
+                    profile.ThroughputIterations,
                     0,
                     0,
-                    1,
                     0,
-                    1,
-                    0))
+                    AdmissionBenchmarkExpected.OperationCount(profile),
+                    0,
+                    AdmissionBenchmarkExpected.Checksum(
+                        profile,
+                        operation,
+                        concurrency.Workers == 0 ? 1 : concurrency.Workers),
+                    0)))
             .ToArray();
 
         string digest = new('1', 64);
 
         AdmissionBenchmarkInputIdentity inputs = new(
+            digest,
+            digest,
             digest,
             digest,
             digest,
@@ -496,115 +575,216 @@ internal static class Program
 
     private static AdmissionBenchmarkInputIdentity CreateInputIdentity(
         string sourceRoot,
+        AdmissionBenchmarkManifest manifest,
         string manifestDigest)
     {
 
         string root = Path.GetFullPath(sourceRoot);
 
-        string benchmarkRoot = Path.Combine(
-            root,
-            "tests",
-            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks");
+        const string benchmarkPrefix = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/";
 
-        string[] harnessFiles = Directory.GetFiles(benchmarkRoot, "*", SearchOption.TopDirectoryOnly)
-            .Where(static path => Path.GetFileName(path) != "packages.lock.json")
-            .Order(StringComparer.Ordinal)
+        const string catalogPath = benchmarkPrefix + "grimoire-admission-input-catalog-v1.txt";
+
+        string catalogContents = File.ReadAllText(Path.Combine(root, catalogPath), Encoding.UTF8);
+
+        using Stream catalogStream = typeof(Program).Assembly.GetManifestResourceStream(
+            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.grimoire-admission-input-catalog-v1.txt")
+            ?? throw new InvalidDataException("The embedded input catalog is missing.");
+
+        using StreamReader catalogReader = new(catalogStream, Encoding.UTF8);
+
+        if (catalogReader.ReadToEnd() != catalogContents)
+        {
+
+            throw new InvalidDataException("The embedded and source-root input catalogs differ.");
+
+        }
+
+        AdmissionBenchmarkCatalogEntry[] catalog = ParseCatalog(catalogContents);
+
+        string shapeDigest = CatalogShapeDigest(catalog);
+
+        if (shapeDigest != manifest.InputCatalogShapeDigest)
+        {
+
+            throw new InvalidDataException("The input catalog shape does not match the immutable manifest pin.");
+
+        }
+
+        AdmissionBenchmarkDigestEntry[] inputs = catalog.Select(
+                entry =>
+                {
+
+                    string fullPath = Path.Combine(root, entry.Path);
+
+                    bool present = File.Exists(fullPath);
+
+                    if (!present && !entry.Optional)
+                    {
+
+                        throw new InvalidDataException($"Required benchmark input '{entry.Path}' is missing.");
+
+                    }
+
+                    return new AdmissionBenchmarkDigestEntry(
+                        entry.Path,
+                        present ? Sha256Hex(File.ReadAllBytes(fullPath)) : string.Empty,
+                        present);
+
+                })
             .ToArray();
-
-        string[] projectFiles =
-        [
-            Path.Combine(root, "Directory.Build.props"),
-            Path.Combine(benchmarkRoot, "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj"),
-            Path.Combine(root, "src", "RetroDownfall.Arcanum.Core", "RetroDownfall.Arcanum.Core.csproj"),
-            Path.Combine(root, "src", "RetroDownfall.Arcanum.Infrastructure", "RetroDownfall.Arcanum.Infrastructure.csproj"),
-            Path.Combine(root, "src", "RetroDownfall.Arcanum.Secrets", "RetroDownfall.Arcanum.Secrets.csproj"),
-        ];
-
-        string lockfile = Path.Combine(benchmarkRoot, "packages.lock.json");
-
-        string nativeRoot = Path.Combine(
-            root,
-            "src",
-            "RetroDownfall.Arcanum.NativeSqlCipher");
-
-        string[] nativeBuildInputs =
-        [
-            Path.Combine(nativeRoot, "native-source-manifest.json"),
-            Path.Combine(nativeRoot, "RetroDownfall.Arcanum.NativeSqlCipher.csproj"),
-            Path.Combine(nativeRoot, "build", "RetroDownfall.Arcanum.NativeSqlCipher.targets"),
-            Path.Combine(nativeRoot, "buildTransitive", "RetroDownfall.Arcanum.NativeSqlCipher.targets"),
-        ];
 
         string runtimeIdentifier = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
 
-        string nativeBinary = Directory.GetFiles(
-                nativeRoot,
-                "*sqlcipher*",
-                SearchOption.AllDirectories)
-            .Where(path => path.Contains(
-                    Path.DirectorySeparatorChar + runtimeIdentifier + Path.DirectorySeparatorChar,
-                    StringComparison.Ordinal)
-                && !path.EndsWith(".json", StringComparison.Ordinal))
-            .Order(StringComparer.Ordinal)
-            .FirstOrDefault()
+        AdmissionBenchmarkDigestEntry nativeBinary = inputs.SingleOrDefault(
+                entry => entry.Path.StartsWith(
+                        $"src/RetroDownfall.Arcanum.NativeSqlCipher/runtimes/{runtimeIdentifier}/",
+                        StringComparison.Ordinal)
+                    && entry.Present)
             ?? throw new InvalidDataException("The selected native SQLCipher binary is missing.");
 
-        string[] sourceRoots =
-        [
-            benchmarkRoot,
-            Path.Combine(root, "src", "RetroDownfall.Arcanum.Core"),
-            Path.Combine(root, "src", "RetroDownfall.Arcanum.Infrastructure"),
-            Path.Combine(root, "src", "RetroDownfall.Arcanum.Secrets"),
-        ];
+        string toolchainDigest = Option(global::System.Environment.GetCommandLineArgs(), "--toolchain-digest")
+            ?? Sha256Hex(Encoding.UTF8.GetBytes(global::System.Environment.Version.ToString()));
 
-        AdmissionBenchmarkDigestEntry[] sources = sourceRoots
-            .SelectMany(static source => Directory.GetFiles(source, "*.cs", SearchOption.AllDirectories))
-            .Where(static path => !path.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar, StringComparison.Ordinal)
-                && !path.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-            .Select(path => new AdmissionBenchmarkDigestEntry(
-                Path.GetRelativePath(root, path).Replace('\\', '/'),
-                Sha256Hex(File.ReadAllBytes(path)),
-                true))
-            .OrderBy(static entry => entry.Path, StringComparer.Ordinal)
-            .ToArray();
-
-        string epochPath = "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionEpoch.cs";
-
-        if (!sources.Any(source => source.Path == epochPath))
+        if (!IsDigest(toolchainDigest))
         {
 
-            sources = [.. sources, new(epochPath, string.Empty, false)];
-
-            Array.Sort(sources, static (left, right) => StringComparer.Ordinal.Compare(left.Path, right.Path));
+            throw new InvalidDataException("The toolchain digest must be nonempty lowercase 64-hex.");
 
         }
 
         return new(
+            shapeDigest,
+            DigestContents(
+                root,
+                inputs.Where(entry => !manifest.SourceDifferenceAllowlist.Contains(entry.Path, StringComparer.Ordinal))),
             manifestDigest,
-            DigestFiles(harnessFiles),
-            DigestFiles(projectFiles),
-            Sha256Hex(File.ReadAllBytes(lockfile)),
-            Option(global::System.Environment.GetCommandLineArgs(), "--toolchain-digest")
-                ?? Sha256Hex(Encoding.UTF8.GetBytes(global::System.Environment.Version.ToString())),
-            DigestFiles(nativeBuildInputs),
-            Sha256Hex(File.ReadAllBytes(nativeBinary)),
-            sources);
+            DigestContents(root, inputs.Where(static entry => entry.Path.StartsWith(benchmarkPrefix, StringComparison.Ordinal))),
+            DigestContents(root, inputs.Where(static entry => entry.Path == "Directory.Build.props" || entry.Path.EndsWith(".csproj", StringComparison.Ordinal) || entry.Path.EndsWith(".targets", StringComparison.Ordinal))),
+            inputs.Single(static entry => entry.Path.EndsWith("/packages.lock.json", StringComparison.Ordinal)).Digest,
+            toolchainDigest,
+            inputs.Single(static entry => entry.Path.EndsWith("/native-source-manifest.json", StringComparison.Ordinal)).Digest,
+            nativeBinary.Digest,
+            inputs);
 
     }
 
-    private static string DigestFiles(IEnumerable<string> paths)
+    private static AdmissionBenchmarkCatalogEntry[] ParseCatalog(string contents)
+    {
+
+        if (string.IsNullOrEmpty(contents)
+            || !contents.EndsWith('\n')
+            || contents.Contains('\r'))
+        {
+
+            throw new InvalidDataException("The input catalog must use exact nonempty LF-delimited framing.");
+
+        }
+
+        AdmissionBenchmarkCatalogEntry[] entries = contents[..^1].Split('\n')
+            .Select(
+                static line =>
+                {
+
+                    string[] parts = line.Split('\t');
+
+                    if (parts.Length != 2
+                        || parts[0] is not "R" and not "O"
+                        || string.IsNullOrEmpty(parts[1]))
+                    {
+
+                        throw new InvalidDataException("The input catalog contains a malformed entry.");
+
+                    }
+
+                    string itemPath = parts[1];
+
+                    if (Path.IsPathFullyQualified(itemPath)
+                        || itemPath.Contains('\\')
+                        || itemPath.Split('/').Any(static segment => segment is "" or "." or ".."))
+                    {
+
+                        throw new InvalidDataException("The input catalog contains a non-normalized path.");
+
+                    }
+
+                    return new AdmissionBenchmarkCatalogEntry(itemPath, parts[0] == "O");
+
+                })
+            .ToArray();
+
+        if (entries.Length == 0
+            || !entries.SequenceEqual(entries.OrderBy(static entry => entry.Path, StringComparer.Ordinal))
+            || entries.Select(static entry => entry.Path).Distinct(StringComparer.Ordinal).Count() != entries.Length)
+        {
+
+            throw new InvalidDataException("The input catalog must be nonempty, sorted, and unique.");
+
+        }
+
+        return entries;
+
+    }
+
+    private static string CatalogShapeDigest(IEnumerable<AdmissionBenchmarkCatalogEntry> entries)
     {
 
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-        foreach (string path in paths)
+        Span<byte> length = stackalloc byte[sizeof(int)];
+
+        foreach (AdmissionBenchmarkCatalogEntry entry in entries)
         {
 
-            byte[] name = Encoding.UTF8.GetBytes(Path.GetFileName(path));
+            byte[] path = Encoding.UTF8.GetBytes(entry.Path);
 
-            hash.AppendData(name);
+            BinaryPrimitives.WriteInt32LittleEndian(length, path.Length);
 
-            hash.AppendData(File.ReadAllBytes(path));
+            hash.AppendData(length);
+
+            hash.AppendData(path);
+
+            hash.AppendData([entry.Optional ? (byte)1 : (byte)0]);
+
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+
+    }
+
+    private static string DigestContents(
+        string root,
+        IEnumerable<AdmissionBenchmarkDigestEntry> entries)
+    {
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        Span<byte> pathLength = stackalloc byte[sizeof(int)];
+
+        Span<byte> contentLength = stackalloc byte[sizeof(long)];
+
+        foreach (AdmissionBenchmarkDigestEntry entry in entries)
+        {
+
+            byte[] path = Encoding.UTF8.GetBytes(entry.Path);
+
+            byte[] contents = entry.Present
+                ? File.ReadAllBytes(Path.Combine(root, entry.Path))
+                : [];
+
+            BinaryPrimitives.WriteInt32LittleEndian(pathLength, path.Length);
+
+            BinaryPrimitives.WriteInt64LittleEndian(contentLength, contents.LongLength);
+
+            hash.AppendData(pathLength);
+
+            hash.AppendData(path);
+
+            hash.AppendData([entry.Present ? (byte)1 : (byte)0]);
+
+            hash.AppendData(contentLength);
+
+            hash.AppendData(contents);
 
         }
 
@@ -655,6 +835,10 @@ internal static class Program
     }
 
     private static string Sha256Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static bool IsDigest(string value) =>
+        value is { Length: 64 }
+        && value.All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
 }
 
@@ -709,6 +893,19 @@ internal sealed class AdmissionBenchmarkHome
 
         Directory.CreateDirectory(child);
 
+        if (!OperatingSystem.IsWindows())
+        {
+
+            File.SetUnixFileMode(
+                parent,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            File.SetUnixFileMode(
+                child,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+
         AdmissionBenchmarkHome home = new(nonce, sessionId, Path.GetFullPath(parent), Path.GetFullPath(child));
 
         using FileStream marker = new(
@@ -720,6 +917,17 @@ internal sealed class AdmissionBenchmarkHome
         using StreamWriter writer = new(marker, new UTF8Encoding(false));
 
         writer.Write(home._markerContents);
+
+        writer.Flush();
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            File.SetUnixFileMode(
+                Path.Combine(home.ChildPath, MarkerName),
+                UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        }
 
         return home;
 
@@ -813,6 +1021,58 @@ internal sealed class AdmissionBenchmarkHome
 
         }
 
+        if (!OperatingSystem.IsWindows())
+        {
+
+            string attackNonce = Guid.NewGuid().ToString("N");
+
+            string targetParent = Path.Combine(Path.GetTempPath(), "arcanum-grimoire-admission-sentinel-" + attackNonce);
+
+            string targetChild = Path.Combine(targetParent, ChildPrefix + attackNonce);
+
+            string sentinel = Path.Combine(targetChild, "sentinel");
+
+            string linkParent = Path.Combine(Path.GetTempPath(), ParentPrefix + attackNonce);
+
+            Directory.CreateDirectory(targetChild);
+
+            File.WriteAllText(sentinel, "survive", Encoding.UTF8);
+
+            Directory.CreateSymbolicLink(linkParent, targetParent);
+
+            try
+            {
+
+                string linkChild = Path.Combine(linkParent, ChildPrefix + attackNonce);
+
+                string marker = MarkerContents(
+                    attackNonce,
+                    SessionId,
+                    global::System.Environment.ProcessId,
+                    Path.GetFullPath(linkChild));
+
+                File.WriteAllText(Path.Combine(targetChild, MarkerName), marker, Encoding.UTF8);
+
+                if (CanDelete(linkParent, linkChild, attackNonce, SessionId, marker)
+                    || !File.Exists(sentinel))
+                {
+
+                    throw new InvalidDataException("A real symlink replacement passed cleanup validation or changed its target.");
+
+                }
+
+            }
+            finally
+            {
+
+                Directory.Delete(linkParent);
+
+                Directory.Delete(targetParent, recursive: true);
+
+            }
+
+        }
+
     }
 
     private static bool CanDelete(
@@ -837,6 +1097,8 @@ internal sealed class AdmissionBenchmarkHome
             || !childInfo.Exists
             || parentInfo.LinkTarget is not null
             || childInfo.LinkTarget is not null
+            || parentInfo.Attributes.HasFlag(FileAttributes.ReparsePoint)
+            || childInfo.Attributes.HasFlag(FileAttributes.ReparsePoint)
             || parentInfo.Parent?.FullName != canonicalTemp
             || parentInfo.Name != ParentPrefix + nonce
             || childInfo.Parent?.FullName != canonicalParent
@@ -847,10 +1109,26 @@ internal sealed class AdmissionBenchmarkHome
 
         }
 
+        if (!OperatingSystem.IsWindows()
+            && (File.GetUnixFileMode(canonicalParent)
+                    != (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute)
+                || File.GetUnixFileMode(canonicalChild)
+                    != (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute)))
+        {
+
+            return false;
+
+        }
+
         string markerPath = Path.Combine(canonicalChild, MarkerName);
 
-        if (!File.Exists(markerPath)
-            || new FileInfo(markerPath).LinkTarget is not null)
+        FileInfo markerInfo = new(markerPath);
+
+        if (!markerInfo.Exists
+            || markerInfo.LinkTarget is not null
+            || markerInfo.Attributes.HasFlag(FileAttributes.ReparsePoint)
+            || !OperatingSystem.IsWindows()
+                && File.GetUnixFileMode(markerPath) != (UnixFileMode.UserRead | UnixFileMode.UserWrite))
         {
 
             return false;

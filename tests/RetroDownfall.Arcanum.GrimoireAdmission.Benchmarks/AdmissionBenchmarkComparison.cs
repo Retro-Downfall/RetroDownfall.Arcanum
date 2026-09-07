@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 internal static class AdmissionBenchmarkComparison
@@ -41,16 +43,26 @@ internal static class AdmissionBenchmarkComparison
 
                 AdmissionBenchmarkCellResult candidateCell = candidate[(operation, concurrency)];
 
+                double p50Ratio = CostRatio(baselineCell.P50Nanoseconds, candidateCell.P50Nanoseconds);
+
+                double p99Ratio = CostRatio(baselineCell.P99Nanoseconds, candidateCell.P99Nanoseconds);
+
+                if (!double.IsFinite(p50Ratio) || !double.IsFinite(p99Ratio))
+                {
+
+                    return InvalidDerivedMetric(operation, concurrency);
+
+                }
+
                 if (concurrency == "one"
-                    && CostRatio(baselineCell.P50Nanoseconds, candidateCell.P50Nanoseconds) > manifest.Thresholds.SingleThreadP50MaximumRatio)
+                    && p50Ratio > manifest.Thresholds.SingleThreadP50MaximumRatio)
                 {
 
                     rejected.Add($"p50: {operation}@{concurrency} exceeds the maximum ratio.");
 
                 }
 
-                if (operation != "ef.pooled"
-                    && CostRatio(baselineCell.P99Nanoseconds, candidateCell.P99Nanoseconds) > manifest.Thresholds.P99MaximumRatio)
+                if (p99Ratio > manifest.Thresholds.P99MaximumRatio)
                 {
 
                     rejected.Add($"p99: {operation}@{concurrency} exceeds the maximum ratio.");
@@ -58,7 +70,7 @@ internal static class AdmissionBenchmarkComparison
                 }
 
                 if (AdmissionBenchmarkOperations.IsDirect(operation)
-                    && candidateCell.BytesPerOperation > baselineCell.BytesPerOperation)
+                    && AllocatesMore(baselineCell, candidateCell))
                 {
 
                     rejected.Add($"direct-allocation: {operation}@{concurrency} allocated more bytes.");
@@ -79,15 +91,36 @@ internal static class AdmissionBenchmarkComparison
 
             AdmissionBenchmarkCellResult candidateMixed = candidate[(manifest.MaterialImprovementOperation, manifest.MaterialImprovementConcurrency)];
 
-            mixedRatios.Add(candidateMixed.OperationsPerSecond / baseMixed.OperationsPerSecond);
+            double mixedRatio = candidateMixed.OperationsPerSecond / baseMixed.OperationsPerSecond;
+
+            if (!double.IsFinite(mixedRatio))
+            {
+
+                return InvalidDerivedMetric(manifest.MaterialImprovementOperation, manifest.MaterialImprovementConcurrency);
+
+            }
+
+            mixedRatios.Add(mixedRatio);
 
             AdmissionBenchmarkCellResult baseEf = baseline[("ef.pooled", "one")];
 
             AdmissionBenchmarkCellResult candidateEf = candidate[("ef.pooled", "one")];
 
-            efRatios.Add(CostRatio(baseEf.P99Nanoseconds, candidateEf.P99Nanoseconds));
+            double efRatio = CostRatio(baseEf.P99Nanoseconds, candidateEf.P99Nanoseconds);
 
-            if (CostRatio(baseEf.BytesPerOperation, candidateEf.BytesPerOperation) > manifest.Thresholds.EfAllocationMaximumRatio)
+            if (!double.IsFinite(efRatio))
+            {
+
+                return InvalidDerivedMetric("ef.pooled", "one");
+
+            }
+
+            efRatios.Add(efRatio);
+
+            if (AllocationRatioExceeds(
+                    baseEf,
+                    candidateEf,
+                    manifest.Thresholds.EfAllocationMaximumRatio))
             {
 
                 rejected.Add("ef-allocation: ef.pooled@one exceeds the allocation ratio.");
@@ -191,9 +224,9 @@ internal static class AdmissionBenchmarkComparison
 
             }
 
-            ValidateRun(pair.Baseline, evidence.SessionId, required, errors);
+            ValidateRun(pair.Baseline, evidence.SessionId, manifest, required, errors);
 
-            ValidateRun(pair.Candidate, evidence.SessionId, required, errors);
+            ValidateRun(pair.Candidate, evidence.SessionId, manifest, required, errors);
 
         }
 
@@ -204,6 +237,7 @@ internal static class AdmissionBenchmarkComparison
     private static void ValidateRun(
         AdmissionBenchmarkRevisionRun run,
         string sessionId,
+        AdmissionBenchmarkManifest manifest,
         IReadOnlySet<(string Operation, string Concurrency)> required,
         ICollection<string> errors)
     {
@@ -212,6 +246,16 @@ internal static class AdmissionBenchmarkComparison
         {
 
             errors.Add($"Run {run.Role}/{run.PairIndex} has mismatched session or exit metadata.");
+
+        }
+
+        AdmissionBenchmarkProfile? profile = manifest.Profiles.SingleOrDefault(
+            item => string.Equals(item.Name, run.Profile, StringComparison.Ordinal));
+
+        if (profile is null || run.Profile != "qualification")
+        {
+
+            errors.Add($"Run {run.Role}/{run.PairIndex} does not use the qualification profile.");
 
         }
 
@@ -243,16 +287,59 @@ internal static class AdmissionBenchmarkComparison
                 || !NonnegativeFinite(cell.P99Nanoseconds)
                 || cell.P50Nanoseconds > cell.P95Nanoseconds
                 || cell.P95Nanoseconds > cell.P99Nanoseconds
-                || cell.BytesPerOperation < 0
+                || cell.WarmupOperationCount < 0
+                || cell.LatencyBundleCount < 0
+                || cell.LatencyOperationCount < 0
+                || cell.ThroughputOperationCount <= 0
+                || cell.AllocatedBytes < 0
+                || cell.AllocationOperationCount <= 0
+                || !NonnegativeFinite(cell.BytesPerOperation)
                 || cell.Gen0Collections < 0
                 || cell.LockContentions < 0
                 || cell.SuccessCount < 0
                 || cell.FailureCount < 0
-                || cell.FailureCount != 0
-                || cell.SuccessCount + cell.FailureCount <= 0)
+                || cell.FailureCount != 0)
             {
 
                 errors.Add($"Run {run.Role}/{run.PairIndex} has an invalid metric in {cell.Operation}@{cell.Concurrency}.");
+
+            }
+
+            if (profile is not null && required.Contains((cell.Operation, cell.Concurrency)))
+            {
+
+                AdmissionBenchmarkConcurrency declaredConcurrency = manifest.Concurrency.Single(
+                    item => item.Id == cell.Concurrency);
+
+                int expectedWorkers = declaredConcurrency.Workers == 0
+                    ? run.Environment.LogicalProcessorCount
+                    : declaredConcurrency.Workers;
+
+                long expectedOperations = AdmissionBenchmarkExpected.OperationCount(profile);
+
+                long expectedLatencyOperations = checked(
+                    (long)profile.LatencySampleCount * profile.LatencyBundleSize);
+
+                long expectedChecksum = AdmissionBenchmarkExpected.Checksum(
+                    profile,
+                    cell.Operation,
+                    cell.Workers);
+
+                if (cell.Workers != expectedWorkers
+                    || cell.WarmupOperationCount != profile.WarmupIterations
+                    || cell.LatencyBundleCount != profile.LatencySampleCount
+                    || cell.LatencyOperationCount != expectedLatencyOperations
+                    || cell.ThroughputOperationCount != profile.ThroughputIterations
+                    || cell.AllocationOperationCount != cell.ThroughputOperationCount
+                    || cell.BytesPerOperation != cell.AllocatedBytes / (double)cell.AllocationOperationCount
+                    || cell.SuccessCount != expectedOperations
+                    || cell.FailureCount != 0
+                    || cell.Checksum != expectedChecksum)
+                {
+
+                    errors.Add($"Run {run.Role}/{run.PairIndex} has invalid exact accounting in {cell.Operation}@{cell.Concurrency}.");
+
+                }
 
             }
 
@@ -293,11 +380,20 @@ internal static class AdmissionBenchmarkComparison
 
                 ulong random = state * 2685821657736338717UL;
 
-                sum += ratios[(int)(random % (ulong)ratios.Count)];
+                double sampleValue = ratios[(int)(random % (ulong)ratios.Count)];
+
+                sum += (sampleValue - sum) / (sample + 1);
+
+                if (!double.IsFinite(sum))
+                {
+
+                    throw new InvalidDataException("Bootstrap mean arithmetic was not finite.");
+
+                }
 
             }
 
-            means[replicate] = sum / ratios.Count;
+            means[replicate] = sum;
 
         }
 
@@ -309,10 +405,58 @@ internal static class AdmissionBenchmarkComparison
 
     }
 
+    private static AdmissionBenchmarkComparisonReport InvalidDerivedMetric(
+        string operation,
+        string concurrency) =>
+        new(
+            false,
+            false,
+            2,
+            0,
+            0,
+            0,
+            [$"derived-metric: {operation}@{concurrency} produced non-finite arithmetic."]);
+
     private static double CostRatio(double baseline, double candidate) =>
         baseline == 0
-            ? candidate == 0 ? 1 : double.PositiveInfinity
+            ? candidate == 0 ? 1 : double.MaxValue
             : candidate / baseline;
+
+    private static bool AllocatesMore(
+        AdmissionBenchmarkCellResult baseline,
+        AdmissionBenchmarkCellResult candidate) =>
+        (BigInteger)candidate.AllocatedBytes * baseline.AllocationOperationCount
+        > (BigInteger)baseline.AllocatedBytes * candidate.AllocationOperationCount;
+
+    private static bool AllocationRatioExceeds(
+        AdmissionBenchmarkCellResult baseline,
+        AdmissionBenchmarkCellResult candidate,
+        double threshold)
+    {
+
+        decimal exactThreshold = (decimal)threshold;
+
+        int[] bits = decimal.GetBits(exactThreshold);
+
+        int scale = (bits[3] >> 16) & 0x7F;
+
+        BigInteger thresholdNumerator = ((BigInteger)(uint)bits[2] << 64)
+            | ((BigInteger)(uint)bits[1] << 32)
+            | (uint)bits[0];
+
+        BigInteger thresholdDenominator = BigInteger.Pow(10, scale);
+
+        BigInteger left = (BigInteger)candidate.AllocatedBytes
+            * baseline.AllocationOperationCount
+            * thresholdDenominator;
+
+        BigInteger right = (BigInteger)baseline.AllocatedBytes
+            * candidate.AllocationOperationCount
+            * thresholdNumerator;
+
+        return left > right;
+
+    }
 
     private static bool PositiveFinite(double value) => value > 0 && double.IsFinite(value);
 

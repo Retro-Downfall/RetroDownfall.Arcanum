@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 
+using System.Reflection;
+
 using RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 using Xunit;
@@ -8,6 +10,97 @@ namespace RetroDownfall.Arcanum.Tests.Benchmarks;
 
 public sealed class GrimoireAdmissionPersistentWorkerTests
 {
+
+    [Fact]
+    public void Cell_runner_brackets_warmup_latency_and_throughput_callback_materialization()
+    {
+
+        using PersistentWorkerHarness harness = new(4);
+
+        long callbacks = 0;
+
+        AdmissionBenchmarkProfile profile = new(
+            "test",
+            3,
+            4,
+            2,
+            5,
+            10,
+            ["request.finite"]);
+
+        AdmissionBenchmarkCellMeasurement measurement = AdmissionBenchmarkCellRunner.Run(
+            harness,
+            profile,
+            2,
+            (int worker, int iteration, CancellationToken token, ref long checksum) =>
+            {
+
+                Interlocked.Increment(ref callbacks);
+
+                return true;
+
+            },
+            () => Interlocked.Read(ref callbacks),
+            CancellationToken.None);
+
+        Assert.Equal(3, measurement.Warmup.OperationCount);
+
+        Assert.Equal(2, measurement.Latency.BundleNanosecondsPerOperation.Length);
+
+        Assert.Equal(8, measurement.Latency.OperationCount);
+
+        Assert.Equal(5, measurement.Throughput.OperationCount);
+
+        Assert.Equal(16, measurement.MaterializedTerminalCallbackDelta);
+
+    }
+
+    [Fact]
+    public void Phase_iteration_count_is_one_exact_cell_total_not_a_per_worker_multiplier()
+    {
+
+        using PersistentWorkerHarness harness = new(3);
+
+        AdmissionBenchmarkPhaseResult result = harness.Run(
+            new(
+                AdmissionBenchmarkPhaseKind.Throughput,
+                10,
+                1,
+                static (int worker, int iteration, CancellationToken _, ref long checksum) =>
+                {
+
+                    checksum = checked(checksum + worker + iteration + 1);
+
+                    return true;
+
+                }),
+            CancellationToken.None);
+
+        Assert.Equal(10, result.OperationCount);
+
+        Assert.Equal(10, result.SuccessCount);
+
+    }
+
+    [Fact]
+    public void Latency_sample_count_is_partitioned_exactly_before_bundle_expansion()
+    {
+
+        using PersistentWorkerHarness harness = new(3);
+
+        AdmissionBenchmarkPhaseResult result = harness.Run(
+            new(
+                AdmissionBenchmarkPhaseKind.Latency,
+                5,
+                4,
+                static (int worker, int iteration, CancellationToken _, ref long checksum) => true),
+            CancellationToken.None);
+
+        Assert.Equal(5, result.BundleNanosecondsPerOperation.Length);
+
+        Assert.Equal(20, result.OperationCount);
+
+    }
 
     [Fact]
     public void Workers_are_persistent_and_phase_accounting_is_exact()
@@ -55,15 +148,15 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
 
         Assert.Equal(firstIds, harness.ManagedThreadIds);
 
-        Assert.Equal(21, warmup.OperationCount);
+        Assert.Equal(7, warmup.OperationCount);
 
-        Assert.Equal(33, measured.OperationCount);
+        Assert.Equal(11, measured.OperationCount);
 
-        Assert.Equal(33, measured.SuccessCount);
+        Assert.Equal(11, measured.SuccessCount);
 
         Assert.Equal(0, measured.FailureCount);
 
-        Assert.Equal(231, measured.Checksum);
+        Assert.Equal(36, measured.Checksum);
 
         Assert.True(measured.MaximumWorkerEndTimestamp >= measured.MinimumWorkerStartTimestamp);
 
@@ -90,6 +183,135 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
     }
 
     [Fact]
+    public void Probe_replays_the_actual_asymmetric_worker_completion_order()
+    {
+
+        OrderedProbe probe = new();
+
+        using PersistentWorkerHarness harness = new(2, probe);
+
+        probe.AllWorkersParked = () => harness.AllWorkersParked;
+
+        using ManualResetEventSlim workerOneCompleted = new();
+
+        _ = harness.Run(
+            new(
+                AdmissionBenchmarkPhaseKind.Throughput,
+                2,
+                1,
+                (int worker, int iteration, CancellationToken _, ref long checksum) =>
+                {
+
+                    if (worker == 0)
+                    {
+
+                        workerOneCompleted.Wait();
+
+                    }
+                    else
+                    {
+
+                        workerOneCompleted.Set();
+
+                    }
+
+                    return true;
+
+                }),
+            CancellationToken.None);
+
+        Assert.Equal([1, 0], probe.WorkerCompletionOrder);
+
+    }
+
+    [Fact]
+    public void Early_completer_and_controller_block_instead_of_consuming_cpu_until_release()
+    {
+
+        using PersistentWorkerHarness harness = new(2);
+
+        Thread[] workers = (Thread[])typeof(PersistentWorkerHarness)
+            .GetField("_threads", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(harness)!;
+
+        using ManualResetEventSlim earlyWorkerCompleted = new();
+
+        using ManualResetEventSlim releaseSlowWorker = new();
+
+        Exception? error = null;
+
+        Thread controller = new(
+            () =>
+            {
+
+                try
+                {
+
+                    _ = harness.Run(
+                        new(
+                            AdmissionBenchmarkPhaseKind.Throughput,
+                            2,
+                            1,
+                            (int worker, int iteration, CancellationToken cancellationToken, ref long checksum) =>
+                            {
+
+                                if (worker == 0)
+                                {
+
+                                    releaseSlowWorker.Wait(cancellationToken);
+
+                                }
+                                else
+                                {
+
+                                    earlyWorkerCompleted.Set();
+
+                                }
+
+                                return true;
+
+                            }),
+                        CancellationToken.None);
+
+                }
+                catch (Exception exception)
+                {
+
+                    error = exception;
+
+                }
+
+            });
+
+        controller.Start();
+
+        Assert.True(earlyWorkerCompleted.Wait(TimeSpan.FromSeconds(5)));
+
+        try
+        {
+
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => workers[1].ThreadState.HasFlag(ThreadState.WaitSleepJoin)
+                        && controller.ThreadState.HasFlag(ThreadState.WaitSleepJoin),
+                    TimeSpan.FromSeconds(1)),
+                $"Expected blocked threads; worker={workers[1].ThreadState}, controller={controller.ThreadState}.");
+
+        }
+        finally
+        {
+
+            releaseSlowWorker.Set();
+
+            Assert.True(controller.Join(TimeSpan.FromSeconds(5)));
+
+        }
+
+        Assert.Null(error);
+
+    }
+
+    [Fact]
     public void Worker_exception_is_reported_after_every_worker_reaches_a_safe_boundary()
     {
 
@@ -104,7 +326,7 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
                     static (int worker, int iteration, CancellationToken _, ref long checksum) =>
                     {
 
-                        if (worker == 1 && iteration == 2)
+                        if (worker == 1 && iteration == 1)
                         {
 
                             throw new InvalidOperationException("named worker break");
@@ -148,7 +370,7 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
     private sealed class OrderedProbe : IAdmissionBenchmarkOrderProbe
     {
 
-        private readonly ConcurrentQueue<(int Phase, AdmissionBenchmarkProbeEvent Event)> _events = new();
+        private readonly ConcurrentQueue<(int Phase, int Worker, AdmissionBenchmarkProbeEvent Event)> _events = new();
 
         private int _phase;
 
@@ -156,12 +378,17 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
 
         internal int CompletedPhases => Volatile.Read(ref _phase);
 
+        internal int[] WorkerCompletionOrder => _events
+            .Where(static item => item.Event == AdmissionBenchmarkProbeEvent.WorkerLoopCompleted)
+            .Select(static item => item.Worker)
+            .ToArray();
+
         public void Record(int phase, int worker, AdmissionBenchmarkProbeEvent value)
         {
 
             Assert.True(AllWorkersParked?.Invoke());
 
-            _events.Enqueue((phase, value));
+            _events.Enqueue((phase, worker, value));
 
             if (value == AdmissionBenchmarkProbeEvent.ProcessTerminal)
             {
@@ -175,10 +402,10 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
         internal void AssertEveryPhaseHasMeasuredWindowOrder()
         {
 
-            foreach (IGrouping<int, (int Phase, AdmissionBenchmarkProbeEvent Event)> group in _events.GroupBy(static item => item.Phase))
+            foreach (IGrouping<int, (int Phase, int Worker, AdmissionBenchmarkProbeEvent Event)> group in _events.GroupBy(static item => item.Phase))
             {
 
-                (int Phase, AdmissionBenchmarkProbeEvent Event)[] events = group.ToArray();
+                (int Phase, int Worker, AdmissionBenchmarkProbeEvent Event)[] events = group.ToArray();
 
                 int baseline = Array.FindIndex(events, static item => item.Event == AdmissionBenchmarkProbeEvent.ProcessBaseline);
 

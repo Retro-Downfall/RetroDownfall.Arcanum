@@ -4,6 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -19,12 +21,15 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
 
     private readonly ServiceProvider _provider;
 
+    private readonly CancellationToken _disposalCancellationToken;
+
     private BenchmarkComposition(
         ServiceProvider provider,
         GrimoireConnectionAdmissionGate gate,
         CovenantConnectionDrain drain,
         GrimoireOrdinaryConnectionLifecycle lifecycle,
-        CovenantSqliteConnectionInitializer initializer)
+        CovenantSqliteConnectionInitializer initializer,
+        CancellationToken disposalCancellationToken)
     {
 
         _provider = provider;
@@ -36,6 +41,8 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
         Lifecycle = lifecycle;
 
         Initializer = initializer;
+
+        _disposalCancellationToken = disposalCancellationToken;
 
     }
 
@@ -49,7 +56,7 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
 
     internal IServiceProvider Services => _provider;
 
-    internal static BenchmarkComposition Create()
+    internal static BenchmarkComposition Create(CancellationToken disposalCancellationToken)
     {
 
         SqliteNativeRuntime.Instance.Initialize();
@@ -107,14 +114,22 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
             gate,
             drain,
             lifecycle,
-            initializer);
+            initializer,
+            disposalCancellationToken);
 
     }
 
     public async ValueTask DisposeAsync()
     {
 
-        await Drain.DrainAsync(CancellationToken.None).ConfigureAwait(false);
+        Result drained = await Drain.DrainAsync(_disposalCancellationToken).ConfigureAwait(false);
+
+        if (drained.IsFailure)
+        {
+
+            throw new InvalidDataException(drained.Error.Message);
+
+        }
 
         await _provider.DisposeAsync().ConfigureAwait(false);
 

@@ -44,6 +44,14 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
     [InlineData("leak")]
     [InlineData("historical-churn")]
     [InlineData("candidate-source")]
+    [InlineData("catalog-shape")]
+    [InlineData("immutable-content")]
+    [InlineData("malformed-digest")]
+    [InlineData("unsorted-input")]
+    [InlineData("absolute-input")]
+    [InlineData("missing-input")]
+    [InlineData("extra-input")]
+    [InlineData("null-input-map")]
     public void Identity_or_execution_drift_is_invalid_evidence(string breakName)
     {
 
@@ -56,7 +64,16 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
 
         Assert.False(validation.Valid);
 
-        Assert.Contains(validation.Errors, error => error.StartsWith(breakName, StringComparison.Ordinal));
+        string expectedErrorPrefix = breakName switch
+        {
+            "missing-input" or "extra-input" => "input-digest",
+            "malformed-digest" => "source-map",
+            "unsorted-input" or "null-input-map" => "duplicate-source",
+            "absolute-input" => "source-map",
+            _ => breakName,
+        };
+
+        Assert.Contains(validation.Errors, error => error.StartsWith(expectedErrorPrefix, StringComparison.Ordinal));
 
     }
 
@@ -140,31 +157,101 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
             ],
         };
 
-    private static AdmissionBenchmarkInputIdentity Inputs(string role) =>
-        new(
-            "manifest",
-            "harness",
-            "project",
-            "lock",
-            "toolchain",
-            "native-manifest",
-            "native-binary",
-            [
-                new("Directory.Build.props", "same", true),
-                new("src/RetroDownfall.Arcanum.Core/Core.cs", "same", true),
-                new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionGate.cs", role, true),
-                new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionEpoch.cs", role == "C" ? "candidate" : string.Empty, role == "C"),
-            ]);
+    private static AdmissionBenchmarkInputIdentity Inputs(string role)
+    {
 
-    private static AdmissionBenchmarkCellResult[] Cells() =>
-        AdmissionBenchmarkOperations.All.SelectMany(
-            static operation => new[]
+        AdmissionBenchmarkManifest manifest = AdmissionBenchmarkManifest.CreateDefault();
+
+        const string gate = "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionGate.cs";
+
+        const string epoch = "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionEpoch.cs";
+
+        string catalogPath = Path.Combine(
+            FindRepositoryRoot(),
+            "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-input-catalog-v1.txt");
+
+        AdmissionBenchmarkDigestEntry[] inputs = File.ReadAllLines(catalogPath)
+            .Select<string, AdmissionBenchmarkDigestEntry>(
+                line =>
+                {
+
+                    string path = line.Split('\t')[1];
+
+                    if (path == epoch)
+                    {
+
+                        return new(path, role == "C" ? new string('c', 64) : string.Empty, role == "C");
+
+                    }
+
+                    return new(
+                        path,
+                        path == gate
+                            ? role == "B" ? new string('a', 64) : new string('b', 64)
+                            : new string('d', 64),
+                        true);
+
+                })
+            .ToArray();
+
+        string same = new('1', 64);
+
+        return new(
+            manifest.InputCatalogShapeDigest,
+            same,
+            same,
+            same,
+            same,
+            same,
+            same,
+            same,
+            same,
+            inputs);
+
+    }
+
+    private static AdmissionBenchmarkCellResult[] Cells()
+    {
+
+        AdmissionBenchmarkProfile profile = AdmissionBenchmarkManifest.CreateDefault().Profiles[0];
+
+        return AdmissionBenchmarkOperations.All.SelectMany(
+            operation => new[]
             {
-                new AdmissionBenchmarkCellResult(operation, "one", 1, 100, 100, 100, 100, 8, 0, 0, 1, 0, 1, 0),
-                new AdmissionBenchmarkCellResult(operation, "two", 2, 100, 100, 100, 100, 8, 0, 0, 1, 0, 1, 0),
-                new AdmissionBenchmarkCellResult(operation, "eight", 8, 100, 100, 100, 100, 8, 0, 0, 1, 0, 1, 0),
-                new AdmissionBenchmarkCellResult(operation, "logical", 8, 100, 100, 100, 100, 8, 0, 0, 1, 0, 1, 0),
+                Cell(operation, "one", 1, profile),
+                Cell(operation, "two", 2, profile),
+                Cell(operation, "eight", 8, profile),
+                Cell(operation, "logical", 8, profile),
             }).ToArray();
+
+    }
+
+    private static AdmissionBenchmarkCellResult Cell(
+        string operation,
+        string concurrency,
+        int workers,
+        AdmissionBenchmarkProfile profile) =>
+        new(
+            operation,
+            concurrency,
+            workers,
+            profile.WarmupIterations,
+            profile.LatencySampleCount,
+            checked((long)profile.LatencySampleCount * profile.LatencyBundleSize),
+            profile.ThroughputIterations,
+            100,
+            100,
+            100,
+            100,
+            checked(8L * profile.ThroughputIterations),
+            profile.ThroughputIterations,
+            8,
+            0,
+            0,
+            AdmissionBenchmarkExpected.OperationCount(profile),
+            0,
+            AdmissionBenchmarkExpected.Checksum(profile, operation, workers),
+            0);
 
     private static AdmissionBenchmarkEvidenceBundle Mutate(
         AdmissionBenchmarkEvidenceBundle evidence,
@@ -187,14 +274,22 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
             "toolchain" => candidate with { Inputs = candidate.Inputs with { ToolchainDigest = "different" } },
             "native" => candidate with { Inputs = candidate.Inputs with { NativeBinaryDigest = "different" } },
             "environment" => candidate with { Environment = candidate.Environment with { CpuIdentity = "different" } },
-            "outside-source" => candidate with { Inputs = candidate.Inputs with { CompiledSources = candidate.Inputs.CompiledSources.Select(static source => source.Path == "src/RetroDownfall.Arcanum.Core/Core.cs" ? source with { Digest = "different" } : source).ToArray() } },
-            "duplicate-source" => candidate with { Inputs = candidate.Inputs with { CompiledSources = [.. candidate.Inputs.CompiledSources, candidate.Inputs.CompiledSources[0]] } },
-            "gate-absent" => candidate with { Inputs = candidate.Inputs with { CompiledSources = candidate.Inputs.CompiledSources.Select(static source => source.Path.EndsWith("GrimoireConnectionAdmissionGate.cs", StringComparison.Ordinal) ? source with { Present = false, Digest = string.Empty } : source).ToArray() } },
+            "outside-source" => candidate with { Inputs = candidate.Inputs with { Inputs = candidate.Inputs.Inputs.Select(static source => source.Path.StartsWith("src/RetroDownfall.Arcanum.Core/", StringComparison.Ordinal) && source.Path.EndsWith(".cs", StringComparison.Ordinal) ? source with { Digest = "different" } : source).ToArray() } },
+            "duplicate-source" => candidate with { Inputs = candidate.Inputs with { Inputs = [.. candidate.Inputs.Inputs, candidate.Inputs.Inputs[0]] } },
+            "gate-absent" => candidate with { Inputs = candidate.Inputs with { Inputs = candidate.Inputs.Inputs.Select(static source => source.Path.EndsWith("GrimoireConnectionAdmissionGate.cs", StringComparison.Ordinal) ? source with { Present = false, Digest = string.Empty } : source).ToArray() } },
             "crash" => candidate with { ExitCode = 2 },
             "cancel" => candidate with { ExitCode = 130 },
             "leak" => candidate with { FinalState = candidate.FinalState with { LiveWork = 1 } },
             "historical-churn" => candidate with { HistoricalChurn = [] },
-            "candidate-source" => candidate with { Inputs = candidate.Inputs with { CompiledSources = candidate.Inputs.CompiledSources.Select(static source => source.Path.EndsWith("GrimoireConnectionAdmissionGate.cs", StringComparison.Ordinal) ? source with { Digest = "different-candidate" } : source).ToArray() } },
+            "candidate-source" => candidate with { Inputs = candidate.Inputs with { Inputs = candidate.Inputs.Inputs.Select(static source => source.Path.EndsWith("GrimoireConnectionAdmissionGate.cs", StringComparison.Ordinal) ? source with { Digest = "different-candidate" } : source).ToArray() } },
+            "catalog-shape" => candidate with { Inputs = candidate.Inputs with { CatalogShapeDigest = new string('2', 64) } },
+            "immutable-content" => candidate with { Inputs = candidate.Inputs with { ImmutableContentDigest = new string('2', 64) } },
+            "malformed-digest" => candidate with { Inputs = candidate.Inputs with { Inputs = [candidate.Inputs.Inputs[0] with { Digest = new string('G', 64) }, .. candidate.Inputs.Inputs[1..]] } },
+            "unsorted-input" => candidate with { Inputs = candidate.Inputs with { Inputs = candidate.Inputs.Inputs.Reverse().ToArray() } },
+            "absolute-input" => candidate with { Inputs = candidate.Inputs with { Inputs = [candidate.Inputs.Inputs[0] with { Path = "/absolute" }, .. candidate.Inputs.Inputs[1..]] } },
+            "missing-input" => candidate with { Inputs = candidate.Inputs with { Inputs = candidate.Inputs.Inputs[1..] } },
+            "extra-input" => candidate with { Inputs = candidate.Inputs with { Inputs = [.. candidate.Inputs.Inputs, new("zz-extra", new string('e', 64), true)] } },
+            "null-input-map" => candidate with { Inputs = candidate.Inputs with { Inputs = null! } },
             _ => candidate,
         };
 
@@ -203,6 +298,29 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
         pairs[0] = first with { Candidate = candidate };
 
         return evidence with { Pairs = pairs };
+
+    }
+
+    private static string FindRepositoryRoot()
+    {
+
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+
+        while (directory is not null)
+        {
+
+            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
+            {
+
+                return directory.FullName;
+
+            }
+
+            directory = directory.Parent;
+
+        }
+
+        throw new InvalidOperationException("Could not locate the repository root.");
 
     }
 

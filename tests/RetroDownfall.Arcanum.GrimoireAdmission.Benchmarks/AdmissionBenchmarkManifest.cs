@@ -13,8 +13,11 @@ internal sealed record AdmissionBenchmarkManifest(
     string MaterialImprovementConcurrency,
     AdmissionBenchmarkThresholds Thresholds,
     AdmissionBenchmarkBootstrap Bootstrap,
+    string InputCatalogShapeDigest,
     string[] SourceDifferenceAllowlist)
 {
+
+    private const string ExactInputCatalogShapeDigest = "a91e37b24069581e03cdc473a5fc188f8eeceb6bd83f4d9d273fb17ffebf20fa";
 
     private static readonly string[] ExactAllowlist =
     [
@@ -68,6 +71,7 @@ internal sealed record AdmissionBenchmarkManifest(
                     32,
                     2_000,
                     1_000_000,
+                    900,
                     [
                         "request.finite",
                         "request.quiesceable",
@@ -84,6 +88,7 @@ internal sealed record AdmissionBenchmarkManifest(
                     4,
                     4,
                     32,
+                    120,
                     [
                         "request.finite",
                         "work.effect",
@@ -95,6 +100,7 @@ internal sealed record AdmissionBenchmarkManifest(
             "logical",
             new(1.05, 1.10, 1.05, 1.05, 1.20),
             new("xorshift64star", 0x8A5CD789635D2DFFUL, 10_000, 0.05),
+            ExactInputCatalogShapeDigest,
             [.. ExactAllowlist]);
 
     internal void Validate()
@@ -130,6 +136,7 @@ internal sealed record AdmissionBenchmarkManifest(
                 || profile.LatencyBundleSize <= 0
                 || profile.LatencySampleCount <= 0
                 || profile.ThroughputIterations <= 0
+                || profile.MaximumDurationSeconds <= 0
                 || profile.MixedSchedule is null
                 || profile.MixedSchedule.Length == 0
                 || profile.MixedSchedule.Any(operation => !AdmissionBenchmarkOperations.All.Contains(operation, StringComparer.Ordinal))))
@@ -166,6 +173,7 @@ internal sealed record AdmissionBenchmarkManifest(
         }
 
         if (SourceDifferenceAllowlist is null
+            || InputCatalogShapeDigest != ExactInputCatalogShapeDigest
             || !SourceDifferenceAllowlist.SequenceEqual(ExactAllowlist, StringComparer.Ordinal)
             || SourceDifferenceAllowlist.Any(static path => path.Contains('*')
                 || path.EndsWith("/", StringComparison.Ordinal)

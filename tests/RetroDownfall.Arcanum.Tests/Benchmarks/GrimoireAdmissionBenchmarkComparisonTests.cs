@@ -32,6 +32,7 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
     [Theory]
     [InlineData("p50")]
     [InlineData("p99")]
+    [InlineData("ef-universal-p99")]
     [InlineData("ef-p99")]
     [InlineData("direct-allocation")]
     [InlineData("ef-allocation")]
@@ -51,7 +52,11 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
 
         Assert.False(report.Accepted);
 
-        Assert.Contains(report.Reasons, reason => reason.StartsWith(breakName, StringComparison.Ordinal));
+        string expectedReasonPrefix = breakName == "ef-universal-p99"
+            ? "p99"
+            : breakName;
+
+        Assert.Contains(report.Reasons, reason => reason.StartsWith(expectedReasonPrefix, StringComparison.Ordinal));
 
     }
 
@@ -83,6 +88,17 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
     [InlineData("zero-throughput")]
     [InlineData("wrong-order")]
     [InlineData("five-pairs")]
+    [InlineData("wrong-profile")]
+    [InlineData("wrong-success-count")]
+    [InlineData("wrong-checksum")]
+    [InlineData("overflowed-derived")]
+    [InlineData("warmup-count")]
+    [InlineData("latency-bundle-count")]
+    [InlineData("latency-operation-count")]
+    [InlineData("throughput-count")]
+    [InlineData("allocation-denominator")]
+    [InlineData("derived-bytes")]
+    [InlineData("wrong-worker-count")]
     public void Malformed_or_incomplete_evidence_is_invalid_not_a_measured_rejection(string breakName)
     {
 
@@ -143,9 +159,18 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
         {
             "p50" => MutateCell(evidence, "request.finite", "one", static cell => cell with { P50Nanoseconds = 106, P95Nanoseconds = 106, P99Nanoseconds = 106 }),
             "p99" => MutateCell(evidence, "request.finite", "two", static cell => cell with { P99Nanoseconds = 111 }),
+            "ef-universal-p99" => MutateCell(evidence, "ef.pooled", "two", static cell => cell with { P99Nanoseconds = 111 }),
             "ef-p99" => MutateCell(evidence, "ef.pooled", "one", static cell => cell with { P99Nanoseconds = 106 }),
-            "direct-allocation" => MutateCell(evidence, "request.finite", "two", static cell => cell with { BytesPerOperation = 17 }),
-            "ef-allocation" => MutateCell(evidence, "ef.pooled", "one", static cell => cell with { BytesPerOperation = 17 }),
+            "direct-allocation" => MutateCell(evidence, "request.finite", "two", static cell => cell with
+            {
+                AllocatedBytes = checked(17 * cell.AllocationOperationCount),
+                BytesPerOperation = 17,
+            }),
+            "ef-allocation" => MutateCell(evidence, "ef.pooled", "one", static cell => cell with
+            {
+                AllocatedBytes = checked(17 * cell.AllocationOperationCount),
+                BytesPerOperation = 17,
+            }),
             "terminal-waiter" => MutateCell(evidence, "request.finite", "one", static cell => cell with { MaterializedTerminalCallbackDelta = 1 }),
             "mixed-point" => MutateCell(evidence, "ordinary.mixed", "logical", static cell => cell with { OperationsPerSecond = 119 }),
             "mixed-lower" => MutatePairCells(evidence, [101d, 101d, 101d, 149d, 149d, 149d]),
@@ -156,6 +181,21 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
             "zero-throughput" => MutateCell(evidence, "ordinary.mixed", "logical", static cell => cell with { OperationsPerSecond = 0 }),
             "wrong-order" => evidence with { Pairs = evidence.Pairs.Select(static pair => pair with { FirstRole = "B", SecondRole = "C" }).ToArray() },
             "five-pairs" => evidence with { Pairs = evidence.Pairs[..5] },
+            "wrong-profile" => evidence with { Pairs = evidence.Pairs.Select(static pair => pair with { Candidate = pair.Candidate with { Profile = "smoke" } }).ToArray() },
+            "wrong-success-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { SuccessCount = 99 }),
+            "wrong-checksum" => MutateCell(evidence, "request.finite", "one", static cell => cell with { Checksum = 0 }),
+            "overflowed-derived" => MutateCell(
+                MutateBaselineCell(evidence, "ordinary.mixed", "logical", static cell => cell with { OperationsPerSecond = double.Epsilon }),
+                "ordinary.mixed",
+                "logical",
+                static cell => cell with { OperationsPerSecond = double.MaxValue }),
+            "warmup-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { WarmupOperationCount = cell.WarmupOperationCount - 1 }),
+            "latency-bundle-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { LatencyBundleCount = cell.LatencyBundleCount - 1 }),
+            "latency-operation-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { LatencyOperationCount = cell.LatencyOperationCount - 1 }),
+            "throughput-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { ThroughputOperationCount = cell.ThroughputOperationCount - 1 }),
+            "allocation-denominator" => MutateCell(evidence, "request.finite", "one", static cell => cell with { AllocationOperationCount = cell.AllocationOperationCount - 1 }),
+            "derived-bytes" => MutateCell(evidence, "request.finite", "one", static cell => cell with { BytesPerOperation = cell.BytesPerOperation + 0.5 }),
+            "wrong-worker-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { Workers = 2 }),
             _ => evidence,
         };
 
@@ -171,6 +211,8 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
     {
 
         List<AdmissionBenchmarkCellResult> cells = [];
+
+        AdmissionBenchmarkProfile profile = AdmissionBenchmarkManifest.CreateDefault().Profiles[0];
 
         foreach (string operation in AdmissionBenchmarkOperations.All)
         {
@@ -189,18 +231,24 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                         operation,
                         concurrency,
                         workers,
+                        profile.WarmupIterations,
+                        profile.LatencySampleCount,
+                        checked((long)profile.LatencySampleCount * profile.LatencyBundleSize),
+                        profile.ThroughputIterations,
                         operation == "ordinary.mixed" && concurrency == "logical"
                             ? mixedThroughput
                             : 100,
                         100,
                         100,
                         100,
+                        checked(allocation * profile.ThroughputIterations),
+                        profile.ThroughputIterations,
                         allocation,
                         0,
                         contention,
-                        100,
+                        AdmissionBenchmarkExpected.OperationCount(profile),
                         0,
-                        123,
+                        AdmissionBenchmarkExpected.Checksum(profile, operation, workers),
                         0));
 
             }
@@ -225,6 +273,8 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
 
     private static AdmissionBenchmarkInputIdentity InputIdentity() =>
         new(
+            "catalog-shape",
+            "immutable",
             "manifest",
             "harness",
             "project",
@@ -282,6 +332,26 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                         Cells = pair.Candidate.Cells.Select(
                             cell => cell.Operation == "ordinary.mixed" && cell.Concurrency == "logical"
                                 ? cell with { OperationsPerSecond = throughputs[index] }
+                                : cell).ToArray(),
+                    },
+                }).ToArray(),
+        };
+
+    private static AdmissionBenchmarkEvidenceBundle MutateBaselineCell(
+        AdmissionBenchmarkEvidenceBundle evidence,
+        string operation,
+        string concurrency,
+        Func<AdmissionBenchmarkCellResult, AdmissionBenchmarkCellResult> mutation) =>
+        evidence with
+        {
+            Pairs = evidence.Pairs.Select(
+                pair => pair with
+                {
+                    Baseline = pair.Baseline with
+                    {
+                        Cells = pair.Baseline.Cells.Select(
+                            cell => cell.Operation == operation && cell.Concurrency == concurrency
+                                ? mutation(cell)
                                 : cell).ToArray(),
                     },
                 }).ToArray(),

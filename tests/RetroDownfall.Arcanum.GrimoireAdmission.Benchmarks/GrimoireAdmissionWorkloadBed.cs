@@ -12,12 +12,14 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 /// <summary>
 /// Host-only adapter over the real Grimoire admission state machine.
 /// </summary>
-internal sealed class GrimoireAdmissionWorkloadBed
+internal sealed class GrimoireAdmissionWorkloadBed : IDisposable
 {
 
     private readonly BenchmarkComposition _composition;
@@ -35,6 +37,8 @@ internal sealed class GrimoireAdmissionWorkloadBed
     private long _liveEffects;
 
     private long _liveOpens;
+
+    private int _disposed;
 
     internal GrimoireAdmissionWorkloadBed(BenchmarkComposition composition)
     {
@@ -61,6 +65,8 @@ internal sealed class GrimoireAdmissionWorkloadBed
 
         List<AdmissionBenchmarkCellResult> cells = [];
 
+        using PersistentWorkerHarness harness = new(_workers.Length);
+
         foreach (AdmissionBenchmarkConcurrency concurrency in manifest.Concurrency)
         {
 
@@ -68,54 +74,24 @@ internal sealed class GrimoireAdmissionWorkloadBed
                 ? global::System.Environment.ProcessorCount
                 : concurrency.Workers;
 
-            using PersistentWorkerHarness harness = new(workers);
-
             foreach (string operation in manifest.Operations)
             {
 
                 _operation = operation;
 
-                int warmupIterations = IterationsPerWorker(profile.WarmupIterations, workers);
-
-                int latencySamples = IterationsPerWorker(profile.LatencySampleCount, workers);
-
-                int throughputIterations = IterationsPerWorker(profile.ThroughputIterations, workers);
-
-                harness.Run(
-                    new(
-                        AdmissionBenchmarkPhaseKind.Warmup,
-                        warmupIterations,
-                        1,
-                        Execute),
+                AdmissionBenchmarkCellMeasurement measurement = AdmissionBenchmarkCellRunner.Run(
+                    harness,
+                    profile,
+                    workers,
+                    Execute,
+                    () => _composition.Gate.MaterializedTerminalCallbacks,
                     cancellationToken);
-
-                AdmissionBenchmarkPhaseResult latency = harness.Run(
-                    new(
-                        AdmissionBenchmarkPhaseKind.Latency,
-                        latencySamples,
-                        profile.LatencyBundleSize,
-                        Execute),
-                    cancellationToken);
-
-                long callbackBaseline = _composition.Gate.MaterializedTerminalCallbacks;
-
-                AdmissionBenchmarkPhaseResult throughput = harness.Run(
-                    new(
-                        AdmissionBenchmarkPhaseKind.Throughput,
-                        throughputIterations,
-                        1,
-                        Execute),
-                    cancellationToken);
-
-                long callbackDelta = checked(_composition.Gate.MaterializedTerminalCallbacks - callbackBaseline);
 
                 cells.Add(ToCell(
                     operation,
                     concurrency.Id,
                     workers,
-                    latency,
-                    throughput,
-                    callbackDelta));
+                    measurement));
 
             }
 
@@ -128,6 +104,12 @@ internal sealed class GrimoireAdmissionWorkloadBed
     internal async ValueTask<AdmissionBenchmarkFinalState> ValidateFinalStateAsync(
         CancellationToken cancellationToken)
     {
+
+        long observedGeneration = _composition.Gate.CurrentGeneration;
+
+        Task<long> nextOpen = _composition.Gate.WaitForNextOpenGenerationAsync(
+            observedGeneration,
+            cancellationToken);
 
         Result<IGrimoireClosingOwner> begun = _composition.Gate.BeginOrResumeExclusive(
             new(
@@ -150,6 +132,13 @@ internal sealed class GrimoireAdmissionWorkloadBed
 
         RequireSuccess(closedResult);
 
+        if (nextOpen.IsCompleted)
+        {
+
+            throw new InvalidDataException("The next-open waiter completed while admission was closed.");
+
+        }
+
         await using IGrimoireExclusiveClosedLease closed = closedResult.Value;
 
         Result reopened = await closed.CompleteAsync(
@@ -157,6 +146,15 @@ internal sealed class GrimoireAdmissionWorkloadBed
             cancellationToken).ConfigureAwait(false);
 
         RequireSuccess(reopened);
+
+        long reopenedGeneration = await nextOpen.ConfigureAwait(false);
+
+        if (reopenedGeneration != checked(observedGeneration + 1))
+        {
+
+            throw new InvalidDataException("The next-open waiter observed the wrong reopen generation.");
+
+        }
 
         bool requestSucceeded = _composition.Gate.TryAcquireRequestLease(
             GrimoireRequestKind.Finite,
@@ -202,10 +200,17 @@ internal sealed class GrimoireAdmissionWorkloadBed
 
             int count = counts[index];
 
+            CovenantConnectionDrain drain = new();
+
+            GrimoireConnectionAdmissionGate gate = new(
+                TimeProvider.System,
+                drain,
+                new ChurnMaintenancePaths($"churn-{index}.db"));
+
             for (int admission = 0; admission < count; admission++)
             {
 
-                if (!_composition.Gate.TryAcquireRequestLease(
+                if (!gate.TryAcquireRequestLease(
                         GrimoireRequestKind.Finite,
                         out IGrimoireRequestLease? request))
                 {
@@ -222,7 +227,10 @@ internal sealed class GrimoireAdmissionWorkloadBed
 
             long started = System.Diagnostics.Stopwatch.GetTimestamp();
 
-            bool drained = await CloseDrainReopenAsync(index + 10, cancellationToken).ConfigureAwait(false);
+            bool drained = await CloseDrainReopenAsync(
+                gate,
+                index + 10,
+                cancellationToken).ConfigureAwait(false);
 
             long ended = System.Diagnostics.Stopwatch.GetTimestamp();
 
@@ -238,6 +246,25 @@ internal sealed class GrimoireAdmissionWorkloadBed
         }
 
         return results;
+
+    }
+
+    public void Dispose()
+    {
+
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+
+            return;
+
+        }
+
+        foreach (WorkerState worker in _workers)
+        {
+
+            worker.Dispose();
+
+        }
 
     }
 
@@ -546,12 +573,17 @@ internal sealed class GrimoireAdmissionWorkloadBed
         string operation,
         string concurrency,
         int workers,
-        AdmissionBenchmarkPhaseResult latency,
-        AdmissionBenchmarkPhaseResult throughput,
-        long callbackDelta)
+        AdmissionBenchmarkCellMeasurement measurement)
     {
 
-        if (latency.FailureCount != 0
+        AdmissionBenchmarkPhaseResult warmup = measurement.Warmup;
+
+        AdmissionBenchmarkPhaseResult latency = measurement.Latency;
+
+        AdmissionBenchmarkPhaseResult throughput = measurement.Throughput;
+
+        if (warmup.FailureCount != 0
+            || latency.FailureCount != 0
             || throughput.FailureCount != 0
             || latency.BundleNanosecondsPerOperation.Length == 0)
         {
@@ -578,17 +610,23 @@ internal sealed class GrimoireAdmissionWorkloadBed
             operation,
             concurrency,
             workers,
+            warmup.OperationCount,
+            latency.BundleNanosecondsPerOperation.LongLength,
+            latency.OperationCount,
+            throughput.OperationCount,
             throughput.OperationCount / elapsedSeconds,
             Percentile(samples, 0.50),
             Percentile(samples, 0.95),
             Percentile(samples, 0.99),
-            throughput.AllocatedBytes / throughput.OperationCount,
+            throughput.AllocatedBytes,
+            throughput.OperationCount,
+            throughput.AllocatedBytes / (double)throughput.OperationCount,
             throughput.Gen0Collections,
             throughput.LockContentions,
-            throughput.SuccessCount,
-            throughput.FailureCount,
-            checked(latency.Checksum + throughput.Checksum),
-            callbackDelta);
+            checked(warmup.SuccessCount + latency.SuccessCount + throughput.SuccessCount),
+            checked(warmup.FailureCount + latency.FailureCount + throughput.FailureCount),
+            checked(warmup.Checksum + latency.Checksum + throughput.Checksum),
+            measurement.MaterializedTerminalCallbackDelta);
 
     }
 
@@ -600,9 +638,6 @@ internal sealed class GrimoireAdmissionWorkloadBed
         return sorted[rank];
 
     }
-
-    private static int IterationsPerWorker(int totalIterations, int workers) =>
-        Math.Max(1, checked((totalIterations + workers - 1) / workers));
 
     private static void RequireSuccess(Result result)
     {
@@ -616,7 +651,8 @@ internal sealed class GrimoireAdmissionWorkloadBed
 
     }
 
-    private async ValueTask<bool> CloseDrainReopenAsync(
+    private static async ValueTask<bool> CloseDrainReopenAsync(
+        GrimoireConnectionAdmissionGate gate,
         int ownerByte,
         CancellationToken cancellationToken)
     {
@@ -625,7 +661,7 @@ internal sealed class GrimoireAdmissionWorkloadBed
 
         guidBytes[15] = checked((byte)ownerByte);
 
-        Result<IGrimoireClosingOwner> begun = _composition.Gate.BeginOrResumeExclusive(
+        Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(
             new(
                 new Guid(guidBytes),
                 CovenantExclusiveOperation.CovenantReset,
@@ -635,13 +671,13 @@ internal sealed class GrimoireAdmissionWorkloadBed
 
         await using IGrimoireClosingOwner closing = begun.Value;
 
-        Result drained = await _composition.Gate.DrainRequestAndWorkAsync(
+        Result drained = await gate.DrainRequestAndWorkAsync(
             closing,
             cancellationToken).ConfigureAwait(false);
 
         RequireSuccess(drained);
 
-        Result<IGrimoireExclusiveClosedLease> closedResult = await _composition.Gate
+        Result<IGrimoireExclusiveClosedLease> closedResult = await gate
             .CloseConnectionAdmissionAsync(closing, cancellationToken).ConfigureAwait(false);
 
         RequireSuccess(closedResult);
@@ -658,10 +694,22 @@ internal sealed class GrimoireAdmissionWorkloadBed
 
     }
 
-    private sealed class WorkerState
+    private sealed class WorkerState : IDisposable
     {
 
         internal SqliteConnection Connection { get; } = new("Data Source=:memory:;Pooling=False");
+
+        public void Dispose() => Connection.Dispose();
+
+    }
+
+    private sealed class ChurnMaintenancePaths(string canonicalPath) : IGrimoireMaintenancePathAuthority
+    {
+
+        public string CanonicalDatabasePath => canonicalPath;
+
+        public string ExportStagingDatabasePath(Guid operationId) =>
+            canonicalPath + "." + operationId.ToString("N") + ".candidate";
 
     }
 

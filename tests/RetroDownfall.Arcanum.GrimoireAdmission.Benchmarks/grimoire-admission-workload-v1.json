@@ -24,6 +24,7 @@
       "latencyBundleSize": 32,
       "latencySampleCount": 2000,
       "throughputIterations": 1000000,
+      "maximumDurationSeconds": 900,
       "mixedSchedule": [
         "request.finite",
         "request.quiesceable",
@@ -41,6 +42,7 @@
       "latencyBundleSize": 4,
       "latencySampleCount": 4,
       "throughputIterations": 32,
+      "maximumDurationSeconds": 120,
       "mixedSchedule": [
         "request.finite",
         "work.effect",
@@ -64,6 +66,7 @@
     "replicateCount": 10000,
     "lowerQuantile": 0.05
   },
+  "inputCatalogShapeDigest": "a91e37b24069581e03cdc473a5fc188f8eeceb6bd83f4d9d273fb17ffebf20fa",
   "sourceDifferenceAllowlist": [
     "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionGate.cs",
     "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionEpoch.cs"

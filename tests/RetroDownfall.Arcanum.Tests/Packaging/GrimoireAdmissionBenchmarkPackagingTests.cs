@@ -2,6 +2,8 @@ using System.Xml.Linq;
 
 using System.Diagnostics;
 
+using System.Text.RegularExpressions;
+
 using Microsoft.CodeAnalysis.CSharp;
 
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -21,6 +23,67 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
         "AdmissionBenchmarkManifest.cs",
         "PersistentWorkerHarness.cs",
     ];
+
+    [Fact]
+    public void Script_namespaces_every_function_owned_variable_for_posix_sh()
+    {
+
+        string script = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "scripts",
+            "benchmark-grimoire-admission.sh"));
+
+        MatchCollection functions = Regex.Matches(
+            script,
+            @"(?ms)^(?<name>[a-z][a-z0-9_]*)\(\)\n\{\n(?<body>.*?)^\}");
+
+        Assert.NotEmpty(functions);
+
+        foreach (Match function in functions)
+        {
+
+            string name = function.Groups["name"].Value;
+
+            string prefix = name + "__";
+
+            string body = function.Groups["body"].Value;
+
+            IEnumerable<string> assignments = Regex.Matches(
+                    body,
+                    @"(?m)^\s*(?<variable>[a-z][a-z0-9_]*)=")
+                .Select(static match => match.Groups["variable"].Value);
+
+            IEnumerable<string> iterations = Regex.Matches(
+                    body,
+                    @"(?m)^\s*for\s+(?<variable>[a-z][a-z0-9_]*)\s+in(?:\s|$)")
+                .Select(static match => match.Groups["variable"].Value);
+
+            IEnumerable<string> reads = Regex.Matches(
+                    body,
+                    @"(?m)\bread[ \t]+-r[ \t]+(?<variables>[a-z][a-z0-9_]*(?:[ \t]+[a-z][a-z0-9_]*)*)")
+                .SelectMany(static match => match.Groups["variables"].Value.Split(
+                    [' ', '\t'],
+                    StringSplitOptions.RemoveEmptyEntries));
+
+            string[] owned = assignments.Concat(iterations).Concat(reads).Distinct().ToArray();
+
+            string[] allowedShared = name switch
+            {
+                "create_workspace" => ["temp_root"],
+                "run_host" => ["child_pid", "watchdog_pid"],
+                _ => [],
+            };
+
+            Assert.All(
+                owned,
+                variable => Assert.True(
+                    variable.StartsWith(prefix, StringComparison.Ordinal)
+                        || allowedShared.Contains(variable, StringComparer.Ordinal),
+                    $"Function '{name}' owns unnamespaced POSIX-global variable '{variable}'."));
+
+        }
+
+    }
 
     [Fact]
     public void Host_is_outside_solution_and_tests_compile_the_exact_five_pure_sources()
@@ -124,12 +187,14 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(130)]
-    public async Task Smoke_script_publishes_once_runs_the_binary_directly_and_preserves_exit_code(
-        int hostExitCode)
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    [InlineData(130, false)]
+    [InlineData(0, true)]
+    public async Task Smoke_script_publishes_once_runs_directly_and_bounds_or_preserves_exit(
+        int hostExitCode,
+        bool forceParentDeadline)
     {
 
         if (OperatingSystem.IsWindows())
@@ -181,6 +246,32 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
                 fakeDotnet,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
+            if (forceParentDeadline)
+            {
+
+                string hangingHost = Path.Combine(fixture, "hanging-host");
+
+                await WriteExecutableAsync(
+                    hangingHost,
+                    "#!/bin/sh\n" +
+                    "printf 'host:%s home:%s\\n' \"$*\" \"${ARCANUM_TEST_HOME-unset}\" >> \"$BENCHMARK_FIXTURE_LOG\"\n" +
+                    "trap '' TERM\n" +
+                    "while :; do :; done\n");
+
+                await WriteExecutableAsync(
+                    fakeDotnet,
+                    "#!/bin/sh\n" +
+                    "printf 'dotnet:%s\\n' \"$*\" >> \"$BENCHMARK_FIXTURE_LOG\"\n" +
+                    "output=''\n" +
+                    "previous=''\n" +
+                    "for argument in \"$@\"; do if [ \"$previous\" = '-o' ]; then output=$argument; fi; previous=$argument; done\n" +
+                    "mkdir -p \"$output\"\n" +
+                    "cp \"$BENCHMARK_HANGING_HOST\" \"$output/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\"\n");
+
+                await WriteExecutableAsync(Path.Combine(fakeBin, "sleep"), "#!/bin/sh\nexit 0\n");
+
+            }
+
             ProcessStartInfo start = new("/bin/sh", script + " --smoke")
             {
                 WorkingDirectory = root,
@@ -196,6 +287,8 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
             start.Environment["BENCHMARK_FIXTURE_EXIT"] = hostExitCode.ToString(
                 global::System.Globalization.CultureInfo.InvariantCulture);
 
+            start.Environment["BENCHMARK_HANGING_HOST"] = Path.Combine(fixture, "hanging-host");
+
             start.Environment.Remove("ARCANUM_TEST_HOME");
 
             using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
@@ -204,7 +297,7 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
             string calls = await File.ReadAllTextAsync(log);
 
-            Assert.Equal(hostExitCode, process.ExitCode);
+            Assert.Equal(forceParentDeadline ? 2 : hostExitCode, process.ExitCode);
 
             Assert.Equal(1, calls.Split('\n').Count(static line => line.StartsWith("dotnet:publish ", StringComparison.Ordinal)));
 
@@ -212,7 +305,12 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
             Assert.Contains("-p:RestoreLockedMode=true", calls, StringComparison.Ordinal);
 
-            Assert.Contains("host:--smoke home:unset", calls, StringComparison.Ordinal);
+            if (!forceParentDeadline)
+            {
+
+                Assert.Contains("host:--smoke home:unset", calls, StringComparison.Ordinal);
+
+            }
 
             Assert.DoesNotContain("dotnet:run", calls, StringComparison.Ordinal);
 
@@ -282,8 +380,11 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
     }
 
-    [Fact]
-    public async Task Qualification_uses_two_immutable_publishes_and_six_counterbalanced_process_pairs()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(130)]
+    public async Task Qualification_uses_two_immutable_publishes_and_preserves_measurement_cancellation(
+        int hostExitCode)
     {
 
         if (OperatingSystem.IsWindows())
@@ -324,7 +425,7 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
                 "  fi\n" +
                 "  previous=$argument\n" +
                 "done\n" +
-                "exit 0\n");
+                "exit \"${BENCHMARK_FIXTURE_EXIT:-0}\"\n");
 
             File.SetUnixFileMode(
                 hostTemplate,
@@ -347,6 +448,8 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
                 "mkdir -p \"$output\"\n" +
                 "cp \"$BENCHMARK_FAKE_HOST\" \"$output/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\"\n");
 
+            string harness = new('9', 40);
+
             string baseline = new('a', 40);
 
             string candidate = new('b', 40);
@@ -356,8 +459,8 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
                 "#!/bin/sh\n" +
                 "case \"$3\" in\n" +
                 "  status) exit 0;;\n" +
-                "  rev-parse) case \"$4\" in a*) printf '%s\\n' '" + baseline + "';; *) printf '%s\\n' '" + candidate + "';; esac; exit 0;;\n" +
-                "  merge-base|archive|show) exit 0;;\n" +
+                "  rev-parse) case \"$4\" in 9*) printf '%s\\n' '" + harness + "';; a*) printf '%s\\n' '" + baseline + "';; *) printf '%s\\n' '" + candidate + "';; esac; exit 0;;\n" +
+                "  merge-base|archive|show|ls-tree) exit 0;;\n" +
                 "esac\n" +
                 "exit 2\n");
 
@@ -372,7 +475,8 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
             ProcessStartInfo start = new(
                 "/bin/sh",
                 Path.Combine(root, "scripts", "benchmark-grimoire-admission.sh")
-                    + " --qualify --base " + baseline
+                    + " --qualify --harness " + harness
+                    + " --base " + baseline
                     + " --candidate " + candidate
                     + " --out " + output)
             {
@@ -388,6 +492,9 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
             start.Environment["BENCHMARK_FAKE_HOST"] = hostTemplate;
 
+            start.Environment["BENCHMARK_FIXTURE_EXIT"] = hostExitCode.ToString(
+                global::System.Globalization.CultureInfo.InvariantCulture);
+
             start.Environment.Remove("ARCANUM_TEST_HOME");
 
             using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
@@ -396,11 +503,20 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
             string calls = await File.ReadAllTextAsync(log);
 
-            Assert.Equal(0, process.ExitCode);
+            Assert.Equal(hostExitCode, process.ExitCode);
 
             Assert.Equal(2, calls.Split('\n').Count(static line => line.StartsWith("dotnet:publish ", StringComparison.Ordinal)));
 
-            Assert.Equal(13, calls.Split('\n').Count(static line => line.StartsWith("host:", StringComparison.Ordinal)));
+            int expectedHostCalls = hostExitCode == 0 ? 13 : 1;
+
+            Assert.Equal(expectedHostCalls, calls.Split('\n').Count(static line => line.StartsWith("host:", StringComparison.Ordinal)));
+
+            if (hostExitCode == 130)
+            {
+
+                return;
+
+            }
 
             int pairZeroBaseline = calls.IndexOf("--pair 0 --order 0 --role B", StringComparison.Ordinal);
 
@@ -428,8 +544,11 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
     }
 
-    [Fact]
-    public async Task Calibration_keeps_the_requested_result_path_after_publish()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(7)]
+    public async Task Calibration_keeps_the_result_and_refuses_failed_toolchain_capture(
+        int toolchainExitCode)
     {
 
         if (OperatingSystem.IsWindows())
@@ -474,7 +593,7 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
             await WriteExecutableAsync(
                 Path.Combine(fakeBin, "dotnet"),
                 "#!/bin/sh\n" +
-                "case \"$1\" in --version) printf '10.0.400\\n'; exit 0;; --info) printf 'fake toolchain\\n'; exit 0;; esac\n" +
+                "case \"$1\" in --version) printf '10.0.400\\n'; exit 0;; --info) [ \"$BENCHMARK_TOOLCHAIN_EXIT\" -eq 0 ] || exit \"$BENCHMARK_TOOLCHAIN_EXIT\"; printf 'fake toolchain\\n'; exit 0;; esac\n" +
                 "output=''\n" +
                 "previous=''\n" +
                 "for argument in \"$@\"; do if [ \"$previous\" = '-o' ]; then output=$argument; fi; previous=$argument; done\n" +
@@ -507,13 +626,25 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
             start.Environment["BENCHMARK_FAKE_HOST"] = hostTemplate;
 
+            start.Environment["BENCHMARK_TOOLCHAIN_EXIT"] = toolchainExitCode.ToString(
+                global::System.Globalization.CultureInfo.InvariantCulture);
+
             start.Environment.Remove("ARCANUM_TEST_HOME");
 
             using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
 
             await process.WaitForExitAsync();
 
-            Assert.Equal(0, process.ExitCode);
+            Assert.Equal(toolchainExitCode == 0 ? 0 : 2, process.ExitCode);
+
+            if (toolchainExitCode != 0)
+            {
+
+                Assert.False(File.Exists(result));
+
+                return;
+
+            }
 
             Assert.True(File.Exists(result));
 
