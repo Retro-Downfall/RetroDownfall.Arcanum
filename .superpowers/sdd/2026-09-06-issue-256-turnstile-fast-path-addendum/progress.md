@@ -225,3 +225,23 @@ marks, binds, unlinks, and decrements under one `_sync`-to-shard transaction. Or
 read by monitor-backed finisher checks remain atomic. Old epochs never reactivate; survivors remain
 in the process-wide census across abort/reclose; successful abort/reopen computes every checked value
 and replacement publication object before mutating state and publishes the fresh epoch last.
+
+## Task C1 implementation handoff
+
+Task C1 implemented from `adf36a59d00cf28a1eb018eaca52f0f845078d8d` as normal implementation commit
+`c50be99dca742751554a8c57566c522d80e294c0`; independent C1 review is pending. Exact reviewed B remains
+`b0be2b4df8855e56f2dcfcaf155dfacddc51b88a`, and immutable H remains
+`f51ac3f84c3b408510e448311d7a5e15bdbc041e`. This increment is not final candidate C.
+
+Completed: checked instance-owned request/work censuses and lazy exact closure zero signal,
+never-reused epochs, fixed reclaimable request shards, request release without `_sync`, atomic
+ambient liveness, exact promotion, full request-shard scan before zero, and request-applicable
+publication/isolation proofs. Work membership/effects, physical opens, maintenance state, and
+`CurrentGeneration` remain monitor-backed for the next increment.
+
+Strict compile-clean RED/GREEN evidence is recorded in `task-C1-evidence.md`, and the full handoff is
+`task-C1-report.md`. Fresh solution build: zero warnings/errors. Gate/interceptor/request-scope:
+227/227. Transition/coordinator/request middleware/reset recovery: 474 passed, 0 failed, 3 existing
+Windows-only skips. Format, blank-line, staged/unstaged diff, immutable-H, 1,641-input catalog,
+production allowlist, unchanged Task B tests, and ancestry audits passed. No acceptance benchmark
+was run. Report, evidence, and ledger are committed separately from the implementation.
