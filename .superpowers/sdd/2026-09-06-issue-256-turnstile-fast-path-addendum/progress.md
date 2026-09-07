@@ -290,3 +290,11 @@ verified exact work epoch/shard admission, full close scan, scope/effect termina
 successor-group identity, deferred cancellation through abort/reclose, terminal/signal/callback
 ordering outside locks, mixed closure isolation, deterministic model/reclamation proof quality, and
 the cold-state/H boundary. Whole-candidate review and measurement remain mandatory.
+
+Task C whole-candidate review: complete with no Critical, Important, or Minor findings. The reviewer
+verified the composed request/work state machine, exact epoch/shard admission and promotion, completed
+scan and full-fence zero protocol, stage two/abort/reclose/reopen/`KeepClosed`, physical-open boundary,
+effect disposition/callback order, O(fixed shards + live memberships + live opens) reclamation,
+allocation/AOT scope, immutable H inputs, ancestry, and byte-reversible rejection path. Exact measured
+candidate C is `09da72dad77dc5b829f688f33ed6b8562621aa8d`. Review authorizes the bound Native
+AOT experiment; it does not yet authorize retaining or shipping C.
