@@ -19,17 +19,16 @@ namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 internal sealed class BenchmarkComposition : IAsyncDisposable
 {
 
-    private readonly ServiceProvider _provider;
+    private static readonly TimeSpan CleanupDeadline = TimeSpan.FromSeconds(10);
 
-    private readonly CancellationToken _disposalCancellationToken;
+    private readonly ServiceProvider _provider;
 
     private BenchmarkComposition(
         ServiceProvider provider,
         GrimoireConnectionAdmissionGate gate,
         CovenantConnectionDrain drain,
         GrimoireOrdinaryConnectionLifecycle lifecycle,
-        CovenantSqliteConnectionInitializer initializer,
-        CancellationToken disposalCancellationToken)
+        CovenantSqliteConnectionInitializer initializer)
     {
 
         _provider = provider;
@@ -41,8 +40,6 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
         Lifecycle = lifecycle;
 
         Initializer = initializer;
-
-        _disposalCancellationToken = disposalCancellationToken;
 
     }
 
@@ -56,7 +53,7 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
 
     internal IServiceProvider Services => _provider;
 
-    internal static BenchmarkComposition Create(CancellationToken disposalCancellationToken)
+    internal static BenchmarkComposition Create()
     {
 
         SqliteNativeRuntime.Instance.Initialize();
@@ -114,26 +111,60 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
             gate,
             drain,
             lifecycle,
-            initializer,
-            disposalCancellationToken);
+            initializer);
 
     }
 
     public async ValueTask DisposeAsync()
     {
 
-        Result drained = await Drain.DrainAsync(_disposalCancellationToken).ConfigureAwait(false);
+        AdmissionBenchmarkTeardownWitness witness = await TeardownAsync().ConfigureAwait(false);
 
-        if (drained.IsFailure)
+        if (!witness.HomeDeletionAuthorized)
         {
 
-            throw new InvalidDataException(drained.Error.Message);
+            throw new InvalidDataException(string.Join("; ", witness.Errors));
 
         }
 
-        await _provider.DisposeAsync().ConfigureAwait(false);
+    }
 
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    internal async ValueTask<AdmissionBenchmarkTeardownWitness> TeardownAsync()
+    {
+
+        using CancellationTokenSource cleanupCancellation = new(CleanupDeadline);
+
+        return await AdmissionBenchmarkTeardownCoordinator.RunAsync(
+            runtimeResourcesCreated: true,
+            async cancellationToken =>
+            {
+
+                Result drained = await Drain.DrainAsync(cancellationToken).ConfigureAwait(false);
+
+                if (drained.IsFailure)
+                {
+
+                    throw new InvalidDataException(drained.Error.Message);
+
+                }
+
+            },
+            () => _provider.DisposeAsync(),
+            async cancellationToken =>
+            {
+
+                Result drained = await Drain.DrainAsync(cancellationToken).ConfigureAwait(false);
+
+                if (drained.IsFailure)
+                {
+
+                    throw new InvalidDataException(drained.Error.Message);
+
+                }
+
+            },
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools,
+            cleanupCancellation.Token).ConfigureAwait(false);
 
     }
 

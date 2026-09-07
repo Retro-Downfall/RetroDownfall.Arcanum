@@ -36,7 +36,7 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
     [InlineData("ef-p99")]
     [InlineData("direct-allocation")]
     [InlineData("ef-allocation")]
-    [InlineData("terminal-waiter")]
+    [InlineData("ef-allocation-two")]
     [InlineData("mixed-point")]
     [InlineData("mixed-lower")]
     public void Every_acceptance_requirement_rejects_independently(string breakName)
@@ -52,9 +52,12 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
 
         Assert.False(report.Accepted);
 
-        string expectedReasonPrefix = breakName == "ef-universal-p99"
-            ? "p99"
-            : breakName;
+        string expectedReasonPrefix = breakName switch
+        {
+            "ef-universal-p99" => "p99",
+            "ef-allocation-two" => "ef-allocation",
+            _ => breakName,
+        };
 
         Assert.Contains(report.Reasons, reason => reason.StartsWith(expectedReasonPrefix, StringComparison.Ordinal));
 
@@ -80,6 +83,22 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
 
     }
 
+    [Fact]
+    public void Finite_extreme_mixed_ratios_produce_a_finite_overflow_safe_average()
+    {
+
+        AdmissionBenchmarkComparisonReport report = AdmissionBenchmarkComparison.Compare(
+            AdmissionBenchmarkManifest.CreateDefault(),
+            Evidence("overflowed-average"));
+
+        Assert.True(report.Valid, string.Join(global::System.Environment.NewLine, report.Reasons));
+
+        Assert.True(double.IsFinite(report.MixedThroughputPointRatio));
+
+        Assert.Equal(double.MaxValue, report.MixedThroughputPointRatio);
+
+    }
+
     [Theory]
     [InlineData("missing-cell")]
     [InlineData("duplicate-cell")]
@@ -99,6 +118,12 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
     [InlineData("allocation-denominator")]
     [InlineData("derived-bytes")]
     [InlineData("wrong-worker-count")]
+    [InlineData("terminal-waiter")]
+    [InlineData("wrong-final-live")]
+    [InlineData("wrong-final-reopen")]
+    [InlineData("missing-churn")]
+    [InlineData("wrong-churn-count")]
+    [InlineData("failed-churn-drain")]
     public void Malformed_or_incomplete_evidence_is_invalid_not_a_measured_rejection(string breakName)
     {
 
@@ -171,6 +196,11 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                 AllocatedBytes = checked(17 * cell.AllocationOperationCount),
                 BytesPerOperation = 17,
             }),
+            "ef-allocation-two" => MutateCell(evidence, "ef.pooled", "two", static cell => cell with
+            {
+                AllocatedBytes = checked(17 * cell.AllocationOperationCount),
+                BytesPerOperation = 17,
+            }),
             "terminal-waiter" => MutateCell(evidence, "request.finite", "one", static cell => cell with { MaterializedTerminalCallbackDelta = 1 }),
             "mixed-point" => MutateCell(evidence, "ordinary.mixed", "logical", static cell => cell with { OperationsPerSecond = 119 }),
             "mixed-lower" => MutatePairCells(evidence, [101d, 101d, 101d, 149d, 149d, 149d]),
@@ -189,6 +219,11 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                 "ordinary.mixed",
                 "logical",
                 static cell => cell with { OperationsPerSecond = double.MaxValue }),
+            "overflowed-average" => MutateCell(
+                MutateBaselineCell(evidence, "ordinary.mixed", "logical", static cell => cell with { OperationsPerSecond = 1 }),
+                "ordinary.mixed",
+                "logical",
+                static cell => cell with { OperationsPerSecond = double.MaxValue }),
             "warmup-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { WarmupOperationCount = cell.WarmupOperationCount - 1 }),
             "latency-bundle-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { LatencyBundleCount = cell.LatencyBundleCount - 1 }),
             "latency-operation-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { LatencyOperationCount = cell.LatencyOperationCount - 1 }),
@@ -196,6 +231,63 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
             "allocation-denominator" => MutateCell(evidence, "request.finite", "one", static cell => cell with { AllocationOperationCount = cell.AllocationOperationCount - 1 }),
             "derived-bytes" => MutateCell(evidence, "request.finite", "one", static cell => cell with { BytesPerOperation = cell.BytesPerOperation + 0.5 }),
             "wrong-worker-count" => MutateCell(evidence, "request.finite", "one", static cell => cell with { Workers = 2 }),
+            "wrong-final-live" => evidence with
+            {
+                Pairs = evidence.Pairs.Select(static pair => pair with
+                {
+                    Candidate = pair.Candidate with
+                    {
+                        FinalState = pair.Candidate.FinalState with { LiveWaiters = 1 },
+                    },
+                }).ToArray(),
+            },
+            "wrong-final-reopen" => evidence with
+            {
+                Pairs = evidence.Pairs.Select(static pair => pair with
+                {
+                    Candidate = pair.Candidate with
+                    {
+                        FinalState = pair.Candidate.FinalState with { ReopenSucceeded = false },
+                    },
+                }).ToArray(),
+            },
+            "missing-churn" => evidence with
+            {
+                Pairs = evidence.Pairs.Select(static pair => pair with
+                {
+                    Candidate = pair.Candidate with { HistoricalChurn = [] },
+                }).ToArray(),
+            },
+            "wrong-churn-count" => evidence with
+            {
+                Pairs = evidence.Pairs.Select(static pair => pair with
+                {
+                    Candidate = pair.Candidate with
+                    {
+                        HistoricalChurn =
+                        [
+                            pair.Candidate.HistoricalChurn[0],
+                            pair.Candidate.HistoricalChurn[1] with { DisposedAdmissions = 63 },
+                            pair.Candidate.HistoricalChurn[2],
+                        ],
+                    },
+                }).ToArray(),
+            },
+            "failed-churn-drain" => evidence with
+            {
+                Pairs = evidence.Pairs.Select(static pair => pair with
+                {
+                    Candidate = pair.Candidate with
+                    {
+                        HistoricalChurn =
+                        [
+                            pair.Candidate.HistoricalChurn[0],
+                            pair.Candidate.HistoricalChurn[1] with { DrainSucceeded = false },
+                            pair.Candidate.HistoricalChurn[2],
+                        ],
+                    },
+                }).ToArray(),
+            },
             _ => evidence,
         };
 
@@ -267,7 +359,15 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
             EnvironmentIdentity(),
             cells.ToArray(),
             new(0, 0, 0, 0, 0, true, true),
-            0);
+            0)
+        {
+            HistoricalChurn =
+            [
+                new(0, 0, 0, 1, true),
+                new(64, 0, 0, 1, true),
+                new(640, 0, 0, 1, true),
+            ],
+        };
 
     }
 

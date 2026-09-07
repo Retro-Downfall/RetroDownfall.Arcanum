@@ -74,6 +74,172 @@ internal sealed record AdmissionBenchmarkCellMeasurement(
     AdmissionBenchmarkPhaseResult Throughput,
     long MaterializedTerminalCallbackDelta);
 
+internal sealed record AdmissionBenchmarkTeardownWitness(
+    bool RuntimeResourcesCreated,
+    bool PreDrainSucceeded,
+    bool ProviderDisposed,
+    bool FinalDrainSucceeded,
+    bool PoolsCleared,
+    string[] Errors)
+{
+
+    internal bool HomeDeletionAuthorized => !RuntimeResourcesCreated
+        || ProviderDisposed && FinalDrainSucceeded && PoolsCleared;
+
+}
+
+internal static class AdmissionBenchmarkTeardownCoordinator
+{
+
+    internal static async ValueTask<AdmissionBenchmarkTeardownWitness> RunAsync(
+        bool runtimeResourcesCreated,
+        Func<CancellationToken, ValueTask> preDrain,
+        Func<ValueTask> disposeProvider,
+        Func<CancellationToken, ValueTask> finalDrain,
+        Action clearPools,
+        CancellationToken cleanupCancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(preDrain);
+
+        ArgumentNullException.ThrowIfNull(disposeProvider);
+
+        ArgumentNullException.ThrowIfNull(finalDrain);
+
+        ArgumentNullException.ThrowIfNull(clearPools);
+
+        List<string> errors = [];
+
+        bool preDrainSucceeded = await AttemptAsync(
+            "pre-drain",
+            () => preDrain(cleanupCancellationToken),
+            cleanupCancellationToken,
+            errors).ConfigureAwait(false);
+
+        bool providerDisposed = await AttemptAsync(
+            "provider disposal",
+            disposeProvider,
+            cleanupCancellationToken,
+            errors).ConfigureAwait(false);
+
+        bool finalDrainSucceeded = await AttemptAsync(
+            "final drain",
+            () => finalDrain(cleanupCancellationToken),
+            cleanupCancellationToken,
+            errors).ConfigureAwait(false);
+
+        bool poolsCleared;
+
+        try
+        {
+
+            clearPools();
+
+            poolsCleared = true;
+
+        }
+        catch (Exception exception)
+        {
+
+            errors.Add($"pool clearing: {exception.Message}");
+
+            poolsCleared = false;
+
+        }
+
+        return new(
+            runtimeResourcesCreated,
+            preDrainSucceeded,
+            providerDisposed,
+            finalDrainSucceeded,
+            poolsCleared,
+            errors.ToArray());
+
+    }
+
+    private static async ValueTask<bool> AttemptAsync(
+        string name,
+        Func<ValueTask> operation,
+        CancellationToken cleanupCancellationToken,
+        ICollection<string> errors)
+    {
+
+        try
+        {
+
+            await operation().AsTask().WaitAsync(cleanupCancellationToken).ConfigureAwait(false);
+
+            return true;
+
+        }
+        catch (Exception exception)
+        {
+
+            errors.Add($"{name}: {exception.Message}");
+
+            return false;
+
+        }
+
+    }
+
+}
+
+internal static class AdmissionBenchmarkLifecycleCoordinator
+{
+
+    internal static async ValueTask<T> DisposeThenSampleAsync<T>(
+        Action disposeMeasuredResources,
+        Func<CancellationToken, ValueTask<T>> sampleFinalState,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(disposeMeasuredResources);
+
+        ArgumentNullException.ThrowIfNull(sampleFinalState);
+
+        disposeMeasuredResources();
+
+        return await sampleFinalState(cancellationToken).ConfigureAwait(false);
+
+    }
+
+}
+
+internal static class AdmissionBenchmarkWorkerTeardown
+{
+
+    internal static Exception[] AttemptAll(IEnumerable<Action> actions)
+    {
+
+        ArgumentNullException.ThrowIfNull(actions);
+
+        List<Exception> errors = [];
+
+        foreach (Action action in actions)
+        {
+
+            try
+            {
+
+                action();
+
+            }
+            catch (Exception exception)
+            {
+
+                errors.Add(exception);
+
+            }
+
+        }
+
+        return errors.ToArray();
+
+    }
+
+}
+
 internal static class AdmissionBenchmarkCellRunner
 {
 
@@ -456,46 +622,66 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         Volatile.Write(ref _runEpoch, int.MaxValue);
 
-        _parkRelease.Set();
+        long deadline = checked(Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency));
+
+        List<Action> teardownActions =
+        [
+            () => _parkRelease.Set(),
+        ];
 
         foreach (AutoResetEvent signal in _wake)
         {
 
-            signal.Set();
+            teardownActions.Add(() => signal.Set());
 
         }
-
-        long deadline = checked(Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency));
 
         foreach (Thread thread in _threads)
         {
 
-            long remainingTicks = deadline - Stopwatch.GetTimestamp();
-
-            if (remainingTicks <= 0
-                || !thread.Join(TimeSpan.FromSeconds(remainingTicks / (double)Stopwatch.Frequency)))
+            teardownActions.Add(() =>
             {
 
-                throw new InvalidOperationException("A persistent benchmark worker did not stop within the bounded join.");
+                long remainingTicks = deadline - Stopwatch.GetTimestamp();
 
-            }
+                if (remainingTicks <= 0
+                    || !thread.Join(TimeSpan.FromSeconds(remainingTicks / (double)Stopwatch.Frequency)))
+                {
+
+                    throw new InvalidOperationException(
+                        "A persistent benchmark worker did not stop within the bounded join.");
+
+                }
+
+            });
 
         }
 
         foreach (AutoResetEvent signal in _wake)
         {
 
-            signal.Dispose();
+            teardownActions.Add(signal.Dispose);
 
         }
 
-        _allArmed.Dispose();
+        teardownActions.Add(_allArmed.Dispose);
 
-        _allCompleted.Dispose();
+        teardownActions.Add(_allCompleted.Dispose);
 
-        _allParked.Dispose();
+        teardownActions.Add(_allParked.Dispose);
 
-        _parkRelease.Dispose();
+        teardownActions.Add(_parkRelease.Dispose);
+
+        Exception[] teardownErrors = AdmissionBenchmarkWorkerTeardown.AttemptAll(teardownActions);
+
+        if (teardownErrors.Length != 0)
+        {
+
+            throw new InvalidOperationException(
+                "Persistent benchmark worker teardown was incomplete.",
+                new AggregateException(teardownErrors));
+
+        }
 
     }
 

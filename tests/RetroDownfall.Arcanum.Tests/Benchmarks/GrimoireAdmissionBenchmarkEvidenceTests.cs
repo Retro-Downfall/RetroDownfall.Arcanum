@@ -1,5 +1,7 @@
 using System.Text.Json;
 
+using System.Text.Json.Nodes;
+
 using System.Text.Json.Serialization;
 
 using RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
@@ -88,6 +90,84 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
         Assert.Throws<InvalidDataException>(
             () => AdmissionBenchmarkEvidence.ParseBundle(
                 json[..^5],
+                EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle));
+
+    }
+
+    [Theory]
+    [InlineData("p50Nanoseconds")]
+    [InlineData("p95Nanoseconds")]
+    [InlineData("p99Nanoseconds")]
+    [InlineData("allocatedBytes")]
+    [InlineData("allocationOperationCount")]
+    [InlineData("bytesPerOperation")]
+    [InlineData("gen0Collections")]
+    [InlineData("lockContentions")]
+    [InlineData("materializedTerminalCallbackDelta")]
+    public void Missing_required_cell_metric_is_refused_during_json_parsing(string propertyName)
+    {
+
+        JsonObject root = JsonNode.Parse(JsonSerializer.Serialize(
+            Bundle(),
+            EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle))!.AsObject();
+
+        JsonObject cell = root["pairs"]![0]!["candidate"]!["cells"]![0]!.AsObject();
+
+        Assert.True(cell.Remove(propertyName));
+
+        Assert.Throws<InvalidDataException>(
+            () => AdmissionBenchmarkEvidence.ParseBundle(
+                root.ToJsonString(),
+                EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle));
+
+    }
+
+    [Theory]
+    [InlineData("liveRequests")]
+    [InlineData("liveWork")]
+    [InlineData("liveOpens")]
+    [InlineData("liveEffects")]
+    [InlineData("liveWaiters")]
+    [InlineData("drainSucceeded")]
+    [InlineData("reopenSucceeded")]
+    public void Missing_required_final_state_metric_is_refused_during_json_parsing(string propertyName)
+    {
+
+        JsonObject root = JsonNode.Parse(JsonSerializer.Serialize(
+            Bundle(),
+            EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle))!.AsObject();
+
+        JsonObject finalState = root["pairs"]![0]!["candidate"]!["finalState"]!.AsObject();
+
+        Assert.True(finalState.Remove(propertyName));
+
+        Assert.Throws<InvalidDataException>(
+            () => AdmissionBenchmarkEvidence.ParseBundle(
+                root.ToJsonString(),
+                EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle));
+
+    }
+
+    [Theory]
+    [InlineData("disposedAdmissions")]
+    [InlineData("retainedBytesBeforeClose")]
+    [InlineData("retainedBytesAfterClose")]
+    [InlineData("closeNanoseconds")]
+    [InlineData("drainSucceeded")]
+    public void Missing_required_historical_churn_metric_is_refused_during_json_parsing(string propertyName)
+    {
+
+        JsonObject root = JsonNode.Parse(JsonSerializer.Serialize(
+            Bundle(),
+            EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle))!.AsObject();
+
+        JsonObject churn = root["pairs"]![0]!["candidate"]!["historicalChurn"]![0]!.AsObject();
+
+        Assert.True(churn.Remove(propertyName));
+
+        Assert.Throws<InvalidDataException>(
+            () => AdmissionBenchmarkEvidence.ParseBundle(
+                root.ToJsonString(),
                 EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle));
 
     }

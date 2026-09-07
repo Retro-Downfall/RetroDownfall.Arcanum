@@ -77,6 +77,17 @@ internal static class AdmissionBenchmarkComparison
 
                 }
 
+                if (operation == "ef.pooled"
+                    && AllocationRatioExceeds(
+                        baselineCell,
+                        candidateCell,
+                        manifest.Thresholds.EfAllocationMaximumRatio))
+                {
+
+                    rejected.Add($"ef-allocation: {operation}@{concurrency} exceeds the allocation ratio.");
+
+                }
+
                 if (candidateCell.MaterializedTerminalCallbackDelta != 0
                     || baselineCell.MaterializedTerminalCallbackDelta != 0)
                 {
@@ -117,19 +128,9 @@ internal static class AdmissionBenchmarkComparison
 
             efRatios.Add(efRatio);
 
-            if (AllocationRatioExceeds(
-                    baseEf,
-                    candidateEf,
-                    manifest.Thresholds.EfAllocationMaximumRatio))
-            {
-
-                rejected.Add("ef-allocation: ef.pooled@one exceeds the allocation ratio.");
-
-            }
-
         }
 
-        double mixedPoint = mixedRatios.Average();
+        double mixedPoint = FiniteMean(mixedRatios);
 
         double mixedLower = BootstrapQuantile(
             mixedRatios,
@@ -140,6 +141,15 @@ internal static class AdmissionBenchmarkComparison
             efRatios,
             manifest.Bootstrap,
             1 - manifest.Bootstrap.LowerQuantile);
+
+        if (!double.IsFinite(mixedPoint)
+            || !double.IsFinite(mixedLower)
+            || !double.IsFinite(efUpper))
+        {
+
+            return InvalidDerivedMetric("aggregate", "qualification");
+
+        }
 
         if (mixedPoint < manifest.Thresholds.MixedThroughputMinimumRatio)
         {
@@ -193,13 +203,6 @@ internal static class AdmissionBenchmarkComparison
 
         }
 
-        HashSet<(string Operation, string Concurrency)> required =
-        [
-            .. manifest.Operations.SelectMany(
-                _ => manifest.Concurrency,
-                static (operation, concurrency) => (operation, concurrency.Id)),
-        ];
-
         for (int index = 0; index < evidence.Pairs.Length; index++)
         {
 
@@ -224,133 +227,21 @@ internal static class AdmissionBenchmarkComparison
 
             }
 
-            ValidateRun(pair.Baseline, evidence.SessionId, manifest, required, errors);
+            errors.AddRange(AdmissionBenchmarkRunValidator.Validate(
+                manifest,
+                pair.Baseline,
+                "qualification",
+                evidence.SessionId));
 
-            ValidateRun(pair.Candidate, evidence.SessionId, manifest, required, errors);
+            errors.AddRange(AdmissionBenchmarkRunValidator.Validate(
+                manifest,
+                pair.Candidate,
+                "qualification",
+                evidence.SessionId));
 
         }
 
         return errors;
-
-    }
-
-    private static void ValidateRun(
-        AdmissionBenchmarkRevisionRun run,
-        string sessionId,
-        AdmissionBenchmarkManifest manifest,
-        IReadOnlySet<(string Operation, string Concurrency)> required,
-        ICollection<string> errors)
-    {
-
-        if (run.SessionId != sessionId || run.ExitCode != 0)
-        {
-
-            errors.Add($"Run {run.Role}/{run.PairIndex} has mismatched session or exit metadata.");
-
-        }
-
-        AdmissionBenchmarkProfile? profile = manifest.Profiles.SingleOrDefault(
-            item => string.Equals(item.Name, run.Profile, StringComparison.Ordinal));
-
-        if (profile is null || run.Profile != "qualification")
-        {
-
-            errors.Add($"Run {run.Role}/{run.PairIndex} does not use the qualification profile.");
-
-        }
-
-        if (run.Cells is null)
-        {
-
-            errors.Add($"Run {run.Role}/{run.PairIndex} has no cells.");
-
-            return;
-
-        }
-
-        HashSet<(string Operation, string Concurrency)> actual = [];
-
-        foreach (AdmissionBenchmarkCellResult cell in run.Cells)
-        {
-
-            if (!actual.Add((cell.Operation, cell.Concurrency)))
-            {
-
-                errors.Add($"Run {run.Role}/{run.PairIndex} has a duplicate cell.");
-
-            }
-
-            if (cell.Workers <= 0
-                || !PositiveFinite(cell.OperationsPerSecond)
-                || !NonnegativeFinite(cell.P50Nanoseconds)
-                || !NonnegativeFinite(cell.P95Nanoseconds)
-                || !NonnegativeFinite(cell.P99Nanoseconds)
-                || cell.P50Nanoseconds > cell.P95Nanoseconds
-                || cell.P95Nanoseconds > cell.P99Nanoseconds
-                || cell.WarmupOperationCount < 0
-                || cell.LatencyBundleCount < 0
-                || cell.LatencyOperationCount < 0
-                || cell.ThroughputOperationCount <= 0
-                || cell.AllocatedBytes < 0
-                || cell.AllocationOperationCount <= 0
-                || !NonnegativeFinite(cell.BytesPerOperation)
-                || cell.Gen0Collections < 0
-                || cell.LockContentions < 0
-                || cell.SuccessCount < 0
-                || cell.FailureCount < 0
-                || cell.FailureCount != 0)
-            {
-
-                errors.Add($"Run {run.Role}/{run.PairIndex} has an invalid metric in {cell.Operation}@{cell.Concurrency}.");
-
-            }
-
-            if (profile is not null && required.Contains((cell.Operation, cell.Concurrency)))
-            {
-
-                AdmissionBenchmarkConcurrency declaredConcurrency = manifest.Concurrency.Single(
-                    item => item.Id == cell.Concurrency);
-
-                int expectedWorkers = declaredConcurrency.Workers == 0
-                    ? run.Environment.LogicalProcessorCount
-                    : declaredConcurrency.Workers;
-
-                long expectedOperations = AdmissionBenchmarkExpected.OperationCount(profile);
-
-                long expectedLatencyOperations = checked(
-                    (long)profile.LatencySampleCount * profile.LatencyBundleSize);
-
-                long expectedChecksum = AdmissionBenchmarkExpected.Checksum(
-                    profile,
-                    cell.Operation,
-                    cell.Workers);
-
-                if (cell.Workers != expectedWorkers
-                    || cell.WarmupOperationCount != profile.WarmupIterations
-                    || cell.LatencyBundleCount != profile.LatencySampleCount
-                    || cell.LatencyOperationCount != expectedLatencyOperations
-                    || cell.ThroughputOperationCount != profile.ThroughputIterations
-                    || cell.AllocationOperationCount != cell.ThroughputOperationCount
-                    || cell.BytesPerOperation != cell.AllocatedBytes / (double)cell.AllocationOperationCount
-                    || cell.SuccessCount != expectedOperations
-                    || cell.FailureCount != 0
-                    || cell.Checksum != expectedChecksum)
-                {
-
-                    errors.Add($"Run {run.Role}/{run.PairIndex} has invalid exact accounting in {cell.Operation}@{cell.Concurrency}.");
-
-                }
-
-            }
-
-        }
-
-        if (!actual.SetEquals(required))
-        {
-
-            errors.Add($"Run {run.Role}/{run.PairIndex} does not contain the exact required cells.");
-
-        }
 
     }
 
@@ -417,6 +308,29 @@ internal static class AdmissionBenchmarkComparison
             0,
             [$"derived-metric: {operation}@{concurrency} produced non-finite arithmetic."]);
 
+    private static double FiniteMean(IReadOnlyList<double> values)
+    {
+
+        double mean = 0;
+
+        for (int index = 0; index < values.Count; index++)
+        {
+
+            mean += (values[index] - mean) / (index + 1);
+
+            if (!double.IsFinite(mean))
+            {
+
+                return double.NaN;
+
+            }
+
+        }
+
+        return mean;
+
+    }
+
     private static double CostRatio(double baseline, double candidate) =>
         baseline == 0
             ? candidate == 0 ? 1 : double.MaxValue
@@ -455,6 +369,190 @@ internal static class AdmissionBenchmarkComparison
             * thresholdNumerator;
 
         return left > right;
+
+    }
+
+}
+
+internal static class AdmissionBenchmarkRunValidator
+{
+
+    private static readonly int[] RequiredHistoricalChurn = [0, 64, 640];
+
+    internal static string[] Validate(
+        AdmissionBenchmarkManifest manifest,
+        AdmissionBenchmarkRevisionRun run,
+        string expectedProfile,
+        string expectedSessionId)
+    {
+
+        List<string> errors = [];
+
+        if (run.SessionId != expectedSessionId || run.ExitCode != 0)
+        {
+
+            errors.Add($"Run {run.Role}/{run.PairIndex} has mismatched session or exit metadata.");
+
+        }
+
+        AdmissionBenchmarkProfile? profile = manifest.Profiles.SingleOrDefault(
+            item => string.Equals(item.Name, run.Profile, StringComparison.Ordinal));
+
+        if (profile is null || run.Profile != expectedProfile)
+        {
+
+            errors.Add($"Run {run.Role}/{run.PairIndex} does not use the expected profile.");
+
+        }
+
+        HashSet<(string Operation, string Concurrency)> required =
+        [
+            .. manifest.Operations.SelectMany(
+                _ => manifest.Concurrency,
+                static (operation, concurrency) => (operation, concurrency.Id)),
+        ];
+
+        HashSet<(string Operation, string Concurrency)> actual = [];
+
+        if (run.Cells is null)
+        {
+
+            errors.Add($"Run {run.Role}/{run.PairIndex} has no cells.");
+
+        }
+        else
+        {
+
+            foreach (AdmissionBenchmarkCellResult cell in run.Cells)
+            {
+
+                if (!actual.Add((cell.Operation, cell.Concurrency)))
+                {
+
+                    errors.Add($"Run {run.Role}/{run.PairIndex} has a duplicate cell.");
+
+                }
+
+                if (cell.Workers <= 0
+                    || !PositiveFinite(cell.OperationsPerSecond)
+                    || !NonnegativeFinite(cell.P50Nanoseconds)
+                    || !NonnegativeFinite(cell.P95Nanoseconds)
+                    || !NonnegativeFinite(cell.P99Nanoseconds)
+                    || cell.P50Nanoseconds > cell.P95Nanoseconds
+                    || cell.P95Nanoseconds > cell.P99Nanoseconds
+                    || cell.WarmupOperationCount < 0
+                    || cell.LatencyBundleCount < 0
+                    || cell.LatencyOperationCount < 0
+                    || cell.ThroughputOperationCount <= 0
+                    || cell.AllocatedBytes < 0
+                    || cell.AllocationOperationCount <= 0
+                    || !NonnegativeFinite(cell.BytesPerOperation)
+                    || cell.Gen0Collections < 0
+                    || cell.LockContentions < 0
+                    || cell.SuccessCount < 0
+                    || cell.FailureCount != 0
+                    || cell.MaterializedTerminalCallbackDelta != 0)
+                {
+
+                    errors.Add($"Run {run.Role}/{run.PairIndex} has an invalid metric in {cell.Operation}@{cell.Concurrency}.");
+
+                }
+
+                if (profile is null || !required.Contains((cell.Operation, cell.Concurrency)))
+                {
+
+                    continue;
+
+                }
+
+                AdmissionBenchmarkConcurrency declaredConcurrency = manifest.Concurrency.Single(
+                    item => item.Id == cell.Concurrency);
+
+                int expectedWorkers = declaredConcurrency.Workers == 0
+                    ? run.Environment.LogicalProcessorCount
+                    : declaredConcurrency.Workers;
+
+                long expectedOperations = AdmissionBenchmarkExpected.OperationCount(profile);
+
+                long expectedLatencyOperations = checked(
+                    (long)profile.LatencySampleCount * profile.LatencyBundleSize);
+
+                long expectedChecksum = AdmissionBenchmarkExpected.Checksum(
+                    profile,
+                    cell.Operation,
+                    cell.Workers);
+
+                if (cell.Workers != expectedWorkers
+                    || cell.WarmupOperationCount != profile.WarmupIterations
+                    || cell.LatencyBundleCount != profile.LatencySampleCount
+                    || cell.LatencyOperationCount != expectedLatencyOperations
+                    || cell.ThroughputOperationCount != profile.ThroughputIterations
+                    || cell.AllocationOperationCount != cell.ThroughputOperationCount
+                    || cell.BytesPerOperation != cell.AllocatedBytes / (double)cell.AllocationOperationCount
+                    || cell.SuccessCount != expectedOperations
+                    || cell.Checksum != expectedChecksum)
+                {
+
+                    errors.Add($"Run {run.Role}/{run.PairIndex} has invalid exact accounting in {cell.Operation}@{cell.Concurrency}.");
+
+                }
+
+            }
+
+        }
+
+        if (!actual.SetEquals(required))
+        {
+
+            errors.Add($"Run {run.Role}/{run.PairIndex} does not contain the exact required cells.");
+
+        }
+
+        if (run.FinalState is null
+            || run.FinalState.LiveRequests != 0
+            || run.FinalState.LiveWork != 0
+            || run.FinalState.LiveOpens != 0
+            || run.FinalState.LiveEffects != 0
+            || run.FinalState.LiveWaiters != 0
+            || !run.FinalState.DrainSucceeded
+            || !run.FinalState.ReopenSucceeded)
+        {
+
+            errors.Add($"Run {run.Role}/{run.PairIndex} did not reach the required final drained state.");
+
+        }
+
+        if (run.HistoricalChurn is null
+            || run.HistoricalChurn.Length != RequiredHistoricalChurn.Length)
+        {
+
+            errors.Add($"Run {run.Role}/{run.PairIndex} does not contain the exact historical-churn observations.");
+
+        }
+        else
+        {
+
+            for (int index = 0; index < RequiredHistoricalChurn.Length; index++)
+            {
+
+                AdmissionBenchmarkHistoricalChurnResult churn = run.HistoricalChurn[index];
+
+                if (churn.DisposedAdmissions != RequiredHistoricalChurn[index]
+                    || churn.RetainedBytesBeforeClose < 0
+                    || churn.RetainedBytesAfterClose < 0
+                    || !NonnegativeFinite(churn.CloseNanoseconds)
+                    || !churn.DrainSucceeded)
+                {
+
+                    errors.Add($"Run {run.Role}/{run.PairIndex} has an invalid historical-churn observation at index {index}.");
+
+                }
+
+            }
+
+        }
+
+        return errors.Distinct(StringComparer.Ordinal).ToArray();
 
     }
 

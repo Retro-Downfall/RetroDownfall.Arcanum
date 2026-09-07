@@ -2,6 +2,8 @@ using System.Xml.Linq;
 
 using System.Diagnostics;
 
+using System.Runtime.InteropServices;
+
 using System.Text.RegularExpressions;
 
 using Microsoft.CodeAnalysis.CSharp;
@@ -80,6 +82,146 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
                     variable.StartsWith(prefix, StringComparison.Ordinal)
                         || allowedShared.Contains(variable, StringComparer.Ordinal),
                     $"Function '{name}' owns unnamespaced POSIX-global variable '{variable}'."));
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Published_host_independently_closes_the_runtime_source_set()
+    {
+
+        if (!OperatingSystem.IsMacOS() || RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+        {
+
+            return;
+
+        }
+
+        string root = FindRepositoryRoot();
+
+        string fixture = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-admission-host-closure-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(fixture);
+
+        try
+        {
+
+            string publish = Path.Combine(fixture, "publish");
+
+            string sourceRoot = Path.Combine(fixture, "source");
+
+            string workingDirectory = Path.Combine(fixture, "working");
+
+            Directory.CreateDirectory(sourceRoot);
+
+            Directory.CreateDirectory(workingDirectory);
+
+            await CopyCatalogInputsAsync(root, sourceRoot);
+
+            ProcessResult publishResult = await RunProcessAsync(
+                "dotnet",
+                [
+                    "publish",
+                    Path.Combine(
+                        root,
+                        "tests",
+                        "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
+                        "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj"),
+                    "-c",
+                    "Release",
+                    "-r",
+                    "osx-arm64",
+                    "--self-contained",
+                    "true",
+                    "-p:RestoreLockedMode=true",
+                    "-p:UseSharedCompilation=false",
+                    "-m:1",
+                    "-nodeReuse:false",
+                    "-o",
+                    publish,
+                ],
+                root);
+
+            Assert.Equal(0, publishResult.ExitCode);
+
+            string host = Path.Combine(
+                publish,
+                "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks");
+
+            ProcessResult accepted = await RunProcessAsync(
+                host,
+                ["--smoke", "--source-root", sourceRoot],
+                workingDirectory);
+
+            Assert.True(
+                accepted.ExitCode == 0,
+                $"Host exited {accepted.ExitCode}. stdout: {accepted.StandardOutput} stderr: {accepted.StandardError}");
+
+            string extraCSharp = Path.Combine(
+                sourceRoot,
+                "src",
+                "RetroDownfall.Arcanum.Core",
+                "UnexpectedBenchmarkInput.cs");
+
+            await File.WriteAllTextAsync(extraCSharp, "namespace Unexpected; internal sealed class Input;\n");
+
+            ProcessResult extraCSharpResult = await RunProcessAsync(
+                host,
+                ["--smoke", "--source-root", sourceRoot],
+                workingDirectory);
+
+            Assert.Equal(2, extraCSharpResult.ExitCode);
+
+            File.Delete(extraCSharp);
+
+            string extraSql = Path.Combine(
+                sourceRoot,
+                "src",
+                "RetroDownfall.Arcanum.Infrastructure",
+                "Data",
+                "Schema",
+                "UnexpectedBenchmarkInput.sql");
+
+            await File.WriteAllTextAsync(extraSql, "SELECT 1;\n");
+
+            ProcessResult extraSqlResult = await RunProcessAsync(
+                host,
+                ["--smoke", "--source-root", sourceRoot],
+                workingDirectory);
+
+            Assert.Equal(2, extraSqlResult.ExitCode);
+
+            File.Delete(extraSql);
+
+            string requiredSql = Directory.EnumerateFiles(
+                    Path.Combine(
+                        sourceRoot,
+                        "src",
+                        "RetroDownfall.Arcanum.Infrastructure",
+                        "Data",
+                        "Schema"),
+                    "*.sql",
+                    SearchOption.AllDirectories)
+                .Order(StringComparer.Ordinal)
+                .First();
+
+            File.Delete(requiredSql);
+
+            ProcessResult missingSqlResult = await RunProcessAsync(
+                host,
+                ["--smoke", "--source-root", sourceRoot],
+                workingDirectory);
+
+            Assert.Equal(2, missingSqlResult.ExitCode);
+
+        }
+        finally
+        {
+
+            Directory.Delete(fixture, recursive: true);
 
         }
 
@@ -308,7 +450,10 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
             if (!forceParentDeadline)
             {
 
-                Assert.Contains("host:--smoke home:unset", calls, StringComparison.Ordinal);
+                Assert.Contains(
+                    "host:--smoke --source-root " + root + " home:unset",
+                    calls,
+                    StringComparison.Ordinal);
 
             }
 
@@ -381,10 +526,18 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(130)]
+    [InlineData(0, "none", 0)]
+    [InlineData(130, "none", 130)]
+    [InlineData(0, "ancestry", 2)]
+    [InlineData(0, "catalog-extra-csharp", 2)]
+    [InlineData(0, "catalog-extra-sql", 2)]
+    [InlineData(0, "bytes-baseline", 2)]
+    [InlineData(0, "bytes-candidate", 2)]
+    [InlineData(0, "bytes-caller", 2)]
     public async Task Qualification_uses_two_immutable_publishes_and_preserves_measurement_cancellation(
-        int hostExitCode)
+        int hostExitCode,
+        string breakName,
+        int expectedExitCode)
     {
 
         if (OperatingSystem.IsWindows())
@@ -454,17 +607,56 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
             string candidate = new('b', 40);
 
+            string controlledRevision = Path.Combine(fixture, "revision");
+
+            Directory.CreateDirectory(controlledRevision);
+
+            await CopyCatalogInputsAsync(root, controlledRevision);
+
+            string controlledCatalog = Path.Combine(
+                controlledRevision,
+                "tests",
+                "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
+                "grimoire-admission-input-catalog-v1.txt");
+
+            string[] controlledTree = (await File.ReadAllLinesAsync(controlledCatalog))
+                .Select(static line => line.Split('\t')[1])
+                .ToArray();
+
+            await File.WriteAllLinesAsync(Path.Combine(controlledRevision, "tree.txt"), controlledTree);
+
             await WriteExecutableAsync(
                 Path.Combine(fakeBin, "git"),
                 "#!/bin/sh\n" +
                 "case \"$3\" in\n" +
                 "  status) exit 0;;\n" +
                 "  rev-parse) case \"$4\" in 9*) printf '%s\\n' '" + harness + "';; a*) printf '%s\\n' '" + baseline + "';; *) printf '%s\\n' '" + candidate + "';; esac; exit 0;;\n" +
-                "  merge-base|archive|show|ls-tree) exit 0;;\n" +
+                "  merge-base) [ \"${BENCHMARK_QUALIFICATION_BREAK:-none}\" != 'ancestry' ]; exit $?;;\n" +
+                "  ls-tree)\n" +
+                "    cat \"$BENCHMARK_QUALIFICATION_ROOT/revision/tree.txt\" || exit 2\n" +
+                "    if [ \"$6\" = '" + candidate + "' ]; then\n" +
+                "      case \"${BENCHMARK_QUALIFICATION_BREAK:-none}\" in\n" +
+                "        catalog-extra-csharp) printf '%s\\n' 'src/RetroDownfall.Arcanum.Infrastructure/ExtraQualificationFixture.cs';;\n" +
+                "        catalog-extra-sql) printf '%s\\n' 'src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/ExtraQualificationFixture.sql';;\n" +
+                "      esac\n" +
+                "    fi\n" +
+                "    exit 0;;\n" +
+                "  show)\n" +
+                "    git_fixture__spec=$4\n" +
+                "    git_fixture__revision=${git_fixture__spec%%:*}\n" +
+                "    git_fixture__path=${git_fixture__spec#*:}\n" +
+                "    git_fixture__file=$BENCHMARK_QUALIFICATION_ROOT/revision/$git_fixture__path\n" +
+                "    [ -f \"$git_fixture__file\" ] || exit 2\n" +
+                "    cat \"$git_fixture__file\" || exit 2\n" +
+                "    if [ \"$git_fixture__path\" = 'Directory.Build.props' ]; then\n" +
+                "      case \"${BENCHMARK_QUALIFICATION_BREAK:-none}:$git_fixture__revision\" in\n" +
+                "        bytes-baseline:a*|bytes-candidate:b*|bytes-caller:*) printf '%s\\n' 'controlled byte drift';;\n" +
+                "      esac\n" +
+                "    fi\n" +
+                "    exit 0;;\n" +
+                "  archive) exit 0;;\n" +
                 "esac\n" +
                 "exit 2\n");
-
-            await WriteExecutableAsync(Path.Combine(fakeBin, "cmp"), "#!/bin/sh\nexit 0\n");
 
             await WriteExecutableAsync(Path.Combine(fakeBin, "tar"), "#!/bin/sh\nexit 0\n");
 
@@ -495,15 +687,26 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
             start.Environment["BENCHMARK_FIXTURE_EXIT"] = hostExitCode.ToString(
                 global::System.Globalization.CultureInfo.InvariantCulture);
 
+            start.Environment["BENCHMARK_QUALIFICATION_BREAK"] = breakName;
+
+            start.Environment["BENCHMARK_QUALIFICATION_ROOT"] = fixture;
+
             start.Environment.Remove("ARCANUM_TEST_HOME");
 
             using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
 
             await process.WaitForExitAsync();
 
-            string calls = await File.ReadAllTextAsync(log);
+            Assert.Equal(expectedExitCode, process.ExitCode);
 
-            Assert.Equal(hostExitCode, process.ExitCode);
+            if (breakName != "none")
+            {
+
+                return;
+
+            }
+
+            string calls = await File.ReadAllTextAsync(log);
 
             Assert.Equal(2, calls.Split('\n').Count(static line => line.StartsWith("dotnet:publish ", StringComparison.Ordinal)));
 
@@ -678,6 +881,79 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
     }
 
+    private static async Task CopyCatalogInputsAsync(string root, string destination)
+    {
+
+        string catalogRelative = Path.Combine(
+            "tests",
+            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
+            "grimoire-admission-input-catalog-v1.txt");
+
+        foreach (string line in await File.ReadAllLinesAsync(Path.Combine(root, catalogRelative)))
+        {
+
+            string[] parts = line.Split('\t');
+
+            string relative = parts[1].Replace('/', Path.DirectorySeparatorChar);
+
+            string source = Path.Combine(root, relative);
+
+            if (!File.Exists(source))
+            {
+
+                Assert.Equal("O", parts[0]);
+
+                continue;
+
+            }
+
+            string target = Path.Combine(destination, relative);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+
+            File.Copy(source, target);
+
+        }
+
+    }
+
+    private static async Task<ProcessResult> RunProcessAsync(
+        string executable,
+        IReadOnlyList<string> arguments,
+        string workingDirectory)
+    {
+
+        ProcessStartInfo start = new(executable)
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        foreach (string argument in arguments)
+        {
+
+            start.ArgumentList.Add(argument);
+
+        }
+
+        start.Environment.Remove("ARCANUM_TEST_HOME");
+
+        using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
+
+        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
+
+        Task<string> standardError = process.StandardError.ReadToEndAsync();
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(5));
+
+        await process.WaitForExitAsync(deadline.Token);
+
+        return new(process.ExitCode, await standardOutput, await standardError);
+
+    }
+
     private static string Property(XDocument document, string name) =>
         document.Descendants(name).Single().Value;
 
@@ -703,5 +979,7 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
         throw new InvalidOperationException("Could not locate the repository root.");
 
     }
+
+    private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 
 }

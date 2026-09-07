@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 internal static class AdmissionBenchmarkOperations
@@ -162,42 +164,42 @@ internal sealed record AdmissionBenchmarkEnvironmentIdentity(
     bool DynamicCodeSupported);
 
 internal sealed record AdmissionBenchmarkCellResult(
-    string Operation,
-    string Concurrency,
-    int Workers,
-    long WarmupOperationCount,
-    long LatencyBundleCount,
-    long LatencyOperationCount,
-    long ThroughputOperationCount,
-    double OperationsPerSecond,
-    double P50Nanoseconds,
-    double P95Nanoseconds,
-    double P99Nanoseconds,
-    long AllocatedBytes,
-    long AllocationOperationCount,
-    double BytesPerOperation,
-    int Gen0Collections,
-    long LockContentions,
-    long SuccessCount,
-    long FailureCount,
-    long Checksum,
-    long MaterializedTerminalCallbackDelta);
+    [property: JsonRequired] string Operation,
+    [property: JsonRequired] string Concurrency,
+    [property: JsonRequired] int Workers,
+    [property: JsonRequired] long WarmupOperationCount,
+    [property: JsonRequired] long LatencyBundleCount,
+    [property: JsonRequired] long LatencyOperationCount,
+    [property: JsonRequired] long ThroughputOperationCount,
+    [property: JsonRequired] double OperationsPerSecond,
+    [property: JsonRequired] double P50Nanoseconds,
+    [property: JsonRequired] double P95Nanoseconds,
+    [property: JsonRequired] double P99Nanoseconds,
+    [property: JsonRequired] long AllocatedBytes,
+    [property: JsonRequired] long AllocationOperationCount,
+    [property: JsonRequired] double BytesPerOperation,
+    [property: JsonRequired] int Gen0Collections,
+    [property: JsonRequired] long LockContentions,
+    [property: JsonRequired] long SuccessCount,
+    [property: JsonRequired] long FailureCount,
+    [property: JsonRequired] long Checksum,
+    [property: JsonRequired] long MaterializedTerminalCallbackDelta);
 
 internal sealed record AdmissionBenchmarkFinalState(
-    long LiveRequests,
-    long LiveWork,
-    long LiveOpens,
-    long LiveEffects,
-    long LiveWaiters,
-    bool DrainSucceeded,
-    bool ReopenSucceeded);
+    [property: JsonRequired] long LiveRequests,
+    [property: JsonRequired] long LiveWork,
+    [property: JsonRequired] long LiveOpens,
+    [property: JsonRequired] long LiveEffects,
+    [property: JsonRequired] long LiveWaiters,
+    [property: JsonRequired] bool DrainSucceeded,
+    [property: JsonRequired] bool ReopenSucceeded);
 
 internal sealed record AdmissionBenchmarkHistoricalChurnResult(
-    int DisposedAdmissions,
-    long RetainedBytesBeforeClose,
-    long RetainedBytesAfterClose,
-    double CloseNanoseconds,
-    bool DrainSucceeded);
+    [property: JsonRequired] int DisposedAdmissions,
+    [property: JsonRequired] long RetainedBytesBeforeClose,
+    [property: JsonRequired] long RetainedBytesAfterClose,
+    [property: JsonRequired] double CloseNanoseconds,
+    [property: JsonRequired] bool DrainSucceeded);
 
 internal sealed record AdmissionBenchmarkRevisionRun(
     string Revision,

@@ -242,7 +242,9 @@ case "$1" in
         create_workspace
         publish_dir="$temp_root/publish"
         publish_host "$repo_root" "$publish_dir" || exit 2
-        run_host 150 "$publish_dir/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks" --smoke
+        run_host 150 "$publish_dir/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks" \
+            --smoke \
+            --source-root "$repo_root"
         exit $?
         ;;
     --calibrate)

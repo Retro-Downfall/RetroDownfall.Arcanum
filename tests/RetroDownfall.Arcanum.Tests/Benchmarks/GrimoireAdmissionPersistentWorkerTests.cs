@@ -367,6 +367,214 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
 
     }
 
+    [Fact]
+    public async Task Teardown_attempts_every_stage_after_pre_drain_failure()
+    {
+
+        List<string> calls = [];
+
+        AdmissionBenchmarkTeardownWitness witness = await AdmissionBenchmarkTeardownCoordinator.RunAsync(
+            runtimeResourcesCreated: true,
+            _ =>
+            {
+
+                calls.Add("pre-drain");
+
+                throw new InvalidDataException("pre-drain break");
+
+            },
+            () =>
+            {
+
+                calls.Add("provider");
+
+                return ValueTask.CompletedTask;
+
+            },
+            _ =>
+            {
+
+                calls.Add("final-drain");
+
+                return ValueTask.CompletedTask;
+
+            },
+            () => calls.Add("pools"),
+            CancellationToken.None);
+
+        Assert.Equal(["pre-drain", "provider", "final-drain", "pools"], calls);
+
+        Assert.False(witness.PreDrainSucceeded);
+
+        Assert.True(witness.ProviderDisposed);
+
+        Assert.True(witness.FinalDrainSucceeded);
+
+        Assert.True(witness.PoolsCleared);
+
+        Assert.True(witness.HomeDeletionAuthorized);
+
+        Assert.Contains(witness.Errors, static error => error.Contains("pre-drain break", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public async Task Teardown_bounds_provider_disposal_and_retains_the_home_without_proof()
+    {
+
+        TaskCompletionSource providerNeverCompletes = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        List<string> calls = [];
+
+        using CancellationTokenSource cleanupCancellation = new();
+
+        cleanupCancellation.Cancel();
+
+        AdmissionBenchmarkTeardownWitness witness = await AdmissionBenchmarkTeardownCoordinator.RunAsync(
+            runtimeResourcesCreated: true,
+            _ => ValueTask.CompletedTask,
+            () => new(providerNeverCompletes.Task),
+            _ =>
+            {
+
+                calls.Add("final-drain");
+
+                return ValueTask.CompletedTask;
+
+            },
+            () => calls.Add("pools"),
+            cleanupCancellation.Token);
+
+        Assert.Equal(["final-drain", "pools"], calls);
+
+        Assert.False(witness.ProviderDisposed);
+
+        Assert.True(witness.FinalDrainSucceeded);
+
+        Assert.True(witness.PoolsCleared);
+
+        Assert.False(witness.HomeDeletionAuthorized);
+
+    }
+
+    [Fact]
+    public async Task Teardown_without_created_runtime_resources_authorizes_owned_home_cleanup()
+    {
+
+        using CancellationTokenSource cleanupCancellation = new();
+
+        cleanupCancellation.Cancel();
+
+        AdmissionBenchmarkTeardownWitness witness = await AdmissionBenchmarkTeardownCoordinator.RunAsync(
+            runtimeResourcesCreated: false,
+            _ => ValueTask.FromException(new InvalidOperationException("pre")),
+            () => ValueTask.FromException(new InvalidOperationException("provider")),
+            _ => ValueTask.FromException(new InvalidOperationException("final")),
+            () => throw new InvalidOperationException("pools"),
+            cleanupCancellation.Token);
+
+        Assert.True(witness.HomeDeletionAuthorized);
+
+        Assert.Equal(4, witness.Errors.Length);
+
+    }
+
+    [Fact]
+    public async Task Final_state_is_sampled_only_after_measured_resources_are_disposed()
+    {
+
+        List<string> calls = [];
+
+        bool disposed = false;
+
+        int finalState = await AdmissionBenchmarkLifecycleCoordinator.DisposeThenSampleAsync(
+            () =>
+            {
+
+                calls.Add("dispose");
+
+                disposed = true;
+
+            },
+            _ =>
+            {
+
+                Assert.True(disposed);
+
+                calls.Add("sample");
+
+                return ValueTask.FromResult(42);
+
+            },
+            CancellationToken.None);
+
+        Assert.Equal(42, finalState);
+
+        Assert.Equal(["dispose", "sample"], calls);
+
+    }
+
+    [Fact]
+    public void Worker_teardown_attempts_every_handle_cleanup_after_a_join_failure()
+    {
+
+        PersistentWorkerHarness harness = new(2);
+
+        Thread[] workers = (Thread[])typeof(PersistentWorkerHarness)
+            .GetField("_threads", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(harness)!;
+
+        AutoResetEvent[] wake = (AutoResetEvent[])typeof(PersistentWorkerHarness)
+            .GetField("_wake", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(harness)!;
+
+        workers[0] = new Thread(static () => { });
+
+        Assert.ThrowsAny<Exception>(harness.Dispose);
+
+        Assert.All(wake, static signal => Assert.True(signal.SafeWaitHandle.IsClosed));
+
+    }
+
+    [Fact]
+    public void Worker_teardown_action_failures_do_not_suppress_later_join_or_handle_cleanup()
+    {
+
+        List<string> calls = [];
+
+        Exception[] errors = AdmissionBenchmarkWorkerTeardown.AttemptAll(
+        [
+            () =>
+            {
+
+                calls.Add("join-one");
+
+                throw new InvalidOperationException("join break");
+
+            },
+            () => calls.Add("join-two"),
+            () =>
+            {
+
+                calls.Add("handle-one");
+
+                throw new InvalidOperationException("handle break");
+
+            },
+            () => calls.Add("handle-two"),
+        ]);
+
+        Assert.Equal(["join-one", "join-two", "handle-one", "handle-two"], calls);
+
+        Assert.Equal(2, errors.Length);
+
+        Assert.Contains(errors, static error => error.Message == "join break");
+
+        Assert.Contains(errors, static error => error.Message == "handle break");
+
+    }
+
     private sealed class OrderedProbe : IAdmissionBenchmarkOrderProbe
     {
 

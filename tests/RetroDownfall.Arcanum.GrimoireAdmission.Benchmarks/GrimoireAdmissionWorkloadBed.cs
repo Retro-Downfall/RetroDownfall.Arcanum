@@ -38,6 +38,8 @@ internal sealed class GrimoireAdmissionWorkloadBed : IDisposable
 
     private long _liveOpens;
 
+    private long _liveWaiters;
+
     private int _disposed;
 
     internal GrimoireAdmissionWorkloadBed(BenchmarkComposition composition)
@@ -111,48 +113,69 @@ internal sealed class GrimoireAdmissionWorkloadBed : IDisposable
             observedGeneration,
             cancellationToken);
 
-        Result<IGrimoireClosingOwner> begun = _composition.Gate.BeginOrResumeExclusive(
-            new(
-                Guid.Parse("00000000-0000-0000-0000-000000000001"),
-                CovenantExclusiveOperation.CovenantReset,
-                new CovenantDigest(Enumerable.Repeat((byte)1, 32).ToArray())));
+        Interlocked.Increment(ref _liveWaiters);
 
-        RequireSuccess(begun);
+        bool drainSucceeded = false;
 
-        await using IGrimoireClosingOwner closing = begun.Value;
+        bool reopenSucceeded = false;
 
-        Result drained = await _composition.Gate.DrainRequestAndWorkAsync(
-            closing,
-            cancellationToken).ConfigureAwait(false);
-
-        RequireSuccess(drained);
-
-        Result<IGrimoireExclusiveClosedLease> closedResult = await _composition.Gate
-            .CloseConnectionAdmissionAsync(closing, cancellationToken).ConfigureAwait(false);
-
-        RequireSuccess(closedResult);
-
-        if (nextOpen.IsCompleted)
+        try
         {
 
-            throw new InvalidDataException("The next-open waiter completed while admission was closed.");
+            Result<IGrimoireClosingOwner> begun = _composition.Gate.BeginOrResumeExclusive(
+                new(
+                    Guid.Parse("00000000-0000-0000-0000-000000000001"),
+                    CovenantExclusiveOperation.CovenantReset,
+                    new CovenantDigest(Enumerable.Repeat((byte)1, 32).ToArray())));
+
+            RequireSuccess(begun);
+
+            await using IGrimoireClosingOwner closing = begun.Value;
+
+            Result drained = await _composition.Gate.DrainRequestAndWorkAsync(
+                closing,
+                cancellationToken).ConfigureAwait(false);
+
+            RequireSuccess(drained);
+
+            drainSucceeded = drained.IsSuccess;
+
+            Result<IGrimoireExclusiveClosedLease> closedResult = await _composition.Gate
+                .CloseConnectionAdmissionAsync(closing, cancellationToken).ConfigureAwait(false);
+
+            RequireSuccess(closedResult);
+
+            if (nextOpen.IsCompleted)
+            {
+
+                throw new InvalidDataException("The next-open waiter completed while admission was closed.");
+
+            }
+
+            await using IGrimoireExclusiveClosedLease closed = closedResult.Value;
+
+            Result reopened = await closed.CompleteAsync(
+                CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                cancellationToken).ConfigureAwait(false);
+
+            RequireSuccess(reopened);
+
+            reopenSucceeded = reopened.IsSuccess;
+
+            long reopenedGeneration = await nextOpen.ConfigureAwait(false);
+
+            if (reopenedGeneration != checked(observedGeneration + 1))
+            {
+
+                throw new InvalidDataException("The next-open waiter observed the wrong reopen generation.");
+
+            }
 
         }
-
-        await using IGrimoireExclusiveClosedLease closed = closedResult.Value;
-
-        Result reopened = await closed.CompleteAsync(
-            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
-            cancellationToken).ConfigureAwait(false);
-
-        RequireSuccess(reopened);
-
-        long reopenedGeneration = await nextOpen.ConfigureAwait(false);
-
-        if (reopenedGeneration != checked(observedGeneration + 1))
+        finally
         {
 
-            throw new InvalidDataException("The next-open waiter observed the wrong reopen generation.");
+            Interlocked.Decrement(ref _liveWaiters);
 
         }
 
@@ -169,21 +192,24 @@ internal sealed class GrimoireAdmissionWorkloadBed : IDisposable
 
         await request!.DisposeAsync().ConfigureAwait(false);
 
-        using IGrimoireConnectionOpenTicket ticket = _composition.Gate.AcquireOrdinaryOpen(
-            _workers[0].Connection);
+        using (SqliteConnection finalConnection = new("Data Source=:memory:;Pooling=False"))
+        using (IGrimoireConnectionOpenTicket ticket = _composition.Gate.AcquireOrdinaryOpen(finalConnection))
+        {
 
-        RequireSuccess(ticket.RevalidateAfterNativeOpen());
+            RequireSuccess(ticket.RevalidateAfterNativeOpen());
 
-        RequireSuccess(ticket.MarkOpened());
+            RequireSuccess(ticket.MarkOpened());
+
+        }
 
         return new(
             Interlocked.Read(ref _liveRequests),
             Interlocked.Read(ref _liveWork),
             Interlocked.Read(ref _liveOpens),
             Interlocked.Read(ref _liveEffects),
-            0,
-            drained.IsSuccess,
-            reopened.IsSuccess);
+            Interlocked.Read(ref _liveWaiters),
+            drainSucceeded,
+            reopenSucceeded);
 
     }
 

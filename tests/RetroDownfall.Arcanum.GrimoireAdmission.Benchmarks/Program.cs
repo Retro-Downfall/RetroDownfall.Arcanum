@@ -19,6 +19,42 @@ internal static class Program
 
     private const int InvalidEvidence = 2;
 
+    private const string BenchmarkPrefix = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/";
+
+    private const string CatalogPath = BenchmarkPrefix + "grimoire-admission-input-catalog-v1.txt";
+
+    private const string EpochPath = "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionEpoch.cs";
+
+    private const string SchemaPrefix = "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/";
+
+    private static readonly string[] RuntimeCSharpRoots =
+    [
+        "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
+        "src/RetroDownfall.Arcanum.Core",
+        "src/RetroDownfall.Arcanum.Infrastructure",
+        "src/RetroDownfall.Arcanum.Secrets",
+    ];
+
+    private static readonly string[] FixedRuntimeInputs =
+    [
+        "Directory.Build.props",
+        "scripts/benchmark-grimoire-admission.sh",
+        CatalogPath,
+        BenchmarkPrefix + "grimoire-admission-workload-v1.json",
+        BenchmarkPrefix + "packages.lock.json",
+        BenchmarkPrefix + "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj",
+        "src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj",
+        "src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj",
+        "src/RetroDownfall.Arcanum.Secrets/RetroDownfall.Arcanum.Secrets.csproj",
+        "src/RetroDownfall.Arcanum.NativeSqlCipher/RetroDownfall.Arcanum.NativeSqlCipher.csproj",
+        "src/RetroDownfall.Arcanum.NativeSqlCipher/build/RetroDownfall.Arcanum.NativeSqlCipher.targets",
+        "src/RetroDownfall.Arcanum.NativeSqlCipher/buildTransitive/RetroDownfall.Arcanum.NativeSqlCipher.targets",
+        "src/RetroDownfall.Arcanum.NativeSqlCipher/native-source-manifest.json",
+        "src/RetroDownfall.Arcanum.NativeSqlCipher/runtimes/osx-arm64/native/libe_sqlcipher.dylib",
+        "src/RetroDownfall.Arcanum.NativeSqlCipher/runtimes/win-arm64/native/e_sqlcipher.dll",
+        "src/RetroDownfall.Arcanum.NativeSqlCipher/runtimes/win-x64/native/e_sqlcipher.dll",
+    ];
+
     internal static async Task<int> Main(string[] args)
     {
 
@@ -44,7 +80,7 @@ internal static class Program
 
         AdmissionBenchmarkHome? home = null;
 
-        int exitCode;
+        int exitCode = InvalidEvidence;
 
         using CancellationTokenSource processCancellation = new();
 
@@ -87,6 +123,7 @@ internal static class Program
                 args,
                 manifest,
                 sessionId,
+                home,
                 processCancellation.Token).ConfigureAwait(false);
 
         }
@@ -126,7 +163,12 @@ internal static class Program
 
                 Console.Error.WriteLine($"Benchmark home safety validation failed; retained: {home.ChildPath}");
 
-                exitCode = InvalidEvidence;
+                if (exitCode != 130)
+                {
+
+                    exitCode = InvalidEvidence;
+
+                }
 
             }
 
@@ -140,11 +182,14 @@ internal static class Program
         string[] args,
         AdmissionBenchmarkManifest manifest,
         string sessionId,
+        AdmissionBenchmarkHome home,
         CancellationToken processCancellation)
     {
 
-        if (args.Length == 1 && args[0] == "--smoke")
+        if (args.Length == 3 && args[0] == "--smoke")
         {
+
+            string sourceRoot = RequiredOption(args, "--source-root");
 
             AdmissionBenchmarkRevisionRun run = await RunAsync(
                 manifest,
@@ -154,7 +199,8 @@ internal static class Program
                 0,
                 0,
                 "H",
-                Directory.GetCurrentDirectory(),
+                sourceRoot,
+                home,
                 processCancellation).ConfigureAwait(false);
 
             Console.WriteLine($"Grimoire admission Native AOT smoke passed ({run.Cells.Length} cells).");
@@ -196,6 +242,7 @@ internal static class Program
                 order,
                 role,
                 sourceRoot,
+                home,
                 processCancellation).ConfigureAwait(false);
 
             WriteAtomic(
@@ -376,6 +423,7 @@ internal static class Program
         int orderPosition,
         string role,
         string sourceRoot,
+        AdmissionBenchmarkHome home,
         CancellationToken processCancellation)
     {
 
@@ -406,65 +454,181 @@ internal static class Program
 
         CancellationToken cancellationToken = linked.Token;
 
-        await using BenchmarkComposition composition = BenchmarkComposition.Create(cancellationToken);
-
-        using GrimoireAdmissionWorkloadBed bed = new(composition);
-
-        AdmissionBenchmarkCellResult[] cells = bed.Run(manifest, profile, cancellationToken);
-
-        AdmissionBenchmarkHistoricalChurnResult[] historicalChurn = await bed
-            .MeasureHistoricalChurnAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        AdmissionBenchmarkFinalState finalState = await bed.ValidateFinalStateAsync(cancellationToken)
-            .ConfigureAwait(false);
-
         string digest = Sha256Hex(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
             manifest,
             AdmissionBenchmarkJsonContext.Default.AdmissionBenchmarkManifest)));
 
         AdmissionBenchmarkInputIdentity inputs = CreateInputIdentity(sourceRoot, manifest, digest);
 
-        IReadOnlyDictionary<string, object> gcConfiguration = GC.GetConfigurationVariables();
+        BenchmarkComposition? composition = null;
 
-        if (!gcConfiguration.TryGetValue("ConcurrentGC", out object? concurrentGcValue)
-            || concurrentGcValue is not bool concurrentGc)
+        GrimoireAdmissionWorkloadBed? bed = null;
+
+        bool bedDisposalAttempted = false;
+
+        bool measuredResourcesDisposed = false;
+
+        Exception? primaryException = null;
+
+        try
         {
 
-            throw new InvalidDataException("The runtime did not expose an exact Boolean ConcurrentGC configuration.");
+            home.MarkRuntimeResourcesCreated();
+
+            composition = BenchmarkComposition.Create();
+
+            bed = new(composition);
+
+            AdmissionBenchmarkCellResult[] cells = bed.Run(manifest, profile, cancellationToken);
+
+            AdmissionBenchmarkHistoricalChurnResult[] historicalChurn = await bed
+                .MeasureHistoricalChurnAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            AdmissionBenchmarkFinalState finalState = await AdmissionBenchmarkLifecycleCoordinator
+                .DisposeThenSampleAsync(
+                    () =>
+                    {
+
+                        bedDisposalAttempted = true;
+
+                        bed.Dispose();
+
+                        measuredResourcesDisposed = true;
+
+                        home.MarkMeasuredResourcesDisposed();
+
+                    },
+                    bed.ValidateFinalStateAsync,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            IReadOnlyDictionary<string, object> gcConfiguration = GC.GetConfigurationVariables();
+
+            if (!gcConfiguration.TryGetValue("ConcurrentGC", out object? concurrentGcValue)
+                || concurrentGcValue is not bool concurrentGc)
+            {
+
+                throw new InvalidDataException("The runtime did not expose an exact Boolean ConcurrentGC configuration.");
+
+            }
+
+            AdmissionBenchmarkEnvironmentIdentity environment = new(
+                System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier,
+                System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+                System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString(),
+                System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+                global::System.Environment.Version.ToString(),
+                Option(global::System.Environment.GetCommandLineArgs(), "--sdk") ?? "unknown",
+                Option(global::System.Environment.GetCommandLineArgs(), "--cpu") ?? "unknown",
+                global::System.Environment.ProcessorCount,
+                System.Diagnostics.Stopwatch.Frequency,
+                GCSettings.IsServerGC,
+                concurrentGc,
+                RuntimeFeature.IsDynamicCodeSupported);
+
+            AdmissionBenchmarkRevisionRun run = new(
+                revision,
+                true,
+                sessionId,
+                pairIndex,
+                orderPosition,
+                role,
+                profile.Name,
+                inputs,
+                environment,
+                cells,
+                finalState,
+                0)
+            {
+                HistoricalChurn = historicalChurn,
+            };
+
+            string[] validationErrors = AdmissionBenchmarkRunValidator.Validate(
+                manifest,
+                run,
+                profile.Name,
+                sessionId);
+
+            if (validationErrors.Length != 0)
+            {
+
+                throw new InvalidDataException(
+                    "The benchmark run failed exact invariant validation: "
+                    + string.Join("; ", validationErrors));
+
+            }
+
+            return run;
 
         }
-
-        AdmissionBenchmarkEnvironmentIdentity environment = new(
-            System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier,
-            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
-            System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString(),
-            System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            global::System.Environment.Version.ToString(),
-            Option(global::System.Environment.GetCommandLineArgs(), "--sdk") ?? "unknown",
-            Option(global::System.Environment.GetCommandLineArgs(), "--cpu") ?? "unknown",
-            global::System.Environment.ProcessorCount,
-            System.Diagnostics.Stopwatch.Frequency,
-            GCSettings.IsServerGC,
-            concurrentGc,
-            RuntimeFeature.IsDynamicCodeSupported);
-
-        return new(
-            revision,
-            true,
-            sessionId,
-            pairIndex,
-            orderPosition,
-            role,
-            profile.Name,
-            inputs,
-            environment,
-            cells,
-            finalState,
-            0)
+        catch (Exception exception)
         {
-            HistoricalChurn = historicalChurn,
-        };
+
+            primaryException = exception;
+
+            throw;
+
+        }
+        finally
+        {
+
+            if (bed is not null && !bedDisposalAttempted)
+            {
+
+                bedDisposalAttempted = true;
+
+                try
+                {
+
+                    bed.Dispose();
+
+                    measuredResourcesDisposed = true;
+
+                    home.MarkMeasuredResourcesDisposed();
+
+                }
+                catch (Exception exception)
+                {
+
+                    Console.Error.WriteLine($"Benchmark measured-resource teardown failed: {exception.Message}");
+
+                }
+
+            }
+
+            if (composition is not null)
+            {
+
+                AdmissionBenchmarkTeardownWitness witness = await composition.TeardownAsync().ConfigureAwait(false);
+
+                home.RecordTeardown(witness);
+
+                if (!witness.HomeDeletionAuthorized)
+                {
+
+                    Console.Error.WriteLine(
+                        "Benchmark runtime teardown was incomplete: " + string.Join("; ", witness.Errors));
+
+                    if (primaryException is null)
+                    {
+
+                        throw new InvalidDataException("Benchmark runtime teardown was incomplete.");
+
+                    }
+
+                }
+
+            }
+
+            if (!measuredResourcesDisposed && bed is not null)
+            {
+
+                Console.Error.WriteLine("Benchmark measured resources did not produce a positive disposal witness.");
+
+            }
+
+        }
 
     }
 
@@ -579,13 +743,9 @@ internal static class Program
         string manifestDigest)
     {
 
-        string root = Path.GetFullPath(sourceRoot);
+        string root = ValidateSourceRoot(sourceRoot);
 
-        const string benchmarkPrefix = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/";
-
-        const string catalogPath = benchmarkPrefix + "grimoire-admission-input-catalog-v1.txt";
-
-        string catalogContents = File.ReadAllText(Path.Combine(root, catalogPath), Encoding.UTF8);
+        string catalogContents = File.ReadAllText(Path.Combine(root, CatalogPath), Encoding.UTF8);
 
         using Stream catalogStream = typeof(Program).Assembly.GetManifestResourceStream(
             "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.grimoire-admission-input-catalog-v1.txt")
@@ -602,6 +762,18 @@ internal static class Program
 
         AdmissionBenchmarkCatalogEntry[] catalog = ParseCatalog(catalogContents);
 
+        AdmissionBenchmarkCatalogEntry[] independentlySelected = EnumerateRuntimeInputs(root);
+
+        if (!catalog.SequenceEqual(independentlySelected))
+        {
+
+            throw new InvalidDataException(
+                "The input catalog does not match the host's independently enumerated runtime input set.");
+
+        }
+
+        ValidateEmbeddedSchema(independentlySelected);
+
         string shapeDigest = CatalogShapeDigest(catalog);
 
         if (shapeDigest != manifest.InputCatalogShapeDigest)
@@ -611,7 +783,7 @@ internal static class Program
 
         }
 
-        AdmissionBenchmarkDigestEntry[] inputs = catalog.Select(
+        AdmissionBenchmarkDigestEntry[] inputs = independentlySelected.Select(
                 entry =>
                 {
 
@@ -659,13 +831,196 @@ internal static class Program
                 root,
                 inputs.Where(entry => !manifest.SourceDifferenceAllowlist.Contains(entry.Path, StringComparer.Ordinal))),
             manifestDigest,
-            DigestContents(root, inputs.Where(static entry => entry.Path.StartsWith(benchmarkPrefix, StringComparison.Ordinal))),
+            DigestContents(root, inputs.Where(static entry => entry.Path.StartsWith(BenchmarkPrefix, StringComparison.Ordinal))),
             DigestContents(root, inputs.Where(static entry => entry.Path == "Directory.Build.props" || entry.Path.EndsWith(".csproj", StringComparison.Ordinal) || entry.Path.EndsWith(".targets", StringComparison.Ordinal))),
             inputs.Single(static entry => entry.Path.EndsWith("/packages.lock.json", StringComparison.Ordinal)).Digest,
             toolchainDigest,
             inputs.Single(static entry => entry.Path.EndsWith("/native-source-manifest.json", StringComparison.Ordinal)).Digest,
             nativeBinary.Digest,
             inputs);
+
+    }
+
+    private static string ValidateSourceRoot(string sourceRoot)
+    {
+
+        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(sourceRoot));
+
+        DirectoryInfo rootInfo = new(root);
+
+        if (!rootInfo.Exists
+            || rootInfo.LinkTarget is not null
+            || rootInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+
+            throw new InvalidDataException("The source root must be an existing canonical non-link directory.");
+
+        }
+
+        return root;
+
+    }
+
+    private static AdmissionBenchmarkCatalogEntry[] EnumerateRuntimeInputs(string root)
+    {
+
+        List<AdmissionBenchmarkCatalogEntry> entries = [];
+
+        foreach (string relativeRoot in RuntimeCSharpRoots)
+        {
+
+            foreach (string path in EnumerateSelectedFiles(root, relativeRoot, ".cs"))
+            {
+
+                if (path != EpochPath)
+                {
+
+                    entries.Add(new(path, false));
+
+                }
+
+            }
+
+        }
+
+        foreach (string path in EnumerateSelectedFiles(
+                     root,
+                     "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema",
+                     ".sql"))
+        {
+
+            entries.Add(new(path, false));
+
+        }
+
+        entries.AddRange(FixedRuntimeInputs.Select(static path => new AdmissionBenchmarkCatalogEntry(path, false)));
+
+        entries.Add(new(EpochPath, true));
+
+        AdmissionBenchmarkCatalogEntry[] selected = [.. entries.OrderBy(static entry => entry.Path, StringComparer.Ordinal)];
+
+        if (selected.Select(static entry => entry.Path).Distinct(StringComparer.Ordinal).Count() != selected.Length)
+        {
+
+            throw new InvalidDataException("The host's independently enumerated runtime input set contains a duplicate.");
+
+        }
+
+        return selected;
+
+    }
+
+    private static IEnumerable<string> EnumerateSelectedFiles(
+        string root,
+        string relativeRoot,
+        string extension)
+    {
+
+        string selectionRoot = Path.Combine(root, relativeRoot);
+
+        DirectoryInfo selectionRootInfo = new(selectionRoot);
+
+        if (!selectionRootInfo.Exists
+            || selectionRootInfo.LinkTarget is not null
+            || selectionRootInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+
+            throw new InvalidDataException($"Runtime input root '{relativeRoot}' is missing or is a link.");
+
+        }
+
+        Stack<DirectoryInfo> pending = new();
+
+        pending.Push(selectionRootInfo);
+
+        while (pending.TryPop(out DirectoryInfo? directory))
+        {
+
+            foreach (FileSystemInfo child in directory.EnumerateFileSystemInfos())
+            {
+
+                if (child.LinkTarget is not null || child.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+
+                    throw new InvalidDataException($"Runtime input path '{child.FullName}' is a link.");
+
+                }
+
+                if (child is DirectoryInfo childDirectory)
+                {
+
+                    if (childDirectory.Name is not "bin" and not "obj")
+                    {
+
+                        pending.Push(childDirectory);
+
+                    }
+
+                    continue;
+
+                }
+
+                if (child is FileInfo file
+                    && file.Extension.Equals(extension, StringComparison.Ordinal))
+                {
+
+                    string relative = Path.GetRelativePath(root, file.FullName).Replace('\\', '/');
+
+                    if (relative.StartsWith("../", StringComparison.Ordinal)
+                        || relative == ".."
+                        || Path.IsPathFullyQualified(relative))
+                    {
+
+                        throw new InvalidDataException("A runtime input escaped the canonical source root.");
+
+                    }
+
+                    yield return relative;
+
+                }
+
+            }
+
+        }
+
+    }
+
+    private static void ValidateEmbeddedSchema(IEnumerable<AdmissionBenchmarkCatalogEntry> inputs)
+    {
+
+        const string resourcePrefix = "RetroDownfall.Arcanum.Infrastructure.Data.Schema.";
+
+        const string resourceSuffix = ".sql";
+
+        string[] sourceSchema = inputs
+            .Where(static entry => entry.Path.StartsWith(SchemaPrefix, StringComparison.Ordinal)
+                && entry.Path.EndsWith(resourceSuffix, StringComparison.Ordinal))
+            .Select(static entry => entry.Path[SchemaPrefix.Length..^resourceSuffix.Length].Replace('/', '.'))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        string[] embeddedSchema = typeof(RetroDownfall.Arcanum.Infrastructure.Data.ArcanumDbContext)
+            .Assembly
+            .GetManifestResourceNames()
+            .Where(static name => name.StartsWith(resourcePrefix, StringComparison.Ordinal)
+                && name.EndsWith(resourceSuffix, StringComparison.Ordinal))
+            .Select(static name => name[resourcePrefix.Length..^resourceSuffix.Length])
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        if (!sourceSchema.SequenceEqual(embeddedSchema, StringComparer.Ordinal))
+        {
+
+            int mismatch = Enumerable.Range(0, Math.Min(sourceSchema.Length, embeddedSchema.Length))
+                .FirstOrDefault(index => sourceSchema[index] != embeddedSchema[index], -1);
+
+            throw new InvalidDataException(
+                "The source-root schema input set does not match the embedded Infrastructure schema resources. "
+                + $"Source count {sourceSchema.Length}, embedded count {embeddedSchema.Length}, first mismatch "
+                + $"{mismatch}: '{(mismatch >= 0 ? sourceSchema[mismatch] : "<count>")}' versus "
+                + $"'{(mismatch >= 0 ? embeddedSchema[mismatch] : "<count>")}'.");
+
+        }
 
     }
 
@@ -853,6 +1208,10 @@ internal sealed class AdmissionBenchmarkHome
 
     private readonly string _markerContents;
 
+    private bool _deletionAuthorized = true;
+
+    private bool _measuredResourcesDisposed;
+
     private AdmissionBenchmarkHome(
         string nonce,
         string sessionId,
@@ -933,11 +1292,25 @@ internal sealed class AdmissionBenchmarkHome
 
     }
 
+    internal void MarkRuntimeResourcesCreated() => _deletionAuthorized = false;
+
+    internal void MarkMeasuredResourcesDisposed() => _measuredResourcesDisposed = true;
+
+    internal void RecordTeardown(AdmissionBenchmarkTeardownWitness witness) =>
+        _deletionAuthorized = _measuredResourcesDisposed && witness.HomeDeletionAuthorized;
+
     internal bool TryDelete()
     {
 
         try
         {
+
+            if (!_deletionAuthorized)
+            {
+
+                return false;
+
+            }
 
             if (!CanDelete(ParentPath, ChildPath, Nonce, SessionId, _markerContents))
             {
