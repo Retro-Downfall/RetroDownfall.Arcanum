@@ -8,7 +8,7 @@ Main plan: docs/superpowers/plans/2026-09-06-issue-256-hosted-producer-admission
 ## Task todo
 
 - [x] Task A: Add the admission benchmark without changing production
-- [ ] Task B: Characterize all current gate invariants
+- [x] Task B: Characterize all current gate invariants
 - [ ] Task C: Implement and measure the benchmark-gated hot path, if justified
 - [ ] Task D: Prove queue-free bounded reopen in main-plan Tasks 3-13
 - [ ] Task E: Prove maintenance classification in main-plan Task 14
@@ -190,3 +190,38 @@ gate/interceptor/request-scope slice passed 196/196 with no skips; fresh nonincr
 build passed with 0 warnings/errors; scoped format, blank-line, diff, and immutable-H audits passed.
 Task B now adds 80 cases. Full evidence is appended to `task-B-report.md`; this report/ledger
 bookkeeping remains separate from exact B. No Task C optimization was introduced.
+
+Task B: fix round 1/5 complete. The same independent reviewer verified the stale unpromoted-request
+finding is addressed before any promotion, census, owner, or phase mutation; the regression pins the
+full G1 timeout/abort-to-G2 path and later drain; and no new Critical, Important, Minor, scope, or H
+finding remains. Exact reviewed monitor baseline B is
+`b0be2b4df8855e56f2dcfcaf155dfacddc51b88a`.
+
+## Task C controller rulings
+
+Ruling: the H callback metric retains its exact physical-open meaning. Removing the eager ordinary
+request/work terminal tasks is proved by Task C structural/allocation tests, not by renaming or
+changing H. Historical-churn timing is supporting evidence; executable membership/census tests are
+the formal O(fixed shards + live leases + live opens) proof. A passing comparator alone is therefore
+never a complete acceptance claim.
+
+Ruling: keep physical-open tickets and `CurrentGeneration` on `_sync` in the first candidate. Move
+only request/work admission, reclaimable membership, effect serialization, terminal release, and
+stage-one zero waiting. Counts and fixed shards belong to each singleton gate instance across all
+its never-reused epochs; they are not static. Keep ambient ancestry separate from intrusive shard
+membership so released ambient history cannot retain whole lease/CTS state.
+
+Ruling: introduce checked request/work counts and the closure-owned zero signal while the monitor
+still protects both paths, then migrate requests, then zero-publication races, then work/effects.
+This avoids an unprovable hybrid census. Publishing the exact zero signal requires an Interlocked
+full-fence operation before count recheck; volatile release/acquire alone cannot prove absence of a
+missed zero. Close publishes `Closing` and completes the full fixed-order shard scan before deriving
+drained state or exposing a waiter.
+
+Ruling: only `_sync` may nest into one captured shard; no path may take shard then `_sync`, hold two
+shards, await under either lock, or invoke callbacks under either lock. Admission rechecks exact
+epoch and phase inside its shard before checked CAS reservation and exact linking. Promotion validates,
+marks, binds, unlinks, and decrements under one `_sync`-to-shard transaction. Ordinary release flags
+read by monitor-backed finisher checks remain atomic. Old epochs never reactivate; survivors remain
+in the process-wide census across abort/reclose; successful abort/reopen computes every checked value
+and replacement publication object before mutating state and publishes the fresh epoch last.
