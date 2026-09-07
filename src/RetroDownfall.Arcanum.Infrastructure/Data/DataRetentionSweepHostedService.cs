@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
+using RetroDownfall.Arcanum.Core.Operations;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -19,6 +21,8 @@ internal sealed class DataRetentionSweepHostedService(
     IServiceScopeFactory scopeFactory,
     IDataRetentionPolicyStore policyStore,
     TimeProvider timeProvider,
+    IGrimoireConnectionAdmissionGate admission,
+    LongRunningOperationOwnership operationOwnership,
     ILogger<DataRetentionSweepHostedService> logger) : BackgroundService
 {
 
@@ -77,42 +81,120 @@ internal sealed class DataRetentionSweepHostedService(
 
     internal async Task RunOnceAsync(CancellationToken cancellationToken)
     {
+        DataRetentionHostedSweepContinuation? continuation = null;
 
-        if (!policyStore.Current.AutomaticSweepsEnabled)
+        try
         {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-            return;
+                long predecessorGeneration = admission.CurrentGeneration;
 
+                if (!admission.TryAcquireWorkLease(
+                        GrimoireWorkKind.DataRetentionSweep,
+                        out IGrimoireWorkLease? admitted))
+                {
+                    if (continuation is null)
+                    {
+                        return;
+                    }
+
+                    _ = await admission.WaitForNextOpenGenerationAsync(
+                        predecessorGeneration,
+                        cancellationToken).ConfigureAwait(false);
+
+                    continue;
+                }
+
+                DataRetentionHostedSweepOutcome outcome;
+
+                await using (IGrimoireWorkLease lease = admitted!)
+                {
+                    if (continuation is null && !policyStore.Current.AutomaticSweepsEnabled)
+                    {
+                        return;
+                    }
+
+                    await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+                    IDataRetentionHostedSweep service = scope.ServiceProvider
+                        .GetRequiredService<IDataRetentionHostedSweep>();
+
+                    outcome = await service.ApplyOrResumeHostedPruneAsync(
+                        continuation,
+                        lease,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (outcome.Disposition == DataRetentionHostedSweepDisposition.DeferredForMaintenance)
+                    {
+                        DataRetentionHostedSweepContinuation retained = outcome.Continuation
+                            ?? throw new InvalidOperationException(
+                                "A deferred automatic retention sweep must retain its durable continuation.");
+
+                        if (continuation is not null && continuation != retained)
+                        {
+                            throw new InvalidOperationException(
+                                "A deferred automatic retention sweep must retain its exact durable continuation.");
+                        }
+
+                        continuation = retained;
+
+                        if (outcome.Result is not null)
+                        {
+                            throw new InvalidOperationException(
+                                "A deferred automatic retention sweep must return no terminal result.");
+                        }
+                    }
+                }
+
+                if (outcome.Disposition == DataRetentionHostedSweepDisposition.DeferredForMaintenance)
+                {
+                    _ = await admission.WaitForNextOpenGenerationAsync(
+                        predecessorGeneration,
+                        cancellationToken).ConfigureAwait(false);
+
+                    continue;
+                }
+
+                if (outcome.Disposition != DataRetentionHostedSweepDisposition.Concluded
+                    || outcome.Continuation is not null
+                    || outcome.Result is null)
+                {
+                    throw new InvalidOperationException(
+                        "An automatic retention sweep returned an invalid terminal outcome.");
+                }
+
+                Result<DataRetentionApplyResult> result = outcome.Result;
+
+                if (result.IsFailure)
+                {
+                    logger.LogWarning(
+                        "Automatic retention sweep did not complete: {ErrorCode} {ErrorMessage}",
+                        result.Error.Code,
+                        result.Error.Message);
+
+                    return;
+                }
+
+                logger.LogInformation(
+                    "Automatic retention sweep {OperationId} deleted {Rows} rows and {Files} files.",
+                    result.Value.OperationId,
+                    result.Value.RowsDeleted,
+                    result.Value.FilesDeleted);
+
+                return;
+            }
         }
-
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-        IDataRetentionService service = scope.ServiceProvider
-            .GetRequiredService<IDataRetentionService>();
-
-        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
-            new DataRetentionApplyRequest(
-                new DataRetentionRequest(DataRetentionOperation.Prune)),
-            cancellationToken).ConfigureAwait(false);
-
-        if (result.IsFailure)
+        finally
         {
-
-            logger.LogWarning(
-                "Automatic retention sweep did not complete: {ErrorCode} {ErrorMessage}",
-                result.Error.Code,
-                result.Error.Message);
-
-            return;
-
+            if (continuation is not null)
+            {
+                _ = operationOwnership.Release(
+                    continuation.OperationId,
+                    continuation.OwnershipToken);
+            }
         }
-
-        logger.LogInformation(
-            "Automatic retention sweep {OperationId} deleted {Rows} rows and {Files} files.",
-            result.Value.OperationId,
-            result.Value.RowsDeleted,
-            result.Value.FilesDeleted);
-
     }
 
 }

@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Operations;
 using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
@@ -292,6 +293,14 @@ public sealed class CovenantArchitectureBoundaryTests
 
         AssertSingleRegistration<ILongRunningOperationMaintenanceLeaseAdoption>(services, ServiceLifetime.Scoped);
 
+        AssertSingleRegistration<ILongRunningOperationSameOwnerLeaseResumption>(services, ServiceLifetime.Scoped);
+
+        Assert.False(typeof(ILongRunningOperationSameOwnerLeaseResumption).IsVisible);
+
+        Assert.False(
+            typeof(ILongRunningOperationSameOwnerLeaseResumption)
+                .IsAssignableFrom(typeof(FakeLongRunningOperationStore)));
+
         AssertSingleRegistration<GrimoireOfflineTransitionDatabaseReconciler>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<ICovenantCanonicalErasure>(services, ServiceLifetime.Singleton);
@@ -409,6 +418,16 @@ public sealed class CovenantArchitectureBoundaryTests
         AssertSingleRegistration<IDataRetentionService>(
             builder.Services,
             ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<IDataRetentionHostedSweep>(
+            builder.Services,
+            ServiceLifetime.Scoped);
+
+        Assert.False(typeof(IDataRetentionHostedSweep).IsVisible);
+
+        Assert.False(typeof(DataRetentionHostedSweepContinuation).IsVisible);
+
+        Assert.False(typeof(DataRetentionHostedSweepOutcome).IsVisible);
 
         AssertSingleRecoveryHandler<DataRetentionRecoveryHandler>(builder.Services);
 
@@ -621,6 +640,20 @@ public sealed class CovenantArchitectureBoundaryTests
 
         if (isHost)
         {
+            LongRunningOperationStore firstOperationStore = firstScope.ServiceProvider
+                .GetRequiredService<LongRunningOperationStore>();
+
+            Assert.Same(
+                firstOperationStore,
+                firstScope.ServiceProvider.GetRequiredService<ILongRunningOperationStore>());
+
+            Assert.Same(
+                firstOperationStore,
+                firstScope.ServiceProvider.GetRequiredService<ILongRunningOperationSameOwnerLeaseResumption>());
+
+            Assert.NotSame(
+                firstOperationStore,
+                secondScope.ServiceProvider.GetRequiredService<LongRunningOperationStore>());
 
             _ = firstScope.ServiceProvider.GetRequiredService<CovenantResetCheckpointInitiator>();
 

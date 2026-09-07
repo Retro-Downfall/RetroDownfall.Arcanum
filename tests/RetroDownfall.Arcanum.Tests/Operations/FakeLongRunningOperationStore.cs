@@ -10,6 +10,10 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 /// In-memory <see cref="ILongRunningOperationStore"/> with the same compare-and-swap semantics the
 /// SQL store enforces, so reconciler behaviour can be exercised without a Grimoire.
 /// </summary>
+/// <remarks>
+/// Deliberately does not implement the retention-only same-owner lease-resumption capability. Tests
+/// that need that privilege must receive a dedicated fake instead of widening this general store.
+/// </remarks>
 internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) : ILongRunningOperationStore
 {
     private readonly ConcurrentDictionary<Guid, LongRunningOperation> _operations = new();

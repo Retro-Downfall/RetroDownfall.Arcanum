@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Operations;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -538,7 +540,10 @@ public sealed partial class DataRetentionServiceTests
         ArcanumSettings settings,
         Func<Guid, CancellationToken, Task> acquireSessionGate,
         ILogger<DataRetentionService>? logger = null,
-        ILongRunningOperationStore? operationStore = null)
+        ILongRunningOperationStore? operationStore = null,
+        TimeProvider? timeProvider = null,
+        LongRunningOperationOwnership? operationOwnership = null,
+        ILongRunningOperationSameOwnerLeaseResumption? sameOwnerLeaseResumption = null)
     {
 
         ILongRunningOperationStore operations = operationStore
@@ -550,14 +555,16 @@ public sealed partial class DataRetentionServiceTests
             _db!,
             new TestOptionsMonitor<ArcanumSettings>(settings),
             operations,
-            TimeProvider.System,
+            timeProvider ?? TimeProvider.System,
             logger ?? NullLogger<DataRetentionService>.Instance,
             FixtureLabeledArtifactGuard.For(_db!),
             _attachmentsRoot,
             _filesRoot,
             _logsRoot,
             attachmentStore: new NoOpSessionAttachmentStore(
-                acquireSessionGate: acquireSessionGate));
+                acquireSessionGate: acquireSessionGate),
+            operationOwnership: operationOwnership,
+            sameOwnerLeaseResumption: sameOwnerLeaseResumption);
 
     }
 

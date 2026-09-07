@@ -43,6 +43,8 @@ using RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 
+using RetroDownfall.Arcanum.Infrastructure.Operations;
+
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -74,7 +76,10 @@ internal sealed partial class DataRetentionService(
     DataRetentionLeaseMaintainer? leaseMaintainer = null,
     CovenantRequestedOperationStarter? requestedOperationStarter = null,
     ICovenantFactoryErasureApplyRequestDigestCalculator? factoryApplyRequestDigests = null,
-    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null) : IDataRetentionService
+    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null,
+    LongRunningOperationOwnership? operationOwnership = null,
+    ILongRunningOperationSameOwnerLeaseResumption? sameOwnerLeaseResumption = null)
+    : IDataRetentionService, IDataRetentionHostedSweep
 {
 
     /// <summary>
@@ -140,6 +145,11 @@ internal sealed partial class DataRetentionService(
 
     private readonly ICovenantErasureEffectDigestCalculator _covenantErasureEffectDigests =
         covenantErasureEffectDigests ?? new CovenantErasureEffectDigestCalculator();
+
+    private readonly LongRunningOperationOwnership? _operationOwnership = operationOwnership;
+
+    private readonly ILongRunningOperationSameOwnerLeaseResumption? _sameOwnerLeaseResumption =
+        sameOwnerLeaseResumption;
 
     public async Task<DataRetentionStatus> GetStatusAsync(
         CancellationToken cancellationToken = default)
@@ -739,6 +749,548 @@ internal sealed partial class DataRetentionService(
         return await ApplyOrdinaryAsync(request, cancellationToken).ConfigureAwait(false);
 
     }
+
+    Task<DataRetentionHostedSweepOutcome> IDataRetentionHostedSweep.ApplyOrResumeHostedPruneAsync(
+        DataRetentionHostedSweepContinuation? continuation,
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken) =>
+        ApplyOrResumeHostedPruneAsync(continuation, workLease, cancellationToken);
+
+    internal async Task<DataRetentionHostedSweepOutcome> ApplyOrResumeHostedPruneAsync(
+        DataRetentionHostedSweepContinuation? continuation,
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(workLease);
+
+        if (workLease.Kind != GrimoireWorkKind.DataRetentionSweep)
+        {
+            throw new ArgumentException(
+                "Automatic retention requires DataRetentionSweep work authority.",
+                nameof(workLease));
+        }
+
+        return continuation is null
+            ? await StartHostedPruneAsync(workLease, cancellationToken).ConfigureAwait(false)
+            : await ResumeHostedPruneAsync(continuation, workLease, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<DataRetentionHostedSweepOutcome> StartHostedPruneAsync(
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken)
+    {
+        if (_operationOwnership is null)
+        {
+            return ConcludedHostedPrune(HostedPruneFailure(
+                "Automatic retention cannot establish process-local operation ownership."));
+        }
+
+        DataRetentionPlan plan;
+
+        try
+        {
+            plan = await PlanAsync(
+                new DataRetentionRequest(DataRetentionOperation.Prune),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(
+                ex,
+                "Automatic retention refused a managed filesystem inventory that could not be proven safe.");
+
+            return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Data.Conflict,
+                    "Managed data changed or could not be safely inspected; the automatic sweep will retry later.")));
+        }
+
+        string ownerId = "automatic-retention:" + Guid.NewGuid().ToString("N");
+
+        DateTimeOffset now = timeProvider.GetUtcNow();
+
+        LongRunningOperation? operation = await operations.TryStartSingleFlightAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                $"Applying automatic data-retention plan {plan.PlanId}.",
+                now),
+            ownerId,
+            now,
+            now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
+            cancellationToken).ConfigureAwait(false);
+
+        if (operation is null)
+        {
+            return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Data.Conflict,
+                    await DescribeRetentionConflictAsync(cancellationToken).ConfigureAwait(false))));
+        }
+
+        if (!_operationOwnership.TryClaim(operation.Id, out Guid ownershipToken))
+        {
+            Result<DataRetentionApplyResult> refused = await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.Failed,
+                HostedPruneError("Automatic retention could not claim its durable operation."),
+                CancellationToken.None).ConfigureAwait(false);
+
+            return ConcludedHostedPrune(refused);
+        }
+
+        DataRetentionHostedSweepContinuation retained = new(
+            operation.Id,
+            ownerId,
+            ownershipToken);
+
+        bool keepClaim = false;
+
+        try
+        {
+            DataRetentionPruneExecutionOutcome execution = await ApplyUnifiedPruneCoreAsync(
+                operation.Id,
+                ownerId,
+                plan,
+                startIndex: 0,
+                checkpointVersion: 0,
+                saveCheckpoints: true,
+                frozenCutoffs: null,
+                forcedPreservedCandidates: null,
+                retainedPendingJournal: null,
+                workLease,
+                cancellationToken).ConfigureAwait(false);
+
+            if (execution.DeferredForMaintenance)
+            {
+                keepClaim = true;
+
+                return new DataRetentionHostedSweepOutcome(
+                    DataRetentionHostedSweepDisposition.DeferredForMaintenance,
+                    retained,
+                    Result: null);
+            }
+
+            if (execution.Failure is { } failure)
+            {
+                return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
+            }
+
+            return ConcludedHostedPrune(await CompleteHostedPruneAsync(
+                operation.Id,
+                ownerId,
+                execution.Applied
+                    ?? throw new InvalidOperationException("A completed retention pass returned no result."),
+                cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException)
+        {
+            await TrySurrenderHostedPruneAsync(operation.Id, ownerId).ConfigureAwait(false);
+
+            throw;
+        }
+        catch (DataRetentionCandidateFrontierException ex)
+        {
+            logger.LogError(
+                ex,
+                "Automatic retention operation {OperationId} could not release its candidate frontier cleanly.",
+                operation.Id);
+
+            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.ReconciliationRequired,
+                HostedPruneError(
+                    "The automatic retention candidate completed, but its maintenance frontier did not close cleanly."),
+                CancellationToken.None,
+                RetentionRecoveryTerminalCode).ConfigureAwait(false));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Automatic retention operation {OperationId} failed outside a candidate frontier.",
+                operation.Id);
+
+            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.Failed,
+                HostedPruneError("The automatic retention operation failed before a candidate effect began."),
+                CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            if (!keepClaim)
+            {
+                _ = _operationOwnership.Release(operation.Id, ownershipToken);
+            }
+        }
+    }
+
+    private async Task<DataRetentionHostedSweepOutcome> ResumeHostedPruneAsync(
+        DataRetentionHostedSweepContinuation continuation,
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken)
+    {
+        if (continuation.OperationId == Guid.Empty
+            || string.IsNullOrWhiteSpace(continuation.OwnerId)
+            || continuation.OwnershipToken == Guid.Empty
+            || _operationOwnership is null
+            || !_operationOwnership.IsClaimedBy(
+                continuation.OperationId,
+                continuation.OwnershipToken))
+        {
+            return ConcludedHostedPrune(HostedPruneFailure(
+                "Automatic retention refused a continuation without its exact process claim."));
+        }
+
+        bool keepClaim = false;
+
+        try
+        {
+            LongRunningOperation? operation = await operations.GetAsync(
+                continuation.OperationId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (!IsExactHostedPruneOwner(operation, continuation.OwnerId))
+            {
+                return ConcludedHostedPrune(HostedPruneFailure(
+                    "Automatic retention could not verify its durable owner."));
+            }
+
+            if (_sameOwnerLeaseResumption is null)
+            {
+                return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                    operation,
+                    continuation.OwnerId,
+                    LongRunningOperationState.ReconciliationRequired,
+                    HostedPruneError("Automatic retention cannot resume its exact durable lease."),
+                    CancellationToken.None,
+                    RetentionRecoveryTerminalCode).ConfigureAwait(false));
+            }
+
+            DateTimeOffset now = timeProvider.GetUtcNow();
+
+            bool resumed = await _sameOwnerLeaseResumption.ResumeSameOwnerLeaseAsync(
+                continuation.OperationId,
+                continuation.OwnerId,
+                now,
+                now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
+                cancellationToken).ConfigureAwait(false);
+
+            operation = await operations.GetAsync(
+                continuation.OperationId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (!resumed
+                || !IsExactHostedPruneOwner(operation, continuation.OwnerId))
+            {
+                return ConcludedHostedPrune(HostedPruneFailure(
+                    "Automatic retention could not verify its resumed durable lease."));
+            }
+
+            DataRetentionPruneRecoveryExecution recovery = await RecoverPruneCoreAsync(
+                operation!,
+                workLease,
+                pendingJournalKnownUnstarted: true,
+                cancellationToken).ConfigureAwait(false);
+
+            if (recovery.Execution?.DeferredForMaintenance == true)
+            {
+                keepClaim = true;
+
+                return new DataRetentionHostedSweepOutcome(
+                    DataRetentionHostedSweepDisposition.DeferredForMaintenance,
+                    continuation,
+                    Result: null);
+            }
+
+            if (recovery.Terminal is not null)
+            {
+                Error recoveryError = new(
+                    recovery.Terminal.ErrorCode ?? ErrorCodes.Data.ReconciliationFailed,
+                    "Automatic retention could not safely resume its durable checkpoint.");
+
+                return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                    operation,
+                    continuation.OwnerId,
+                    recovery.Terminal.State,
+                    recoveryError,
+                    CancellationToken.None).ConfigureAwait(false));
+            }
+
+            if (recovery.Execution?.Failure is { } failure)
+            {
+                return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
+            }
+
+            return ConcludedHostedPrune(await CompleteHostedPruneAsync(
+                operation!.Id,
+                continuation.OwnerId,
+                recovery.Execution?.Applied
+                    ?? throw new InvalidOperationException("A resumed retention pass returned no result."),
+                cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException)
+        {
+            await TrySurrenderHostedPruneAsync(
+                continuation.OperationId,
+                continuation.OwnerId).ConfigureAwait(false);
+
+            throw;
+        }
+        catch (DataRetentionCandidateFrontierException ex)
+        {
+            logger.LogError(
+                ex,
+                "Automatic retention operation {OperationId} could not release its resumed candidate frontier cleanly.",
+                continuation.OperationId);
+
+            LongRunningOperation? operation = await operations.GetAsync(
+                continuation.OperationId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                operation,
+                continuation.OwnerId,
+                LongRunningOperationState.ReconciliationRequired,
+                HostedPruneError(
+                    "The resumed retention candidate completed, but its maintenance frontier did not close cleanly."),
+                CancellationToken.None,
+                RetentionRecoveryTerminalCode).ConfigureAwait(false));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Automatic retention operation {OperationId} failed while resuming.",
+                continuation.OperationId);
+
+            LongRunningOperation? operation = await operations.GetAsync(
+                continuation.OperationId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                operation,
+                continuation.OwnerId,
+                LongRunningOperationState.Failed,
+                HostedPruneError("The automatic retention operation failed while resuming."),
+                CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            if (!keepClaim)
+            {
+                _ = _operationOwnership.Release(
+                    continuation.OperationId,
+                    continuation.OwnershipToken);
+            }
+        }
+    }
+
+    private static bool IsExactHostedPruneOwner(
+        LongRunningOperation? operation,
+        string ownerId) =>
+        operation is not null
+        && string.Equals(
+            operation.Kind,
+            LongRunningOperationKinds.DataRetentionPrune,
+            StringComparison.Ordinal)
+        && string.Equals(operation.LeaseOwner, ownerId, StringComparison.Ordinal)
+        && operation.State is LongRunningOperationState.Running
+            or LongRunningOperationState.Waiting
+            or LongRunningOperationState.Cancelling;
+
+    private async Task<Result<DataRetentionApplyResult>> CompleteHostedPruneAsync(
+        Guid operationId,
+        string ownerId,
+        DataRetentionApplyResult applied,
+        CancellationToken cancellationToken)
+    {
+        LongRunningOperation? latest = await operations.GetAsync(
+            operationId,
+            cancellationToken).ConfigureAwait(false);
+
+        if (latest is null
+            || !await operations.TryTransitionAsync(
+                operationId,
+                latest.Revision,
+                ownerId,
+                LongRunningOperationState.Completed,
+                timeProvider.GetUtcNow(),
+                cancellationToken: cancellationToken).ConfigureAwait(false))
+        {
+            return Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Data.OperationNotFinalized,
+                    "Data was pruned, but the durable operation could not be finalized; retry is safe."));
+        }
+
+        return Result<DataRetentionApplyResult>.Success(applied);
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> SettleHostedPruneAsync(
+        LongRunningOperation? operation,
+        string ownerId,
+        LongRunningOperationState state,
+        Error error,
+        CancellationToken cancellationToken,
+        string? durableErrorCode = null)
+    {
+        if (operation is null)
+        {
+            return Result<DataRetentionApplyResult>.Failure(error);
+        }
+
+        LongRunningOperation latest = await operations.GetAsync(
+            operation.Id,
+            cancellationToken).ConfigureAwait(false)
+            ?? operation;
+
+        bool settled = await operations.TryTransitionAsync(
+            operation.Id,
+            latest.Revision,
+            ownerId,
+            state,
+            timeProvider.GetUtcNow(),
+            durableErrorCode ?? error.Code,
+            cancellationToken).ConfigureAwait(false);
+
+        return Result<DataRetentionApplyResult>.Failure(
+            settled
+                ? error
+                : HostedPruneError("Automatic retention could not record its durable disposition."));
+    }
+
+    private async Task<Error> SettleHostedCandidateFailureAsync(
+        Guid operationId,
+        string ownerId,
+        Exception exception)
+    {
+        LongRunningOperationState state;
+
+        Error error;
+
+        string? durableErrorCode = null;
+
+        switch (exception)
+        {
+            case RetentionCovenantLabelException covenantLabel:
+                state = LongRunningOperationState.Failed;
+
+                error = covenantLabel.Error;
+
+                break;
+
+            case RetentionBlockedException blocked:
+                state = LongRunningOperationState.Failed;
+
+                error = new Error(ErrorCodes.Data.Blocked, blocked.Message);
+
+                break;
+
+            case RetentionConflictException conflict:
+                state = LongRunningOperationState.Failed;
+
+                error = new Error(ErrorCodes.Data.Conflict, conflict.Message);
+
+                break;
+
+            case RetentionQuarantineRecoveryRequiredException:
+                state = LongRunningOperationState.ReconciliationRequired;
+
+                error = new Error(
+                    ErrorCodes.Data.QuarantineRecoveryRequired,
+                    "The database mutation committed; quarantined bytes will be finalized by durable recovery.");
+
+                durableErrorCode = RetentionRecoveryTerminalCode;
+
+                break;
+
+            default:
+                logger.LogError(
+                    exception,
+                    "Automatic retention operation {OperationId} failed inside a candidate frontier.",
+                    operationId);
+
+                state = LongRunningOperationState.ReconciliationRequired;
+
+                error = HostedPruneError(
+                    "The automatic retention candidate may be partly applied and requires durable recovery.");
+
+                durableErrorCode = RetentionRecoveryTerminalCode;
+
+                break;
+        }
+
+        try
+        {
+            LongRunningOperation? operation = await operations.GetAsync(
+                operationId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Result<DataRetentionApplyResult> settled = await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                state,
+                error,
+                CancellationToken.None,
+                durableErrorCode).ConfigureAwait(false);
+
+            return settled.Error;
+        }
+        catch (Exception settlementException)
+        {
+            logger.LogError(
+                settlementException,
+                "Automatic retention operation {OperationId} could not record its candidate failure while the effect frontier was held.",
+                operationId);
+
+            return HostedPruneError(
+                "The automatic retention candidate failed and its durable operation remains available for recovery.");
+        }
+    }
+
+    private async Task TrySurrenderHostedPruneAsync(Guid operationId, string ownerId)
+    {
+        try
+        {
+            LongRunningOperation? current = await operations.GetAsync(
+                operationId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (current is not null)
+            {
+                _ = await operations.TryTransitionAsync(
+                    current.Id,
+                    current.Revision,
+                    ownerId,
+                    LongRunningOperationState.ReconciliationRequired,
+                    timeProvider.GetUtcNow(),
+                    RetentionRecoveryTerminalCode,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Cancelled automatic retention operation {OperationId} could not surrender its lease.",
+                operationId);
+        }
+    }
+
+    private static DataRetentionHostedSweepOutcome ConcludedHostedPrune(
+        Result<DataRetentionApplyResult> result) =>
+        new(DataRetentionHostedSweepDisposition.Concluded, Continuation: null, result);
+
+    private static Result<DataRetentionApplyResult> HostedPruneFailure(string message) =>
+        Result<DataRetentionApplyResult>.Failure(HostedPruneError(message));
+
+    private static Error HostedPruneError(string message) =>
+        new(ErrorCodes.Data.ReconciliationFailed, message);
 
     private async Task<Result<DataRetentionApplyResult>> ApplyOrdinaryAsync(
         DataRetentionApplyRequest request,

@@ -21,7 +21,10 @@ internal sealed class LongRunningOperationStore(
     ArcanumDbContext db,
     IGrimoireOrdinaryConnectionFactory connections,
     ICovenantConnectionDrain? covenantDrain = null)
-    : ILongRunningOperationStore, ILongRunningOperationMaintenanceLeaseAdoption, IDisposable
+    : ILongRunningOperationStore,
+      ILongRunningOperationMaintenanceLeaseAdoption,
+      ILongRunningOperationSameOwnerLeaseResumption,
+      IDisposable
 {
     private const int MaxKindLength = 100;
 
@@ -779,6 +782,56 @@ internal sealed class LongRunningOperationStore(
             leaseExpiresAt,
             requireExpiredLease: true,
             cancellationToken);
+
+    public Task<bool> ResumeSameOwnerLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        if (leaseExpiresAt <= utcNow)
+        {
+            throw new ArgumentOutOfRangeException(nameof(leaseExpiresAt));
+        }
+
+        string boundedOwner = Bound(ownerId, MaxOwnerLength);
+
+        if (!string.Equals(boundedOwner, ownerId, StringComparison.Ordinal))
+        {
+            return Task.FromResult(false);
+        }
+
+        return ExecuteUpdateAsync(
+            """
+            UPDATE "LongRunningOperations"
+            SET "HeartbeatAt" = @now,
+                "LeaseExpiresAt" = @lease,
+                "Revision" = "Revision" + 1
+            WHERE "Id" = @id
+              AND "LeaseOwner" = @owner
+              AND "State" IN (@running, @waiting, @cancelling)
+            """,
+            command =>
+            {
+                Add(command, "@id", Format(operationId));
+
+                Add(command, "@owner", boundedOwner);
+
+                Add(command, "@now", Format(utcNow));
+
+                Add(command, "@lease", Format(leaseExpiresAt));
+
+                Add(command, "@running", (int)LongRunningOperationState.Running);
+
+                Add(command, "@waiting", (int)LongRunningOperationState.Waiting);
+
+                Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
+            },
+            cancellationToken);
+    }
 
     private async Task<LongRunningOperationLeaseResult> AcquireLeaseAsync(
         Guid operationId,

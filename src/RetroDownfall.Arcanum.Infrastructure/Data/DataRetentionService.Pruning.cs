@@ -3598,7 +3598,37 @@ internal sealed partial class DataRetentionService
         IReadOnlyDictionary<string, DateTimeOffset>? frozenCutoffs,
         CancellationToken cancellationToken)
     {
+        DataRetentionPruneExecutionOutcome outcome = await ApplyUnifiedPruneCoreAsync(
+            operationId,
+            ownerId,
+            plan,
+            startIndex,
+            checkpointVersion,
+            saveCheckpoints,
+            frozenCutoffs,
+            forcedPreservedCandidates: null,
+            retainedPendingJournal: null,
+            workLease: null,
+            cancellationToken).ConfigureAwait(false);
 
+        return outcome.Applied
+            ?? throw new InvalidOperationException(
+                "A request-driven retention pass ended without an applied result.");
+    }
+
+    private async Task<DataRetentionPruneExecutionOutcome> ApplyUnifiedPruneCoreAsync(
+        Guid operationId,
+        string ownerId,
+        DataRetentionPlan plan,
+        int startIndex,
+        int checkpointVersion,
+        bool saveCheckpoints,
+        IReadOnlyDictionary<string, DateTimeOffset>? frozenCutoffs,
+        IReadOnlySet<string>? forcedPreservedCandidates,
+        RetentionMutationJournal? retainedPendingJournal,
+        IGrimoireWorkLease? workLease,
+        CancellationToken cancellationToken)
+    {
         const int checkpointInterval = PruneCheckpointInterval;
 
         int currentCheckpointVersion = checkpointVersion;
@@ -3618,7 +3648,6 @@ internal sealed partial class DataRetentionService
 
         if (saveCheckpoints && currentCheckpointVersion == 0)
         {
-
             currentCheckpointVersion = await SavePruneCheckpointAsync(
                 operationId,
                 ownerId,
@@ -3628,7 +3657,6 @@ internal sealed partial class DataRetentionService
                 expectedCheckpointVersion: 0,
                 pendingJournal: null,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         long rowsDeleted = 0;
@@ -3647,7 +3675,6 @@ internal sealed partial class DataRetentionService
 
         for (int index = startIndex; index < plan.CandidateIds.Length; index++)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             // Renewal is wall-clock driven, not candidate-count driven. A sweep of candidates that are
@@ -3659,13 +3686,11 @@ internal sealed partial class DataRetentionService
             // counted here too, because none of it renews anything.
             if (saveCheckpoints)
             {
-
                 DateTimeOffset iterationStartedAt = timeProvider.GetUtcNow();
 
                 if (iterationStartedAt - lastLeaseRenewalAt
                     >= DataRetentionLeaseMaintainer.DefaultHeartbeatInterval)
                 {
-
                     bool renewedLease = await operations.HeartbeatAsync(
                         operationId,
                         ownerId,
@@ -3675,19 +3700,22 @@ internal sealed partial class DataRetentionService
 
                     if (!renewedLease)
                     {
-
                         throw new InvalidOperationException(
                             "The retention operation lost its durable lease while applying candidates.");
-
                     }
 
                     lastLeaseRenewalAt = iterationStartedAt;
-
                 }
-
             }
 
             string candidate = plan.CandidateIds[index];
+
+            bool clearsRetainedPendingJournal = index == startIndex
+                && retainedPendingJournal is not null
+                && string.Equals(
+                    retainedPendingJournal.Target,
+                    candidate,
+                    StringComparison.Ordinal);
 
             CandidateAgeBoundary? currentBoundary =
                 await ReadCandidateAgeBoundaryAsync(
@@ -3699,177 +3727,234 @@ internal sealed partial class DataRetentionService
 
             RetentionMutationJournal? pendingJournal = null;
 
-            if (currentBoundary is null
-                || !originalCutoffs.TryGetValue(
-                    candidate,
-                    out DateTimeOffset originalCutoff))
+            IGrimoireExternalEffectGroup? effectGroup = null;
+
+            bool cancellationInFlight = false;
+
+            try
             {
+                if (forcedPreservedCandidates?.Contains(candidate) == true
+                    || currentBoundary is null
+                    || !originalCutoffs.TryGetValue(
+                        candidate,
+                        out DateTimeOffset originalCutoff))
+                {
+                    deleted = CandidateDeleteResult.Empty;
 
-                deleted = CandidateDeleteResult.Empty;
+                    if (saveCheckpoints && clearsRetainedPendingJournal)
+                    {
+                        currentCheckpointVersion = await SavePruneCheckpointAsync(
+                            operationId,
+                            ownerId,
+                            plan,
+                            originalCutoffs,
+                            nextCandidateIndex: earliestSkippedIndex ?? index,
+                            expectedCheckpointVersion: currentCheckpointVersion,
+                            pendingJournal: null,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    DateTimeOffset effectiveCutoff = originalCutoff <= currentBoundary.Cutoff
+                        ? originalCutoff
+                        : currentBoundary.Cutoff;
 
-            }
-            else
-            {
+                    pendingJournal = await BuildPruneCandidateJournalAsync(
+                        candidate,
+                        cancellationToken).ConfigureAwait(false);
 
-                DateTimeOffset effectiveCutoff = originalCutoff <= currentBoundary.Cutoff
-                    ? originalCutoff
-                    : currentBoundary.Cutoff;
+                    if (saveCheckpoints && pendingJournal is not null)
+                    {
+                        currentCheckpointVersion = await SavePruneCheckpointAsync(
+                            operationId,
+                            ownerId,
+                            plan,
+                            originalCutoffs,
+                            nextCandidateIndex: earliestSkippedIndex ?? index,
+                            expectedCheckpointVersion: currentCheckpointVersion,
+                            pendingJournal,
+                            cancellationToken).ConfigureAwait(false);
+                    }
 
-                pendingJournal = await BuildPruneCandidateJournalAsync(
-                    candidate,
-                    cancellationToken).ConfigureAwait(false);
+                    if (workLease is not null)
+                    {
+                        if (!workLease.TryBeginExternalEffectGroup(
+                                out IGrimoireExternalEffectGroup? admittedGroup))
+                        {
+                            return new DataRetentionPruneExecutionOutcome(
+                                DeferredForMaintenance: true,
+                                Applied: null,
+                                Failure: null);
+                        }
+
+                        effectGroup = admittedGroup!;
+                    }
+
+                    deleted = await _leaseMaintainer.RunAsync(
+                        operationId,
+                        ownerId,
+                        candidateCancellationToken => ApplyCandidateAsync(
+                            operationId,
+                            plan,
+                            candidate,
+                            effectiveCutoff,
+                            pendingJournal,
+                            candidateCancellationToken),
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!deleted.Reconciled)
+                {
+                    throw new IOException(
+                        "Post-delete reconciliation found retained owned data for the current candidate.");
+                }
+
+                bool preserved = deleted.Rows == 0
+                    && deleted.Files == 0
+                    && deleted.Derived == 0
+                    && await CandidateStillExistsAsync(
+                        candidate,
+                        cancellationToken).ConfigureAwait(false);
 
                 if (saveCheckpoints && pendingJournal is not null)
                 {
-
                     currentCheckpointVersion = await SavePruneCheckpointAsync(
                         operationId,
                         ownerId,
                         plan,
                         originalCutoffs,
-                        nextCandidateIndex: earliestSkippedIndex ?? index,
+                        nextCandidateIndex: earliestSkippedIndex ?? (preserved ? index : index + 1),
                         expectedCheckpointVersion: currentCheckpointVersion,
-                        pendingJournal,
+                        pendingJournal: null,
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
-                deleted = await _leaseMaintainer.RunAsync(
+                if (preserved)
+                {
+                    appliedConflicts.Add(
+                        new DataRetentionConflict(
+                            ErrorCodes.Data.PlanChanged,
+                            candidate,
+                            "The retention candidate changed or became protected after planning; it was preserved."));
+
+                    earliestSkippedIndex ??= index;
+                }
+                else
+                {
+                    rowsDeleted += deleted.Rows;
+
+                    filesDeleted += deleted.Files;
+
+                    bytesDeleted += deleted.Bytes;
+
+                    derivedDeleted += deleted.Derived;
+                }
+
+                int nextIndex = index + 1;
+
+                if (!saveCheckpoints
+                    || (nextIndex % checkpointInterval != 0
+                        && nextIndex != plan.CandidateIds.Length))
+                {
+                    continue;
+                }
+
+                // The lease is renewed on every checkpoint boundary, including boundaries the cursor
+                // cannot advance past. A preserved candidate or a journal-bearing one must not silence
+                // renewal for the rest of the sweep: an expired lease lets the background reconciler
+                // adopt this operation and run a second concurrent prune under the same plan.
+                DateTimeOffset now = timeProvider.GetUtcNow();
+
+                bool heartbeat = await operations.HeartbeatAsync(
                     operationId,
                     ownerId,
-                    candidateCancellationToken => ApplyCandidateAsync(
+                    now,
+                    now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
+                    cancellationToken).ConfigureAwait(false);
+
+                if (!heartbeat)
+                {
+                    throw new InvalidOperationException(
+                        "The retention operation lost its durable lease while checkpointing.");
+                }
+
+                lastLeaseRenewalAt = now;
+
+                // A journal-bearing candidate already wrote its own cursor above, and an earlier
+                // preserved candidate pins the resume point, so neither may advance it here.
+                if (pendingJournal is null && earliestSkippedIndex is null)
+                {
+                    currentCheckpointVersion = await SavePruneCheckpointAsync(
                         operationId,
+                        ownerId,
                         plan,
-                        candidate,
-                        effectiveCutoff,
-                        pendingJournal,
-                        candidateCancellationToken),
-                    cancellationToken).ConfigureAwait(false);
-
+                        originalCutoffs,
+                        nextIndex,
+                        currentCheckpointVersion,
+                        pendingJournal: null,
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
-
-            if (!deleted.Reconciled)
+            catch (OperationCanceledException) when (effectGroup is not null)
             {
+                cancellationInFlight = true;
 
-                throw new IOException(
-                    "Post-delete reconciliation found retained owned data for the current candidate.");
+                await TrySurrenderHostedPruneAsync(operationId, ownerId).ConfigureAwait(false);
 
+                throw;
             }
-
-            bool preserved = deleted.Rows == 0
-                && deleted.Files == 0
-                && deleted.Derived == 0
-                && await CandidateStillExistsAsync(
-                    candidate,
-                    cancellationToken).ConfigureAwait(false);
-
-            if (saveCheckpoints && pendingJournal is not null)
+            catch (Exception ex) when (effectGroup is not null)
             {
-
-                currentCheckpointVersion = await SavePruneCheckpointAsync(
+                Error failure = await SettleHostedCandidateFailureAsync(
                     operationId,
                     ownerId,
-                    plan,
-                    originalCutoffs,
-                    nextCandidateIndex: earliestSkippedIndex ?? (preserved ? index : index + 1),
-                    expectedCheckpointVersion: currentCheckpointVersion,
-                    pendingJournal: null,
-                    cancellationToken).ConfigureAwait(false);
+                    ex).ConfigureAwait(false);
 
+                return new DataRetentionPruneExecutionOutcome(
+                    DeferredForMaintenance: false,
+                    Applied: null,
+                    failure);
             }
-
-            if (preserved)
+            finally
             {
-
-                appliedConflicts.Add(
-                    new DataRetentionConflict(
-                        ErrorCodes.Data.PlanChanged,
-                        candidate,
-                        "The retention candidate changed or became protected after planning; it was preserved."));
-
-                earliestSkippedIndex ??= index;
-
+                if (effectGroup is not null)
+                {
+                    try
+                    {
+                        await effectGroup.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (cancellationInFlight)
+                    {
+                        logger.LogWarning(
+                            ex,
+                            "Cancelled automatic retention operation {OperationId} could not release its candidate frontier cleanly.",
+                            operationId);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new DataRetentionCandidateFrontierException(ex);
+                    }
+                }
             }
-            else
-            {
-
-                rowsDeleted += deleted.Rows;
-
-                filesDeleted += deleted.Files;
-
-                bytesDeleted += deleted.Bytes;
-
-                derivedDeleted += deleted.Derived;
-
-            }
-
-            int nextIndex = index + 1;
-
-            if (!saveCheckpoints
-                || (nextIndex % checkpointInterval != 0
-                    && nextIndex != plan.CandidateIds.Length))
-            {
-
-                continue;
-
-            }
-
-            // The lease is renewed on every checkpoint boundary, including boundaries the cursor
-            // cannot advance past. A preserved candidate or a journal-bearing one must not silence
-            // renewal for the rest of the sweep: an expired lease lets the background reconciler
-            // adopt this operation and run a second concurrent prune under the same plan.
-            DateTimeOffset now = timeProvider.GetUtcNow();
-
-            bool heartbeat = await operations.HeartbeatAsync(
-                operationId,
-                ownerId,
-                now,
-                now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
-                cancellationToken).ConfigureAwait(false);
-
-            if (!heartbeat)
-            {
-
-                throw new InvalidOperationException(
-                    "The retention operation lost its durable lease while checkpointing.");
-
-            }
-
-            lastLeaseRenewalAt = now;
-
-            // A journal-bearing candidate already wrote its own cursor above, and an earlier
-            // preserved candidate pins the resume point, so neither may advance it here.
-            if (pendingJournal is null && earliestSkippedIndex is null)
-            {
-
-                currentCheckpointVersion = await SavePruneCheckpointAsync(
-                    operationId,
-                    ownerId,
-                    plan,
-                    originalCutoffs,
-                    nextIndex,
-                    currentCheckpointVersion,
-                    pendingJournal: null,
-                    cancellationToken).ConfigureAwait(false);
-
-            }
-
         }
 
-        return new DataRetentionApplyResult(
-            operationId,
-            plan.PlanId,
-            rowsDeleted,
-            filesDeleted,
-            bytesDeleted,
-            derivedDeleted,
-            Reconciled: true,
-            plan.Blockers,
-            [.. appliedConflicts
-                .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
-                .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
-                .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)]);
-
+        return new DataRetentionPruneExecutionOutcome(
+            DeferredForMaintenance: false,
+            new DataRetentionApplyResult(
+                operationId,
+                plan.PlanId,
+                rowsDeleted,
+                filesDeleted,
+                bytesDeleted,
+                derivedDeleted,
+                Reconciled: true,
+                plan.Blockers,
+                [.. appliedConflicts
+                    .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
+                    .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
+                    .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)]),
+            Failure: null);
     }
 
     private async Task<int> SavePruneCheckpointAsync(
@@ -3984,22 +4069,35 @@ internal sealed partial class DataRetentionService
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
+        DataRetentionPruneRecoveryExecution recovery = await RecoverPruneCoreAsync(
+            operation,
+            workLease: null,
+            pendingJournalKnownUnstarted: false,
+            cancellationToken).ConfigureAwait(false);
 
+        return recovery.Terminal
+            ?? (recovery.Execution?.Failure is { } failure
+                ? LongRunningOperationRecoveryResult.RequiresAttention(failure.Code)
+                : LongRunningOperationRecoveryResult.Completed());
+    }
+
+    private async Task<DataRetentionPruneRecoveryExecution> RecoverPruneCoreAsync(
+        LongRunningOperation operation,
+        IGrimoireWorkLease? workLease,
+        bool pendingJournalKnownUnstarted,
+        CancellationToken cancellationToken)
+    {
         if (!string.Equals(
                 operation.Kind,
                 LongRunningOperationKinds.DataRetentionPrune,
                 StringComparison.Ordinal))
         {
-
             throw new InvalidDataException("The operation is not a retention prune.");
-
         }
 
         if (string.IsNullOrWhiteSpace(operation.LeaseOwner))
         {
-
             throw new InvalidDataException("The recovered retention operation has no lease owner.");
-
         }
 
         DataRetentionPlan plan;
@@ -4008,11 +4106,12 @@ internal sealed partial class DataRetentionService
 
         IReadOnlyDictionary<string, DateTimeOffset>? frozenCutoffs;
 
+        IReadOnlySet<string>? forcedPreservedCandidates;
+
         RetentionMutationJournal? pendingJournal = null;
 
         if (operation.CheckpointPayload is null)
         {
-
             plan = await BuildUnifiedPrunePlanAsync(
                 new DataRetentionRequest(DataRetentionOperation.Prune),
                 cancellationToken).ConfigureAwait(false);
@@ -4021,10 +4120,10 @@ internal sealed partial class DataRetentionService
 
             frozenCutoffs = null;
 
+            forcedPreservedCandidates = null;
         }
         else
         {
-
             (string planId,
                 int checkpointIndex,
                 string[] checkpointCandidates,
@@ -4037,7 +4136,6 @@ internal sealed partial class DataRetentionService
 
             if (pendingJournal is not null)
             {
-
                 // The journal target is the candidate that was mid-flight, which is at or after the
                 // cursor rather than exactly on it: the cursor is held back at the earliest
                 // preserved candidate so recovery re-evaluates that protection, while apply keeps
@@ -4051,43 +4149,57 @@ internal sealed partial class DataRetentionService
                         .Skip(checkpointIndex)
                         .Contains(pendingJournal.Target, StringComparer.Ordinal))
                 {
-
-                    return LongRunningOperationRecoveryResult.RequiresAttention(
-                        ErrorCodes.Data.ReconciliationFailed);
-
+                    return new DataRetentionPruneRecoveryExecution(
+                        LongRunningOperationRecoveryResult.RequiresAttention(
+                            ErrorCodes.Data.ReconciliationFailed),
+                        Execution: null);
                 }
 
-                bool targetExists = await CandidateStillExistsAsync(
-                    pendingJournal.Target,
-                    cancellationToken).ConfigureAwait(false);
-
-                LongRunningOperationRecoveryResult journalRecovery =
-                    await RecoverPrunePendingJournalAsync(
-                        operation.Id,
-                        pendingJournal,
-                        targetExists,
+                if (!pendingJournalKnownUnstarted)
+                {
+                    bool targetExists = await CandidateStillExistsAsync(
+                        pendingJournal.Target,
                         cancellationToken).ConfigureAwait(false);
 
-                if (journalRecovery.State
-                    == LongRunningOperationState.ReconciliationRequired)
-                {
+                    LongRunningOperationRecoveryResult journalRecovery =
+                        await RecoverPrunePendingJournalAsync(
+                            operation.Id,
+                            pendingJournal,
+                            targetExists,
+                            cancellationToken).ConfigureAwait(false);
 
-                    return journalRecovery;
-
+                    if (journalRecovery.State
+                        == LongRunningOperationState.ReconciliationRequired)
+                    {
+                        return new DataRetentionPruneRecoveryExecution(
+                            journalRecovery,
+                            Execution: null);
+                    }
                 }
-
             }
 
             DataRetentionPlan current = await BuildUnifiedPrunePlanAsync(
                 new DataRetentionRequest(DataRetentionOperation.Prune),
                 cancellationToken).ConfigureAwait(false);
 
-            HashSet<string> remaining = checkpointCandidates
-                .Skip(checkpointIndex)
+            HashSet<string> currentCandidates = current.CandidateIds
                 .ToHashSet(StringComparer.Ordinal);
 
             string[] candidates =
-                [.. current.CandidateIds.Where(remaining.Contains)];
+                [.. checkpointCandidates
+                    .Skip(checkpointIndex)
+                    .Where(candidate =>
+                        currentCandidates.Contains(candidate)
+                        || (pendingJournalKnownUnstarted
+                            && pendingJournal is not null
+                            && string.Equals(
+                                candidate,
+                                pendingJournal.Target,
+                                StringComparison.Ordinal)))];
+
+            forcedPreservedCandidates = candidates
+                .Where(candidate => !currentCandidates.Contains(candidate))
+                .ToHashSet(StringComparer.Ordinal);
 
             plan = new DataRetentionPlan(
                 planId,
@@ -4113,10 +4225,9 @@ internal sealed partial class DataRetentionService
                         static pair => pair.Key,
                         static pair => pair.Value,
                         StringComparer.Ordinal);
-
         }
 
-        _ = await ApplyUnifiedPruneAsync(
+        DataRetentionPruneExecutionOutcome execution = await ApplyUnifiedPruneCoreAsync(
             operation.Id,
             operation.LeaseOwner,
             plan,
@@ -4124,10 +4235,14 @@ internal sealed partial class DataRetentionService
             operation.CheckpointVersion,
             saveCheckpoints: true,
             frozenCutoffs,
+            forcedPreservedCandidates,
+            pendingJournalKnownUnstarted ? pendingJournal : null,
+            workLease,
             cancellationToken).ConfigureAwait(false);
 
-        return LongRunningOperationRecoveryResult.Completed();
-
+        return new DataRetentionPruneRecoveryExecution(
+            Terminal: null,
+            execution);
     }
 
     private Task<LongRunningOperationRecoveryResult> RecoverPrunePendingJournalAsync(
@@ -7126,6 +7241,20 @@ internal sealed partial class DataRetentionService
             reconciled);
 
     }
+
+    private sealed record DataRetentionPruneExecutionOutcome(
+        bool DeferredForMaintenance,
+        DataRetentionApplyResult? Applied,
+        Error? Failure);
+
+    private sealed record DataRetentionPruneRecoveryExecution(
+        LongRunningOperationRecoveryResult? Terminal,
+        DataRetentionPruneExecutionOutcome? Execution);
+
+    private sealed class DataRetentionCandidateFrontierException(Exception innerException)
+        : IOException(
+            "The automatic retention candidate frontier did not close cleanly.",
+            innerException);
 
     private sealed record CandidateDeleteResult(
         long Rows,

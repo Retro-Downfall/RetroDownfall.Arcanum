@@ -52,6 +52,170 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    [InlineData(LongRunningOperationState.Running)]
+    [InlineData(LongRunningOperationState.Waiting)]
+    [InlineData(LongRunningOperationState.Cancelling)]
+    public async Task Same_owner_resumption_refreshes_an_expired_active_lease_without_incrementing_attempt(
+        LongRunningOperationState activeState)
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        ILongRunningOperationSameOwnerLeaseResumption resumption = store;
+
+        DateTimeOffset startedAt = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = await CreateAsync(store, startedAt);
+
+        LongRunningOperationLeaseResult acquired = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "automatic-retention-owner",
+            startedAt,
+            startedAt.AddMinutes(1));
+
+        Assert.True(acquired.Acquired);
+
+        if (activeState == LongRunningOperationState.Waiting)
+        {
+            Assert.True(await store.TryTransitionAsync(
+                operation.Id,
+                acquired.Operation.Revision,
+                "automatic-retention-owner",
+                LongRunningOperationState.Waiting,
+                startedAt.AddSeconds(1)));
+        }
+        else if (activeState == LongRunningOperationState.Cancelling)
+        {
+            Assert.True(await store.RequestCancellationAsync(
+                operation.Id,
+                acquired.Operation.Revision,
+                startedAt.AddSeconds(1)));
+        }
+
+        LongRunningOperation before = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        DateTimeOffset resumedAt = startedAt.AddMinutes(2);
+
+        DateTimeOffset newExpiry = resumedAt.AddMinutes(5);
+
+        bool resumed = await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            "automatic-retention-owner",
+            resumedAt,
+            newExpiry);
+
+        LongRunningOperation after = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        Assert.True(resumed);
+
+        Assert.Equal(activeState, after.State);
+
+        Assert.Equal(before.AttemptCount, after.AttemptCount);
+
+        Assert.Equal(before.LeaseOwner, after.LeaseOwner);
+
+        Assert.Equal(resumedAt, after.HeartbeatAt);
+
+        Assert.Equal(newExpiry, after.LeaseExpiresAt);
+
+        Assert.Equal(before.Revision + 1, after.Revision);
+    }
+
+    [SkippableFact]
+    public async Task Same_owner_resumption_refuses_a_different_owner_or_terminal_row()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        ILongRunningOperationSameOwnerLeaseResumption resumption = store;
+
+        DateTimeOffset startedAt = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = await CreateAsync(store, startedAt);
+
+        LongRunningOperationLeaseResult acquired = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "automatic-retention-owner",
+            startedAt,
+            startedAt.AddMinutes(1));
+
+        Assert.True(acquired.Acquired);
+
+        LongRunningOperation beforeWrongOwner = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        Assert.False(await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            "different-owner",
+            startedAt.AddMinutes(2),
+            startedAt.AddMinutes(7)));
+
+        Assert.Equal(beforeWrongOwner, await store.GetAsync(operation.Id));
+
+        Assert.False(await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            " automatic-retention-owner ",
+            startedAt.AddMinutes(2),
+            startedAt.AddMinutes(7)));
+
+        Assert.Equal(beforeWrongOwner, await store.GetAsync(operation.Id));
+
+        Assert.True(await store.TryTransitionAsync(
+            operation.Id,
+            beforeWrongOwner.Revision,
+            "automatic-retention-owner",
+            LongRunningOperationState.Completed,
+            startedAt.AddMinutes(3)));
+
+        LongRunningOperation terminal = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        Assert.False(await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            "automatic-retention-owner",
+            startedAt.AddMinutes(4),
+            startedAt.AddMinutes(9)));
+
+        Assert.Equal(terminal, await store.GetAsync(operation.Id));
+    }
+
+    [SkippableFact]
+    public async Task Same_owner_resumption_does_not_truncate_a_different_owner_into_authority()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        ILongRunningOperationSameOwnerLeaseResumption resumption = store;
+
+        DateTimeOffset startedAt = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = await CreateAsync(store, startedAt);
+
+        string exactOwner = new('a', 200);
+
+        LongRunningOperationLeaseResult acquired = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            exactOwner,
+            startedAt,
+            startedAt.AddMinutes(1));
+
+        Assert.True(acquired.Acquired);
+
+        LongRunningOperation before = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        bool resumed = await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            exactOwner + "b",
+            startedAt.AddMinutes(2),
+            startedAt.AddMinutes(7));
+
+        Assert.False(resumed);
+
+        Assert.Equal(before, await store.GetAsync(operation.Id));
+    }
+
     /// <summary>
     /// Issue #118 — the request-identity row reads back into the right properties.
     /// </summary>

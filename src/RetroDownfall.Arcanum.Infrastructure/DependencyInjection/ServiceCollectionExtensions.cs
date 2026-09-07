@@ -1216,6 +1216,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILongRunningOperationStore>(
             static sp => sp.GetRequiredService<LongRunningOperationStore>());
 
+        services.AddScoped<ILongRunningOperationSameOwnerLeaseResumption>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
+
         // The same store, reached through the one contract whose evidence is a held installation
         // maintenance lock. Registered separately rather than folded into the Core contract, so an
         // expiry-free lease acquisition is not available to every caller of the ordinary store — and
@@ -1229,6 +1232,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DataRetentionService>();
 
         services.AddScoped<IDataRetentionService>(
+            static provider => provider.GetRequiredService<DataRetentionService>());
+
+        services.AddScoped<IDataRetentionHostedSweep>(
             static provider => provider.GetRequiredService<DataRetentionService>());
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionRecoveryHandler>();
