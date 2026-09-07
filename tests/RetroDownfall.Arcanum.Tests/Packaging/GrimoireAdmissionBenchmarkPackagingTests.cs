@@ -14,7 +14,7 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
-public sealed class GrimoireAdmissionBenchmarkPackagingTests
+public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 {
 
     private static readonly string[] ExactSharedSources =
@@ -71,7 +71,7 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
             string[] allowedShared = name switch
             {
-                "create_workspace" => ["temp_root"],
+                "create_workspace" => ["temp_root", "temp_parent", "temp_root_identity"],
                 "run_host" => ["child_pid", "watchdog_pid"],
                 _ => [],
             };
@@ -88,7 +88,7 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
     }
 
     [Fact]
-    public async Task Published_host_independently_closes_the_runtime_source_set()
+    public async Task Archived_host_publishes_through_symlinked_temp_parent_and_closes_the_runtime_source_set()
     {
 
         if (!OperatingSystem.IsMacOS() || RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
@@ -100,8 +100,10 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
         string root = FindRepositoryRoot();
 
+        // The SDK's own Exec scripts require a space-free TMPDIR; fast workspace tests cover spaces.
+
         string fixture = Path.Combine(
-            Path.GetTempPath(),
+            "/tmp",
             "arcanum-admission-host-closure-" + Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(fixture);
@@ -109,9 +111,27 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
         try
         {
 
-            string publish = Path.Combine(fixture, "publish");
+            string physicalParent = Path.Combine(fixture, "physical-parent");
 
-            string sourceRoot = Path.Combine(fixture, "source");
+            Directory.CreateDirectory(physicalParent);
+
+            string alias = Path.Combine(fixture, "temporary-alias");
+
+            Directory.CreateSymbolicLink(alias, physicalParent);
+
+            ProcessResult workspace = await RunLauncherFunctionsAsync(
+                root,
+                "create_workspace\ntrap - EXIT\nprintf '%s\\n' \"$temp_root\"",
+                [],
+                new Dictionary<string, string?> { ["TMPDIR"] = alias });
+
+            Assert.Equal(0, workspace.ExitCode);
+
+            string workspaceRoot = workspace.StandardOutput.Trim();
+
+            string publish = Path.Combine(workspaceRoot, "publish");
+
+            string sourceRoot = Path.Combine(workspaceRoot, "source");
 
             string workingDirectory = Path.Combine(fixture, "working");
 
@@ -119,33 +139,34 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
             Directory.CreateDirectory(workingDirectory);
 
-            await CopyCatalogInputsAsync(root, sourceRoot);
-
-            ProcessResult publishResult = await RunProcessAsync(
-                "dotnet",
-                [
-                    "publish",
-                    Path.Combine(
-                        root,
-                        "tests",
-                        "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
-                        "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj"),
-                    "-c",
-                    "Release",
-                    "-r",
-                    "osx-arm64",
-                    "--self-contained",
-                    "true",
-                    "-p:RestoreLockedMode=true",
-                    "-p:UseSharedCompilation=false",
-                    "-m:1",
-                    "-nodeReuse:false",
-                    "-o",
-                    publish,
-                ],
+            ProcessResult archive = await RunProcessAsync(
+                "git",
+                ["archive", "HEAD", "--output=" + Path.Combine(workspaceRoot, "source.tar")],
                 root);
 
-            Assert.Equal(0, publishResult.ExitCode);
+            Assert.Equal(0, archive.ExitCode);
+
+            ProcessResult extract = await RunProcessAsync(
+                "tar",
+                ["-xf", Path.Combine(workspaceRoot, "source.tar"), "-C", sourceRoot],
+                root);
+
+            Assert.Equal(0, extract.ExitCode);
+
+            ProcessResult publishResult = await RunLauncherFunctionsAsync(
+                root,
+                "publish_host \"$1\" \"$2\"",
+                [sourceRoot, publish],
+                new Dictionary<string, string?>
+                {
+                    ["TMPDIR"] = alias,
+                    ["MSBUILDDISABLENODEREUSE"] = "1",
+                    ["UseSharedCompilation"] = "false",
+                });
+
+            Assert.True(
+                publishResult.ExitCode == 0,
+                $"Archived publish exited {publishResult.ExitCode}. stdout: {publishResult.StandardOutput} stderr: {publishResult.StandardError}");
 
             string host = Path.Combine(
                 publish,
@@ -920,7 +941,8 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
     private static async Task<ProcessResult> RunProcessAsync(
         string executable,
         IReadOnlyList<string> arguments,
-        string workingDirectory)
+        string workingDirectory,
+        IReadOnlyDictionary<string, string?>? environment = null)
     {
 
         ProcessStartInfo start = new(executable)
@@ -940,17 +962,60 @@ public sealed class GrimoireAdmissionBenchmarkPackagingTests
 
         start.Environment.Remove("ARCANUM_TEST_HOME");
 
+        if (environment is not null)
+        {
+
+            foreach ((string key, string? value) in environment)
+            {
+
+                if (value is null)
+                {
+
+                    start.Environment.Remove(key);
+
+                }
+                else
+                {
+
+                    start.Environment[key] = value;
+
+                }
+
+            }
+
+        }
+
         using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
-
-        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
-
-        Task<string> standardError = process.StandardError.ReadToEndAsync();
 
         using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(5));
 
-        await process.WaitForExitAsync(deadline.Token);
+        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(deadline.Token);
 
-        return new(process.ExitCode, await standardOutput, await standardError);
+        Task<string> standardError = process.StandardError.ReadToEndAsync(deadline.Token);
+
+        try
+        {
+
+            await process.WaitForExitAsync(deadline.Token);
+
+            return new(process.ExitCode, await standardOutput, await standardError);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            if (!process.HasExited)
+            {
+
+                process.Kill(entireProcessTree: true);
+
+                await process.WaitForExitAsync();
+
+            }
+
+            throw;
+
+        }
 
     }
 

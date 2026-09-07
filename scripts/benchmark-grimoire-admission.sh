@@ -11,21 +11,26 @@ invalid()
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P) || exit 2
 project="$repo_root/tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj"
 temp_root=''
+temp_parent=''
+temp_root_identity=''
 child_pid=''
 watchdog_pid=''
 
 cleanup()
 {
-    [ -n "$temp_root" ] || return 0
+    [ -n "$temp_root" ] && [ -n "$temp_parent" ] && [ -n "$temp_root_identity" ] || return 0
+    [ ! -L "$temp_root" ] || return 0
 
+    # Cleanup authority is the original physical directory, never a mutable TMPDIR alias.
     cleanup__canonical_temp=$(CDPATH= cd -- "$temp_root" 2>/dev/null && pwd -P) || return 0
-    cleanup__system_temp=${TMPDIR:-/tmp}
-    cleanup__canonical_system_temp=$(CDPATH= cd -- "$cleanup__system_temp" 2>/dev/null && pwd -P) || return 0
+    [ "$cleanup__canonical_temp" = "$temp_root" ] || return 0
+    [ "${temp_root%/*}" = "$temp_parent" ] || return 0
 
-    case "$cleanup__canonical_temp" in
-        "$cleanup__canonical_system_temp"/arcanum-grimoire-admission-script.*)
-            [ ! -L "$temp_root" ] || return 0
-            rm -rf -- "$cleanup__canonical_temp"
+    case "${temp_root##*/}" in
+        arcanum-grimoire-admission-script.??????)
+            cleanup__identity=$(/usr/bin/stat -f '%d:%i' "$temp_root" 2>/dev/null) || return 0
+            [ "$cleanup__identity" = "$temp_root_identity" ] || return 0
+            rm -rf -- "$temp_root"
             ;;
     esac
 }
@@ -49,7 +54,20 @@ trap cancel INT TERM
 
 create_workspace()
 {
-    temp_root=$(mktemp -d "${TMPDIR:-/tmp}/arcanum-grimoire-admission-script.XXXXXX") || exit 2
+    # NuGet must see the same physical root for the top-level project and its references.
+    temp_parent=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P) || exit 2
+    create_workspace__created=$(mktemp -d "$temp_parent/arcanum-grimoire-admission-script.XXXXXX") || exit 2
+    create_workspace__identity=$(/usr/bin/stat -f '%d:%i' "$create_workspace__created" 2>/dev/null) || exit 2
+    [ ! -L "$create_workspace__created" ] || exit 2
+    create_workspace__canonical=$(CDPATH= cd -- "$create_workspace__created" && pwd -P) || exit 2
+    [ "$create_workspace__canonical" = "$create_workspace__created" ] || exit 2
+    [ "${create_workspace__canonical%/*}" = "$temp_parent" ] || exit 2
+    case "${create_workspace__canonical##*/}" in
+        arcanum-grimoire-admission-script.??????) ;;
+        *) exit 2 ;;
+    esac
+    temp_root=$create_workspace__canonical
+    temp_root_identity=$create_workspace__identity
 }
 
 rid()
