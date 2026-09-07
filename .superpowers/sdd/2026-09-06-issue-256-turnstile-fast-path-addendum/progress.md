@@ -229,7 +229,7 @@ and replacement publication object before mutating state and publishes the fresh
 ## Task C1 implementation handoff
 
 Task C1 implemented from `adf36a59d00cf28a1eb018eaca52f0f845078d8d` as normal implementation commit
-`c50be99dca742751554a8c57566c522d80e294c0`; independent C1 review is pending. Exact reviewed B remains
+`c50be99dca742751554a8c57566c522d80e294c0`; independent C1 review is clean. Exact reviewed B remains
 `b0be2b4df8855e56f2dcfcaf155dfacddc51b88a`, and immutable H remains
 `f51ac3f84c3b408510e448311d7a5e15bdbc041e`. This increment is not final candidate C.
 
@@ -245,3 +245,9 @@ Strict compile-clean RED/GREEN evidence is recorded in `task-C1-evidence.md`, an
 Windows-only skips. Format, blank-line, staged/unstaged diff, immutable-H, 1,641-input catalog,
 production allowlist, unchanged Task B tests, and ancestry audits passed. No acceptance benchmark
 was run. Report, evidence, and ledger are committed separately from the implementation.
+
+Task C1: complete with no Critical, Important, or Minor review findings. Independent review verified
+the epoch/phase recheck, completed shard scan, `_sync`-to-shard promotion, exact CAS census/unlink,
+atomic ambient liveness, full-fence signal publication, decrement-before-signal load, abort/reopen
+isolation, hybrid monitor-work boundary, deterministic proof quality, and exact H/allowlist scope.
+Work/effect sharding remains Task C2; the candidate is not yet final and has not been benchmarked.
