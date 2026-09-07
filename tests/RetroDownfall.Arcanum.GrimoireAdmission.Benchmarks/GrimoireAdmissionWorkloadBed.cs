@@ -42,6 +42,10 @@ internal sealed class GrimoireAdmissionWorkloadBed : IDisposable
 
     private int _disposed;
 
+    private int _workerThreadsTerminated;
+
+    private int _workerConnectionsDisposed;
+
     internal GrimoireAdmissionWorkloadBed(BenchmarkComposition composition)
     {
 
@@ -67,41 +71,88 @@ internal sealed class GrimoireAdmissionWorkloadBed : IDisposable
 
         List<AdmissionBenchmarkCellResult> cells = [];
 
-        using PersistentWorkerHarness harness = new(_workers.Length);
+        PersistentWorkerHarness harness = new(_workers.Length);
 
-        foreach (AdmissionBenchmarkConcurrency concurrency in manifest.Concurrency)
+        Exception? primaryException = null;
+
+        try
         {
 
-            int workers = concurrency.Workers == 0
-                ? global::System.Environment.ProcessorCount
-                : concurrency.Workers;
-
-            foreach (string operation in manifest.Operations)
+            foreach (AdmissionBenchmarkConcurrency concurrency in manifest.Concurrency)
             {
 
-                _operation = operation;
+                int workers = concurrency.Workers == 0
+                    ? global::System.Environment.ProcessorCount
+                    : concurrency.Workers;
 
-                AdmissionBenchmarkCellMeasurement measurement = AdmissionBenchmarkCellRunner.Run(
-                    harness,
-                    profile,
-                    workers,
-                    Execute,
-                    () => _composition.Gate.MaterializedTerminalCallbacks,
-                    cancellationToken);
+                foreach (string operation in manifest.Operations)
+                {
 
-                cells.Add(ToCell(
-                    operation,
-                    concurrency.Id,
-                    workers,
-                    measurement));
+                    _operation = operation;
+
+                    AdmissionBenchmarkCellMeasurement measurement = AdmissionBenchmarkCellRunner.Run(
+                        harness,
+                        profile,
+                        workers,
+                        Execute,
+                        () => _composition.Gate.MaterializedTerminalCallbacks,
+                        cancellationToken);
+
+                    cells.Add(ToCell(
+                        operation,
+                        concurrency.Id,
+                        workers,
+                        measurement));
+
+                }
+
+            }
+
+            return cells.ToArray();
+
+        }
+        catch (Exception exception)
+        {
+
+            primaryException = exception;
+
+            throw;
+
+        }
+        finally
+        {
+
+            try
+            {
+
+                harness.Dispose();
+
+            }
+            catch (Exception exception) when (primaryException is not null)
+            {
+
+                Console.Error.WriteLine($"Persistent benchmark worker teardown failed: {exception.Message}");
+
+            }
+            finally
+            {
+
+                if (harness.WorkerTerminationSucceeded)
+                {
+
+                    Interlocked.Exchange(ref _workerThreadsTerminated, 1);
+
+                }
 
             }
 
         }
 
-        return cells.ToArray();
-
     }
+
+    internal AdmissionBenchmarkMeasuredResourceWitness MeasuredResourceWitness => new(
+        Volatile.Read(ref _workerThreadsTerminated) != 0,
+        Volatile.Read(ref _workerConnectionsDisposed) != 0);
 
     internal async ValueTask<AdmissionBenchmarkFinalState> ValidateFinalStateAsync(
         CancellationToken cancellationToken)
@@ -291,6 +342,8 @@ internal sealed class GrimoireAdmissionWorkloadBed : IDisposable
             worker.Dispose();
 
         }
+
+        Interlocked.Exchange(ref _workerConnectionsDisposed, 1);
 
     }
 

@@ -74,6 +74,15 @@ internal sealed record AdmissionBenchmarkCellMeasurement(
     AdmissionBenchmarkPhaseResult Throughput,
     long MaterializedTerminalCallbackDelta);
 
+internal sealed record AdmissionBenchmarkMeasuredResourceWitness(
+    bool WorkerThreadsTerminated,
+    bool WorkerConnectionsDisposed)
+{
+
+    internal bool HomeDeletionAuthorized => WorkerThreadsTerminated && WorkerConnectionsDisposed;
+
+}
+
 internal sealed record AdmissionBenchmarkTeardownWitness(
     bool RuntimeResourcesCreated,
     bool PreDrainSucceeded,
@@ -189,7 +198,7 @@ internal static class AdmissionBenchmarkLifecycleCoordinator
 {
 
     internal static async ValueTask<T> DisposeThenSampleAsync<T>(
-        Action disposeMeasuredResources,
+        Func<AdmissionBenchmarkMeasuredResourceWitness> disposeMeasuredResources,
         Func<CancellationToken, ValueTask<T>> sampleFinalState,
         CancellationToken cancellationToken)
     {
@@ -198,7 +207,15 @@ internal static class AdmissionBenchmarkLifecycleCoordinator
 
         ArgumentNullException.ThrowIfNull(sampleFinalState);
 
-        disposeMeasuredResources();
+        AdmissionBenchmarkMeasuredResourceWitness witness = disposeMeasuredResources();
+
+        if (!witness.HomeDeletionAuthorized)
+        {
+
+            throw new InvalidDataException(
+                "Measured-resource teardown did not establish worker termination and connection disposal.");
+
+        }
 
         return await sampleFinalState(cancellationToken).ConfigureAwait(false);
 
@@ -362,6 +379,10 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
     private int _disposed;
 
+    private int _handlesDisposed;
+
+    private int _workerTerminationSucceeded;
+
     internal PersistentWorkerHarness(
         int workerCount,
         IAdmissionBenchmarkOrderProbe? probe = null)
@@ -424,6 +445,8 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
     internal bool AllWorkersParked => Volatile.Read(ref _parkedCount) == Volatile.Read(ref _activeWorkerCount)
         || Volatile.Read(ref _commandEpoch) == 0;
+
+    internal bool WorkerTerminationSucceeded => Volatile.Read(ref _workerTerminationSucceeded) != 0;
 
     internal AdmissionBenchmarkPhaseResult Run(
         AdmissionBenchmarkPhaseCommand command,
@@ -611,12 +634,14 @@ internal sealed class PersistentWorkerHarness : IDisposable
     public void Dispose()
     {
 
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Volatile.Read(ref _handlesDisposed) != 0)
         {
 
             return;
 
         }
+
+        Interlocked.Exchange(ref _disposed, 1);
 
         Volatile.Write(ref _stop, 1);
 
@@ -624,7 +649,7 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         long deadline = checked(Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency));
 
-        List<Action> teardownActions =
+        List<Action> signalActions =
         [
             () => _parkRelease.Set(),
         ];
@@ -632,14 +657,18 @@ internal sealed class PersistentWorkerHarness : IDisposable
         foreach (AutoResetEvent signal in _wake)
         {
 
-            teardownActions.Add(() => signal.Set());
+            signalActions.Add(() => signal.Set());
 
         }
+
+        Exception[] signalErrors = AdmissionBenchmarkWorkerTeardown.AttemptAll(signalActions);
+
+        List<Action> joinActions = [];
 
         foreach (Thread thread in _threads)
         {
 
-            teardownActions.Add(() =>
+            joinActions.Add(() =>
             {
 
                 long remainingTicks = deadline - Stopwatch.GetTimestamp();
@@ -657,29 +686,46 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         }
 
-        foreach (AutoResetEvent signal in _wake)
-        {
+        Exception[] joinErrors = AdmissionBenchmarkWorkerTeardown.AttemptAll(joinActions);
 
-            teardownActions.Add(signal.Dispose);
-
-        }
-
-        teardownActions.Add(_allArmed.Dispose);
-
-        teardownActions.Add(_allCompleted.Dispose);
-
-        teardownActions.Add(_allParked.Dispose);
-
-        teardownActions.Add(_parkRelease.Dispose);
-
-        Exception[] teardownErrors = AdmissionBenchmarkWorkerTeardown.AttemptAll(teardownActions);
-
-        if (teardownErrors.Length != 0)
+        if (joinErrors.Length != 0)
         {
 
             throw new InvalidOperationException(
                 "Persistent benchmark worker teardown was incomplete.",
-                new AggregateException(teardownErrors));
+                new AggregateException(signalErrors.Concat(joinErrors)));
+
+        }
+
+        Interlocked.Exchange(ref _workerTerminationSucceeded, 1);
+
+        Interlocked.Exchange(ref _handlesDisposed, 1);
+
+        List<Action> handleActions = [];
+
+        foreach (AutoResetEvent signal in _wake)
+        {
+
+            handleActions.Add(signal.Dispose);
+
+        }
+
+        handleActions.Add(_allArmed.Dispose);
+
+        handleActions.Add(_allCompleted.Dispose);
+
+        handleActions.Add(_allParked.Dispose);
+
+        handleActions.Add(_parkRelease.Dispose);
+
+        Exception[] handleErrors = AdmissionBenchmarkWorkerTeardown.AttemptAll(handleActions);
+
+        if (signalErrors.Length != 0 || handleErrors.Length != 0)
+        {
+
+            throw new InvalidOperationException(
+                "Persistent benchmark worker teardown was incomplete.",
+                new AggregateException(signalErrors.Concat(handleErrors)));
 
         }
 

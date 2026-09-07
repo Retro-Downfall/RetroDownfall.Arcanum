@@ -494,9 +494,13 @@ internal static class Program
 
                         bed.Dispose();
 
-                        measuredResourcesDisposed = true;
+                        AdmissionBenchmarkMeasuredResourceWitness witness = bed.MeasuredResourceWitness;
 
-                        home.MarkMeasuredResourcesDisposed();
+                        measuredResourcesDisposed = witness.HomeDeletionAuthorized;
+
+                        home.RecordMeasuredResourceTeardown(witness);
+
+                        return witness;
 
                     },
                     bed.ValidateFinalStateAsync,
@@ -583,9 +587,19 @@ internal static class Program
 
                     bed.Dispose();
 
-                    measuredResourcesDisposed = true;
+                    AdmissionBenchmarkMeasuredResourceWitness witness = bed.MeasuredResourceWitness;
 
-                    home.MarkMeasuredResourcesDisposed();
+                    measuredResourcesDisposed = witness.HomeDeletionAuthorized;
+
+                    home.RecordMeasuredResourceTeardown(witness);
+
+                    if (!witness.HomeDeletionAuthorized)
+                    {
+
+                        throw new InvalidDataException(
+                            "Benchmark workers or their measured connections did not complete teardown.");
+
+                    }
 
                 }
                 catch (Exception exception)
@@ -1294,7 +1308,8 @@ internal sealed class AdmissionBenchmarkHome
 
     internal void MarkRuntimeResourcesCreated() => _deletionAuthorized = false;
 
-    internal void MarkMeasuredResourcesDisposed() => _measuredResourcesDisposed = true;
+    internal void RecordMeasuredResourceTeardown(AdmissionBenchmarkMeasuredResourceWitness witness) =>
+        _measuredResourcesDisposed = witness.HomeDeletionAuthorized;
 
     internal void RecordTeardown(AdmissionBenchmarkTeardownWitness witness) =>
         _deletionAuthorized = _measuredResourcesDisposed && witness.HomeDeletionAuthorized;

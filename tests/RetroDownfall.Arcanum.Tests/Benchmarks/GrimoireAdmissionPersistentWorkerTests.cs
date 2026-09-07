@@ -496,6 +496,8 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
 
                 disposed = true;
 
+                return new(true, true);
+
             },
             _ =>
             {
@@ -516,10 +518,40 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
     }
 
     [Fact]
-    public void Worker_teardown_attempts_every_handle_cleanup_after_a_join_failure()
+    public async Task Final_state_is_not_sampled_without_positive_worker_termination_witness()
     {
 
-        PersistentWorkerHarness harness = new(2);
+        List<string> calls = [];
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await AdmissionBenchmarkLifecycleCoordinator.DisposeThenSampleAsync(
+                () =>
+                {
+
+                    calls.Add("dispose");
+
+                    return new(false, true);
+
+                },
+                _ =>
+                {
+
+                    calls.Add("sample");
+
+                    return ValueTask.FromResult(42);
+
+                },
+                CancellationToken.None));
+
+        Assert.Equal(["dispose"], calls);
+
+    }
+
+    [Fact]
+    public void Missed_worker_join_keeps_reachable_handles_alive_until_the_worker_terminates()
+    {
+
+        PersistentWorkerHarness harness = new(1);
 
         Thread[] workers = (Thread[])typeof(PersistentWorkerHarness)
             .GetField("_threads", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -529,11 +561,110 @@ public sealed class GrimoireAdmissionPersistentWorkerTests
             .GetField("_wake", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(harness)!;
 
-        workers[0] = new Thread(static () => { });
+        EventWaitHandle[] sharedHandles =
+        [
+            (EventWaitHandle)typeof(PersistentWorkerHarness)
+                .GetField("_allArmed", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(harness)!,
+            (EventWaitHandle)typeof(PersistentWorkerHarness)
+                .GetField("_allCompleted", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(harness)!,
+            (EventWaitHandle)typeof(PersistentWorkerHarness)
+                .GetField("_allParked", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(harness)!,
+            (EventWaitHandle)typeof(PersistentWorkerHarness)
+                .GetField("_parkRelease", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(harness)!,
+        ];
 
-        Assert.ThrowsAny<Exception>(harness.Dispose);
+        using ManualResetEventSlim operationEntered = new();
+
+        using ManualResetEventSlim releaseOperation = new();
+
+        using CancellationTokenSource cancellation = new();
+
+        Exception? controllerError = null;
+
+        Thread controller = new(
+            () =>
+            {
+
+                try
+                {
+
+                    _ = harness.Run(
+                        new(
+                            AdmissionBenchmarkPhaseKind.Throughput,
+                            1,
+                            1,
+                            (int worker, int iteration, CancellationToken token, ref long checksum) =>
+                            {
+
+                                operationEntered.Set();
+
+                                releaseOperation.Wait();
+
+                                return true;
+
+                            }),
+                        cancellation.Token);
+
+                }
+                catch (Exception exception)
+                {
+
+                    controllerError = exception;
+
+                }
+
+            });
+
+        controller.Start();
+
+        Assert.True(operationEntered.Wait(TimeSpan.FromSeconds(5)));
+
+        cancellation.Cancel();
+
+        Assert.True(controller.Join(TimeSpan.FromSeconds(5)));
+
+        Assert.IsAssignableFrom<OperationCanceledException>(controllerError);
+
+        try
+        {
+
+            Assert.Throws<InvalidOperationException>(harness.Dispose);
+
+            Assert.All(wake, static signal => Assert.False(signal.SafeWaitHandle.IsClosed));
+
+            Assert.All(sharedHandles, static signal => Assert.False(signal.SafeWaitHandle.IsClosed));
+
+            AdmissionBenchmarkMeasuredResourceWitness incomplete = new(
+                harness.WorkerTerminationSucceeded,
+                true);
+
+            Assert.False(incomplete.HomeDeletionAuthorized);
+
+        }
+        finally
+        {
+
+            releaseOperation.Set();
+
+        }
+
+        Assert.True(workers[0].Join(TimeSpan.FromSeconds(5)));
+
+        harness.Dispose();
+
+        AdmissionBenchmarkMeasuredResourceWitness complete = new(
+            harness.WorkerTerminationSucceeded,
+            true);
+
+        Assert.True(complete.HomeDeletionAuthorized);
 
         Assert.All(wake, static signal => Assert.True(signal.SafeWaitHandle.IsClosed));
+
+        Assert.All(sharedHandles, static signal => Assert.True(signal.SafeWaitHandle.IsClosed));
 
     }
 
