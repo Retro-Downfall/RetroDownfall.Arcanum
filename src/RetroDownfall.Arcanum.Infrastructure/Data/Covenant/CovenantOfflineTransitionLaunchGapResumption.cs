@@ -44,7 +44,7 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
         IGrimoireOfflineTransitionHandlerDispatch dispatch,
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
-        CovenantExclusiveRecoveryOwner? adopted,
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner? adopted,
         CancellationToken cancellationToken)
     {
 
@@ -62,7 +62,11 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
         }
 
         Result<LongRunningOperationSettlementOutcome> dispatched = await dispatch
-            .DispatchAsync(heldInstallationLock, guardedDirectory, owner.OperationId, cancellationToken)
+            .DispatchAsync(
+                heldInstallationLock,
+                guardedDirectory,
+                new AdoptedLaunchOwnerEvidence(owner.Owner, owner.ExpectedOperation),
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (dispatched.IsFailure)
@@ -84,5 +88,10 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
         new Error(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "An offline transition launched before this start could not be finished before readiness.");
+
+    private sealed class AdoptedLaunchOwnerEvidence(
+        CovenantExclusiveRecoveryOwner owner,
+        LongRunningOperationRecoveryFingerprint expectedOperation)
+        : LongRunningRecoveryOwnerEvidence(owner, expectedOperation);
 
 }

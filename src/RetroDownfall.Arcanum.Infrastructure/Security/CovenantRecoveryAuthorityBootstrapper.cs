@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -60,6 +61,10 @@ internal interface ICovenantClosedRecoveryHandoff
 
     /// <summary>The durable operation the journal names, and the only one this handoff can resume.</summary>
     Guid OperationId { get; }
+
+    CovenantExclusiveRecoveryOwner Owner { get; }
+
+    LongRunningOperationRecoveryFingerprint ExpectedOperation { get; }
 
     Task<Result> ConsumeAsync(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -115,8 +120,7 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
         ISecretStore secretStore,
         string guardedDirectory,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
-        Guid operationId,
-        string operationKind,
+        LongRunningOperationRecoveryFingerprint expectedOperation,
         CovenantExclusiveRecoveryOwner owner,
         GrimoireOfflineTransitionObservedState observedDatabaseState)
     {
@@ -141,9 +145,11 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
 
         _journalEnvelopeDigest = evidence.EnvelopeDigest;
 
-        OperationId = operationId;
+        OperationId = expectedOperation.OperationId;
 
-        OperationKind = operationKind;
+        OperationKind = expectedOperation.Kind;
+
+        ExpectedOperation = expectedOperation;
 
         Owner = owner;
 
@@ -158,7 +164,9 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
     internal string OperationKind { get; }
 
     /// <summary>The exclusive owner reconstructed from the launch this journal is bound to.</summary>
-    internal CovenantExclusiveRecoveryOwner Owner { get; }
+    public CovenantExclusiveRecoveryOwner Owner { get; }
+
+    public LongRunningOperationRecoveryFingerprint ExpectedOperation { get; }
 
     /// <summary>Whether the catalog is at the launch's source tuple or at its preselected target.</summary>
     internal GrimoireOfflineTransitionObservedState ObservedDatabaseState { get; }
@@ -408,8 +416,11 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
             _secretStore,
             guardedDirectory,
             evidence,
-            launch.Value.OperationId,
-            launch.Value.OperationKind,
+            new LongRunningOperationRecoveryFingerprint(
+                launch.Value.OperationId,
+                launch.Value.OperationKind,
+                row.Value.CheckpointVersion,
+                row.Value.Revision),
             new CovenantExclusiveRecoveryOwner(
                 launch.Value.OperationId,
                 launch.Value.Operation,

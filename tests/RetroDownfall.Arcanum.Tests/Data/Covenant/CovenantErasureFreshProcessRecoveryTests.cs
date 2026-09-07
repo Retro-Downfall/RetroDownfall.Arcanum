@@ -172,13 +172,13 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
                 }
 
-                Result<CovenantExclusiveRecoveryOwner?> adopted = await recovery
+                Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await recovery
                     .GetRequiredService<CovenantErasureStartupRecoveryOwnerAdopter>()
                     .AdoptBeforeReadinessAsync(install, CancellationToken.None);
 
                 Assert.True(adopted.IsSuccess, adopted.Error.Message);
 
-                Assert.Equal(durableOwner, adopted.Value);
+                Assert.Equal(durableOwner, adopted.Value?.Owner);
 
                 gate.PublishReadiness();
 

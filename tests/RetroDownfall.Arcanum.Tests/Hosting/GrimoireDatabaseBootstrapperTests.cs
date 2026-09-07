@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -2920,6 +2921,57 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Adopted_launch_without_offline_dispatch_refuses_readiness()
+    {
+        _secretStore.SetApiKey("test-api-key");
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        CovenantExclusiveRecoveryOwner owner = new(
+            Guid.NewGuid(),
+            CovenantExclusiveOperation.CovenantReset,
+            new CovenantDigest(Convert.FromHexString(new string('a', 64))));
+
+        LongRunningOperation launch = CovenantAdoptedOwnerTestIssuer.BuildLaunch(owner);
+
+        await InsertLaunchAsync(launch);
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<GrimoireDbReadiness>();
+        services.AddSingleton<IGrimoireDbReadiness>(
+            static provider => provider.GetRequiredService<GrimoireDbReadiness>());
+        services.AddSingleton(CovenantOperationGateFixture.CreateGate());
+        services.AddSingleton<IOsCredentialStore>(_credentialStore);
+
+        _ = services.AddGrimoireSchemaInstallation();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(_tempDir));
+
+        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                _secretStore,
+                _passphraseSource,
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                _dbPath,
+                _tempDir,
+                held,
+                expectedInstallationId: null,
+                CancellationToken.None));
+
+        Assert.False(provider.GetRequiredService<GrimoireDbReadiness>().IsReady);
+    }
+
     /// <summary>
     /// Bootstrapping with <c>Arcanum:Features:Covenant</c> off must leave Covenant residence unlatched.
     /// </summary>
@@ -3126,6 +3178,56 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             .BuildServiceProvider()
             .GetRequiredService<IServiceScopeFactory>();
 
+    }
+
+    private async Task InsertLaunchAsync(LongRunningOperation launch)
+    {
+        string connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = _dbPath,
+            Password = _passphraseSource.Passphrase,
+            Pooling = false,
+        }.ToString();
+
+        await using SqliteConnection connection = new(connectionString);
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand insert = connection.CreateCommand();
+
+        insert.CommandText =
+            """
+            INSERT INTO "LongRunningOperations"
+                ("Id", "Kind", "State", "RecoveryPolicy", "RootOperationId", "ParentOperationId",
+                 "SessionId", "RunId", "InferenceRunId", "BudgetReservationId", "IdempotencyClaimId",
+                 "CreatedAt", "StartedAt", "HeartbeatAt", "CompletedAt", "LeaseOwner", "LeaseExpiresAt",
+                 "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
+                 "PublicSummary", "TerminalErrorCode", "Revision")
+            VALUES
+                (@id, @kind, @state, @policy, NULL, NULL,
+                 NULL, NULL, NULL, NULL, NULL,
+                 @created, @started, @heartbeat, NULL, @leaseOwner, @leaseExpires,
+                 @attempts, @version, @payload, @reference,
+                 @summary, NULL, @revision);
+            """;
+
+        _ = insert.Parameters.AddWithValue("@id", launch.Id.ToString("N"));
+        _ = insert.Parameters.AddWithValue("@kind", launch.Kind);
+        _ = insert.Parameters.AddWithValue("@state", (int)launch.State);
+        _ = insert.Parameters.AddWithValue("@policy", (int)launch.RecoveryPolicy);
+        _ = insert.Parameters.AddWithValue("@created", launch.CreatedAt.ToString("O"));
+        _ = insert.Parameters.AddWithValue("@started", launch.StartedAt!.Value.ToString("O"));
+        _ = insert.Parameters.AddWithValue("@heartbeat", launch.HeartbeatAt!.Value.ToString("O"));
+        _ = insert.Parameters.AddWithValue("@leaseOwner", launch.LeaseOwner!);
+        _ = insert.Parameters.AddWithValue("@leaseExpires", launch.LeaseExpiresAt!.Value.ToString("O"));
+        _ = insert.Parameters.AddWithValue("@attempts", launch.AttemptCount);
+        _ = insert.Parameters.AddWithValue("@version", launch.CheckpointVersion);
+        _ = insert.Parameters.AddWithValue("@payload", launch.CheckpointPayload!);
+        _ = insert.Parameters.AddWithValue("@reference", launch.CheckpointReference!);
+        _ = insert.Parameters.AddWithValue("@summary", launch.PublicSummary);
+        _ = insert.Parameters.AddWithValue("@revision", launch.Revision);
+
+        _ = await insert.ExecuteNonQueryAsync();
     }
 
     /// <summary>

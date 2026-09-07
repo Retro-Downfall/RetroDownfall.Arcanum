@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
@@ -14,7 +15,10 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 /// Deliberately does not implement the retention-only same-owner lease-resumption capability. Tests
 /// that need that privilege must receive a dedicated fake instead of widening this general store.
 /// </remarks>
-internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) : ILongRunningOperationStore
+internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
+    : ILongRunningOperationStore,
+      ILongRunningOperationGenericRecoveryDiscovery,
+      ILongRunningOperationClassifiedRecoveryLeaseAcquisition
 {
     private readonly ConcurrentDictionary<Guid, LongRunningOperation> _operations = new();
 
@@ -31,6 +35,11 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
     internal Func<LongRunningOperation?, LongRunningOperation?>? GetOverride { get; set; }
 
     internal Func<LongRunningOperation?, bool?>? TryTransitionOverride { get; set; }
+
+    internal Func<
+        LongRunningOperation,
+        LongRunningOperationRecoveryFingerprint,
+        LongRunningOperationLeaseResult?>? ClassifiedLeaseOverride { get; set; }
 
     public IReadOnlyCollection<LongRunningOperation> Operations => [.. _operations.Values];
 
@@ -260,6 +269,24 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         return Task.FromResult<IReadOnlyList<LongRunningOperation>>(expired);
     }
 
+    public async Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        [
+            .. (await FindExpiredAsync(utcNow, int.MaxValue, cancellationToken))
+                .Where(static operation => operation is not
+                {
+                    Kind: LongRunningOperationKinds.DataRetentionMutation,
+                    CheckpointVersion: 4,
+                } and not
+                {
+                    Kind: LongRunningOperationKinds.DataRetentionFactoryReset,
+                    CheckpointVersion: 2,
+                })
+                .Take(limit),
+        ];
+
     public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
         Guid operationId,
         string ownerId,
@@ -267,8 +294,6 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default)
     {
-        _leaseAcquisitions.Enqueue(new LeaseAcquisition(timeProvider.GetUtcNow(), utcNow, leaseExpiresAt));
-
         lock (_gate)
         {
             if (!_operations.TryGetValue(operationId, out LongRunningOperation? current))
@@ -276,30 +301,74 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
                 throw new InvalidOperationException($"Operation {operationId} is not seeded.");
             }
 
-            bool claimable = current.State is LongRunningOperationState.Pending
-                || (current.State is LongRunningOperationState.Running or LongRunningOperationState.Waiting
-                    && (current.LeaseExpiresAt is null || current.LeaseExpiresAt <= utcNow))
-                || (IsRecoverableAttention(current)
-                    && (current.LeaseExpiresAt is null || current.LeaseExpiresAt <= utcNow));
+            return Task.FromResult(
+                AcquireLeaseUnderLock(current, ownerId, utcNow, leaseExpiresAt));
+        }
+    }
 
-            if (!claimable)
+    public Task<LongRunningOperationLeaseResult> TryAcquireClassifiedRecoveryLeaseAsync(
+        LongRunningOperationRecoveryFingerprint expected,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_gate)
+        {
+            if (!_operations.TryGetValue(expected.OperationId, out LongRunningOperation? current))
+            {
+                throw new InvalidOperationException($"Operation {expected.OperationId} is not seeded.");
+            }
+
+            if (ClassifiedLeaseOverride?.Invoke(current, expected) is { } overridden)
+            {
+                return Task.FromResult(overridden);
+            }
+
+            if (current.Revision != expected.Revision
+                || !string.Equals(current.Kind, expected.Kind, StringComparison.Ordinal)
+                || current.CheckpointVersion != expected.CheckpointVersion)
             {
                 return Task.FromResult(new LongRunningOperationLeaseResult(false, current));
             }
 
-            LongRunningOperation leased = current with
-            {
-                State = LongRunningOperationState.Running,
-                LeaseOwner = ownerId,
-                LeaseExpiresAt = leaseExpiresAt,
-                AttemptCount = current.AttemptCount + 1,
-                Revision = current.Revision + 1,
-            };
-
-            _operations[operationId] = leased;
-
-            return Task.FromResult(new LongRunningOperationLeaseResult(true, leased));
+            return Task.FromResult(
+                AcquireLeaseUnderLock(current, ownerId, utcNow, leaseExpiresAt));
         }
+    }
+
+    private LongRunningOperationLeaseResult AcquireLeaseUnderLock(
+        LongRunningOperation current,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt)
+    {
+        _leaseAcquisitions.Enqueue(
+            new LeaseAcquisition(timeProvider.GetUtcNow(), utcNow, leaseExpiresAt));
+
+        bool claimable = current.State is LongRunningOperationState.Pending
+            || (current.State is LongRunningOperationState.Running or LongRunningOperationState.Waiting
+                && (current.LeaseExpiresAt is null || current.LeaseExpiresAt <= utcNow))
+            || (IsRecoverableAttention(current)
+                && (current.LeaseExpiresAt is null || current.LeaseExpiresAt <= utcNow));
+
+        if (!claimable)
+        {
+            return new LongRunningOperationLeaseResult(false, current);
+        }
+
+        LongRunningOperation leased = current with
+        {
+            State = LongRunningOperationState.Running,
+            LeaseOwner = ownerId,
+            LeaseExpiresAt = leaseExpiresAt,
+            AttemptCount = current.AttemptCount + 1,
+            Revision = current.Revision + 1,
+        };
+
+        _operations[current.Id] = leased;
+
+        return new LongRunningOperationLeaseResult(true, leased);
     }
 
     public Task<bool> HeartbeatAsync(
@@ -479,13 +548,23 @@ internal sealed class RecordingRecoveryHandler(
 /// regression that shares one store — and therefore one SQLite connection — across concurrent
 /// recovery workers fails the test instead of racing an unsynchronized command list.
 /// </summary>
-internal sealed class PagingOnlyOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
+internal sealed class PagingOnlyOperationStore(ILongRunningOperationStore inner)
+    : ILongRunningOperationStore,
+      ILongRunningOperationGenericRecoveryDiscovery
 {
     public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
         DateTimeOffset utcNow,
         int limit,
         CancellationToken cancellationToken = default) =>
         inner.FindExpiredAsync(utcNow, limit, cancellationToken);
+
+    public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        inner is ILongRunningOperationGenericRecoveryDiscovery discovery
+            ? discovery.FindExpiredForGenericRecoveryAsync(utcNow, limit, cancellationToken)
+            : throw OutsideItsScope();
 
     public Task<LongRunningOperation> CreateAsync(
         LongRunningOperationCreateRequest request,

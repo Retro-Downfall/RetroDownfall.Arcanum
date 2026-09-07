@@ -2,6 +2,8 @@ using System.Data;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -29,7 +31,8 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 internal sealed class RecordingRecoveryDispatchSeam(
     List<string> steps,
     string? failAt,
-    LongRunningOperationSettlementOutcome settlement)
+    LongRunningOperationSettlementOutcome settlement,
+    CovenantExclusiveOperation exclusiveOperation = CovenantExclusiveOperation.CovenantReset)
     : IGrimoireRecoveryOnlyUnlock,
         ICovenantRecoveryAuthorityBootstrapper,
         ICovenantClosedRecoveryHandoff,
@@ -42,6 +45,21 @@ internal sealed class RecordingRecoveryDispatchSeam(
         _connection is not null && _connection.State != ConnectionState.Open;
 
     public Guid OperationId { get; } = Guid.Parse("11111111-1111-4111-8111-111111111111");
+
+    public CovenantExclusiveRecoveryOwner Owner => new(
+        OperationId,
+        exclusiveOperation,
+        new CovenantDigest(Convert.FromHexString(new string('a', 64))));
+
+    public LongRunningOperationRecoveryFingerprint ExpectedOperation => new(
+        OperationId,
+        exclusiveOperation is CovenantExclusiveOperation.CovenantReset
+            ? LongRunningOperationKinds.DataRetentionMutation
+            : LongRunningOperationKinds.DataRetentionFactoryReset,
+        CheckpointVersion: exclusiveOperation is CovenantExclusiveOperation.CovenantReset ? 4 : 2,
+        Revision: 7);
+
+    internal LongRunningRecoveryOwnerEvidence? CapturedOwnerEvidence { get; private set; }
 
     public async Task<Result<GrimoireRecoveryUnlockedCatalog>> OpenExistingAsync(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -120,7 +138,7 @@ internal sealed class RecordingRecoveryDispatchSeam(
     public Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
-        Guid operationId,
+        LongRunningRecoveryOwnerEvidence ownerEvidence,
         CancellationToken cancellationToken)
     {
 
@@ -130,7 +148,9 @@ internal sealed class RecordingRecoveryDispatchSeam(
 
         Assert.True(Disposed);
 
-        Assert.Equal(OperationId, operationId);
+        Assert.Equal(OperationId, ownerEvidence.ExpectedOperation.OperationId);
+
+        CapturedOwnerEvidence = ownerEvidence;
 
         return Task.FromResult(
             failAt == "dispatch"

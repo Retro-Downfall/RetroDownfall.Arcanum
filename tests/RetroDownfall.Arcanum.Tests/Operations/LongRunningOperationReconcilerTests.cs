@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Tests.A2A;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
@@ -132,6 +133,144 @@ public sealed class LongRunningOperationReconcilerTests
         Assert.Equal(
             LongRunningOperationErrorCodes.UnsupportedCheckpointVersion,
             recovered.TerminalErrorCode);
+    }
+
+    [Fact]
+    public async Task Unsupported_registry_hole_is_settled_without_invoking_its_handler()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        RecordingRecoveryHandler handler = new(
+            LongRunningOperationKinds.DataRetentionPrune,
+            supportedCheckpointVersion: 2);
+        LongRunningOperation unsupported = store.Seed(
+            LongRunningOperationKinds.DataRetentionPrune,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            checkpointVersion: 1);
+
+        LongRunningOperationReconciliationSummary summary = await CreateReconciler(store, time, handler)
+            .ReconcileNowAsync("test-owner");
+
+        LongRunningOperation settled = Assert.Single(
+            store.Operations,
+            operation => operation.Id == unsupported.Id);
+        Assert.Empty(handler.Invocations);
+        Assert.Equal(1, summary.RequiresAttention);
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, settled.State);
+        Assert.Equal(LongRunningOperationErrorCodes.UnsupportedCheckpointVersion, settled.TerminalErrorCode);
+    }
+
+    [Fact]
+    public async Task Owner_bound_operation_without_authenticated_evidence_stays_untouched()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        RecordingRecoveryHandler handler = new(
+            LongRunningOperationKinds.DataRetentionMutation,
+            supportedCheckpointVersion: 4);
+        LongRunningOperation ownerBound = store.Seed(
+            LongRunningOperationKinds.DataRetentionMutation,
+            LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            checkpointVersion: 4);
+        ownerBound = ownerBound with { CheckpointPayload = [1] };
+        store.Add(ownerBound);
+
+        LongRunningOperationReconciliationSummary summary = await CreateReconciler(store, time, handler)
+            .ReconcileNowAsync("test-owner");
+
+        LongRunningOperation unchanged = Assert.Single(
+            store.Operations,
+            operation => operation.Id == ownerBound.Id);
+        Assert.Empty(handler.Invocations);
+        Assert.Empty(store.LeaseAcquisitions);
+        Assert.Equal(ownerBound, unchanged);
+        Assert.Equal(0, summary.Skipped);
+    }
+
+    [Fact]
+    public async Task Conditional_claim_return_is_reclassified_before_handler_selection()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        LongRunningOperation stale = store.Seed(
+            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        RecordingRecoveryHandler handler = new(
+            LongRunningOperationKinds.WorkspaceIndex,
+            supportedCheckpointVersion: 0);
+
+        store.ClassifiedLeaseOverride = (current, _) =>
+            new LongRunningOperationLeaseResult(
+                true,
+                current with
+                {
+                    LeaseOwner = "test-owner",
+                    AttemptCount = current.AttemptCount + 1,
+                    Revision = current.Revision + 2,
+                });
+
+        LongRunningOperationReconciliationSummary summary = await CreateReconciler(store, time, handler)
+            .ReconcileNowAsync("test-owner");
+
+        Assert.Empty(handler.Invocations);
+        Assert.Equal(1, summary.Skipped);
+        Assert.Equal(stale, Assert.Single(store.Operations));
+    }
+
+    [Fact]
+    public async Task Generic_recovery_refuses_a_broad_store_without_the_discovery_alias()
+    {
+        FakeTimeProvider time = new();
+
+        FakeLongRunningOperationStore inner = new(time);
+
+        _ = inner.Seed(
+            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+
+        CountingOperationStore broadOnly = new(inner);
+
+        LongRunningOperationReconciler reconciler = new(
+            broadOnly,
+            [new RecordingRecoveryHandler(LongRunningOperationKinds.WorkspaceIndex, 0)],
+            time,
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
+
+        InvalidOperationException refusal = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            reconciler.ReconcileNowAsync("test-owner"));
+
+        Assert.Contains("generic-discovery", refusal.Message, StringComparison.Ordinal);
+
+        Assert.Empty(inner.LeaseAcquisitions);
+    }
+
+    [Fact]
+    public async Task Generic_recovery_refuses_a_store_without_the_classified_claim_alias()
+    {
+        FakeTimeProvider time = new();
+
+        FakeLongRunningOperationStore inner = new(time);
+
+        _ = inner.Seed(
+            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+
+        PagingOnlyOperationStore discoveryOnly = new(inner);
+
+        LongRunningOperationReconciler reconciler = new(
+            discoveryOnly,
+            [new RecordingRecoveryHandler(LongRunningOperationKinds.WorkspaceIndex, 0)],
+            time,
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
+
+        InvalidOperationException refusal = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            reconciler.ReconcileNowAsync("test-owner"));
+
+        Assert.Contains("classified compare-exchange", refusal.Message, StringComparison.Ordinal);
+
+        Assert.Empty(inner.LeaseAcquisitions);
     }
 
     /// <summary>
@@ -423,7 +562,9 @@ public sealed class LongRunningOperationReconcilerTests
 /// unscoped pass and throws if that shape ever changes to reach it.
 /// </summary>
 internal sealed class CancelsOnCompensationOperationStore(FakeLongRunningOperationStore inner)
-    : ILongRunningOperationStore
+    : ILongRunningOperationStore,
+      ILongRunningOperationGenericRecoveryDiscovery,
+      ILongRunningOperationClassifiedRecoveryLeaseAcquisition
 {
     public Task<LongRunningOperation> CreateAsync(
         LongRunningOperationCreateRequest request,
@@ -472,6 +613,12 @@ internal sealed class CancelsOnCompensationOperationStore(FakeLongRunningOperati
         CancellationToken cancellationToken = default) =>
         inner.FindExpiredAsync(utcNow, limit, cancellationToken);
 
+    public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        inner.FindExpiredForGenericRecoveryAsync(utcNow, limit, cancellationToken);
+
     public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
         Guid operationId,
         string ownerId,
@@ -479,6 +626,19 @@ internal sealed class CancelsOnCompensationOperationStore(FakeLongRunningOperati
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default) =>
         inner.TryAcquireLeaseAsync(operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken);
+
+    public Task<LongRunningOperationLeaseResult> TryAcquireClassifiedRecoveryLeaseAsync(
+        LongRunningOperationRecoveryFingerprint expected,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        inner.TryAcquireClassifiedRecoveryLeaseAsync(
+            expected,
+            ownerId,
+            utcNow,
+            leaseExpiresAt,
+            cancellationToken);
 
     public Task<bool> HeartbeatAsync(
         Guid operationId,

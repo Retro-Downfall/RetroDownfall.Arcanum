@@ -142,12 +142,29 @@ public sealed class LongRunningOperationReconciler(
 
         HashSet<Guid> attempted = [];
 
+        if (store is not ILongRunningOperationGenericRecoveryDiscovery discovery)
+        {
+            throw new InvalidOperationException(
+                "Recovery requires the generic-discovery store alias.");
+        }
+
         async Task SettleAsync(
             ILongRunningOperationStore operationStore,
             IReadOnlyDictionary<string, ILongRunningOperationRecoveryHandler> operationHandlers,
             LongRunningOperation operation,
             CancellationToken ct)
         {
+            LongRunningRecoveryAdmissionDecision admission =
+                LongRunningOperationRecoveryAdmission.Classify(operation, ownerEvidence: null);
+
+            if (admission.Kind is LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner)
+            {
+                Interlocked.Increment(ref skipped);
+
+                RecordOutcome(operation.Kind, "awaiting_exact_owner");
+
+                return;
+            }
 
             // Read the clock here rather than reusing the pass-start `utcNow`. That timestamp is the
             // discovery predicate for the whole pass, and a pass over a real backlog easily outruns the
@@ -173,12 +190,23 @@ public sealed class LongRunningOperationReconciler(
 
             DateTimeOffset leaseTakenAt = timeProvider.GetUtcNow();
 
-            LongRunningOperationLeaseResult lease = await operationStore.TryAcquireLeaseAsync(
-                operation.Id,
-                ownerId,
-                leaseTakenAt,
-                leaseTakenAt.Add(RecoveryLease),
-                ct).ConfigureAwait(false);
+            if (operationStore is not ILongRunningOperationClassifiedRecoveryLeaseAcquisition classified)
+            {
+                throw new InvalidOperationException(
+                    "Recovery requires the classified compare-exchange store alias.");
+            }
+
+            LongRunningOperationLeaseResult lease = await classified
+                .TryAcquireClassifiedRecoveryLeaseAsync(
+                    new LongRunningOperationRecoveryFingerprint(
+                        operation.Id,
+                        operation.Kind,
+                        operation.CheckpointVersion,
+                        operation.Revision),
+                    ownerId,
+                    leaseTakenAt,
+                    leaseTakenAt.Add(RecoveryLease),
+                    ct).ConfigureAwait(false);
 
             if (!lease.Acquired)
             {
@@ -191,14 +219,43 @@ public sealed class LongRunningOperationReconciler(
 
             }
 
+            LongRunningRecoveryAdmissionDecision claimedAdmission =
+                LongRunningOperationRecoveryAdmission.Classify(
+                    lease.Operation,
+                    ownerEvidence: null);
+
+            if (lease.Operation.Id != operation.Id
+                || !string.Equals(lease.Operation.Kind, operation.Kind, StringComparison.Ordinal)
+                || lease.Operation.CheckpointVersion != operation.CheckpointVersion
+                || lease.Operation.Revision != operation.Revision + 1
+                || claimedAdmission != admission)
+            {
+                Interlocked.Increment(ref skipped);
+
+                RecordOutcome(operation.Kind, "classification_drift");
+
+                return;
+            }
+
             Interlocked.Increment(ref claimed);
 
-            switch (await SettleLeasedAsync(
-                operationStore,
-                operationHandlers,
-                lease.Operation,
-                ownerId,
-                ct).ConfigureAwait(false))
+            LongRunningOperationSettlementOutcome outcome =
+                admission.Kind is LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion
+                    ? await SettleResultAsync(
+                        operationStore,
+                        lease.Operation,
+                        ownerId,
+                        LongRunningOperationRecoveryResult.RequiresAttention(
+                            LongRunningOperationErrorCodes.UnsupportedCheckpointVersion))
+                        .ConfigureAwait(false)
+                    : await SettleLeasedAsync(
+                        operationStore,
+                        operationHandlers,
+                        lease.Operation,
+                        ownerId,
+                        ct).ConfigureAwait(false);
+
+            switch (outcome)
             {
                 case LongRunningOperationSettlementOutcome.Completed:
                     Interlocked.Increment(ref completed);
@@ -225,9 +282,11 @@ public sealed class LongRunningOperationReconciler(
             while (true)
             {
 
-                IReadOnlyList<LongRunningOperation> expired = await store
-                    .FindExpiredAsync(utcNow, pageSize, cancellationToken)
-                    .ConfigureAwait(false);
+                IReadOnlyList<LongRunningOperation> expired = await discovery
+                    .FindExpiredForGenericRecoveryAsync(
+                        utcNow,
+                        pageSize,
+                        cancellationToken).ConfigureAwait(false);
 
                 LongRunningOperation[] page = expired
                     .Where(operation => PriorityOf(operation.Kind) == phase)
@@ -302,13 +361,27 @@ public sealed class LongRunningOperationReconciler(
     /// a second copy of "run the handler, reread, compare-exchange the verdict" would be a second
     /// answer to what a recovery outcome means.
     /// </remarks>
-    public async Task<LongRunningOperationSettlementOutcome> SettleExactlyAsync(
+    public Task<LongRunningOperationSettlementOutcome> SettleExactlyAsync(
         Guid operationId,
         string ownerId,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(LongRunningOperationSettlementOutcome.RequiresAttention);
+    }
+
+    internal async Task<LongRunningOperationSettlementOutcome> SettleExactlyAsync(
+        Guid operationId,
+        string ownerId,
+        LongRunningRecoveryOwnerEvidence ownerEvidence,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        ArgumentNullException.ThrowIfNull(ownerEvidence);
 
         LongRunningOperation? leased = await store
             .GetAsync(operationId, cancellationToken)
@@ -316,9 +389,7 @@ public sealed class LongRunningOperationReconciler(
 
         if (leased is null)
         {
-
             return LongRunningOperationSettlementOutcome.NotFound;
-
         }
 
         // The same skip the generic pass makes, for the same reason: an operation this process is
@@ -326,16 +397,119 @@ public sealed class LongRunningOperationReconciler(
         // so the metric can carry the row's real kind, which an identity alone does not name.
         if (ownership.IsClaimed(operationId))
         {
-
             RecordOutcome(leased.Kind, "owned_in_process");
 
             return LongRunningOperationSettlementOutcome.OwnedInProcess;
+        }
 
+        LongRunningOperationRecoveryFingerprint expected = ownerEvidence.ExpectedOperation;
+        LongRunningRecoveryAdmissionDecision decision =
+            LongRunningOperationRecoveryAdmission.Classify(leased, ownerEvidence);
+
+        if (leased.Id != expected.OperationId
+            || !string.Equals(leased.Kind, expected.Kind, StringComparison.Ordinal)
+            || leased.CheckpointVersion != expected.CheckpointVersion
+            || leased.Revision != expected.Revision + 1
+            || !string.Equals(leased.LeaseOwner, ownerId, StringComparison.Ordinal)
+            || decision.Kind is not LongRunningRecoveryAdmissionKind.OwnerBoundOffline)
+        {
+            RecordOutcome(leased.Kind, "owner_evidence_refused");
+
+            return LongRunningOperationSettlementOutcome.RequiresAttention;
         }
 
         return await SettleLeasedAsync(store, _handlers, leased, ownerId, cancellationToken)
             .ConfigureAwait(false);
+    }
 
+    /// <summary>
+    /// Atomically claims and settles one row materialized by the runtime discovery scope.
+    /// </summary>
+    internal async Task<LongRunningOperationSettlementOutcome> SettleDiscoveredRuntimeAsync(
+        LongRunningOperation discovered,
+        string ownerId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(discovered);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        LongRunningRecoveryAdmissionDecision before =
+            LongRunningOperationRecoveryAdmission.Classify(discovered, ownerEvidence: null);
+
+        if (before.Kind is LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner)
+        {
+            RecordOutcome(discovered.Kind, "awaiting_exact_owner");
+
+            return LongRunningOperationSettlementOutcome.ConcurrencyLost;
+        }
+
+        if (ownership.IsClaimed(discovered.Id))
+        {
+            RecordOutcome(discovered.Kind, "owned_in_process");
+
+            return LongRunningOperationSettlementOutcome.OwnedInProcess;
+        }
+
+        if (store is not ILongRunningOperationClassifiedRecoveryLeaseAcquisition acquisition)
+        {
+            throw new InvalidOperationException(
+                "Runtime recovery requires the classified compare-exchange store alias.");
+        }
+
+        DateTimeOffset leaseTakenAt = timeProvider.GetUtcNow();
+        LongRunningOperationLeaseResult lease = await acquisition
+            .TryAcquireClassifiedRecoveryLeaseAsync(
+                new LongRunningOperationRecoveryFingerprint(
+                    discovered.Id,
+                    discovered.Kind,
+                    discovered.CheckpointVersion,
+                    discovered.Revision),
+                ownerId,
+                leaseTakenAt,
+                leaseTakenAt.Add(RecoveryLease),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!lease.Acquired)
+        {
+            RecordOutcome(discovered.Kind, "classification_drift");
+
+            return LongRunningOperationSettlementOutcome.ConcurrencyLost;
+        }
+
+        LongRunningOperation claimed = lease.Operation;
+        LongRunningRecoveryAdmissionDecision after =
+            LongRunningOperationRecoveryAdmission.Classify(claimed, ownerEvidence: null);
+
+        if (claimed.Id != discovered.Id
+            || !string.Equals(claimed.Kind, discovered.Kind, StringComparison.Ordinal)
+            || claimed.CheckpointVersion != discovered.CheckpointVersion
+            || claimed.Revision != discovered.Revision + 1
+            || after != before)
+        {
+            RecordOutcome(discovered.Kind, "classification_drift");
+
+            return LongRunningOperationSettlementOutcome.ConcurrencyLost;
+        }
+
+        if (after.Kind is LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion)
+        {
+            return await SettleResultAsync(
+                store,
+                claimed,
+                ownerId,
+                LongRunningOperationRecoveryResult.RequiresAttention(
+                    LongRunningOperationErrorCodes.UnsupportedCheckpointVersion))
+                .ConfigureAwait(false);
+        }
+
+        return await SettleLeasedAsync(
+            store,
+            _handlers,
+            claimed,
+            ownerId,
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -361,6 +535,15 @@ public sealed class LongRunningOperationReconciler(
             leased,
             cancellationToken).ConfigureAwait(false);
 
+        return await SettleResultAsync(operationStore, leased, ownerId, result).ConfigureAwait(false);
+    }
+
+    private async Task<LongRunningOperationSettlementOutcome> SettleResultAsync(
+        ILongRunningOperationStore operationStore,
+        LongRunningOperation leased,
+        string ownerId,
+        LongRunningOperationRecoveryResult result)
+    {
         LongRunningOperation latest = await operationStore.GetAsync(
             leased.Id,
             CancellationToken.None).ConfigureAwait(false)

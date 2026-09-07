@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -28,7 +29,7 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
 
     private static readonly CancellationToken Token = CancellationToken.None;
 
-    private static readonly CovenantExclusiveRecoveryOwner Adopted = new(
+    private static readonly CovenantExclusiveRecoveryOwner Owner = new(
         Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         CovenantExclusiveOperation.CovenantReset,
         new CovenantDigest(Convert.FromHexString(new string('a', 64))));
@@ -55,12 +56,15 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
         RecordingDispatch dispatch = new(
             Result<LongRunningOperationSettlementOutcome>.Success(verdict));
 
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted =
+            await IssueAdoptedOwnerAsync();
+
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption
-            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, Adopted, Token);
+            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, adopted, Token);
 
         Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
 
-        Assert.Equal(Adopted.OperationId, dispatch.Dispatched);
+        Assert.Equal(Owner.OperationId, dispatch.Dispatched);
 
     }
 
@@ -82,8 +86,11 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
         RecordingDispatch dispatch = new(
             Result<LongRunningOperationSettlementOutcome>.Success(verdict));
 
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted =
+            await IssueAdoptedOwnerAsync();
+
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption
-            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, Adopted, Token);
+            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, adopted, Token);
 
         Assert.True(resumed.IsFailure);
 
@@ -128,8 +135,11 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
             Result<LongRunningOperationSettlementOutcome>.Failure(
                 new Error(ErrorCodes.Covenant.ManualRecoveryRequired, "no lease")));
 
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted =
+            await IssueAdoptedOwnerAsync();
+
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption
-            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, Adopted, Token);
+            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, adopted, Token);
 
         Assert.True(resumed.IsFailure);
 
@@ -148,6 +158,9 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
         using ArcanumMaintenanceLock foreign = Assert.IsType<ArcanumMaintenanceLock>(
             ArcanumMaintenanceLock.TryAcquire(elsewhere));
 
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted =
+            await IssueAdoptedOwnerAsync();
+
         await Assert.ThrowsAnyAsync<Exception>(
             async () => await CovenantOfflineTransitionLaunchGapResumption
                 .ResumeBeforeReadinessAsync(
@@ -156,10 +169,15 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
                             LongRunningOperationSettlementOutcome.Completed)),
                     foreign,
                     held.Root,
-                    Adopted,
+                    adopted,
                     Token));
 
     }
+
+    private static Task<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner>
+        IssueAdoptedOwnerAsync() =>
+        CovenantAdoptedOwnerTestIssuer.IssueAsync(
+            CovenantAdoptedOwnerTestIssuer.BuildLaunch(Owner));
 
     private Held Hold(string name)
     {
@@ -188,11 +206,11 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
         public Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             string guardedDirectory,
-            Guid operationId,
+            LongRunningRecoveryOwnerEvidence ownerEvidence,
             CancellationToken cancellationToken)
         {
 
-            Dispatched = operationId;
+            Dispatched = ownerEvidence.ExpectedOperation.OperationId;
 
             return Task.FromResult(answer);
 

@@ -22,7 +22,7 @@ internal interface ILongRunningOperationMaintenanceLeaseAdoption
     Task<LongRunningOperationLeaseResult> AdoptUnderInstallationLockAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
-        Guid operationId,
+        LongRunningOperationRecoveryFingerprint expected,
         string ownerId,
         DateTimeOffset utcNow,
         DateTimeOffset leaseExpiresAt,

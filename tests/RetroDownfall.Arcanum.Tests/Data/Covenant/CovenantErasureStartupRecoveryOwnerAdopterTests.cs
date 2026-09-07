@@ -132,13 +132,13 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         CovenantErasureStartupRecoveryOwnerAdopter adopter = new(gate);
 
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await adopter.AdoptBeforeReadinessAsync(
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await adopter.AdoptBeforeReadinessAsync(
             Connection,
             CancellationToken.None);
 
         Assert.True(adopted.IsSuccess);
 
-        Assert.Equal(expected, adopted.Value);
+        Assert.Equal(expected, adopted.Value?.Owner);
 
         await using CovenantExclusiveLease resumed =
             (await gate.ResumeExclusiveAsync(expected, CancellationToken.None)).Value;
@@ -185,7 +185,7 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await new
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
             CovenantErasureStartupRecoveryOwnerAdopter(gate)
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
 
@@ -257,7 +257,7 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
             "UPDATE \"LongRunningOperations\" SET \"CheckpointPayload\" = @payload;",
             ("@payload", payload));
 
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await new
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
             CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
 
@@ -303,7 +303,7 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
                 + "\"CheckpointPayload\" = zeroblob(1000000) WHERE \"Id\" = @id;",
             ("@id", factory.OperationId.ToString("N")));
 
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await new
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
             CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
 
@@ -351,7 +351,7 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await new
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
             CovenantErasureStartupRecoveryOwnerAdopter(gate)
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
 
@@ -387,7 +387,7 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await new
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
             CovenantErasureStartupRecoveryOwnerAdopter(gate)
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
 
@@ -420,7 +420,7 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await new
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
             CovenantErasureStartupRecoveryOwnerAdopter(gate)
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
 

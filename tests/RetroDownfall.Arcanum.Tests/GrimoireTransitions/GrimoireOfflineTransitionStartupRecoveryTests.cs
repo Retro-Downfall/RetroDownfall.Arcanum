@@ -270,6 +270,40 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
 
     }
 
+    [Theory]
+    [InlineData(CovenantExclusiveOperation.CovenantReset)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)]
+    public async Task Authenticated_journal_selects_its_matching_full_owner_capability(
+        CovenantExclusiveOperation exclusiveOperation)
+    {
+        using Harness harness = Create(
+            "full-owner-" + exclusiveOperation,
+            exclusiveOperation: exclusiveOperation);
+
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
+            .RecoverBeforeBootstrapAsync(
+                harness.Lock,
+                harness.Root,
+                harness.DatabasePath,
+                InstallationResetNestedTransitionEvidenceOutcome.NestedBound,
+                harness.Journal,
+                Token);
+
+        Assert.True(recovered.IsSuccess, recovered.IsFailure ? recovered.Error.Message : null);
+
+        LongRunningRecoveryOwnerEvidence evidence = Assert.IsAssignableFrom<LongRunningRecoveryOwnerEvidence>(
+            harness.Unlock.CapturedOwnerEvidence);
+
+        LongRunningOperation launch = CovenantAdoptedOwnerTestIssuer.BuildLaunch(
+            harness.Unlock.Owner,
+            revision: harness.Unlock.ExpectedOperation.Revision);
+
+        Assert.Equal(
+            LongRunningRecoveryAdmissionKind.OwnerBoundOffline,
+            LongRunningOperationRecoveryAdmission.Classify(launch, evidence).Kind);
+
+    }
+
     private static void AssertRefused(Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered)
     {
 
@@ -283,7 +317,8 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         string name,
         string? failAt = null,
         LongRunningOperationSettlementOutcome settlement =
-            LongRunningOperationSettlementOutcome.Completed)
+            LongRunningOperationSettlementOutcome.Completed,
+        CovenantExclusiveOperation exclusiveOperation = CovenantExclusiveOperation.CovenantReset)
     {
 
         string root = _workspace.CreateSubdir("transition-startup-" + name);
@@ -293,7 +328,11 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
 
         List<string> steps = [];
 
-        RecordingRecoveryDispatchSeam seam = new(steps, failAt, settlement);
+        RecordingRecoveryDispatchSeam seam = new(
+            steps,
+            failAt,
+            settlement,
+            exclusiveOperation);
 
         return new Harness(
             held,
@@ -301,12 +340,13 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             Path.Combine(root, "arcanum.db"),
             steps,
             seam,
-            Journal(),
+            Journal(exclusiveOperation),
             new GrimoireOfflineTransitionStartupRecovery(seam, seam, seam));
 
     }
 
-    private static GrimoireOfflineTransitionRecoveryEvidence Journal()
+    private static GrimoireOfflineTransitionRecoveryEvidence Journal(
+        CovenantExclusiveOperation exclusiveOperation = CovenantExclusiveOperation.CovenantReset)
     {
 
         CovenantDigest digest = new(Convert.FromHexString(new string('a', 64)));
@@ -314,7 +354,9 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         return new GrimoireOfflineTransitionRecoveryEvidence(
             new GrimoireOfflineTransitionBinding(
                 Guid.Parse("11111111-1111-4111-8111-111111111111"),
-                GrimoireOfflineTransitionKind.CovenantReset,
+                exclusiveOperation is CovenantExclusiveOperation.CovenantReset
+                    ? GrimoireOfflineTransitionKind.CovenantReset
+                    : GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
                 PayloadVersion: 1,
                 SlotEpoch: 1,
                 digest,

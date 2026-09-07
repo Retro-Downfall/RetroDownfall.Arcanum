@@ -126,7 +126,7 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
         LongRunningOperationLeaseResult adopted = await Adoption().AdoptUnderInstallationLockAsync(
             _lock!,
             _root,
-            crashed.Id,
+            Fingerprint(crashed),
             "recovery-owner",
             now,
             now.AddMinutes(2),
@@ -166,7 +166,7 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
         LongRunningOperationLeaseResult adopted = await Adoption().AdoptUnderInstallationLockAsync(
             _lock!,
             _root,
-            crashed.Id,
+            Fingerprint(crashed),
             "recovery-owner",
             now,
             now.AddMinutes(2),
@@ -197,7 +197,7 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
             async () => await Adoption().AdoptUnderInstallationLockAsync(
                 foreign,
                 _root,
-                crashed.Id,
+                Fingerprint(crashed),
                 "recovery-owner",
                 now,
                 now.AddMinutes(2),
@@ -206,6 +206,13 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
     }
 
     private ILongRunningOperationMaintenanceLeaseAdoption Adoption() => _store;
+
+    private static LongRunningOperationRecoveryFingerprint Fingerprint(LongRunningOperation operation) =>
+        new(
+            operation.Id,
+            operation.Kind,
+            operation.CheckpointVersion,
+            operation.Revision);
 
     private async Task<LongRunningOperation> SeedLeasedAsync()
     {

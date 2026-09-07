@@ -947,7 +947,7 @@ public static class GrimoireDatabaseBootstrapper
     /// </remarks>
     private sealed record ProtectedMaintenanceRecovery(
         CovenantOperationGate? Gate,
-        CovenantExclusiveRecoveryOwner? AdoptedErasureOwner);
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner? AdoptedErasureOwner);
 
     private static async Task<ProtectedMaintenanceRecovery> RecoverProtectedMaintenanceAsync(
         SqliteConnection installConnection,
@@ -969,7 +969,7 @@ public static class GrimoireDatabaseBootstrapper
 
         CovenantOperationGate? gate = scope.ServiceProvider.GetService<CovenantOperationGate>();
 
-        CovenantExclusiveRecoveryOwner? adoptedErasureOwner = null;
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner? adoptedErasureOwner = null;
 
         CovenantSqliteConnectionInitializer initializer = CovenantSqliteConnectionInitializer.Instance;
 
@@ -982,7 +982,7 @@ public static class GrimoireDatabaseBootstrapper
         if (gate is not null)
         {
 
-            Result<CovenantExclusiveRecoveryOwner?> erasureOwner = await new
+            Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> erasureOwner = await new
                 CovenantErasureStartupRecoveryOwnerAdopter(gate)
                 .AdoptBeforeReadinessAsync(installConnection, cancellationToken)
                 .ConfigureAwait(false);
@@ -1097,15 +1097,15 @@ public static class GrimoireDatabaseBootstrapper
     /// <remarks>
     /// Skipped without an installation lock, exactly as the protected-maintenance recovery above is: a
     /// CLI beside a live host does not own the installation, and a second process resuming a
-    /// transition would be two owners for one closed period. Skipped too when the composition carries
-    /// no dispatch - such a container has no way to run a handler here at all, and the operation is
-    /// left to the periodic pass exactly as it was before this step existed.
+    /// transition would be two owners for one closed period. Once a launch has been adopted, however,
+    /// the composition must carry the exact offline dispatch: generic reconciliation deliberately
+    /// excludes owner-bound rows, so readiness cannot be published over a launch nobody else can claim.
     /// </remarks>
     private static async Task ResumeLaunchGapAsync(
         IServiceScopeFactory scopeFactory,
         ArcanumMaintenanceLock? heldInstallationLock,
         string grimoireDirectory,
-        CovenantExclusiveRecoveryOwner? adopted,
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner? adopted,
         CancellationToken cancellationToken)
     {
 
@@ -1121,14 +1121,7 @@ public static class GrimoireDatabaseBootstrapper
         if (scope.ServiceProvider.GetService<IGrimoireOfflineTransitionHandlerDispatch>()
             is not { } dispatch)
         {
-
-            Log.Warning(
-                "An interrupted Covenant erasure launch was adopted before readiness, but this "
-                + "composition carries no offline-transition dispatch, so it is left to ordinary "
-                + "reconciliation.");
-
-            return;
-
+            throw ProtectedRecoveryUnavailable();
         }
 
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption

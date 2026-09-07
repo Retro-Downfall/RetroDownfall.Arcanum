@@ -1,4 +1,7 @@
 using System.Reflection;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -38,6 +41,288 @@ public sealed class CovenantArchitectureBoundaryTests
     private static readonly Assembly CoreAssembly = typeof(CovenantOperationScope).Assembly;
 
     private static readonly Assembly InfrastructureAssembly = typeof(CovenantOperationGate).Assembly;
+
+    [Fact]
+    public void Owner_evidence_has_exactly_two_path_specific_issuers()
+    {
+        CSharpCompilation compilation = Assert.Single(
+            HostedGrimoireProducerInventory.ProductionCompilations,
+            static candidate => candidate.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
+
+        INamedTypeSymbol ownerEvidence = RequiredSourceType(
+            compilation,
+            "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningRecoveryOwnerEvidence");
+
+        INamedTypeSymbol[] allTypes = SourceTypes(compilation).ToArray();
+
+        INamedTypeSymbol[] issuers = allTypes
+            .Where(type => SymbolEqualityComparer.Default.Equals(type.BaseType, ownerEvidence))
+            .OrderBy(MetadataName, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantOfflineTransitionLaunchGapResumption+AdoptedLaunchOwnerEvidence",
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery+AuthenticatedJournalOwnerEvidence"
+            ],
+            issuers.Select(MetadataName));
+
+        Assert.All(issuers, static issuer =>
+        {
+            Assert.NotNull(issuer.ContainingType);
+            Assert.Equal(Accessibility.Private, issuer.DeclaredAccessibility);
+            Assert.True(issuer.IsSealed);
+        });
+
+        Dictionary<string, string> expectedIssuerMembers = new(StringComparer.Ordinal)
+        {
+            ["RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantOfflineTransitionLaunchGapResumption+AdoptedLaunchOwnerEvidence"] = "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantOfflineTransitionLaunchGapResumption.ResumeBeforeReadinessAsync",
+            ["RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery+AuthenticatedJournalOwnerEvidence"] = "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.PrepareAsync"
+        };
+
+        IMethodSymbol[] issuerCreationMembers = issuers
+            .SelectMany(issuer => ObjectCreationMembers(compilation, issuer))
+            .ToArray();
+
+        Assert.Equal(expectedIssuerMembers.Count, issuerCreationMembers.Length);
+
+        foreach (INamedTypeSymbol issuer in issuers)
+        {
+            Assert.Equal(
+                expectedIssuerMembers[MetadataName(issuer)],
+                MethodName(Assert.Single(ObjectCreationMembers(compilation, issuer))));
+        }
+
+        INamedTypeSymbol adoptedOwner = RequiredSourceType(
+            compilation,
+            "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantErasureStartupRecoveryOwnerAdopter+AdoptedOwner");
+
+        Assert.Equal(
+            "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantErasureStartupRecoveryOwnerAdopter",
+            MetadataName(adoptedOwner.ContainingType!));
+        Assert.True(adoptedOwner.IsSealed);
+        Assert.False(adoptedOwner.IsAbstract);
+
+        Assert.Equal(
+            Accessibility.Private,
+            Assert.Single(adoptedOwner.InstanceConstructors).DeclaredAccessibility);
+
+        IMethodSymbol adoptedOwnerCreationMember = Assert.Single(
+            ObjectCreationMembers(compilation, adoptedOwner));
+
+        Assert.Equal(
+            "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantErasureStartupRecoveryOwnerAdopter+AdoptedOwner.CompleteAuthenticatedAdoptionAsync",
+            MethodName(adoptedOwnerCreationMember));
+
+        IMethodSymbol authenticatedCreationMember = Assert.Single(
+            adoptedOwner.GetMembers("CompleteAuthenticatedAdoptionAsync").OfType<IMethodSymbol>());
+
+        Assert.Equal(
+            ["RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantErasureStartupRecoveryOwnerAdopter.AdoptBeforeReadinessAsync"],
+            InvocationCallers(compilation, authenticatedCreationMember).Select(MethodName));
+
+        INamedTypeSymbol handoff = RequiredSourceType(
+            compilation,
+            "RetroDownfall.Arcanum.Infrastructure.Security.ICovenantClosedRecoveryHandoff");
+
+        INamedTypeSymbol handoffImplementation = Assert.Single(
+            allTypes,
+            type => type is { TypeKind: TypeKind.Class, IsAbstract: false }
+                && type.AllInterfaces.Any(
+                    contract => SymbolEqualityComparer.Default.Equals(contract, handoff)));
+
+        Assert.Equal(
+            "RetroDownfall.Arcanum.Infrastructure.Security.CovenantClosedRecoveryHandoff",
+            MetadataName(handoffImplementation));
+
+        INamedTypeSymbol lockAccessor = RequiredSourceType(
+            compilation,
+            "RetroDownfall.Arcanum.Infrastructure.InstallationReset.IInstallationResetMaintenanceLockAccessor");
+
+        IMethodSymbol borrowHeldLock = Assert.Single(
+            lockAccessor.GetMembers("BorrowHeldLock").OfType<IMethodSymbol>());
+
+        IMethodSymbol[] prohibitedCreationMembers =
+        [
+            .. issuerCreationMembers,
+            adoptedOwnerCreationMember
+        ];
+
+        string[] reachableCreationMembers = ReachableMembers(
+                compilation,
+                InvocationCallers(compilation, borrowHeldLock))
+            .Where(member => prohibitedCreationMembers.Any(
+                creator => SymbolEqualityComparer.Default.Equals(
+                    creator.OriginalDefinition,
+                    member.OriginalDefinition)))
+            .Select(MethodName)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Empty(reachableCreationMembers);
+    }
+
+    [Fact]
+    public void EveryEffectfulHandlerIsClassifiedExternal()
+    {
+        RecoveryEffectContract[] contracts =
+        [
+            new(
+                "RetroDownfall.Arcanum.Api.Intelligence.BatchOperationRecoveryHandler",
+                LongRunningOperationKinds.Batch,
+                [0],
+                [
+                    "RetroDownfall.Arcanum.Api.Intelligence.IBatchRecoveryService.ReconcileStrandedAsync",
+                    "System.IO.File.Delete"
+                ]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.AttachmentPromotionRecoveryHandler",
+                LongRunningOperationKinds.AttachmentPromotion,
+                [0],
+                ["RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentStore.ReconcileAsync"]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionMigrationRecoveryHandler",
+                LongRunningOperationKinds.BlobEncryptionMigration,
+                [0, 1],
+                ["RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionFileProcessor.MigrateAsync"]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionKeyRotationRecoveryHandler",
+                LongRunningOperationKinds.BlobEncryptionKeyRotation,
+                [0, 1],
+                [
+                    "RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionFileProcessor.ReencryptAsync",
+                    "RetroDownfall.Arcanum.Core.Storage.IFileEncryptionKeyRing.RetireAsync"
+                ]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Backup.BackupCreateRecoveryHandler",
+                LongRunningOperationKinds.BackupCreate,
+                [2],
+                ["RetroDownfall.Arcanum.Infrastructure.Backup.OwnedTemporaryDirectory.TryDelete"]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionRecoveryHandler",
+                LongRunningOperationKinds.DataRetentionPrune,
+                [0, 2],
+                [
+                    "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionService.RecoverPruneAsync",
+                    "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryDeleteQuarantined"
+                ]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionMutationRecoveryHandler",
+                LongRunningOperationKinds.DataRetentionMutation,
+                [2],
+                [
+                    "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionService.RecoverMutationAsync",
+                    "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryDeleteQuarantined"
+                ]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler",
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                [0],
+                [
+                    "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionService.RecoverFactoryResetAsync",
+                    "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryQuarantine"
+                ]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.A2A.A2AOutboundSendingRecoveryHandler",
+                LongRunningOperationKinds.A2AOutboundSending,
+                [1],
+                ["RetroDownfall.Arcanum.Infrastructure.A2A.IA2AClientService.CancelRemoteTaskAsync"])
+        ];
+
+        IReadOnlyList<CSharpCompilation> compilations =
+            HostedGrimoireProducerInventory.ProductionCompilations;
+
+        SourceType[] handlers = compilations
+            .SelectMany(compilation => SourceTypes(compilation)
+                .Select(symbol => new SourceType(compilation, symbol)))
+            .Where(static candidate => candidate.Symbol is { TypeKind: TypeKind.Class, IsAbstract: false })
+            .Where(static candidate => candidate.Symbol.AllInterfaces.Any(
+                contract => MetadataName(contract)
+                    == "RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler"))
+            .OrderBy(static candidate => MetadataName(candidate.Symbol), StringComparer.Ordinal)
+            .ToArray();
+
+        NonHostedProducerChainEntry[] roots = handlers
+            .Select(RecoveryHandlerRoot)
+            .ToArray();
+
+        HostedProducerDiscovery<HostedProducerSite> discovery =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                compilations,
+                new HostedProducerDiscovery<string>([], []),
+                [],
+                roots);
+
+        string[] expectedEffectfulHandlers = contracts
+            .Select(static contract => contract.HandlerType)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        string[] discoveredEffectfulHandlers = discovery.Items
+            .Where(static site => site.Kind is HostedProducerSiteKind.ProviderCall
+                or HostedProducerSiteKind.FileSystemEffect)
+            .Select(static site => site.RootType)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(expectedEffectfulHandlers, discoveredEffectfulHandlers);
+
+        Dictionary<string, SourceType> handlersByName = handlers.ToDictionary(
+            static handler => MetadataName(handler.Symbol),
+            StringComparer.Ordinal);
+
+        List<string> missingEffectSites = [];
+
+        foreach (RecoveryEffectContract contract in contracts)
+        {
+            SourceType handler = handlersByName[contract.HandlerType];
+
+            Assert.Equal(contract.Kind, ConstantStringProperty(handler, "Kind"));
+
+            HostedProducerSite[] sites = discovery.Items
+                .Where(site => site.RootType == contract.HandlerType)
+                .Where(static site => site.Kind is HostedProducerSiteKind.ProviderCall
+                    or HostedProducerSiteKind.FileSystemEffect)
+                .ToArray();
+
+            foreach (string callee in contract.RequiredCallees)
+            {
+                if (!sites.Any(site => site.Callee == callee))
+                {
+                    missingEffectSites.Add(contract.HandlerType + " -> " + callee);
+                }
+            }
+
+            foreach (int checkpointVersion in contract.ExternalCheckpointVersions)
+            {
+                LongRunningRecoveryAdmissionDecision decision =
+                    LongRunningOperationRecoveryAdmission.Classify(
+                        RecoveryOperation(contract.Kind, checkpointVersion),
+                        ownerEvidence: null);
+
+                Assert.True(
+                    decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
+                    $"{contract.HandlerType} checkpoint V{checkpointVersion} reaches an external effect but was classified {decision.Kind}.");
+            }
+        }
+
+        Assert.True(
+            missingEffectSites.Count == 0,
+            "Required recovery effect sites were not discovered:\n" + string.Join("\n", missingEffectSites));
+
+        Assert.Equal(
+            LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
+            LongRunningOperationRecoveryAdmission.Classify(
+                RecoveryOperation(LongRunningOperationKinds.BackupCreate, 0),
+                ownerEvidence: null).Kind);
+
+        Assert.Equal(
+            LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
+            LongRunningOperationRecoveryAdmission.Classify(
+                RecoveryOperation(LongRunningOperationKinds.A2AOutboundSending, 0),
+                ownerEvidence: null).Kind);
+    }
 
     [Fact]
     public void Core_covenant_types_reference_no_storage_provider_or_transport()
@@ -300,6 +585,12 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.False(
             typeof(ILongRunningOperationSameOwnerLeaseResumption)
                 .IsAssignableFrom(typeof(FakeLongRunningOperationStore)));
+
+        AssertSingleRegistration<ILongRunningOperationGenericRecoveryDiscovery>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>(
+            services,
+            ServiceLifetime.Scoped);
 
         AssertSingleRegistration<GrimoireOfflineTransitionDatabaseReconciler>(services, ServiceLifetime.Scoped);
 
@@ -601,6 +892,21 @@ public sealed class CovenantArchitectureBoundaryTests
             provider.GetRequiredService<ICovenantConnectionDrain>(),
             firstScope.ServiceProvider.GetRequiredService<ICovenantConnectionDrain>());
 
+        if (isHost)
+        {
+            LongRunningOperationStore operationStore = firstScope.ServiceProvider
+                .GetRequiredService<LongRunningOperationStore>();
+
+            Assert.Same(
+                operationStore,
+                firstScope.ServiceProvider.GetRequiredService<ILongRunningOperationGenericRecoveryDiscovery>());
+
+            Assert.Same(
+                operationStore,
+                firstScope.ServiceProvider
+                    .GetRequiredService<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>());
+        }
+
         Assert.Same(
             provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>(),
             firstScope.ServiceProvider
@@ -670,6 +976,394 @@ public sealed class CovenantArchitectureBoundaryTests
         }
 
     }
+
+    private static INamedTypeSymbol RequiredSourceType(
+        CSharpCompilation compilation,
+        string metadataName)
+    {
+        INamedTypeSymbol? symbol = compilation.GetTypeByMetadataName(metadataName);
+
+        Assert.NotNull(symbol);
+
+        return symbol!;
+    }
+
+    private static IEnumerable<INamedTypeSymbol> SourceTypes(CSharpCompilation compilation) =>
+        TypesInNamespace(compilation.Assembly.GlobalNamespace);
+
+    private static IEnumerable<INamedTypeSymbol> TypesInNamespace(INamespaceSymbol @namespace)
+    {
+        foreach (INamedTypeSymbol type in @namespace.GetTypeMembers())
+        {
+            foreach (INamedTypeSymbol candidate in TypeAndNestedTypes(type))
+            {
+                yield return candidate;
+            }
+        }
+
+        foreach (INamespaceSymbol child in @namespace.GetNamespaceMembers())
+        {
+            foreach (INamedTypeSymbol candidate in TypesInNamespace(child))
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private static IEnumerable<INamedTypeSymbol> TypeAndNestedTypes(INamedTypeSymbol type)
+    {
+        yield return type;
+
+        foreach (INamedTypeSymbol nested in type.GetTypeMembers())
+        {
+            foreach (INamedTypeSymbol candidate in TypeAndNestedTypes(nested))
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private static string MetadataName(INamedTypeSymbol type)
+    {
+        if (type.ContainingType is { } containingType)
+        {
+            return MetadataName(containingType) + "+" + type.MetadataName;
+        }
+
+        string containingNamespace = type.ContainingNamespace.ToDisplayString();
+
+        return string.IsNullOrEmpty(containingNamespace)
+            ? type.MetadataName
+            : containingNamespace + "." + type.MetadataName;
+    }
+
+    private static string MethodName(IMethodSymbol method) =>
+        MetadataName(method.ContainingType) + "." + method.Name;
+
+    private static IReadOnlyList<IMethodSymbol> ObjectCreationMembers(
+        CSharpCompilation compilation,
+        INamedTypeSymbol createdType)
+    {
+        List<IMethodSymbol> members = [];
+
+        foreach (SyntaxTree tree in compilation.SyntaxTrees)
+        {
+            SemanticModel model = compilation.GetSemanticModel(tree);
+
+            foreach (BaseObjectCreationExpressionSyntax creation in tree
+                .GetRoot()
+                .DescendantNodes()
+                .OfType<BaseObjectCreationExpressionSyntax>())
+            {
+                if (model.GetSymbolInfo(creation).Symbol is not IMethodSymbol constructor
+                    || !SymbolEqualityComparer.Default.Equals(
+                        constructor.ContainingType,
+                        createdType)
+                    || model.GetEnclosingSymbol(creation.SpanStart) is not IMethodSymbol member)
+                {
+                    continue;
+                }
+
+                members.Add(member);
+            }
+        }
+
+        return members;
+    }
+
+    private static IReadOnlyList<IMethodSymbol> InvocationCallers(
+        CSharpCompilation compilation,
+        IMethodSymbol calledMethod)
+    {
+        List<IMethodSymbol> callers = [];
+
+        foreach (SyntaxTree tree in compilation.SyntaxTrees)
+        {
+            SemanticModel model = compilation.GetSemanticModel(tree);
+
+            foreach (InvocationExpressionSyntax invocation in tree
+                .GetRoot()
+                .DescendantNodes()
+                .OfType<InvocationExpressionSyntax>())
+            {
+                if (model.GetSymbolInfo(invocation).Symbol is not IMethodSymbol target
+                    || !CanDispatchTo(target, calledMethod)
+                    || model.GetEnclosingSymbol(invocation.SpanStart) is not IMethodSymbol caller)
+                {
+                    continue;
+                }
+
+                callers.Add(caller);
+            }
+        }
+
+        return callers;
+    }
+
+    private static IReadOnlyList<IMethodSymbol> ReachableMembers(
+        CSharpCompilation compilation,
+        IEnumerable<IMethodSymbol> roots)
+    {
+        SourceMethod[] sourceMethods = SourceMethods(compilation).ToArray();
+
+        Dictionary<string, SourceMethod[]> sourceMethodsByName = sourceMethods
+            .GroupBy(static member => member.Symbol.Name, StringComparer.Ordinal)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group.ToArray(),
+                StringComparer.Ordinal);
+
+        Queue<IMethodSymbol> pending = new(roots);
+
+        HashSet<IMethodSymbol> visited = new(SymbolEqualityComparer.Default);
+
+        while (pending.TryDequeue(out IMethodSymbol? method))
+        {
+            IMethodSymbol definition = method.OriginalDefinition;
+
+            if (!visited.Add(definition))
+            {
+                continue;
+            }
+
+            foreach (SourceMethod source in sourceMethods.Where(
+                candidate => SymbolEqualityComparer.Default.Equals(
+                    candidate.Symbol.OriginalDefinition,
+                    definition)))
+            {
+                void EnqueueTargets(IMethodSymbol target)
+                {
+                    if (!sourceMethodsByName.TryGetValue(
+                        target.Name,
+                        out SourceMethod[]? candidates))
+                    {
+                        return;
+                    }
+
+                    foreach (SourceMethod candidate in candidates)
+                    {
+                        if (CanDispatchTo(candidate.Symbol, target))
+                        {
+                            pending.Enqueue(candidate.Symbol);
+                        }
+                    }
+                }
+
+                foreach (SyntaxNode call in source.Syntax
+                    .DescendantNodes()
+                    .Where(static node => node is InvocationExpressionSyntax
+                        or BaseObjectCreationExpressionSyntax))
+                {
+                    if (source.Model.GetSymbolInfo(call).Symbol is not IMethodSymbol target)
+                    {
+                        continue;
+                    }
+
+                    EnqueueTargets(target);
+                }
+
+                foreach (ExpressionSyntax propertyReference in source.Syntax
+                    .DescendantNodes()
+                    .OfType<ExpressionSyntax>())
+                {
+                    if (source.Model.GetSymbolInfo(propertyReference).Symbol
+                        is not IPropertySymbol property)
+                    {
+                        continue;
+                    }
+
+                    if (property.GetMethod is { } getter)
+                    {
+                        EnqueueTargets(getter);
+                    }
+
+                    if (property.SetMethod is { } setter)
+                    {
+                        EnqueueTargets(setter);
+                    }
+                }
+            }
+        }
+
+        return visited.ToArray();
+    }
+
+    private static IEnumerable<SourceMethod> SourceMethods(CSharpCompilation compilation)
+    {
+        foreach (SyntaxTree tree in compilation.SyntaxTrees)
+        {
+            SemanticModel model = compilation.GetSemanticModel(tree);
+
+            foreach (SyntaxNode syntax in tree.GetRoot().DescendantNodes())
+            {
+                IMethodSymbol? symbol = syntax switch
+                {
+                    BaseMethodDeclarationSyntax declaration =>
+                        model.GetDeclaredSymbol(declaration),
+                    AccessorDeclarationSyntax accessor =>
+                        model.GetDeclaredSymbol(accessor),
+                    LocalFunctionStatementSyntax localFunction =>
+                        model.GetDeclaredSymbol(localFunction),
+                    _ => null
+                };
+
+                if (symbol is not null)
+                {
+                    yield return new SourceMethod(symbol, syntax, model);
+                }
+            }
+        }
+    }
+
+    private static bool CanDispatchTo(
+        IMethodSymbol candidate,
+        IMethodSymbol target)
+    {
+        if (SymbolEqualityComparer.Default.Equals(
+            candidate.OriginalDefinition,
+            target.OriginalDefinition))
+        {
+            return true;
+        }
+
+        if (target.ContainingType.TypeKind == TypeKind.Interface)
+        {
+            foreach (INamedTypeSymbol contract in candidate.ContainingType.AllInterfaces)
+            {
+                foreach (IMethodSymbol slot in contract
+                    .GetMembers(target.Name)
+                    .OfType<IMethodSymbol>())
+                {
+                    if (!SymbolEqualityComparer.Default.Equals(
+                            slot.OriginalDefinition,
+                            target.OriginalDefinition)
+                        || candidate.ContainingType.FindImplementationForInterfaceMember(slot)
+                            is not IMethodSymbol implementation)
+                    {
+                        continue;
+                    }
+
+                    if (SymbolEqualityComparer.Default.Equals(
+                        implementation.OriginalDefinition,
+                        candidate.OriginalDefinition))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        for (IMethodSymbol? overridden = candidate.OverriddenMethod;
+            overridden is not null;
+            overridden = overridden.OverriddenMethod)
+        {
+            if (SymbolEqualityComparer.Default.Equals(
+                overridden.OriginalDefinition,
+                target.OriginalDefinition))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static NonHostedProducerChainEntry RecoveryHandlerRoot(SourceType handler)
+    {
+        IMethodSymbol recovery = Assert.Single(
+            handler.Symbol.GetMembers("RecoverAsync").OfType<IMethodSymbol>());
+
+        SyntaxReference declaration = Assert.Single(recovery.DeclaringSyntaxReferences);
+
+        string typeName = MetadataName(handler.Symbol);
+
+        return new NonHostedProducerChainEntry(
+            typeName + ".RecoverAsync",
+            declaration.SyntaxTree.FilePath,
+            typeName,
+            "RecoverAsync",
+            HostedProducerAuthorityKind.FiniteRequest,
+            typeName + ".RecoverAsync: recovery effect classification root",
+            []);
+    }
+
+    private static string ConstantStringProperty(
+        SourceType sourceType,
+        string propertyName)
+    {
+        IPropertySymbol property = Assert.Single(
+            sourceType.Symbol.GetMembers(propertyName).OfType<IPropertySymbol>());
+
+        PropertyDeclarationSyntax declaration = Assert.IsType<PropertyDeclarationSyntax>(
+            Assert.Single(property.DeclaringSyntaxReferences).GetSyntax());
+
+        ExpressionSyntax? expression = declaration.ExpressionBody?.Expression;
+
+        if (expression is null)
+        {
+            AccessorDeclarationSyntax getter = Assert.Single(
+                declaration.AccessorList!.Accessors,
+                static accessor => accessor.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.GetAccessorDeclaration));
+
+            expression = getter.ExpressionBody?.Expression
+                ?? Assert.Single(getter.Body!.Statements.OfType<ReturnStatementSyntax>()).Expression;
+        }
+
+        Assert.NotNull(expression);
+
+        Optional<object?> constant = sourceType.Compilation
+            .GetSemanticModel(declaration.SyntaxTree)
+            .GetConstantValue(expression!);
+
+        Assert.True(constant.HasValue);
+
+        return Assert.IsType<string>(constant.Value);
+    }
+
+    private static LongRunningOperation RecoveryOperation(
+        string kind,
+        int checkpointVersion) =>
+        new(
+            Guid.NewGuid(),
+            kind,
+            LongRunningOperationState.Running,
+            LongRunningOperationRecoveryRegistry.Find(kind)?.Policy
+                ?? LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            RootOperationId: null,
+            ParentOperationId: null,
+            SessionId: null,
+            RunId: null,
+            InferenceRunId: null,
+            BudgetReservationId: null,
+            IdempotencyClaimId: null,
+            DateTimeOffset.UnixEpoch,
+            StartedAt: DateTimeOffset.UnixEpoch,
+            HeartbeatAt: DateTimeOffset.UnixEpoch,
+            CompletedAt: null,
+            LeaseOwner: "architecture-test",
+            LeaseExpiresAt: DateTimeOffset.UnixEpoch,
+            AttemptCount: 1,
+            CheckpointVersion: checkpointVersion,
+            CheckpointPayload: null,
+            CheckpointReference: null,
+            PublicSummary: "architecture-test",
+            TerminalErrorCode: null,
+            Revision: 1);
+
+    private sealed record SourceMethod(
+        IMethodSymbol Symbol,
+        SyntaxNode Syntax,
+        SemanticModel Model);
+
+    private sealed record SourceType(
+        CSharpCompilation Compilation,
+        INamedTypeSymbol Symbol);
+
+    private sealed record RecoveryEffectContract(
+        string HandlerType,
+        string Kind,
+        IReadOnlyList<int> ExternalCheckpointVersions,
+        IReadOnlyList<string> RequiredCallees);
 
     private static CovenantRuntimeGenerationProvider RuntimeHolder(object facade)
     {

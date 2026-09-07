@@ -317,13 +317,13 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
         // The adopter finds the row the crash left behind, and the resumption spends it before the
         // readiness this bootstrap is about to publish.
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await new
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
             CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
             .AdoptBeforeReadinessAsync(Connection, Token);
 
         Assert.True(adopted.IsSuccess, adopted.IsFailure ? adopted.Error.Message : null);
 
-        Assert.Equal(seeded.Owner, adopted.Value);
+        Assert.Equal(seeded.Owner, adopted.Value?.Owner);
 
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption
             .ResumeBeforeReadinessAsync(dispatch, _lock!, _root, adopted.Value, Token);
@@ -551,13 +551,13 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
         public Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             string guardedDirectory,
-            Guid operationId,
+            LongRunningRecoveryOwnerEvidence ownerEvidence,
             CancellationToken cancellationToken)
         {
 
             heldInstallationLock.AssertHeldFor(guardedDirectory);
 
-            Dispatched = operationId;
+            Dispatched = ownerEvidence.ExpectedOperation.OperationId;
 
             return Task.FromResult(
                 Result<LongRunningOperationSettlementOutcome>.Success(verdict));

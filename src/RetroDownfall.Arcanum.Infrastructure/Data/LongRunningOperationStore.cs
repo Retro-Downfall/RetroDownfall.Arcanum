@@ -22,6 +22,8 @@ internal sealed class LongRunningOperationStore(
     IGrimoireOrdinaryConnectionFactory connections,
     ICovenantConnectionDrain? covenantDrain = null)
     : ILongRunningOperationStore,
+      ILongRunningOperationGenericRecoveryDiscovery,
+      ILongRunningOperationClassifiedRecoveryLeaseAcquisition,
       ILongRunningOperationMaintenanceLeaseAdoption,
       ILongRunningOperationSameOwnerLeaseResumption,
       IDisposable
@@ -688,6 +690,19 @@ internal sealed class LongRunningOperationStore(
         DateTimeOffset utcNow,
         int limit,
         CancellationToken cancellationToken = default) =>
+        FindExpiredAsync(utcNow, limit, excludeOwnerBoundRows: false, cancellationToken);
+
+    public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        FindExpiredAsync(utcNow, limit, excludeOwnerBoundRows: true, cancellationToken);
+
+    private Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        bool excludeOwnerBoundRows,
+        CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync<IReadOnlyList<LongRunningOperation>>(
             async () =>
             {
@@ -709,6 +724,17 @@ internal sealed class LongRunningOperationStore(
                             AND "Kind" IN (@retentionMutation, @retentionFactory)
                             AND "TerminalErrorCode" = @covenantMaintenanceError))
                       AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
+                    """
+                    + (excludeOwnerBoundRows
+                        ? """
+
+                            AND NOT (
+                                ("Kind" = @retentionMutation AND "CheckpointVersion" = @mutationOwnerVersion)
+                                OR ("Kind" = @retentionFactory AND "CheckpointVersion" = @factoryOwnerVersion))
+                          """
+                        : string.Empty)
+                    + """
+
                     ORDER BY COALESCE("LeaseExpiresAt", "CreatedAt"), "Id"
                     LIMIT @limit
                     """;
@@ -722,6 +748,11 @@ internal sealed class LongRunningOperationStore(
                 Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
                 Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
                 Add(cmd, "@covenantMaintenanceError", ErrorCodes.Covenant.MaintenanceFailed);
+                if (excludeOwnerBoundRows)
+                {
+                    Add(cmd, "@mutationOwnerVersion", CovenantOfflineTransitionLaunchV4.CurrentVersion);
+                    Add(cmd, "@factoryOwnerVersion", DataRetentionFactoryTransitionLaunchV2.CurrentVersion);
+                }
                 Add(cmd, "@now", Format(utcNow));
                 Add(cmd, "@limit", Math.Clamp(limit, 1, 1_000));
                 return await ReadAllAsync(cmd, cancellationToken).ConfigureAwait(false);
@@ -746,7 +777,7 @@ internal sealed class LongRunningOperationStore(
     public Task<LongRunningOperationLeaseResult> AdoptUnderInstallationLockAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
-        Guid operationId,
+        LongRunningOperationRecoveryFingerprint expected,
         string ownerId,
         DateTimeOffset utcNow,
         DateTimeOffset leaseExpiresAt,
@@ -760,12 +791,13 @@ internal sealed class LongRunningOperationStore(
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
         return AcquireLeaseAsync(
-            operationId,
+            expected.OperationId,
             ownerId,
             utcNow,
             leaseExpiresAt,
             requireExpiredLease: false,
-            cancellationToken);
+            cancellationToken,
+            expected);
 
     }
 
@@ -833,13 +865,29 @@ internal sealed class LongRunningOperationStore(
             cancellationToken);
     }
 
+    public Task<LongRunningOperationLeaseResult> TryAcquireClassifiedRecoveryLeaseAsync(
+        LongRunningOperationRecoveryFingerprint expected,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        AcquireLeaseAsync(
+            expected.OperationId,
+            ownerId,
+            utcNow,
+            leaseExpiresAt,
+            requireExpiredLease: true,
+            cancellationToken,
+            expected);
+
     private async Task<LongRunningOperationLeaseResult> AcquireLeaseAsync(
         Guid operationId,
         string ownerId,
         DateTimeOffset utcNow,
         DateTimeOffset leaseExpiresAt,
         bool requireExpiredLease,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        LongRunningOperationRecoveryFingerprint? expected = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         if (leaseExpiresAt <= utcNow)
@@ -847,7 +895,7 @@ internal sealed class LongRunningOperationStore(
             throw new ArgumentOutOfRangeException(nameof(leaseExpiresAt), "Lease expiry must be in the future.");
         }
 
-        bool acquired = await SqliteBusyRetry.ExecuteAsync(
+        LongRunningOperation? claimed = await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -883,7 +931,19 @@ internal sealed class LongRunningOperationStore(
                         ? """
                             AND ("LeaseOwner" IS NULL OR "LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                           """
-                        : string.Empty);
+                        : string.Empty)
+                    + (expected is not null
+                        ? """
+
+                            AND "Revision" = @expectedRevision
+                            AND "Kind" = @expectedKind
+                            AND "CheckpointVersion" = @expectedCheckpointVersion
+                          """
+                        : string.Empty)
+                    + $"""
+
+                        RETURNING {SelectColumns}
+                      """;
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
@@ -904,13 +964,32 @@ internal sealed class LongRunningOperationStore(
                 Add(cmd, "@owner", Bound(ownerId, MaxOwnerLength));
                 Add(cmd, "@lease", Format(leaseExpiresAt));
                 Add(cmd, "@id", Format(operationId));
-                return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+                if (expected is { } fingerprint)
+                {
+                    Add(cmd, "@expectedRevision", fingerprint.Revision);
+                    Add(cmd, "@expectedKind", fingerprint.Kind);
+                    Add(cmd, "@expectedCheckpointVersion", fingerprint.CheckpointVersion);
+                }
+
+                await using DbDataReader reader = await cmd
+                    .ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                    ? Read(reader)
+                    : null;
             },
             cancellationToken).ConfigureAwait(false);
 
+        if (claimed is not null)
+        {
+            return new LongRunningOperationLeaseResult(true, claimed);
+        }
+
         LongRunningOperation operation = await GetAsync(operationId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Long-running operation '{operationId}' was not found.");
-        return new LongRunningOperationLeaseResult(acquired, operation);
+
+        return new LongRunningOperationLeaseResult(false, operation);
     }
 
     /// <summary>
