@@ -1461,9 +1461,28 @@ public static class ServiceCollectionExtensions
                 return handler;
             });
 
-        services.AddSingleton<McpConnectionManager>();
+        services.AddSingleton(static sp =>
+        {
+            McpConnectionManager manager = new(
+                sp.GetRequiredService<ILogger<McpConnectionManager>>(),
+                sp.GetRequiredService<IHumanPromptRegistry>(),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<IUnseenServantPacer>(),
+                sp.GetRequiredService<IEventBus>(),
+                sp.GetRequiredService<ITrustedMcpWorkspaceStore>(),
+                sp.GetRequiredService<IHttpClientFactory>(),
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>());
+
+            manager.ConfigureGlobalAdmission(
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>());
+
+            return manager;
+        });
 
         services.AddSingleton<IMcpConnectionManager>(static sp => sp.GetRequiredService<McpConnectionManager>());
+
+        services.AddSingleton<IMcpGlobalInitializationCoordinator>(
+            static sp => sp.GetRequiredService<McpConnectionManager>());
 
         services.AddInstallationResetRecoveryAwareHostedService<McpServerBootstrapHostedService>();
 

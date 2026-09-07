@@ -208,6 +208,7 @@ public static class ArcanumRuntimeSettings
 
         return defaults with
         {
+            BootstrapBlocksStartup = integration.BootstrapBlocksStartup,
             AllowedHttpHosts = integration.AllowedHttpHosts ?? [],
         };
     }

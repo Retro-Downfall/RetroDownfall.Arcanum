@@ -1,27 +1,43 @@
 using System.Collections.Concurrent;
+
 using System.Threading.Channels;
+
 using Microsoft.Extensions.AI;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Options;
+
 using ModelContextProtocol.Client;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Environment;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 public sealed partial class McpConnectionManager
 {
-
     // W-MCP-HTTP: transport factory. Stdio spawns a subprocess + correlation client; Http builds a
     // stateless Streamable HTTP client over the SSRF-guarded named HttpClient; legacy SSE remains
     // unsupported. Both transports converge on FinishStartAsync (initialize + tools/list + wiring).
@@ -423,29 +439,21 @@ public sealed partial class McpConnectionManager
 
     private void HandleTransportEnded(ManagedMcpServerEntry entry, long transportGeneration)
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         Task handlerTask = Task.Run(async () =>
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
             if (!ManagedMcpServerEntry.IsTransportGenerationCurrent(transportGeneration, entry.TransportGeneration))
             {
-
                 return;
-
             }
 
             McpServerEvent? pendingEvent = null;
@@ -614,7 +622,9 @@ public sealed partial class McpConnectionManager
         // (ChannelClientTransport session dispose calls toServer.TryComplete() on client disposal).
         // On setup failure before a client is attached, the finally block completes the channel so
         // the server task cannot orphan forever.
-        Task serverTask = Task.Run(() => server.RunAsync(_hostLifetimeCts.Token), CancellationToken.None);
+        Task serverTask = Task.Run(
+            () => server.RunAsync(_globalInitializationLifetime.Token),
+            CancellationToken.None);
 
         ObserveInternalServerTask(serverTask);
 
@@ -657,7 +667,6 @@ public sealed partial class McpConnectionManager
                         ToolRiskClassifier.SearchWorkspaceToolName,
                         StringComparison.Ordinal))
                 {
-
                     trustedTool = trustedTool.WithTrustedStructuredResult(
                         TrustedStructuredToolResultKind.WorkspaceSearch);
                 }
@@ -666,7 +675,6 @@ public sealed partial class McpConnectionManager
                              ToolRiskClassifier.ApplyPatchToolName,
                              StringComparison.Ordinal))
                 {
-
                     trustedTool = trustedTool.WithTrustedStructuredResult(
                         TrustedStructuredToolResultKind.WorkspacePatch);
                 }
@@ -675,7 +683,6 @@ public sealed partial class McpConnectionManager
                              ToolRiskClassifier.WorkspaceCheckToolName,
                              StringComparison.Ordinal))
                 {
-
                     trustedTool = trustedTool
                         .WithTrustedStructuredResult(
                             TrustedStructuredToolResultKind.WorkspaceCheck);
@@ -751,5 +758,4 @@ public sealed partial class McpConnectionManager
             TaskContinuationOptions.None,
             TaskScheduler.Default);
     }
-
 }

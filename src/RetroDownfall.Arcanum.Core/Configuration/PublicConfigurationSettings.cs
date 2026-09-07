@@ -296,9 +296,9 @@ public sealed record TapestryIntegrationSettings
 
 public sealed record McpIntegrationSettings
 {
+    public bool BootstrapBlocksStartup { get; set; } = true;
 
     public string[] AllowedHttpHosts { get; set; } = [];
-
 }
 
 public sealed record WebResearchIntegrationSettings

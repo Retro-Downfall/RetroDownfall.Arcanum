@@ -1,245 +1,347 @@
 using System.Collections.Concurrent;
+
 using Microsoft.Extensions.AI;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 public sealed partial class McpConnectionManager
 {
-
-    private async Task EnsureGlobalLoadedAsync(CancellationToken cancellationToken)
+    private async Task EnsureGlobalLoadedAsync(
+        McpGlobalInitializationAuthority authority,
+        CancellationToken cancellationToken)
     {
-
-        if (_globalInitialized)
+        while (true)
         {
+            Task operation;
 
-            return;
+            await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        }
-
-        Task operation;
-
-        await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-
-            if (_globalInitialized)
+            try
             {
+                ThrowIfGlobalInitializationStopped();
 
-                return;
+                long generation = Volatile.Read(ref _toolSurfaceGeneration);
 
+                if (Volatile.Read(ref _globalSurfaceRevision) == generation)
+                {
+                    return;
+                }
+
+                if (_globalLifecycleState is GlobalLifecycleState.Reloading)
+                {
+                    operation = _reloadCompleted.Task;
+                }
+                else if (_globalInitOperation is { IsCompleted: false } inFlight)
+                {
+                    operation = inFlight;
+                }
+                else
+                {
+                    if (!_lifecycleAdmission.TryEnter(out IAsyncDisposable? admitted))
+                    {
+                        throw ManagerStoppedException();
+                    }
+
+                    _globalInitAuthority = authority;
+
+                    operation = RunGlobalInitOperationAsync(
+                        authority,
+                        admitted!,
+                        _globalInitializationLifetime.Token);
+
+                    _globalInitOperation = operation;
+                }
+            }
+            finally
+            {
+                _globalInitLock.Release();
             }
 
-            if (_globalInitOperation is { IsCompleted: false } inFlight)
-            {
-
-                operation = inFlight;
-
-            }
-            else
-            {
-
-                // Bootstrap work uses CancellationToken.None so one caller's cancel does not abort
-                // a shared init another waiter still needs; waiters still honor their own tokens via WaitAsync.
-                operation = _globalInitOperation = RunGlobalInitOperationAsync(CancellationToken.None);
-
-            }
-
+            await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
-        finally
-        {
-
-            _globalInitLock.Release();
-
-        }
-
-        await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
-    private async Task RunGlobalInitOperationAsync(CancellationToken cancellationToken)
+    private async Task RunGlobalInitOperationAsync(
+        McpGlobalInitializationAuthority authority,
+        IAsyncDisposable lifecycle,
+        CancellationToken cancellationToken)
     {
-
-        await EnsureGlobalRegistryLoadedAsync(cancellationToken).ConfigureAwait(false);
-
-        List<ManagedMcpServerEntry> needStart = [];
-
-        await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-
         try
         {
-
-            if (_globalInitialized)
+            if (authority is McpGlobalInitializationAuthority.PreReadinessStartup)
             {
+                await RunGlobalInitCoreAsync(cancellationToken).ConfigureAwait(false);
 
                 return;
-
             }
 
-            foreach (ManagedMcpServerEntry entry in _registry.Values.Where(static e => e.ScopeWorkingDirectory is null))
-            {
-
-                if (!entry.AlwaysOn && entry.State is not McpServerState.Running)
-                {
-
-                    continue;
-
-                }
-
-                if (IsRestartBackoffActive(entry))
-                {
-
-                    continue;
-
-                }
-
-                if (entry.State is not McpServerState.Running)
-                {
-
-                    needStart.Add(entry);
-
-                }
-
-            }
-
+            await RunOrdinaryGlobalInitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-
-            _globalInitLock.Release();
-
+            await lifecycle.DisposeAsync().ConfigureAwait(false);
         }
+    }
 
-        // Expensive handshakes happen outside the global lock; per-entry Gate still serializes StartAsync.
+    private async Task RunOrdinaryGlobalInitAsync(CancellationToken cancellationToken)
+    {
+        IGrimoireConnectionAdmissionGate admission = Volatile.Read(ref _globalAdmission)
+            ?? throw new InvalidOperationException(
+                "MCP ordinary initialization requires configured Grimoire admission.");
+
+        while (true)
+        {
+            long observedGeneration = admission.CurrentGeneration;
+
+            if (!admission.TryAcquireWorkLease(
+                    GrimoireWorkKind.McpServerBootstrap,
+                    out IGrimoireWorkLease? admitted))
+            {
+                _ = await admission.WaitForNextOpenGenerationAsync(
+                        observedGeneration,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                continue;
+            }
+
+            bool retryAfterMaintenance = false;
+
+            await using (IGrimoireWorkLease work = admitted!)
+            {
+                observedGeneration = work.Generation;
+
+                if (!work.TryBeginExternalEffectGroup(
+                        out IGrimoireExternalEffectGroup? admittedGroup))
+                {
+                    retryAfterMaintenance = true;
+                }
+                else
+                {
+                    await using IGrimoireExternalEffectGroup effectGroup = admittedGroup!;
+
+                    using CancellationTokenSource linked =
+                        CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken,
+                            work.MaintenanceRevocation);
+
+                    try
+                    {
+                        await RunGlobalInitCoreAsync(linked.Token).ConfigureAwait(false);
+
+                        return;
+                    }
+                    catch (OperationCanceledException)
+                        when (work.MaintenanceRevocation.IsCancellationRequested
+                            && !cancellationToken.IsCancellationRequested)
+                    {
+                        retryAfterMaintenance = true;
+                    }
+                }
+            }
+
+            if (retryAfterMaintenance)
+            {
+                _ = await admission.WaitForNextOpenGenerationAsync(
+                        observedGeneration,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task RunGlobalInitCoreAsync(CancellationToken cancellationToken)
+    {
+        await EnsureGlobalRegistryLoadedAsync(cancellationToken).ConfigureAwait(false);
+
         List<string> bootstrapFailures = [];
 
-        foreach (ManagedMcpServerEntry entry in needStart)
+        HashSet<ManagedMcpServerEntry> attemptedStarts = [];
+
+        while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
 
-            Result startResult = await StartAsync(entry.Name, null, cancellationToken).ConfigureAwait(false);
+            List<ManagedMcpServerEntry> needStart = [];
 
-            if (startResult.IsFailure && entry.State is not McpServerState.Running)
+            await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
             {
+                ThrowIfGlobalInitializationStopped();
 
-                bootstrapFailures.Add($"{entry.Name}: {startResult.Error.Message}");
+                foreach (ManagedMcpServerEntry entry in _registry.Values.Where(
+                             static candidate => candidate.ScopeWorkingDirectory is null))
+                {
+                    if ((!entry.AlwaysOn && entry.State is not McpServerState.Running)
+                        || IsRestartBackoffActive(entry))
+                    {
+                        continue;
+                    }
 
+                    if (entry.State is not McpServerState.Running
+                        && !attemptedStarts.Contains(entry))
+                    {
+                        needStart.Add(entry);
+                    }
+                }
+            }
+            finally
+            {
+                _globalInitLock.Release();
             }
 
-        }
-
-        if (bootstrapFailures.Count > 0)
-        {
-
-            logger.LogWarning(
-                "MCP bootstrap: {FailureCount} always-on server(s) failed to start: {Failures}",
-                bootstrapFailures.Count,
-                string.Join("; ", bootstrapFailures));
-
-        }
-
-        await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-
-            if (_globalInitialized)
+            foreach (ManagedMcpServerEntry entry in needStart)
             {
+                attemptedStarts.Add(entry);
 
-                return;
+                Result startResult = await StartCoreAsync(
+                        entry.Name,
+                        workingDirectory: null,
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
+                if (startResult.IsFailure && entry.State is not McpServerState.Running)
+                {
+                    bootstrapFailures.Add($"{entry.Name}: {startResult.Error.Message}");
+                }
             }
+
+            long projectedGeneration = Volatile.Read(ref _toolSurfaceGeneration);
 
             McpPartitionClients globalPartition = GetOrCreatePartition(GlobalPartitionKey);
 
             List<LoadedMcpToolRow> tagged = [];
 
-            foreach (ManagedMcpServerEntry entry in _registry.Values.Where(static e => e.ScopeWorkingDirectory is null))
+            bool unstartedAlwaysOnFound = false;
+
+            ManagedMcpServerEntry[] globalEntries = _registry.Values
+                .Where(static candidate => candidate.ScopeWorkingDirectory is null)
+                .ToArray();
+
+            foreach (ManagedMcpServerEntry entry in globalEntries)
             {
+                await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-                if (!entry.AlwaysOn && entry.State is not McpServerState.Running)
+                try
                 {
+                    if (!IsCurrentRegistryEntry(entry)
+                        || (!entry.AlwaysOn && entry.State is not McpServerState.Running)
+                        || IsRestartBackoffActive(entry))
+                    {
+                        continue;
+                    }
 
-                    continue;
+                    if (entry.State is not McpServerState.Running)
+                    {
+                        SyncPartitionServerMetadata(entry);
 
+                        if (!attemptedStarts.Contains(entry))
+                        {
+                            unstartedAlwaysOnFound = true;
+                        }
+
+                        continue;
+                    }
+
+                    AttachEntryToPartition(entry, globalPartition, tagged);
                 }
-
-                if (IsRestartBackoffActive(entry))
+                finally
                 {
-
-                    continue;
-
+                    entry.Gate.Release();
                 }
-
-                if (entry.State is not McpServerState.Running)
-                {
-
-                    SyncPartitionServerMetadata(entry);
-
-                    continue;
-
-                }
-
-                AttachEntryToPartition(entry, globalPartition, tagged);
-
             }
 
-            FinalizeGlobalState(tagged);
+            if (unstartedAlwaysOnFound)
+            {
+                continue;
+            }
 
+            McpToolMerger.GlobalDedupResult deduped =
+                McpToolMerger.DedupeGlobalTaggedTools(tagged);
+
+            bool published = false;
+
+            await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                ThrowIfGlobalInitializationStopped();
+
+                if (projectedGeneration == Volatile.Read(ref _toolSurfaceGeneration))
+                {
+                    FinalizeGlobalState(deduped, projectedGeneration);
+
+                    published = true;
+                }
+            }
+            finally
+            {
+                _globalInitLock.Release();
+            }
+
+            if (!published)
+            {
+                continue;
+            }
+
+            if (bootstrapFailures.Count > 0)
+            {
+                logger.LogWarning(
+                    "MCP bootstrap: {FailureCount} always-on server(s) failed to start: {Failures}",
+                    bootstrapFailures.Count,
+                    string.Join("; ", bootstrapFailures));
+            }
+
+            return;
         }
-        finally
-        {
-
-            _globalInitLock.Release();
-
-        }
-
     }
 
-    private void FinalizeGlobalState(List<LoadedMcpToolRow> tagged)
+    private void FinalizeGlobalState(
+        McpToolMerger.GlobalDedupResult deduped,
+        long projectedGeneration)
     {
-
-        McpToolMerger.GlobalDedupResult deduped = McpToolMerger.DedupeGlobalTaggedTools(tagged);
-
         _globalFirstByToolName = deduped.FirstByToolName;
 
         _globalSurfaceTools = deduped.SurfaceTools;
 
-        _globalInitialized = true;
-
+        Volatile.Write(ref _globalSurfaceRevision, projectedGeneration);
     }
 
     private void InvalidateCachesForServer(ManagedMcpServerEntry entry)
     {
-
         _ = Interlocked.Increment(
             ref _toolSurfaceGeneration);
+
         _mergedToolsByWorkspace.Clear();
-
-        if (entry.ScopeWorkingDirectory is null)
-        {
-
-            _globalInitialized = false;
-
-            _globalInitOperation = null;
-
-        }
-
     }
 
     private void SyncPartitionServerMetadata(ManagedMcpServerEntry entry)
     {
-
         string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
 
         McpPartitionClients partition = GetOrCreatePartition(partitionKey);
@@ -261,29 +363,23 @@ public sealed partial class McpConnectionManager
             entry.ErrorMessage);
 
         partition.UpsertServer(metadata);
-
     }
 
     private void RemoveServerMetadataFromPartition(ManagedMcpServerEntry entry)
     {
-
         string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
 
         if (!_partitionClients.TryGetValue(partitionKey, out Lazy<McpPartitionClients>? partitionLazy)
             || !partitionLazy.IsValueCreated)
         {
-
             return;
-
         }
 
         partitionLazy.Value.RemoveServer(entry.Name);
-
     }
 
     private McpPartitionClients GetOrCreatePartition(string partitionKey)
     {
-
         return _partitionClients
             .GetOrAdd(
                 partitionKey,
@@ -291,7 +387,6 @@ public sealed partial class McpConnectionManager
                     static () => new McpPartitionClients(),
                     LazyThreadSafetyMode.ExecutionAndPublication))
             .Value;
-
     }
 
     /// <summary>
@@ -304,7 +399,6 @@ public sealed partial class McpConnectionManager
         string partitionKey,
         McpPartitionClients partition)
     {
-
         // Identity-checked so a replacement created concurrently under the same key is never dropped.
         if (!_partitionClients.TryGetValue(
                 partitionKey,
@@ -312,16 +406,12 @@ public sealed partial class McpConnectionManager
             || !registered.IsValueCreated
             || !ReferenceEquals(registered.Value, partition))
         {
-
             return;
-
         }
 
         _ = _partitionClients.TryRemove(
             new KeyValuePair<string, Lazy<McpPartitionClients>>(
                 partitionKey,
                 registered));
-
     }
-
 }
