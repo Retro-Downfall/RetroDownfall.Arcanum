@@ -343,18 +343,28 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
         Assert.True(publicationCalls.FindIndex(static call => call.Name == "SignalStageOneZero") > publication);
 
-        foreach (string release in new[] { "ReleaseRequest", "CompleteWorkLeaseIfDrainedWhileLocked" })
+        foreach (string release in new[] { "ReleaseRequest", "ReleaseWorkScope", "ReleaseExternalEffectGroup" })
         {
 
             List<MethodBase> calls = OrderedCalls(GateMethod(release));
 
-            int decrement = calls.FindIndex(static call => call.DeclaringType == typeof(Interlocked) && call.Name == "Decrement");
+            int decrement = calls.FindIndex(static call => (call.DeclaringType == typeof(Interlocked) && call.Name == "Decrement")
+                || call.Name == "CompleteWorkLeaseIfDrainedWhileLocked");
 
             Assert.True(decrement >= 0);
 
             Assert.True(calls.FindIndex(static call => call.Name == "SignalStageOneZero") > decrement);
 
+            Assert.True(calls.FindIndex(static call => call.Name == "SignalStageOneZero")
+                > calls.FindIndex(static call => call.DeclaringType == typeof(Monitor) && call.Name == "Exit"));
+
         }
+
+        List<MethodBase> workTerminalCalls = OrderedCalls(GateMethod("CompleteWorkLeaseIfDrainedWhileLocked"));
+
+        Assert.Contains(workTerminalCalls, static call => call.DeclaringType == typeof(Interlocked) && call.Name == "Decrement");
+
+        Assert.DoesNotContain(workTerminalCalls, static call => call.Name == "SignalStageOneZero");
 
         List<MethodBase> signalCalls = OrderedCalls(GateMethod("SignalStageOneZero"));
 

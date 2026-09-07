@@ -57,8 +57,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private AdmissionEpoch _epoch = new(1);
 
-    private readonly HashSet<WorkLease> _workLeases = [];
-
     private long _requestCount;
 
     private long _workCount;
@@ -325,10 +323,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        lock (_sync)
+        AdmissionEpoch epoch = Volatile.Read(ref _epoch);
+
+        AdmissionShard shard = _shards[Environment.CurrentManagedThreadId & (_shards.Length - 1)];
+
+        lock (shard)
         {
 
-            if (_state != GateState.Ordinary)
+            if (!ReferenceEquals(epoch, Volatile.Read(ref _epoch))
+                || epoch.Phase != GateState.Ordinary)
             {
 
                 lease = null;
@@ -342,10 +345,11 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             WorkLease admitted = new(
                 this,
                 kind,
-                _generation,
+                epoch,
+                shard,
                 SkipReleasedLifetimes(CurrentOrdinaryLifetime.Value));
 
-            _workLeases.Add(admitted);
+            shard.AddWork(admitted);
 
             CurrentOrdinaryLifetime.Value = admitted.Lifetime;
 
@@ -499,28 +503,27 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                         }
 
+                        for (WorkLease? work = shard.Work; work is not null; work = work.NextMember)
+                        {
+
+                            // An effect winner finishes its durable group before cancellation.
+                            // This lease obligation survives a proven stage-one abort.
+                            work.RevocationPending = true;
+
+                            if (work.ActiveEffectGroup is null)
+                            {
+
+                                revocations.Add(work.Revocation);
+
+                            }
+
+                        }
+
                     }
 
                 }
 
-                foreach (WorkLease work in _workLeases)
-                {
-
-                    // An effect winner finishes its durable group before cancellation. The
-                    // obligation belongs to the lease and survives a proven stage-one abort.
-                    work.RevocationPending = true;
-
-                    if (work.ActiveEffectGroup is null)
-                    {
-
-                        revocations.Add(work.Revocation);
-
-                    }
-
-                }
-
-                // Work membership is still protected by _sync in this reviewed increment.
-                // Only the completed request scan plus that work census may establish zero.
+                // Only the completed full scan may establish request/work zero.
                 closure.StageOneDrained = IsStageOneZero();
 
             }
@@ -1415,13 +1418,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         out IGrimoireExternalEffectGroup? effectGroup)
     {
 
-        lock (_sync)
+        lock (lease.Shard)
         {
 
-            if (_state != GateState.Ordinary
+            if (!ReferenceEquals(lease.Epoch, Volatile.Read(ref _epoch))
+                || lease.Epoch.Phase != GateState.Ordinary
                 || lease.IsReleased
-                || !_workLeases.Contains(lease)
-                || lease.Generation != _generation
+                || !lease.IsLinked
                 || lease.MaintenanceRevocation.IsCancellationRequested
                 || lease.ActiveEffectGroup is not null)
             {
@@ -1447,7 +1450,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private void ReleaseWorkScope(WorkLease lease)
     {
 
-        lock (_sync)
+        lock (lease.Shard)
         {
 
             lease.ScopeDisposed = true;
@@ -1456,6 +1459,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
+        SignalStageOneZero();
+
     }
 
     private void ReleaseExternalEffectGroup(ExternalEffectGroup effectGroup)
@@ -1463,10 +1468,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         CancellationTokenSource? revocation = null;
 
-        lock (_sync)
-        {
+        WorkLease lease = effectGroup.Lease;
 
-            WorkLease lease = effectGroup.Lease;
+        lock (lease.Shard)
+        {
 
             if (ReferenceEquals(lease.ActiveEffectGroup, effectGroup))
             {
@@ -1485,6 +1490,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             CompleteWorkLeaseIfDrainedWhileLocked(lease);
 
         }
+
+        SignalStageOneZero();
 
         if (revocation is not null)
         {
@@ -1517,12 +1524,12 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        if (_workLeases.Remove(lease))
+        if (lease.IsLinked)
         {
 
-            _ = Interlocked.Decrement(ref _workCount);
+            lease.Shard.RemoveWork(lease);
 
-            SignalStageOneZero();
+            _ = Interlocked.Decrement(ref _workCount);
 
         }
 
@@ -2404,6 +2411,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal RequestLease? Requests { get; private set; }
 
+        internal WorkLease? Work { get; private set; }
+
         internal void AddRequest(RequestLease request)
         {
 
@@ -2450,6 +2459,55 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             request.NextMember = null;
 
             request.IsLinked = false;
+
+        }
+
+        internal void AddWork(WorkLease work)
+        {
+
+            work.NextMember = Work;
+
+            if (Work is not null)
+            {
+
+                Work.PreviousMember = work;
+
+            }
+
+            Work = work;
+
+            work.IsLinked = true;
+
+        }
+
+        internal void RemoveWork(WorkLease work)
+        {
+
+            if (work.PreviousMember is null)
+            {
+
+                Work = work.NextMember;
+
+            }
+            else
+            {
+
+                work.PreviousMember.NextMember = work.NextMember;
+
+            }
+
+            if (work.NextMember is not null)
+            {
+
+                work.NextMember.PreviousMember = work.PreviousMember;
+
+            }
+
+            work.PreviousMember = null;
+
+            work.NextMember = null;
+
+            work.IsLinked = false;
 
         }
 
@@ -2634,21 +2692,32 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         internal WorkLease(
             GrimoireConnectionAdmissionGate gate,
             GrimoireWorkKind kind,
-            long generation,
+            AdmissionEpoch epoch,
+            AdmissionShard shard,
             OrdinaryLifetime? previousLifetime)
         {
 
-            Gate = gate;
-
             Kind = kind;
 
-            Generation = generation;
+            Epoch = epoch;
 
-            Lifetime = new OrdinaryLifetime(gate, generation, previousLifetime);
+            Shard = shard;
+
+            Lifetime = new OrdinaryLifetime(gate, epoch.Generation, previousLifetime);
 
         }
 
-        internal GrimoireConnectionAdmissionGate Gate { get; }
+        internal GrimoireConnectionAdmissionGate Gate => Lifetime.Gate;
+
+        internal AdmissionEpoch Epoch { get; }
+
+        internal AdmissionShard Shard { get; }
+
+        internal WorkLease? PreviousMember { get; set; }
+
+        internal WorkLease? NextMember { get; set; }
+
+        internal bool IsLinked { get; set; }
 
         internal OrdinaryLifetime Lifetime { get; }
 
@@ -2664,7 +2733,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         public GrimoireWorkKind Kind { get; }
 
-        public long Generation { get; }
+        public long Generation => Epoch.Generation;
 
         public CancellationToken MaintenanceRevocation => Revocation.Token;
 
