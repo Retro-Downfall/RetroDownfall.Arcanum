@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -23,13 +24,11 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection("ApprenticeReliability")]
 public sealed class ApprenticeCheckpointDelegationChainTests
 {
-
     private static readonly string[] InboundChain = ["origin-node-a", "this-node-b"];
 
     [Fact]
     public async Task InterveneAsync_PreservesDelegationChain()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = DelegatedApprentice(apprenticeId, ApprenticeStatus.Escalated);
@@ -47,13 +46,10 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         Assert.True(result.IsSuccess);
 
         Assert.Equal(InboundChain, ChainOf(repo.Get(apprenticeId)));
-
     }
-
     [Fact]
     public async Task CompleteStepAsync_PreservesDelegationChain()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = DelegatedApprentice(apprenticeId, ApprenticeStatus.Running);
@@ -63,9 +59,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         await InvokeCompleteStepAsync(CreateService(repo), repo, apprentice, apprenticeId);
 
         Assert.Equal(InboundChain, ChainOf(repo.Get(apprenticeId)));
-
     }
-
     /// <summary>
     /// The general contract behind the chain loss: a rewrite forwards every member it does not deliberately
     /// change. Reflecting over the record instead of naming members means a property added to
@@ -74,7 +68,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
     [Fact]
     public async Task CompleteStepAsync_ForwardsEveryCheckpointMemberItDoesNotDeliberatelyChange()
     {
-
         string[] deliberatelyChanged = ["CurrentStep", "Timestamp", "DmGuidance"];
 
         Guid apprenticeId = Guid.NewGuid();
@@ -90,7 +83,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             ParentApprenticeId = Guid.NewGuid(),
             DelegationChain = InboundChain,
         };
-
         Apprentice apprentice = DelegatedApprentice(apprenticeId, ApprenticeStatus.Running);
 
         apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(seeded);
@@ -110,26 +102,18 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
         foreach (string name in deliberatelyChanged)
         {
-
             Assert.Contains(properties, property => property.Name == name);
-
         }
-
         foreach (PropertyInfo property in properties.Where(p => !deliberatelyChanged.Contains(p.Name)))
         {
-
             Assert.True(
                 ValuesMatch(property.GetValue(seeded), property.GetValue(rewritten)),
                 $"CompleteStepAsync dropped ApprenticeCheckpoint.{property.Name}.");
-
         }
-
     }
-
     [Fact]
     public async Task EscalateAsync_PreservesDelegationChain()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = DelegatedApprentice(apprenticeId, ApprenticeStatus.Running);
@@ -158,13 +142,10 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         await task.WaitAsync(TimeSpan.FromSeconds(15));
 
         Assert.Equal(InboundChain, ChainOf(repo.Get(apprenticeId)));
-
     }
-
     [Fact]
     public async Task ResumeCrashRecoveryAsync_PreservesDelegationChainWhileEscalatingInterruptedPlanning()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = DelegatedApprentice(apprenticeId, ApprenticeStatus.Planning);
@@ -187,9 +168,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         Assert.Equal(ApprenticeStatus.Escalated.ToString(), persisted.Status);
 
         Assert.Equal(InboundChain, ChainOf(persisted));
-
     }
-
     /// <summary>
     /// A locally cast child of a delegated Apprentice inherits the caller's chain. <c>cast_sending</c>
     /// builds its <c>ConclaveCastRequest</c> without one, so this stamping pass is where the lineage the
@@ -198,7 +177,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
     [Fact]
     public async Task StampCastSendingsAsync_GivesTheChildTheParentDelegationChain()
     {
-
         Guid parentId = Guid.NewGuid();
 
         Guid childId = Guid.NewGuid();
@@ -216,7 +194,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             CurrentStep = 0,
             SessionId = Guid.NewGuid(),
         };
-
         RecordingApprenticeRepository repo = new(parent, child);
 
         ApprenticeService service = CreateService(repo, apprenticesEnabled: false);
@@ -230,9 +207,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         Assert.Equal(parentId, persisted.ParentApprenticeId);
 
         Assert.Equal(InboundChain, ChainOf(persisted));
-
     }
-
     /// <summary>
     /// A child cast by an Apprentice that is not itself delegated stays purely local: no chain is
     /// invented, so a later dispatch is not refused by a peer that never saw this work.
@@ -240,7 +215,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
     [Fact]
     public async Task StampCastSendingsAsync_LeavesTheChildChainEmptyForPurelyLocalWork()
     {
-
         Guid parentId = Guid.NewGuid();
 
         Guid childId = Guid.NewGuid();
@@ -256,7 +230,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             CurrentStep = 0,
             SessionId = Guid.NewGuid(),
         };
-
         Apprentice child = new()
         {
             Id = childId,
@@ -268,7 +241,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             CurrentStep = 0,
             SessionId = Guid.NewGuid(),
         };
-
         RecordingApprenticeRepository repo = new(parent, child);
 
         ApprenticeService service = CreateService(repo, apprenticesEnabled: false);
@@ -278,9 +250,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         await task.WaitAsync(TimeSpan.FromSeconds(15));
 
         Assert.Null(ChainOf(repo.Get(childId)));
-
     }
-
     /// <summary>
     /// Stamping happens before the child is started, so the Apprentice feature is left off: the start
     /// attempt then fails fast instead of launching a background execution task that would rewrite the
@@ -292,7 +262,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         Guid parentId,
         Guid childId)
     {
-
         MethodInfo? method = typeof(ApprenticeService)
             .GetMethod("StampCastSendingsAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
@@ -306,16 +275,13 @@ public sealed class ApprenticeCheckpointDelegationChainTests
                 new List<Guid> { childId },
                 CancellationToken.None,
             ])!;
-
     }
-
     private static async Task InvokeCompleteStepAsync(
         ApprenticeService service,
         IApprenticeRepository repo,
         Apprentice apprentice,
         Guid apprenticeId)
     {
-
         MethodInfo? method = typeof(ApprenticeService)
             .GetMethod("CompleteStepAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
@@ -335,24 +301,16 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             ])!;
 
         await task.WaitAsync(TimeSpan.FromSeconds(15));
-
     }
-
     private static bool ValuesMatch(object? seeded, object? rewritten)
     {
-
         if (seeded is System.Collections.IEnumerable left and not string
             && rewritten is System.Collections.IEnumerable right)
         {
-
             return left.Cast<object>().SequenceEqual(right.Cast<object>());
-
         }
-
         return Equals(seeded, rewritten);
-
     }
-
     private static IReadOnlyList<string>? ChainOf(Apprentice apprentice) =>
         ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData)?.DelegationChain;
 
@@ -378,12 +336,10 @@ public sealed class ApprenticeCheckpointDelegationChainTests
                 DelegationChain = InboundChain,
             }),
         };
-
     private static ApprenticeService CreateService(
         IApprenticeRepository repo,
         bool apprenticesEnabled = true)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton(repo);
@@ -396,61 +352,46 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         {
             Features = new FeatureSettings { Apprentices = apprenticesEnabled },
         };
-
         return new ApprenticeService(
             scopeFactory,
             new TestOptionsMonitor<ArcanumSettings>(settings),
             new ChronicleHub(),
-            NullLogger<ApprenticeService>.Instance);
-
+            NullLogger<ApprenticeService>.Instance,
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
     }
-
     private sealed class RecordingApprenticeRepository : IApprenticeRepository
     {
-
         private readonly Dictionary<Guid, Apprentice> _store = new();
 
         public RecordingApprenticeRepository(params Apprentice[] apprentices)
         {
-
             foreach (Apprentice apprentice in apprentices)
             {
-
                 _store[apprentice.Id] = apprentice;
-
             }
-
         }
-
         public Apprentice Get(Guid id) => _store[id];
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-
             _store[apprentice.Id] = apprentice;
 
             return Task.FromResult(apprentice);
-
         }
-
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(_store.TryGetValue(id, out Apprentice? found) ? found : null);
 
         public Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-
             _store[apprentice.Id] = apprentice;
 
             return Task.FromResult(apprentice);
-
         }
-
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
 
         public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
         {
-
             string planning = ApprenticeStatus.Planning.ToString();
 
             IReadOnlyList<Apprentice> interrupted = _store.Values
@@ -458,9 +399,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
                 .ToList();
 
             return Task.FromResult(interrupted);
-
         }
-
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(_store.Remove(id));
 
@@ -470,7 +409,5 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             int? limit = null,
             DateTimeOffset? beforeUpdatedAt = null,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
     }
-
 }
