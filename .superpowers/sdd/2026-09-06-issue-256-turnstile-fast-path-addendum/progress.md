@@ -173,3 +173,20 @@ repository blank-line verification, and diff checks passed. H benchmark/build/de
 inputs are byte-identical; eager request/work terminal tasks and the dormant generation signal
 remain unchanged. Proposed B is a normal implementation commit; this ledger/report is separate
 bookkeeping. Only independent review can establish the accepted exact B before Task C.
+
+### Task B independent-review fix round 1
+
+The original proposed B `18c7a2b2f779dd4a87a1d45c1a1e61fa924200ff` is superseded. Review
+found one Important omission: an unpromoted old-generation request surviving a proven abort could
+be promoted out of the reopened generation's census. The real G1 timeout/abort-to-G2 regression
+first failed compile-clean because stale promotion returned success (1 failed, 0 passed), then
+passed 1/1 after the sole production correction added the current-generation check before any
+promotion or closure mutation. It also pins unchanged Ordinary admission, exact/foreign connection
+refusal during the next close, and continued census ownership until old-request disposal.
+
+New proposed B: `b0be2b4df8855e56f2dcfcaf155dfacddc51b88a`, a normal production/test/docs
+commit pending independent re-review. Affected promotion/lifetime tests passed 27/27; the complete
+gate/interceptor/request-scope slice passed 196/196 with no skips; fresh nonincremental solution
+build passed with 0 warnings/errors; scoped format, blank-line, diff, and immutable-H audits passed.
+Task B now adds 80 cases. Full evidence is appended to `task-B-report.md`; this report/ledger
+bookkeeping remains separate from exact B. No Task C optimization was introduced.

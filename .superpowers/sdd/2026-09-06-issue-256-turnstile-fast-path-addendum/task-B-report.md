@@ -1,13 +1,15 @@
 # Task B implementation and qualification report
 
-Implementation complete on 2026-09-07; independent review is pending.
+Implementation and review fix round 1 complete on 2026-09-07; independent re-review is pending.
 
 - Exact clean task base: `8544401f27928ed8bff9ba6fcde0639bb1bc8f63`.
 - Immutable instrument H: `f51ac3f84c3b408510e448311d7a5e15bdbc041e`.
-- Proposed exact monitor baseline B: `18c7a2b2f779dd4a87a1d45c1a1e61fa924200ff`.
+- Current proposed exact monitor baseline B: `b0be2b4df8855e56f2dcfcaf155dfacddc51b88a`.
+- Superseded initial proposed B: `18c7a2b2f779dd4a87a1d45c1a1e61fa924200ff`.
 - Branch: `codex/issue-256-hosted-producer-admission`.
 - Worktree: `/Users/mat/Source/apps/RetroDownfall.Arcanum/.worktrees/issue-256-hosted-producer-admission`.
-- Normal implementation commit: `fix: characterize and preserve Grimoire gate lifecycle invariants`.
+- Initial implementation commit: `fix: characterize and preserve Grimoire gate lifecycle invariants`.
+- Review-fix implementation commit: `fix: reject stale request promotion across Grimoire generations`.
 - This report and the ledger update belong to a subsequent bookkeeping commit, not B.
 
 No benchmark claim is made. H calibration is not B/C acceptance evidence. Independent review must
@@ -257,5 +259,67 @@ native/dependency/build input, queue, scheduler, TCS-lazification, or hot-path c
   request/work terminal tasks are intentionally unchanged for the later candidate's independent
   structural/performance decision.
 
-No unresolved implementation defect is known. Independent review remains required before treating
-`18c7a2b2f779dd4a87a1d45c1a1e61fa924200ff` as the reviewed baseline B.
+The initial implementation was handed off for independent review. That review found the stale
+unpromoted-request defect corrected in round 1 below; the initial proposed B is superseded.
+
+## Task B independent-review fix round 1
+
+Base: report HEAD `473679f935306312048c5fd5baa12d90a7666559`. Independent review found one
+Important issue and no other findings: `BeginOrResumeExclusive` checked the initiating request's
+gate, liveness, promotion state, and census membership but omitted its generation. A still-live,
+unpromoted G1 finite request could survive a requestless stage-one timeout and proven abort to G2,
+then be promoted out of G2's census even though it could not carry G2 finisher authority.
+
+The code-review reception and TDD skills guided independent verification before editing. The
+new real-gate test is
+`Unpromoted_old_request_cannot_be_promoted_out_of_the_next_generation_census`.
+
+```text
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
+  --no-restore --disable-build-servers -m:1
+  --filter 'FullyQualifiedName~Unpromoted_old_request_cannot_be_promoted'
+  --logger 'console;verbosity=minimal'
+```
+
+RED: compile-clean exit 1, 1 failed, 0 passed. The assertion `stalePromotion.IsFailure` expected
+true and observed false at `GrimoireConnectionAdmissionGateTests.Lifetimes.cs:204`. The test
+established real G1 admission, requestless closure, a manually advanced stage-one timeout, and
+proven abort to G2 before attempting stale promotion. No production edit preceded that RED.
+
+The only production change adds `request.Generation != _generation` to the existing promotion
+refusal guard under `_sync`, before any closure, owner, phase, promotion, connection-authority, or
+census mutation. GREEN: the identical command then passed 1/1, exit 0. No refactor was needed.
+
+The remaining assertions prove the full consequence: `Grimoire.AdmissionLifecycleConflict`;
+generation remains 2; the dormant G2 waiter stays pending; Ordinary request, work, and exact
+connection-open admission still work at G2; a different owner's subsequent requestless G2 close
+remains valid; both the exact attempted connection and a foreign connection are refused as stale
+finishers; stage-one drain and stage two remain blocked by the old request; and only old-request
+disposal permits G3 closure followed by the actual G3 reopen signal. Thus rejection neither
+promotes/removes the old census entry nor captures a closing owner or broadens connection authority.
+
+Affected promotion/lifetime filter:
+
+```text
+FullyQualifiedName~Promotion|FullyQualifiedName~Promoted_request|FullyQualifiedName~Unpromoted_old_request|FullyQualifiedName~Nested_and_non_lifo|FullyQualifiedName~Flowed_finisher|FullyQualifiedName~Repeated_old_generation|FullyQualifiedName~Revoked_old_work|FullyQualifiedName~Pre_reopen_lifetime|FullyQualifiedName~Non_lifo_disposal_does_not_retain|FullyQualifiedName~New_admission_does_not_retain
+```
+
+With `dotnet test` using `--no-build --no-restore` and the same console logger, this filter passed
+27/27, exit 0. The full gate/interceptor/request-scope filter from Final verification passed
+196/196, 0 failures, 0 skips, exit 0. Task B now adds 80 characterization/regression cases in total.
+
+Fresh `dotnet build RetroDownfall.Arcanum.slnx --no-restore --no-incremental
+--disable-build-servers -m:1` succeeded with 0 warnings and 0 errors, elapsed 00:01:00.68.
+The scoped `dotnet format` command from Final verification passed again with no changes or
+diagnostics. Repository blank-line verification reported `Would change 0 file(s)`. Unstaged and
+staged diff checks passed. The immutable-H audit was rerun with the exact paths above and exited
+0: benchmark, build, dependency, toolchain declarations, and native assets remain byte-identical
+to H. The gate remains the only changed production source path; no epoch file or candidate exists.
+
+Normal review-fix implementation commit and new proposed B:
+`b0be2b4df8855e56f2dcfcaf155dfacddc51b88a`. It supersedes initial proposed B
+`18c7a2b2f779dd4a87a1d45c1a1e61fa924200ff`; no history was amended. This report update and
+the ledger are committed separately as bookkeeping. Self-review confirmed that the added check
+is an early refusal under the existing monitor and changes no disposal, callback, drain, signal,
+timeout, or public-interface behavior. No unresolved implementation defect is known; independent
+re-review must approve this exact new B before any optional Task C optimization.
