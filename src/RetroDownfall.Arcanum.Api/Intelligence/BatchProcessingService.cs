@@ -72,7 +72,6 @@ internal sealed class BatchProcessingService(
 
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
@@ -87,7 +86,6 @@ internal sealed class BatchProcessingService(
                 {
                     break;
                 }
-
                 await TickAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -100,7 +98,6 @@ internal sealed class BatchProcessingService(
             }
         }
     }
-
     internal async Task TickAsync(CancellationToken stoppingToken)
     {
         lock (_dispatchSync)
@@ -110,12 +107,10 @@ internal sealed class BatchProcessingService(
                 return;
             }
         }
-
         if (!_admissionGate.TryAcquireWorkLease(GrimoireWorkKind.BatchProcessing, out IGrimoireWorkLease? admitted))
         {
             return;
         }
-
         await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -132,7 +127,6 @@ internal sealed class BatchProcessingService(
         {
             return;
         }
-
         IReadOnlyList<BatchRecord> pending = await batches.ListPendingPageAsync(
                 availableSlots,
                 stoppingToken)
@@ -148,20 +142,17 @@ internal sealed class BatchProcessingService(
                 {
                     break;
                 }
-
                 if (!_inFlight.TryAdd(batch.Id, completion.Task))
                 {
                     continue;
                 }
             }
-
             try
             {
                 if (AfterBatchRegisteredTestSeam is { } afterRegistered)
                 {
                     await afterRegistered().ConfigureAwait(false);
                 }
-
                 // The exact completion task is visible before launch, including to StopAsync.
                 _ = Task.Run(
                     async () =>
@@ -187,7 +178,6 @@ internal sealed class BatchProcessingService(
             }
         }
     }
-
     /// <summary>
     /// Drains in-flight batch workers before the host disposes the container underneath them. A
     /// worker that has already received (and been billed for) a provider response is inside
@@ -202,7 +192,6 @@ internal sealed class BatchProcessingService(
         {
             _stopping = true;
         }
-
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
 
         int drainSeconds = ArcanumSettingClamps.DaemonShutdownDrainTimeoutSeconds(
@@ -212,14 +201,12 @@ internal sealed class BatchProcessingService(
         {
             return;
         }
-
         Task[] snapshot = [.. _inFlight.Values];
 
         if (snapshot.Length == 0)
         {
             return;
         }
-
         using CancellationTokenSource drainCts = new(TimeSpan.FromSeconds(drainSeconds));
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -241,7 +228,6 @@ internal sealed class BatchProcessingService(
             logger.LogWarning(ex, "Batch shutdown drain observed an unhandled exception.");
         }
     }
-
     private async Task ProcessBatchWithCleanupAsync(BatchRecord batch, CancellationToken stoppingToken)
     {
         try
@@ -266,13 +252,11 @@ internal sealed class BatchProcessingService(
             _ = _inFlight.TryRemove(batch.Id, out _);
         }
     }
-
     private enum BatchProcessingDisposition
     {
         Concluded = 1,
         DeferredForMaintenance = 2,
     }
-
     /// <summary>Owned only by the exact retained batch task, never a DI scope or database row.</summary>
     private sealed class BatchProcessingState
     {
@@ -286,7 +270,6 @@ internal sealed class BatchProcessingService(
 
         internal bool BudgetRejected { get; set; }
     }
-
     internal async Task ProcessBatchAsync(BatchRecord batch, CancellationToken stoppingToken)
     {
         BatchProcessingState state = new();
@@ -304,14 +287,12 @@ internal sealed class BatchProcessingService(
             {
                 return;
             }
-
             // Closing(G) and Closed(G) both reopen as G. A predecessor observation also
             // handles a reopen that races scope disposal without missing its notification.
             await _admissionGate.WaitForNextOpenGenerationAsync(
                 Math.Max(0, observedGeneration - 1), stoppingToken).ConfigureAwait(false);
         }
     }
-
     private async Task<BatchProcessingDisposition> ProcessBatchAttemptAsync(
         BatchRecord batch, BatchProcessingState state, CancellationToken stoppingToken)
     {
@@ -319,7 +300,6 @@ internal sealed class BatchProcessingService(
         {
             return BatchProcessingDisposition.DeferredForMaintenance;
         }
-
         await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -338,7 +318,6 @@ internal sealed class BatchProcessingService(
                 return BatchProcessingDisposition.Concluded;
             }
         }
-
         IUploadedFileRepository files = scope.ServiceProvider.GetRequiredService<IUploadedFileRepository>();
 
         IEncryptedBlobStore blobStore = scope.ServiceProvider.GetRequiredService<IEncryptedBlobStore>();
@@ -351,10 +330,8 @@ internal sealed class BatchProcessingService(
             {
                 return BatchProcessingDisposition.Concluded;
             }
-
             state.Claimed = true;
         }
-
         ArcanumSettings settings = optionsMonitor.CurrentValue;
 
         if (!state.ReadyToPublish)
@@ -372,7 +349,6 @@ internal sealed class BatchProcessingService(
 
                 return BatchProcessingDisposition.Concluded;
             }
-
             await using Stream input = await blobStore.OpenCompatibleReadAsync(
                 inputPath, EncryptedBlobPurpose.UploadedFile, inputFile.EncryptionVersion, stoppingToken)
                 .ConfigureAwait(false);
@@ -387,7 +363,6 @@ internal sealed class BatchProcessingService(
                 {
                     return BatchProcessingDisposition.DeferredForMaintenance;
                 }
-
                 await using (pageGroup!)
                 {
                     IReadOnlyList<PreparedBatchRequestLine> page = await ReadRequestPageAsync(reader, stoppingToken)
@@ -396,16 +371,13 @@ internal sealed class BatchProcessingService(
                     await ProcessRequestPageAsync(batch.Id, page, state, scope.ServiceProvider,
                         batches, settings, stoppingToken).ConfigureAwait(false);
                 }
-
                 if (state.CancelledMidway || state.BudgetRejected)
                 {
                     break;
                 }
             }
-
             state.ReadyToPublish = true;
         }
-
         state.CancelledMidway |= await IsBatchCancelledAsync(batch.Id, batches).ConfigureAwait(false);
 
         if (!state.HasRecords)
@@ -419,12 +391,10 @@ internal sealed class BatchProcessingService(
 
             return BatchProcessingDisposition.Concluded;
         }
-
         if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? artifactGroup))
         {
             return BatchProcessingDisposition.DeferredForMaintenance;
         }
-
         await using (artifactGroup!)
         {
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.FilesDirectory);
@@ -474,16 +444,13 @@ internal sealed class BatchProcessingService(
                         }
                     }
                 }
-
                 TryDeleteFile(outputTempPath);
 
                 TryDeleteFile(errorTempPath);
             }
         }
-
         return BatchProcessingDisposition.Concluded;
     }
-
     private async Task ProcessRequestPageAsync(
         Guid batchId, IReadOnlyList<PreparedBatchRequestLine> page, BatchProcessingState state,
         IServiceProvider scopedServices, IBatchRepository batches, ArcanumSettings settings,
@@ -500,12 +467,10 @@ internal sealed class BatchProcessingService(
 
             return;
         }
-
         if (pending.Count == 0)
         {
             return;
         }
-
         ITurnRunWriter? writer = scopedServices.GetService<ITurnRunWriter>();
 
         IBudgetReservationService? reservations = scopedServices.GetService<IBudgetReservationService>();
@@ -531,7 +496,6 @@ internal sealed class BatchProcessingService(
 
             return;
         }
-
         TurnAccountingHandle accounting = beginning.Value;
 
         InferenceRunStatus runStatus = InferenceRunStatus.Completed;
@@ -573,7 +537,6 @@ internal sealed class BatchProcessingService(
             }
         }
     }
-
     private async Task DeleteCompletedCheckpointsAsync(Guid batchId, IBatchRepository batches)
     {
         try
@@ -586,7 +549,6 @@ internal sealed class BatchProcessingService(
                 "Batch {BatchId} completed, but durable line-checkpoint cleanup will be deferred.", batchId);
         }
     }
-
     private static async Task<IReadOnlyList<PreparedBatchRequestLine>> PreparePendingPageAsync(
 
         Guid batchId,
@@ -638,11 +600,9 @@ internal sealed class BatchProcessingService(
                         cancellationToken).ConfigureAwait(false);
 
                 }
-
                 continue;
 
             }
-
             if (prepared.ParseError is not null || prepared.Request?.Body is null)
 
             {
@@ -662,15 +622,12 @@ internal sealed class BatchProcessingService(
                 continue;
 
             }
-
             pendingProviderLines.Add(prepared);
 
         }
-
         return pendingProviderLines;
 
     }
-
     private static async Task PersistNonProviderErrorAsync(
 
         Guid batchId,
@@ -714,7 +671,6 @@ internal sealed class BatchProcessingService(
             cancellationToken).ConfigureAwait(false);
 
     }
-
     internal static async Task CompleteInterruptedLineAsync(
 
         BatchLineCheckpoint checkpoint,
@@ -754,7 +710,6 @@ internal sealed class BatchProcessingService(
             cancellationToken).ConfigureAwait(false);
 
     }
-
     private static async Task CompleteDispatchedLinesAsync(
 
         Guid batchId,
@@ -790,7 +745,6 @@ internal sealed class BatchProcessingService(
                 return;
 
             }
-
             foreach (BatchLineCheckpoint checkpoint in page)
 
             {
@@ -804,13 +758,10 @@ internal sealed class BatchProcessingService(
                     cancellationToken).ConfigureAwait(false);
 
             }
-
             afterLine = page[^1].LineNumber;
 
         }
-
     }
-
     private static string ResolveCustomId(PreparedBatchRequestLine prepared) =>
 
         string.IsNullOrWhiteSpace(prepared.Request?.CustomId)
@@ -832,7 +783,6 @@ internal sealed class BatchProcessingService(
         return current?.Status == BatchStatuses.Cancelled;
 
     }
-
     private static async Task FinalizeBatchStatusAsync(
 
         Guid batchId,
@@ -870,7 +820,6 @@ internal sealed class BatchProcessingService(
             return;
 
         }
-
         BatchRecord? current = await batches.GetByIdAsync(batchId, CancellationToken.None).ConfigureAwait(false);
 
         if (current?.Status == BatchStatuses.Cancelled
@@ -896,13 +845,11 @@ internal sealed class BatchProcessingService(
             return;
 
         }
-
         throw new InvalidOperationException(
 
             $"Batch '{batchId:D}' changed state while its durable output checkpoints were being published.");
 
     }
-
     /// <summary>
     /// Streams and parses non-empty JSONL lines into bounded internal pages. Every page is budgeted,
     /// processed, and flushed before the next page is read; the page size is not a total-work cap.
@@ -925,7 +872,6 @@ internal sealed class BatchProcessingService(
 
         return page;
     }
-
     /// <summary>
     /// Runs every request line with bounded concurrency (<paramref name="maxConcurrentRequests"/>)
     /// while a lightweight side task polls the Grimoire every <see cref="CancelWatchInterval"/> for
@@ -991,7 +937,6 @@ internal sealed class BatchProcessingService(
 
                             ct).ConfigureAwait(false);
                     }
-
                 }).ConfigureAwait(false);
 
         }
@@ -1017,13 +962,10 @@ internal sealed class BatchProcessingService(
             {
 
             }
-
         }
-
         return cancelledMidway;
 
     }
-
     private async Task WatchForCancellationAsync(Guid batchId, CancellationTokenSource linkedCts)
     {
 
@@ -1049,17 +991,13 @@ internal sealed class BatchProcessingService(
                     return;
 
                 }
-
             }
-
         }
         catch (OperationCanceledException)
         {
 
         }
-
     }
-
     private static async Task ProcessRequestLineAsync(
 
         Guid batchId,
@@ -1096,7 +1034,6 @@ internal sealed class BatchProcessingService(
             return;
 
         }
-
         Result<OpenAiChatResponse> result = await OpenAiV1Endpoints
             .ExecuteChatRequestForBatchAsync(requestLine.Body, intelligence, settings, cancellationToken)
             .ConfigureAwait(false);
@@ -1132,7 +1069,6 @@ internal sealed class BatchProcessingService(
             CancellationToken.None).ConfigureAwait(false);
 
     }
-
     private static async Task<BatchArtifactPublication> PublishCheckpointArtifactsAsync(
         Guid batchId,
         IBatchRepository batches,
@@ -1169,7 +1105,6 @@ internal sealed class BatchProcessingService(
             {
                 break;
             }
-
             foreach (BatchLineCheckpoint checkpoint in page)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -1179,7 +1114,6 @@ internal sealed class BatchProcessingService(
                     throw new InvalidDataException(
                         $"Completed batch checkpoint '{batchId:D}/{checkpoint.LineNumber}' has no terminal JSONL payload.");
                 }
-
                 if (checkpoint.OutputKind == BatchLineOutputKind.Output)
                 {
                     await writers.WriteOutputLineAsync(checkpoint.JsonLine, cancellationToken).ConfigureAwait(false);
@@ -1189,10 +1123,8 @@ internal sealed class BatchProcessingService(
                     await writers.WriteErrorLineAsync(checkpoint.JsonLine, cancellationToken).ConfigureAwait(false);
                 }
             }
-
             afterLine = page[^1].LineNumber;
         }
-
         int outputLineCount = writers.OutputLineCount;
 
         int errorLineCount = writers.ErrorLineCount;
@@ -1231,7 +1163,6 @@ internal sealed class BatchProcessingService(
 
         return new BatchArtifactPublication(outputFileId, errorFileId);
     }
-
     private sealed record BatchArtifactPublication(
         Guid? OutputFileId,
         Guid? ErrorFileId);
@@ -1268,7 +1199,6 @@ internal sealed class BatchProcessingService(
             {
                 throw new UploadedFilePublicationException(id);
             }
-
             newlyPublished.Add(new OwnedBatchArtifact(id, ownedFile));
 
             SecureFilePermissions.ApplyOwnerOnlyFile(path);
@@ -1303,17 +1233,14 @@ internal sealed class BatchProcessingService(
             {
                 _ = IdentityOwnedFileSystemCleanup.TryDelete(ownedFile);
             }
-
             throw;
         }
         finally
         {
             TryDeleteFile(tempPath);
         }
-
         return id;
     }
-
     /// <summary>
     /// Thread-safe incremental JSONL writers for batch output/error files. Lines are flushed as they
     /// complete so peak memory stays per-line rather than the full result set.
@@ -1355,7 +1282,6 @@ internal sealed class BatchProcessingService(
             _encryptedError = encryptedError;
 
         }
-
         public int OutputLineCount => Volatile.Read(ref _outputLineCount);
 
         public int ErrorLineCount => Volatile.Read(ref _errorLineCount);
@@ -1400,9 +1326,7 @@ internal sealed class BatchProcessingService(
                 await output.DisposeAsync().ConfigureAwait(false);
                 throw;
             }
-
         }
-
         public async Task<(EncryptedBlobDescriptor? Output, EncryptedBlobDescriptor? Error)>
             CompleteAsync(CancellationToken cancellationToken)
         {
@@ -1419,7 +1343,6 @@ internal sealed class BatchProcessingService(
                 : null;
             return (output, error);
         }
-
         public async Task WriteOutputLineAsync(string line, CancellationToken cancellationToken)
         {
 
@@ -1439,9 +1362,7 @@ internal sealed class BatchProcessingService(
                 _ = _outputLock.Release();
 
             }
-
         }
-
         public async Task WriteErrorLineAsync(string line, CancellationToken cancellationToken)
         {
 
@@ -1461,9 +1382,7 @@ internal sealed class BatchProcessingService(
                 _ = _errorLock.Release();
 
             }
-
         }
-
         public async ValueTask DisposeAsync()
         {
 
@@ -1473,7 +1392,6 @@ internal sealed class BatchProcessingService(
                 await _error.DisposeAsync().ConfigureAwait(false);
                 _textWritersDisposed = true;
             }
-
             await _encryptedOutput.DisposeAsync().ConfigureAwait(false);
             await _encryptedError.DisposeAsync().ConfigureAwait(false);
 
@@ -1482,9 +1400,7 @@ internal sealed class BatchProcessingService(
             _errorLock.Dispose();
 
         }
-
     }
-
     internal static void TryDeleteFile(string path)
     {
 
@@ -1497,7 +1413,6 @@ internal sealed class BatchProcessingService(
                 File.Delete(path);
 
             }
-
         }
         catch (IOException)
         {
@@ -1507,7 +1422,5 @@ internal sealed class BatchProcessingService(
         {
 
         }
-
     }
-
 }
