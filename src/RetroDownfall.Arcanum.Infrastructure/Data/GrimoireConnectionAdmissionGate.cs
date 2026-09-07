@@ -53,15 +53,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private readonly HashSet<OpenTicket> _unresolvedOpens = [];
 
-    private readonly AdmissionShard[] _shards = CreateAdmissionShards();
+    private readonly HashSet<RequestLease> _requestLeases = [];
 
-    private AdmissionEpoch _epoch = new(1);
-
-    private long _requestCount;
-
-    private long _workCount;
-
-    private TaskCompletionSource? _stageOneZeroSignal;
+    private readonly HashSet<WorkLease> _workLeases = [];
 
     private readonly SemaphoreSlim _maintenanceAdoptionInterlock = new(1, 1);
 
@@ -252,15 +246,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        AdmissionEpoch epoch = Volatile.Read(ref _epoch);
-
-        AdmissionShard shard = _shards[Environment.CurrentManagedThreadId & (_shards.Length - 1)];
-
-        lock (shard)
+        lock (_sync)
         {
 
-            if (!ReferenceEquals(epoch, Volatile.Read(ref _epoch))
-                || epoch.Phase != GateState.Ordinary)
+            if (_state != GateState.Ordinary)
             {
 
                 lease = null;
@@ -269,16 +258,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
-            ReserveCount(ref _requestCount);
-
             RequestLease admitted = new(
                 this,
                 kind,
-                epoch,
-                shard,
+                _generation,
                 SkipReleasedLifetimes(CurrentOrdinaryLifetime.Value));
 
-            shard.AddRequest(admitted);
+            _requestLeases.Add(admitted);
 
             CurrentOrdinaryLifetime.Value = admitted.Lifetime;
 
@@ -323,15 +309,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        AdmissionEpoch epoch = Volatile.Read(ref _epoch);
-
-        AdmissionShard shard = _shards[Environment.CurrentManagedThreadId & (_shards.Length - 1)];
-
-        lock (shard)
+        lock (_sync)
         {
 
-            if (!ReferenceEquals(epoch, Volatile.Read(ref _epoch))
-                || epoch.Phase != GateState.Ordinary)
+            if (_state != GateState.Ordinary)
             {
 
                 lease = null;
@@ -340,16 +321,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
-            ReserveCount(ref _workCount);
-
             WorkLease admitted = new(
                 this,
                 kind,
-                epoch,
-                shard,
+                _generation,
                 SkipReleasedLifetimes(CurrentOrdinaryLifetime.Value));
 
-            shard.AddWork(admitted);
+            _workLeases.Add(admitted);
 
             CurrentOrdinaryLifetime.Value = admitted.Lifetime;
 
@@ -427,7 +405,11 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 {
 
                     if (initiatingRequest is not RequestLease request
-                        || !ReferenceEquals(request.Gate, this))
+                        || !ReferenceEquals(request.Gate, this)
+                        || request.Generation != _generation
+                        || request.IsReleased
+                        || request.IsPromoted
+                        || !_requestLeases.Contains(request))
                     {
 
                         return Result<IGrimoireClosingOwner>.Failure(
@@ -440,91 +422,49 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                 }
 
-                Closure closure = new(owner, promoted, scopedConnection);
+                _state = GateState.Closing;
+
+                _closure = new Closure(owner, promoted, scopedConnection);
 
                 if (promoted is not null)
                 {
 
-                    lock (promoted.Shard)
-                    {
+                    promoted.IsPromoted = true;
 
-                        if (!ReferenceEquals(promoted.Epoch, _epoch)
-                            || promoted.Generation != _generation
-                            || promoted.IsReleased
-                            || promoted.IsPromoted
-                            || !promoted.IsLinked)
-                        {
+                    promoted.Lifetime.PromotedConnection = scopedConnection;
 
-                            return Result<IGrimoireClosingOwner>.Failure(
-                                LifecycleConflict(
-                                    "The initiating request is not the exact live request lease owned by this gate."));
+                    _ = _requestLeases.Remove(promoted);
 
-                        }
-
-                        PublishClosingWhileLocked(closure);
-
-                        promoted.IsPromoted = true;
-
-                        promoted.Lifetime.PromotedConnection = scopedConnection;
-
-                        promoted.Shard.RemoveRequest(promoted);
-
-                        _ = Interlocked.Decrement(ref _requestCount);
-
-                    }
+                    promoted.SignalTerminalWhileLocked();
 
                 }
-                else
-                {
 
-                    PublishClosingWhileLocked(closure);
-
-                }
+                _closure.StageOneDrained =
+                    _requestLeases.Count == 0 && _workLeases.Count == 0;
 
                 revocations = [];
 
-                // Join every shard, including empty shards: an admission may have validated
-                // Ordinary while holding its shard but not yet reserved or linked its member.
-                foreach (AdmissionShard shard in _shards)
+                revocations.AddRange(
+                    _requestLeases
+                        .Where(static request =>
+                            request.Kind == GrimoireRequestKind.QuiesceableStream)
+                        .Select(static request => request.Revocation));
+
+                foreach (WorkLease work in _workLeases)
                 {
 
-                    lock (shard)
+                    // An effect winner finishes its durable group before cancellation. The
+                    // obligation belongs to the lease and survives a proven stage-one abort.
+                    work.RevocationPending = true;
+
+                    if (work.ActiveEffectGroup is null)
                     {
 
-                        for (RequestLease? request = shard.Requests; request is not null; request = request.NextMember)
-                        {
-
-                            if (request.Kind == GrimoireRequestKind.QuiesceableStream)
-                            {
-
-                                revocations.Add(request.Revocation);
-
-                            }
-
-                        }
-
-                        for (WorkLease? work = shard.Work; work is not null; work = work.NextMember)
-                        {
-
-                            // An effect winner finishes its durable group before cancellation.
-                            // This lease obligation survives a proven stage-one abort.
-                            work.RevocationPending = true;
-
-                            if (work.ActiveEffectGroup is null)
-                            {
-
-                                revocations.Add(work.Revocation);
-
-                            }
-
-                        }
+                        revocations.Add(work.Revocation);
 
                     }
 
                 }
-
-                // Only the completed full scan may establish request/work zero.
-                closure.StageOneDrained = IsStageOneZero();
 
             }
             else if (_closure is null || _closure.Owner != owner)
@@ -545,7 +485,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
-            if (_closure!.ActiveClosedLease is not null)
+            if (_closure.ActiveClosedLease is not null)
             {
 
                 return Result<IGrimoireClosingOwner>.Failure(
@@ -615,7 +555,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        Task terminalLifetimes;
+        Task[] terminalLifetimes;
 
         lock (_sync)
         {
@@ -628,7 +568,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
-            if (IsStageOneZero())
+            if (_requestLeases.Count == 0 && _workLeases.Count == 0)
             {
 
                 token.Closure.StageOneDrained = true;
@@ -637,7 +577,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
-            terminalLifetimes = PublishStageOneZeroWhileLocked(token.Closure);
+            terminalLifetimes = _requestLeases
+                .Select(static request => request.Terminal)
+                .Concat(_workLeases.Select(static work => work.Terminal))
+                .ToArray();
 
         }
 
@@ -646,7 +589,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         try
         {
 
-            await terminalLifetimes
+            await Task.WhenAll(terminalLifetimes)
                 .WaitAsync(_workDrainCheckpoint, _timeProvider, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -680,7 +623,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             if (!OwnsClosingToken(token)
                 || _state != GateState.Closing
-                || !IsStageOneZero())
+                || _requestLeases.Count != 0
+                || _workLeases.Count != 0)
             {
 
                 return LifecycleConflict(
@@ -736,7 +680,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
 
             if (!token.Closure.StageOneDrained
-                || !IsStageOneZero())
+                || _requestLeases.Count != 0
+                || _workLeases.Count != 0)
             {
 
                 return Result<IGrimoireExclusiveClosedLease>.Failure(
@@ -758,8 +703,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             {
 
                 _generation = checked(_generation + 1);
-
-                _epoch.Retire();
 
                 _state = GateState.Closed;
 
@@ -934,15 +877,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             openGeneration = checked(_generation + 1);
 
-            AdmissionEpoch nextEpoch = new(openGeneration);
-
-            TaskCompletionSource<long> nextOpen = NewOpenGenerationSignal();
-
             token.Closure.ActiveClosingOwner = null;
-
-            _ = Interlocked.Exchange(ref _stageOneZeroSignal, null);
-
-            _epoch.Retire();
 
             _state = GateState.Ordinary;
 
@@ -952,9 +887,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             opened = _nextOpenGeneration;
 
-            _nextOpenGeneration = nextOpen;
-
-            Volatile.Write(ref _epoch, nextEpoch);
+            _nextOpenGeneration = NewOpenGenerationSignal();
 
         }
 
@@ -1096,91 +1029,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private static TaskCompletionSource<long> NewOpenGenerationSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    private static AdmissionShard[] CreateAdmissionShards()
-    {
-
-        AdmissionShard[] shards = new AdmissionShard[16];
-
-        for (int index = 0; index < shards.Length; index++)
-        {
-
-            shards[index] = new AdmissionShard();
-
-        }
-
-        return shards;
-
-    }
-
-    private void PublishClosingWhileLocked(Closure closure)
-    {
-
-        _closure = closure;
-
-        _state = GateState.Closing;
-
-        _epoch.BeginClosing();
-
-    }
-
-    private static void ReserveCount(ref long count)
-    {
-
-        long observed = Volatile.Read(ref count);
-
-        while (true)
-        {
-
-            long next = checked(observed + 1);
-
-            long actual = Interlocked.CompareExchange(ref count, next, observed);
-
-            if (actual == observed)
-            {
-
-                return;
-
-            }
-
-            observed = actual;
-
-        }
-
-    }
-
-    private bool IsStageOneZero() =>
-        Volatile.Read(ref _requestCount) == 0 && Volatile.Read(ref _workCount) == 0;
-
-    private Task PublishStageOneZeroWhileLocked(Closure closure)
-    {
-
-        TaskCompletionSource signal = closure.StageOneZeroSignal ??=
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        // The full fence orders publication before the count recheck. A release either
-        // observes this exact signal after decrementing or is joined by this recheck.
-        _ = Interlocked.Exchange(ref _stageOneZeroSignal, signal);
-
-        SignalStageOneZero();
-
-        return signal.Task;
-
-    }
-
-    private void SignalStageOneZero()
-    {
-
-        TaskCompletionSource? signal = Volatile.Read(ref _stageOneZeroSignal);
-
-        if (signal is not null && IsStageOneZero())
-        {
-
-            _ = signal.TrySetResult();
-
-        }
-
-    }
 
     private static ValueTask AfterSuccessfulDrainNoOpAsync(
         CancellationToken cancellationToken) => ValueTask.CompletedTask;
@@ -1395,21 +1243,19 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private void ReleaseRequest(RequestLease lease)
     {
 
-        lock (lease.Shard)
+        lock (_sync)
         {
 
-            if (lease.IsLinked)
+            if (!lease.IsPromoted)
             {
 
-                lease.Shard.RemoveRequest(lease);
-
-                _ = Interlocked.Decrement(ref _requestCount);
+                _ = _requestLeases.Remove(lease);
 
             }
 
-        }
+            lease.SignalTerminalWhileLocked();
 
-        SignalStageOneZero();
+        }
 
     }
 
@@ -1418,13 +1264,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         out IGrimoireExternalEffectGroup? effectGroup)
     {
 
-        lock (lease.Shard)
+        lock (_sync)
         {
 
-            if (!ReferenceEquals(lease.Epoch, Volatile.Read(ref _epoch))
-                || lease.Epoch.Phase != GateState.Ordinary
+            if (_state != GateState.Ordinary
                 || lease.IsReleased
-                || !lease.IsLinked
+                || !_workLeases.Contains(lease)
+                || lease.Generation != _generation
                 || lease.MaintenanceRevocation.IsCancellationRequested
                 || lease.ActiveEffectGroup is not null)
             {
@@ -1450,7 +1296,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private void ReleaseWorkScope(WorkLease lease)
     {
 
-        lock (lease.Shard)
+        lock (_sync)
         {
 
             lease.ScopeDisposed = true;
@@ -1459,8 +1305,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        SignalStageOneZero();
-
     }
 
     private void ReleaseExternalEffectGroup(ExternalEffectGroup effectGroup)
@@ -1468,10 +1312,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         CancellationTokenSource? revocation = null;
 
-        WorkLease lease = effectGroup.Lease;
-
-        lock (lease.Shard)
+        lock (_sync)
         {
+
+            WorkLease lease = effectGroup.Lease;
 
             if (ReferenceEquals(lease.ActiveEffectGroup, effectGroup))
             {
@@ -1490,8 +1334,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             CompleteWorkLeaseIfDrainedWhileLocked(lease);
 
         }
-
-        SignalStageOneZero();
 
         if (revocation is not null)
         {
@@ -1524,14 +1366,9 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
-        if (lease.IsLinked)
-        {
+        _ = _workLeases.Remove(lease);
 
-            lease.Shard.RemoveWork(lease);
-
-            _ = Interlocked.Decrement(ref _workCount);
-
-        }
+        lease.SignalTerminalWhileLocked();
 
     }
 
@@ -2324,22 +2161,12 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             }
 
-            AdmissionEpoch? nextEpoch = disposition != CovenantExclusiveLeaseDisposition.KeepClosed
-                ? new AdmissionEpoch(_generation)
-                : null;
-
-            TaskCompletionSource<long>? nextOpen = nextEpoch is not null
-                ? NewOpenGenerationSignal()
-                : null;
-
             lease.DispositionClaimed = true;
 
             lease.Closure.ActiveClosedLease = null;
 
             if (disposition != CovenantExclusiveLeaseDisposition.KeepClosed)
             {
-
-                _ = Interlocked.Exchange(ref _stageOneZeroSignal, null);
 
                 _state = GateState.Ordinary;
 
@@ -2349,9 +2176,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                 opened = _nextOpenGeneration;
 
-                _nextOpenGeneration = nextOpen!;
-
-                Volatile.Write(ref _epoch, nextEpoch!);
+                _nextOpenGeneration = NewOpenGenerationSignal();
 
             }
 
@@ -2388,128 +2213,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         Closing = 2,
 
         Closed = 3,
-
-    }
-
-    private sealed class AdmissionEpoch(long generation)
-    {
-
-        private int _phase = (int)GateState.Ordinary;
-
-        internal long Generation { get; } = generation;
-
-        internal GateState Phase => (GateState)Volatile.Read(ref _phase);
-
-        internal void BeginClosing() => Interlocked.Exchange(ref _phase, (int)GateState.Closing);
-
-        internal void Retire() => Interlocked.Exchange(ref _phase, (int)GateState.Closed);
-
-    }
-
-    private sealed class AdmissionShard
-    {
-
-        internal RequestLease? Requests { get; private set; }
-
-        internal WorkLease? Work { get; private set; }
-
-        internal void AddRequest(RequestLease request)
-        {
-
-            request.NextMember = Requests;
-
-            if (Requests is not null)
-            {
-
-                Requests.PreviousMember = request;
-
-            }
-
-            Requests = request;
-
-            request.IsLinked = true;
-
-        }
-
-        internal void RemoveRequest(RequestLease request)
-        {
-
-            if (request.PreviousMember is null)
-            {
-
-                Requests = request.NextMember;
-
-            }
-            else
-            {
-
-                request.PreviousMember.NextMember = request.NextMember;
-
-            }
-
-            if (request.NextMember is not null)
-            {
-
-                request.NextMember.PreviousMember = request.PreviousMember;
-
-            }
-
-            request.PreviousMember = null;
-
-            request.NextMember = null;
-
-            request.IsLinked = false;
-
-        }
-
-        internal void AddWork(WorkLease work)
-        {
-
-            work.NextMember = Work;
-
-            if (Work is not null)
-            {
-
-                Work.PreviousMember = work;
-
-            }
-
-            Work = work;
-
-            work.IsLinked = true;
-
-        }
-
-        internal void RemoveWork(WorkLease work)
-        {
-
-            if (work.PreviousMember is null)
-            {
-
-                Work = work.NextMember;
-
-            }
-            else
-            {
-
-                work.PreviousMember.NextMember = work.NextMember;
-
-            }
-
-            if (work.NextMember is not null)
-            {
-
-                work.NextMember.PreviousMember = work.PreviousMember;
-
-            }
-
-            work.PreviousMember = null;
-
-            work.NextMember = null;
-
-            work.IsLinked = false;
-
-        }
 
     }
 
@@ -2573,8 +2276,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal bool StageOneDrained { get; set; }
 
-        internal TaskCompletionSource? StageOneZeroSignal { get; set; }
-
         internal bool StageOneTimedOut { get; set; }
 
         internal bool StageTwoInProgress { get; set; }
@@ -2587,8 +2288,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         OrdinaryLifetime? previous)
     {
 
-        private int _released;
-
         internal GrimoireConnectionAdmissionGate Gate { get; } = gate;
 
         internal long Generation { get; } = generation;
@@ -2597,51 +2296,36 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal DbConnection? PromotedConnection { get; set; }
 
-        internal bool IsReleased
-        {
-
-            get => Volatile.Read(ref _released) != 0;
-
-            set => Volatile.Write(ref _released, value ? 1 : 0);
-
-        }
+        internal bool IsReleased { get; set; }
 
     }
 
     private sealed class RequestLease : IGrimoireRequestLease
     {
 
+        private readonly TaskCompletionSource _terminal =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private int _released;
 
         internal RequestLease(
             GrimoireConnectionAdmissionGate gate,
             GrimoireRequestKind kind,
-            AdmissionEpoch epoch,
-            AdmissionShard shard,
+            long generation,
             OrdinaryLifetime? previousLifetime)
         {
 
+            Gate = gate;
+
             Kind = kind;
 
-            Epoch = epoch;
+            Generation = generation;
 
-            Shard = shard;
-
-            Lifetime = new OrdinaryLifetime(gate, epoch.Generation, previousLifetime);
+            Lifetime = new OrdinaryLifetime(gate, generation, previousLifetime);
 
         }
 
-        internal GrimoireConnectionAdmissionGate Gate => Lifetime.Gate;
-
-        internal AdmissionEpoch Epoch { get; }
-
-        internal AdmissionShard Shard { get; }
-
-        internal RequestLease? PreviousMember { get; set; }
-
-        internal RequestLease? NextMember { get; set; }
-
-        internal bool IsLinked { get; set; }
+        internal GrimoireConnectionAdmissionGate Gate { get; }
 
         internal OrdinaryLifetime Lifetime { get; }
 
@@ -2651,9 +2335,11 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal bool IsPromoted { get; set; }
 
+        internal Task Terminal => _terminal.Task;
+
         public GrimoireRequestKind Kind { get; }
 
-        public long Generation => Epoch.Generation;
+        public long Generation { get; }
 
         public CancellationToken MaintenanceRevocation => Revocation.Token;
 
@@ -2682,42 +2368,36 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
+        internal void SignalTerminalWhileLocked() => _terminal.TrySetResult();
+
     }
 
     private sealed class WorkLease : IGrimoireWorkLease
     {
+
+        private readonly TaskCompletionSource _terminal =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private int _released;
 
         internal WorkLease(
             GrimoireConnectionAdmissionGate gate,
             GrimoireWorkKind kind,
-            AdmissionEpoch epoch,
-            AdmissionShard shard,
+            long generation,
             OrdinaryLifetime? previousLifetime)
         {
 
+            Gate = gate;
+
             Kind = kind;
 
-            Epoch = epoch;
+            Generation = generation;
 
-            Shard = shard;
-
-            Lifetime = new OrdinaryLifetime(gate, epoch.Generation, previousLifetime);
+            Lifetime = new OrdinaryLifetime(gate, generation, previousLifetime);
 
         }
 
-        internal GrimoireConnectionAdmissionGate Gate => Lifetime.Gate;
-
-        internal AdmissionEpoch Epoch { get; }
-
-        internal AdmissionShard Shard { get; }
-
-        internal WorkLease? PreviousMember { get; set; }
-
-        internal WorkLease? NextMember { get; set; }
-
-        internal bool IsLinked { get; set; }
+        internal GrimoireConnectionAdmissionGate Gate { get; }
 
         internal OrdinaryLifetime Lifetime { get; }
 
@@ -2731,9 +2411,11 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal ExternalEffectGroup? ActiveEffectGroup { get; set; }
 
+        internal Task Terminal => _terminal.Task;
+
         public GrimoireWorkKind Kind { get; }
 
-        public long Generation => Epoch.Generation;
+        public long Generation { get; }
 
         public CancellationToken MaintenanceRevocation => Revocation.Token;
 
@@ -2765,6 +2447,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             return ValueTask.CompletedTask;
 
         }
+
+        internal void SignalTerminalWhileLocked() => _terminal.TrySetResult();
 
     }
 

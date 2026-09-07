@@ -9,8 +9,8 @@ Main plan: docs/superpowers/plans/2026-09-06-issue-256-hosted-producer-admission
 
 - [x] Task A: Add the admission benchmark without changing production
 - [x] Task B: Characterize all current gate invariants
-- [ ] Task C: Implement and measure the benchmark-gated hot path, if justified (measurement decision
-  complete with valid rejection; monitor restoration and review pending)
+- [x] Task C: Implement and measure the benchmark-gated hot path, if justified (valid rejection;
+  reviewed monitor restored)
 - [ ] Task D: Prove queue-free bounded reopen in main-plan Tasks 3-13
 - [ ] Task E: Prove maintenance classification in main-plan Task 14
 
@@ -315,3 +315,12 @@ Ruling: ship the reviewed monitor B, not the measured epoch/shard candidate. Res
 byte-for-byte to B, remove candidate-only tests, retain Task B characterization and historical Task C
 reports, and obtain a fresh restoration review. The ordinary fast-path architecture, dormant
 generation signal, and producer-owned bounded reopen design are unchanged.
+
+## Task C restoration
+
+Task C restoration is complete. `GrimoireConnectionAdmissionGate.cs` and the corresponding DESIGN
+description match reviewed B byte-for-byte; the six candidate-only test partials were removed; all
+production and test paths now have no diff from B. The surviving gate/interceptor/request-scope suite
+passed 196/196 with no skips, and a fresh nonincremental solution build succeeded with zero warnings
+and errors. Diff checks passed. Independent restoration review found no Critical, Important, or Minor
+issues and approved the monitor baseline for producer work.
