@@ -7,7 +7,7 @@ Main plan: docs/superpowers/plans/2026-09-06-issue-256-hosted-producer-admission
 
 ## Task todo
 
-- [ ] Task A: Add the admission benchmark without changing production
+- [x] Task A: Add the admission benchmark without changing production
 - [ ] Task B: Characterize all current gate invariants
 - [ ] Task C: Implement and measure the benchmark-gated hot path, if justified
 - [ ] Task D: Prove queue-free bounded reopen in main-plan Tasks 3-13
@@ -47,13 +47,13 @@ Ruling: Task A may add exactly one Infrastructure friend grant for `RetroDownfal
 Ruling: The B/C compiled-source allowlist is exactly `GrimoireConnectionAdmissionGate.cs` plus the possibly absent-at-B `GrimoireConnectionAdmissionEpoch.cs`; all candidate types must fit those files or H is invalidated and must be recommitted — this prevents measurement of a drifting harness or broader product change — if wrong, a reviewed pre-H brief/spec correction is required rather than widening evidence after measurement.
 
 Task A reconnaissance: complete (`task-A-recon.md`; outside-solution AOT host feasible, one Infrastructure IVT, real SQLCipher/pooled EF, dedicated threads, two-publish/twelve-process qualification; no production edits)
-Task A implementation: architecture-breaker remediation in progress (base 671a7c89; implementer /root/task2_local_publication; strict TDD; no production gate or Covenant benchmark edits)
+Task A implementation: complete at corrected proposed H `092869fdc4f746850115ab0a17bfc08dce490751` (base 671a7c89; implementer /root/task2_local_publication; strict TDD; no production gate or Covenant benchmark edits)
 Task A preflight review (3 Important requirements gaps corrected before implementation: temp-home deletion ownership, process-wide counter boundary, and host-only AOT JSON roots)
 Task A preflight rereview: approved (0 Critical/Important/Minor; implementation may proceed)
 
 Ruling: The benchmark executable exclusively creates and owns a nonce-marked child under a fresh system-temporary parent, refuses a pre-set `ARCANUM_TEST_HOME`, and deletes only after exact canonical parent/prefix/non-link/marker validation; the script never deletes the database home — this makes direct invocation and qualification safe from user-path deletion — if wrong, cleanup fails closed and leaves an isolated temp directory rather than risking user data.
 
-Ruling: Persistent workers use a lock-free armed/run/loop-complete/parked protocol so controller process-wide Gen0/contention reads occur strictly after arming and before any operation, then after every loop terminal and before monitored wakeup; no assumed harness subtraction — this makes the process metrics belong to the measured phase — if wrong, those metrics are invalid evidence and comparison exits 2.
+Ruling: Persistent workers use precreated and warmed kernel-backed wait handles around the armed/run/loop-complete/parked protocol. Arming finishes before the process baseline; volatile run publication precedes stored worker start stamps; worker allocation/timestamp terminals precede real completion stamps; the last completer wakes the blocked controller once; the controller records process terminals and releases all completed workers once; workers then record parked stamps. Primary timing/allocation excludes handle calls. Process Gen0/contention includes the fixed rendezvous and is diagnostic only — if wrong, those metrics are invalid evidence and comparison exits 2.
 
 Ruling: Native `--smoke` executes the real host `AdmissionBenchmarkJsonContext` against the embedded manifest, revision run, full six-pair bundle, and accepted/rejected reports, while ordinary tests pin exact pure-source links — this prevents an immutable H that fails only when qualification serializes an AOT-only payload — if wrong, the native smoke fails closed before H review.
 
@@ -66,3 +66,7 @@ Ruling: the prior no-event boundary is itself the measurement architecture-break
 Ruling: corrected identity uses a checked-in path/optionality-only catalog plus a manifest-pinned framed shape digest, immutable-content digest outside the two-file candidate allowlist, and complete sorted per-path presence/content digests. Runtime, xUnit tracked-file enumeration, and qualification `git ls-tree` derive the closure independently, including every embedded schema SQL file, so symmetric omission cannot pass.
 
 Ruling: remediation requires a new normal proposed-H commit, new Native AOT smoke, and fresh calibration. No old calibration value, count, or artifact hash may be cited as valid.
+
+Task A remediation: complete. Docs invalidation/correction commit `ea2aabe5`; corrected proposed-H implementation commit `092869fdc4f746850115ab0a17bfc08dce490751`; Task A aggregate 124/124; packaging 12/12; locked restore clean; no production-project lockfiles; clean host build 0 warnings/errors; both format checks, shell syntax, and diff check clean; real published Native AOT smoke exit 0 with 36 cells.
+
+Task A calibration: exact clean proposed H `092869fdc4f746850115ab0a17bfc08dce490751`; calibration-only exit 0; artifact `/private/tmp/grimoire-admission-calibration-092869fdc4f7.json`; 405,969 bytes; SHA-256 `81fbea3ba095b03389dbef67f7e8422ae767c398789c52371631aa92825bcbe5`. Closed validation passed exact revision/profile/36-cell accounting/checksum/worker/allocation/final-state/churn/runtime and all 1,641 sorted catalog inputs. This is not B/C qualification or acceptance evidence; proposed H remains subject to independent review.
