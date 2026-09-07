@@ -9,7 +9,8 @@ Main plan: docs/superpowers/plans/2026-09-06-issue-256-hosted-producer-admission
 
 - [x] Task A: Add the admission benchmark without changing production
 - [x] Task B: Characterize all current gate invariants
-- [ ] Task C: Implement and measure the benchmark-gated hot path, if justified
+- [ ] Task C: Implement and measure the benchmark-gated hot path, if justified (measurement decision
+  complete with valid rejection; monitor restoration and review pending)
 - [ ] Task D: Prove queue-free bounded reopen in main-plan Tasks 3-13
 - [ ] Task E: Prove maintenance classification in main-plan Task 14
 
@@ -298,3 +299,19 @@ effect disposition/callback order, O(fixed shards + live memberships + live open
 allocation/AOT scope, immutable H inputs, ancestry, and byte-reversible rejection path. Exact measured
 candidate C is `09da72dad77dc5b829f688f33ed6b8562621aa8d`. Review authorizes the bound Native
 AOT experiment; it does not yet authorize retaining or shipping C.
+
+## Task C measurement decision
+
+The Task C measurement decision is complete with a valid threshold rejection. The unchanged H
+orchestrator measured reviewed B `b0be2b4df8855e56f2dcfcaf155dfacddc51b88a` against C
+`09da72dad77dc5b829f688f33ed6b8562621aa8d` in session
+`1BFF1AAD-81CF-4F4B-90C3-D4A0C04ED68E`. All twelve processes and structural/final-state validators
+passed. The comparator returned exit 1: mixed throughput was `1.0421905987487488` with bootstrap
+lower bound `1.0023955084512488`, below the required `1.2`, and ten p99 cells exceeded the maximum
+`1.1` ratio. Exact artifact, environment, invalid-preflight, and digest evidence is bound in
+`task-C-decision.md`.
+
+Ruling: ship the reviewed monitor B, not the measured epoch/shard candidate. Restore production
+byte-for-byte to B, remove candidate-only tests, retain Task B characterization and historical Task C
+reports, and obtain a fresh restoration review. The ordinary fast-path architecture, dormant
+generation signal, and producer-owned bounded reopen design are unchanged.
