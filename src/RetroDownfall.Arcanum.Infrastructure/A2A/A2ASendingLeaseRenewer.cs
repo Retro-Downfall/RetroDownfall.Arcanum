@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 
@@ -25,9 +26,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// <c>a2a.inbound_parked_awaiting_answer</c> is exactly what keeps it answerable after a restart
 /// (docs/Arcanum.DESIGN.md &#167;5.7.1.5).
 /// </para>
+/// <para>
+/// Each non-empty renewal pass is ordinary Grimoire work. Maintenance refusal leaves every held
+/// Sending registered so the next scheduled pass renews the same identities after reopening.
+/// </para>
 /// </remarks>
 internal sealed class A2ASendingLeaseRenewer(
     IServiceScopeFactory scopeFactory,
+    IGrimoireConnectionAdmissionGate admissionGate,
     TimeProvider timeProvider,
     ILogger<A2ASendingLeaseRenewer> logger) : BackgroundService
 {
@@ -92,7 +98,16 @@ internal sealed class A2ASendingLeaseRenewer(
 
         }
 
+        if (!admissionGate.TryAcquireWorkLease(
+                GrimoireWorkKind.A2ASendingLeaseRenewal,
+                out IGrimoireWorkLease? admitted))
+        {
+            return 0;
+        }
+
         int renewed = 0;
+
+        await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 

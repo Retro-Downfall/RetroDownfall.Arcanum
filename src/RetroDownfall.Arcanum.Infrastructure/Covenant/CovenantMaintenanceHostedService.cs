@@ -43,10 +43,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// or be erased while the service is alive, and a sweep that decided once at boot would keep opening
 /// transactions against a dataset the installation has since replaced. Reset-awareness comes from the
 /// registration, which withholds the service until recovery has settled.</para>
+///
+/// <para>The whole three-sweep pass holds one ordinary Grimoire work lease through asynchronous
+/// scope disposal. Its maintenance-oriented name does not grant permission to race an exclusive
+/// backup, reset, restore, or schema migration.</para>
 /// </remarks>
 [ExcludeFromCodeCoverage]
 internal sealed class CovenantMaintenanceHostedService(
     IServiceScopeFactory scopeFactory,
+    IGrimoireConnectionAdmissionGate admissionGate,
     ICovenantAvailability availability,
     TimeProvider timeProvider,
     ILogger<CovenantMaintenanceHostedService> logger) : BackgroundService
@@ -119,6 +124,15 @@ internal sealed class CovenantMaintenanceHostedService(
             return false;
 
         }
+
+        if (!admissionGate.TryAcquireWorkLease(
+                GrimoireWorkKind.CovenantMaintenance,
+                out IGrimoireWorkLease? admitted))
+        {
+            return false;
+        }
+
+        await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 

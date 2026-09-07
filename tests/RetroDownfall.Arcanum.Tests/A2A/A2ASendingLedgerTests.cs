@@ -396,6 +396,7 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         return new A2ASendingLeaseRenewer(
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            new GrimoireConnectionAdmissionGate(clock),
             clock,
             NullLogger<A2ASendingLeaseRenewer>.Instance);
 
