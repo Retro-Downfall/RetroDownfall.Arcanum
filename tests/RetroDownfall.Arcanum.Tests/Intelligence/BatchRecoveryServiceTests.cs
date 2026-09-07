@@ -343,6 +343,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             root.GetRequiredService<IServiceScopeFactory>(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
             root,
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<BatchProcessingService>.Instance);
 
         return new BatchRecoveryService(

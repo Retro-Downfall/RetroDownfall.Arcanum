@@ -23,7 +23,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 [Collection("ProcessEnvironment")]
 [Trait("Category", "Integration")]
-public sealed class BatchProcessingServiceTests : IAsyncLifetime
+public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
 {
 
     private readonly GrimoireFixture _fixture;
@@ -1345,6 +1345,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             scopes,
             new TestOptionsMonitor<ArcanumSettings>(settings),
             root,
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<BatchProcessingService>.Instance);
 
         const int lineCount = 4;
@@ -1491,6 +1492,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             root.GetRequiredService<IServiceScopeFactory>(),
             new TestOptionsMonitor<ArcanumSettings>(resolvedSettings),
             root,
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<BatchProcessingService>.Instance);
 
     }

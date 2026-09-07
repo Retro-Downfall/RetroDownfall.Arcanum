@@ -37,151 +37,194 @@ internal static class BatchJsonlRecordReader
 
     private const int ReadBufferBytes = 64 * 1024;
 
-    internal static async IAsyncEnumerable<BatchJsonlRecordReadResult> ReadAsync(
-
-        Stream source,
-
-        string? temporaryDirectory,
-
-        Action<string>? spillCreated,
-
-        [EnumeratorCancellation] CancellationToken cancellationToken,
-
-        long maxRecordBytes = MaxRecordBytes)
-
+    /// <summary>
+    /// Read-only lookahead keeps only one logical first byte. A bounded raw I/O buffer may
+    /// contain unread source bytes; only ReadRecordAsync materializes or spills a record.
+    /// The caller owns the source stream and must serialize access to this cursor.
+    /// </summary>
+    internal sealed class Cursor : IDisposable
     {
+        private readonly Stream _source;
 
-        ArgumentNullException.ThrowIfNull(source);
+        private readonly BatchJsonlRecordBuffer _record;
 
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxRecordBytes, 1);
+        private byte[]? _readBuffer;
 
-        byte[] readBuffer = ArrayPool<byte>.Shared.Rent(ReadBufferBytes);
+        private int _cursor;
 
-        using BatchJsonlRecordBuffer record = new(
+        private int _available;
 
-            maxRecordBytes,
+        private int _firstByte = -1;
 
-            temporaryDirectory,
+        private long _leadingWhitespaceBytes;
 
-            spillCreated);
+        private long _physicalLine;
 
-        long physicalLine = 0;
+        private bool _endOfSource;
 
-        try
-
+        internal Cursor(
+            Stream source,
+            string? temporaryDirectory = null,
+            Action<string>? spillCreated = null,
+            long maxRecordBytes = MaxRecordBytes)
         {
+            ArgumentNullException.ThrowIfNull(source);
 
-            while (true)
+            ArgumentOutOfRangeException.ThrowIfLessThan(maxRecordBytes, 1);
 
+            _source = source;
+
+            _record = new BatchJsonlRecordBuffer(maxRecordBytes, temporaryDirectory, spillCreated);
+
+            _readBuffer = ArrayPool<byte>.Shared.Rent(ReadBufferBytes);
+        }
+
+        internal async ValueTask<bool> HasNextRecordAsync(CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_readBuffer is null, this);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_firstByte >= 0)
             {
+                return true;
+            }
 
-                int bytesRead = await source.ReadAsync(
+            while (await FillAsync(cancellationToken).ConfigureAwait(false))
+            {
+                byte value = _readBuffer![_cursor++];
 
-                        readBuffer.AsMemory(0, ReadBufferBytes),
-
-                        cancellationToken)
-
-                    .ConfigureAwait(false);
-
-                if (bytesRead == 0)
-
+                if (value == (byte)'\n')
                 {
+                    _physicalLine++;
 
-                    break;
-
+                    _leadingWhitespaceBytes = 0;
                 }
-
-                int cursor = 0;
-
-                while (cursor < bytesRead)
-
+                else if (value is (byte)' ' or (byte)'\t' or (byte)'\r')
                 {
+                    _leadingWhitespaceBytes = checked(_leadingWhitespaceBytes + 1);
+                }
+                else
+                {
+                    _firstByte = value;
 
-                    int newlineOffset = readBuffer.AsSpan(cursor, bytesRead - cursor)
+                    return true;
+                }
+            }
 
+            return false;
+        }
+
+        internal async ValueTask<BatchJsonlRecordReadResult> ReadRecordAsync(
+            CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_readBuffer is null, this);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_firstByte < 0)
+            {
+                throw new InvalidOperationException("Read-only lookahead must establish the next batch record first.");
+            }
+
+            try
+            {
+                _record.BeginWithWhitespace(_leadingWhitespaceBytes);
+
+                byte[] first = [(byte)_firstByte];
+
+                _firstByte = -1;
+
+                _leadingWhitespaceBytes = 0;
+
+                await _record.AppendAsync(first, cancellationToken).ConfigureAwait(false);
+
+                while (await FillAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    int newlineOffset = _readBuffer.AsSpan(_cursor, _available - _cursor)
                         .IndexOf((byte)'\n');
 
-                    if (newlineOffset < 0)
+                    int count = newlineOffset >= 0 ? newlineOffset : _available - _cursor;
 
+                    await _record.AppendAsync(
+                            _readBuffer.AsMemory(_cursor, count),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    _cursor += count;
+
+                    if (newlineOffset >= 0)
                     {
-
-                        await record.AppendAsync(
-
-                                readBuffer.AsMemory(cursor, bytesRead - cursor),
-
-                                cancellationToken)
-
-                            .ConfigureAwait(false);
+                        _cursor++;
 
                         break;
-
                     }
-
-                    await record.AppendAsync(
-
-                            readBuffer.AsMemory(cursor, newlineOffset),
-
-                            cancellationToken)
-
-                        .ConfigureAwait(false);
-
-                    physicalLine++;
-
-                    BatchJsonlRecordReadResult? completed = await record.CompleteAsync(
-
-                            physicalLine,
-
-                            cancellationToken)
-
-                        .ConfigureAwait(false);
-
-                    if (completed is not null)
-
-                    {
-
-                        yield return completed;
-
-                    }
-
-                    cursor += newlineOffset + 1;
-
                 }
 
+                _physicalLine++;
+
+                return (await _record.CompleteAsync(_physicalLine, cancellationToken)
+                    .ConfigureAwait(false))!;
             }
-
-            if (record.HasPhysicalBytes)
-
+            finally
             {
+                // The page still owns its effect frontier here; no spill may outlive it.
+                _record.Reset();
+            }
+        }
 
-                physicalLine++;
+        private async ValueTask<bool> FillAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
 
-                BatchJsonlRecordReadResult? completed = await record.CompleteAsync(
-
-                        physicalLine,
-
-                        cancellationToken)
-
-                    .ConfigureAwait(false);
-
-                if (completed is not null)
-
-                {
-
-                    yield return completed;
-
-                }
-
+            if (_cursor < _available)
+            {
+                return true;
             }
 
-        }
-        finally
+            if (_endOfSource)
+            {
+                return false;
+            }
 
+            _available = await _source.ReadAsync(
+                    _readBuffer.AsMemory(0, ReadBufferBytes),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            _cursor = 0;
+
+            _endOfSource = _available == 0;
+
+            return !_endOfSource;
+        }
+
+        public void Dispose()
         {
+            _record.Dispose();
 
-            ArrayPool<byte>.Shared.Return(readBuffer);
+            byte[]? buffer = Interlocked.Exchange(ref _readBuffer, null);
 
+            if (buffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
+    }
 
+    internal static async IAsyncEnumerable<BatchJsonlRecordReadResult> ReadAsync(
+        Stream source,
+        string? temporaryDirectory,
+        Action<string>? spillCreated,
+        [EnumeratorCancellation] CancellationToken cancellationToken,
+        long maxRecordBytes = MaxRecordBytes)
+    {
+        using Cursor reader = new(source, temporaryDirectory, spillCreated, maxRecordBytes);
+
+        while (await reader.HasNextRecordAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return await reader.ReadRecordAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private sealed class BatchJsonlRecordBuffer(
@@ -210,7 +253,19 @@ internal static class BatchJsonlRecordReader
 
         private bool _spillUnavailable;
 
-        internal bool HasPhysicalBytes => _physicalBytes > 0;
+        internal void BeginWithWhitespace(long count)
+        {
+            _physicalBytes = count;
+
+            // JSON whitespace is insignificant, but its exact byte count still owns the limit.
+            // Keep one space when present so a later BOM cannot become a legal initial preamble.
+            if (count > 0)
+            {
+                _buffer![0] = (byte)' ';
+
+                _bufferedBytes = 1;
+            }
+        }
 
         internal async ValueTask AppendAsync(
 
@@ -501,7 +556,7 @@ internal static class BatchJsonlRecordReader
 
         }
 
-        private void Reset()
+        internal void Reset()
 
         {
 
