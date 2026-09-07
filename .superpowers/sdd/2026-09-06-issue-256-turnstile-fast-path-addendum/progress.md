@@ -153,3 +153,23 @@ addressed; commits `37244b88..ed66cf55`).
 
 Task A: complete (implementation H `f51ac3f84c3b408510e448311d7a5e15bdbc041e`, report tip
 `ed66cf55a3ca038ccccb98273e884fed268c1170`, scoped re-review clean with four deferred Minors).
+
+## Task B monitor characterization
+
+Task B implementation: complete at proposed B
+`18c7a2b2f779dd4a87a1d45c1a1e61fa924200ff` (base `8544401f`), pending independent review.
+Report: `task-B-report.md`. No Task C candidate or benchmark edits were made.
+
+TDD: deferred effect revocation first failed 5/5, then passed 5/5; abort exhaustion first failed
+with 1 unchanged passing stage-two control, then passed 2/2; newly discovered ambient-history
+retention first failed 4/4, then passed 4/4. Smallest corrections record lease-owned deferred
+cancellation outside the monitor, check abort generation before mutating authority, and skip
+released ambient predecessors during request/work acquisition and current-head disposal.
+
+Characterization: 79 added cases. Focused clusters passed 5, 2, 20 (including retention), 28, and
+24 cases. Final full gate/interceptor/request-scope slice passed 195/195 without skips. Fresh
+`--no-restore --no-incremental` solution build passed with 0 warnings/errors; scoped dotnet format,
+repository blank-line verification, and diff checks passed. H benchmark/build/dependency/native
+inputs are byte-identical; eager request/work terminal tasks and the dormant generation signal
+remain unchanged. Proposed B is a normal implementation commit; this ledger/report is separate
+bookkeeping. Only independent review can establish the accepted exact B before Task C.
