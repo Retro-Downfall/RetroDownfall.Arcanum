@@ -101,3 +101,44 @@ Deferred Minor review findings for final triage (not changed in fix round 1):
 - Add a non-degenerate literal golden bootstrap fixture with unequal pair ratios.
 - Strengthen the asymmetric completion-order test so worker one's real completion transition is
   established before worker zero is released.
+
+## Task A independent-review fix round 2
+
+Ruling: `0eee1f46e9f8ea3fa710cf531291c30472ef21e2` and its calibration are superseded
+and are not H evidence. A real live worker held inside an operation reproduced the remaining finding
+5 and the round-1 regression: after controller cancellation and the production five-second missed
+join, releasing the worker crashed the test host with an unhandled `ObjectDisposedException` at
+`WorkerLoop` because teardown had disposed `_allCompleted` while the worker could still reach it.
+
+Ruling: worker shutdown now signals all workers and attempts every bounded join, but does not dispose
+any worker-reachable wait handle until every join succeeds. A missed join leaves all handles open
+and its recorded termination witness false. A later explicit bounded retry can positively join the
+worker and only then attempt every handle disposal; no deferred reaper was added. The
+measured-resource witness requires both positive worker termination and worker-connection disposal,
+and both final-state sampling and benchmark-home deletion consume it. Primary cancellation remains
+exit 130, runtime teardown still attempts pre-drain/provider/final-drain/pool clearing, and incomplete
+lifecycle retains the owned home.
+
+Task A round-2 implementation: normal commit
+`f51ac3f84c3b408510e448311d7a5e15bdbc041e`. TDD evidence: the real delayed worker test first
+aborted vstest through the reproduced unhandled exception, then GREEN 1/1; the absent measured
+witness/coordinator contract produced compile RED, then the focused teardown set was GREEN 7/7 and
+the complete persistent-worker class GREEN 16/16.
+
+Task A round-2 verification: aggregate Task A slice 166/166; standalone packaging 19/19; locked
+osx-arm64 restore clean; nonincremental host build 0 warnings/errors; both format verifiers, shell
+syntax, diff check, lockfile boundary, forbidden host-pattern, and forbidden
+production/Covenant/workflow audits clean; real published Native AOT smoke exit 0 with all 36 cells.
+
+Task A round-2 calibration: exact clean proposed H
+`f51ac3f84c3b408510e448311d7a5e15bdbc041e`; calibration-only exit 0; artifact
+`/private/tmp/grimoire-admission-calibration-f51ac3f84c3b.json`; 405,946 bytes; SHA-256
+`1f164b28cf26829380165c61dadefeb041d566d2541a072da04a227327e95a59`. Closed validation returned
+true for exact revision/session/profile, 36-cell phase totals/checksums/workers/allocation/callbacks,
+zero-live final state, drain/reopen, finite 0/64/640 churn, Native AOT runtime, and exact sorted
+1,641-entry catalog path/presence/digest map. This is not B/C qualification or acceptance evidence;
+proposed H remains subject to independent review.
+
+Additional deferred Minor review finding for final triage (not changed in fix round 2):
+
+- Ensure subprocess-timeout cleanup terminates and reaps the timed-out child before fixture cleanup.

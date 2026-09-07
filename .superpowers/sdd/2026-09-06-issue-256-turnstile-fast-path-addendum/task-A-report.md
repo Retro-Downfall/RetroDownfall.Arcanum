@@ -2,16 +2,17 @@
 
 ## Status
 
-DONE — INDEPENDENT-REVIEW FIX ROUND 1 COMPLETE
+DONE — INDEPENDENT-REVIEW FIX ROUND 2 COMPLETE
 
 The review-fixed benchmark instrument is committed at
-`0eee1f46e9f8ea3fa710cf531291c30472ef21e2`. This new normal commit supersedes
-`092869fdc4f746850115ab0a17bfc08dce490751` as proposed H and is not yet the independently accepted
-immutable H. A fresh calibration-only run from the exact clean new commit completed successfully.
-It is instrument calibration only; it is not baseline/candidate evidence and makes no performance
-acceptance claim.
+`f51ac3f84c3b408510e448311d7a5e15bdbc041e`. This new normal commit supersedes
+`0eee1f46e9f8ea3fa710cf531291c30472ef21e2` as proposed H and is not yet the independently accepted
+immutable H. A fresh calibration-only run from the exact clean round-2 commit completed
+successfully. It is instrument calibration only; it is not baseline/candidate evidence and makes
+no performance acceptance claim.
 
-The implementations at `092869fdc4f746850115ab0a17bfc08dce490751` and
+The implementations at `0eee1f46e9f8ea3fa710cf531291c30472ef21e2`,
+`092869fdc4f746850115ab0a17bfc08dce490751`, and
 `659a3441d90aa25d5050cf8dd561ed3d88816edc` are not H. Their calibrations are invalid and superseded
 and must never be used as baseline, candidate, qualification, acceptance, or later calibration
 evidence. The earlier `6acacc3c9fa36e538380fbb357d49c15b8576505` remains superseded as well. No
@@ -207,11 +208,132 @@ before the corresponding implementation change:
    H ancestry refusal, extra-C# refusal, extra-SQL refusal, H/B byte refusal, H/C byte refusal, and
    caller-byte refusal are all GREEN after being driven RED individually.
 
-The two Minor review items were deliberately not changed in this round and are recorded for final
+The two round-1 Minor review items were deliberately not changed and remain recorded for final
 triage in `progress.md`: a non-degenerate literal bootstrap golden fixture, and a stronger real
-worker-one completion transition before the asymmetric test releases worker zero.
+worker-one completion transition before the asymmetric test releases worker zero. Round 2 also
+defers the newly reported subprocess-timeout cleanup Minor.
 
-## Final review-fix verification evidence
+## Independent-review fix round 2 TDD record
+
+Round 2 verified that finding 5 remained open and that the round-1 worker-disposal change added a
+process crash. The replacement regression uses one real persistent worker held inside the actual
+operation by deterministic barriers. It cancels and joins the controller, exercises the production
+five-second worker join deadline, inspects every wait handle still reachable by the live worker,
+then releases and positively joins the worker before retrying cleanup. Against
+`0eee1f46e9f8ea3fa710cf531291c30472ef21e2`, the focused test process aborted at RED with exit 1
+because the test host crashed on an unhandled `ObjectDisposedException` from
+`WorkerLoop` calling `_allCompleted.Set()` after the failed join had disposed that handle.
+
+GREEN splits shutdown into observable stages. Dispose still signals every worker and attempts every
+bounded join, but it does not dispose any worker-reachable wait handle unless every join succeeds.
+A missed join leaves a false recorded termination witness and all handles open. A later explicit
+bounded retry may join the now-terminated worker and only then attempts every handle disposal. No
+reaper or deferred process cleanup was added. The exact live-worker regression is GREEN 1/1 and the
+complete persistent-worker lifecycle class is GREEN 16/16.
+
+The measured-resource witness cluster was then driven RED separately: compilation failed because
+there was no worker-termination witness, no harness termination result, and final-state sampling
+accepted an unqualified disposal action (`CS0246`, `CS1061`, and `CS8030`). GREEN adds a pure witness
+requiring both positive worker termination and worker-connection disposal. The workload bed records
+termination only after all harness joins succeed, preserves an existing primary exception or
+cancellation if teardown is also incomplete, and Program makes both final-state sampling and home
+deletion consume that witness. A late worker exit that was not positively joined cannot change the
+recorded false witness or authorize deletion. The focused teardown/witness set is GREEN 7/7.
+
+Self-review confirmed that all prior teardown attempts remain: runtime teardown still attempts
+pre-drain, provider disposal, final drain, and pool clearing under the independent cleanup deadline;
+worker teardown attempts every signal and every join, and after successful joins attempts every
+handle disposal. External cancellation remains the primary exit 130. Incomplete worker lifecycle
+retains the marked benchmark home. No production gate/epoch, Covenant benchmark, workflow, spec,
+plan, catalog shape, or candidate allowlist bytes changed.
+
+## Final round-2 verification evidence
+
+Review-fixed proposed-H implementation:
+
+```text
+f51ac3f84c3b408510e448311d7a5e15bdbc041e
+fix(grimoire): retain worker teardown resources on timeout
+```
+
+Focused and aggregate verification on the exact implementation bytes:
+
+```text
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+  --no-restore -m:1 \
+  --filter FullyQualifiedName~GrimoireAdmissionPersistentWorkerTests
+Passed: 16, Failed: 0, Skipped: 0
+
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+  --no-restore -m:1 \
+  --filter 'FullyQualifiedName~GrimoireAdmission|FullyQualifiedName~ContinuousIntegrationWorkflowTests|FullyQualifiedName~InternalsVisibleToInventoryTests'
+Passed: 166, Failed: 0, Skipped: 0
+
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+  --no-restore -m:1 \
+  --filter FullyQualifiedName~GrimoireAdmissionBenchmarkPackagingTests
+Passed: 19, Failed: 0, Skipped: 0
+
+dotnet restore \
+  tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj \
+  --locked-mode -r osx-arm64
+Succeeded; all projects were up to date and no production lockfile was created.
+
+dotnet build \
+  tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj \
+  -c Debug --no-restore --no-incremental -m:1
+Build succeeded, 0 warnings, 0 errors.
+
+dotnet format tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+  --verify-no-changes --no-restore \
+  --include tests/RetroDownfall.Arcanum.Tests/Benchmarks/GrimoireAdmissionPersistentWorkerTests.cs
+Succeeded.
+
+dotnet format \
+  tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj \
+  --verify-no-changes --no-restore
+Succeeded.
+
+sh -n scripts/benchmark-grimoire-admission.sh
+git diff --check
+lockfile-boundary, forbidden-host-pattern, and forbidden production/Covenant/workflow audits
+Succeeded.
+
+./scripts/benchmark-grimoire-admission.sh --smoke
+exit 0
+Grimoire admission Native AOT smoke passed (36 cells).
+```
+
+The Native AOT publish emitted only third-party EF/DependencyModel analysis and local linker
+environment warnings. No first-party warning was emitted.
+
+Fresh calibration-only run from the exact clean round-2 proposed H:
+
+```text
+./scripts/benchmark-grimoire-admission.sh \
+  --calibrate \
+  --revision f51ac3f84c3b408510e448311d7a5e15bdbc041e \
+  --out /private/tmp/grimoire-admission-calibration-f51ac3f84c3b.json
+exit 0
+
+shasum -a 256 /private/tmp/grimoire-admission-calibration-f51ac3f84c3b.json
+1f164b28cf26829380165c61dadefeb041d566d2541a072da04a227327e95a59
+```
+
+The artifact is 405,946 bytes. A closed `jq -e` validation returned true for the exact revision,
+clean tree, calibration session, role H, qualification profile, exit 0, 36 unique cells, exact
+20,000 warmup + 64,000 latency + 1,000,000 throughput operations per cell, exact workers,
+1,084,000 successes and zero failures, hand-derived deterministic checksums, exact allocation
+fractions, finite ordered metrics, zero terminal callbacks, zero live resources/waiters, successful
+drain/reopen, finite successful 0/64/640 churn, Native AOT environment, pinned catalog shape, and the
+exact sorted 1,641-entry catalog path/presence/digest map. The artifact remains outside the
+repository and is calibration-only, not B/C qualification or acceptance evidence.
+
+## Superseded round-1 verification evidence
+
+The evidence below belongs to `0eee1f46e9f8ea3fa710cf531291c30472ef21e2`, which round 2
+superseded after reproducing the live-worker teardown crash. It is retained only as history and is
+not valid H evidence.
 
 Review-fixed proposed-H implementation:
 
@@ -477,9 +599,11 @@ This calibration file is diagnostic only and intentionally remains outside the r
 
 ## Concerns
 
-No implementation blocker remains. `0eee1f46e9f8ea3fa710cf531291c30472ef21e2` is deliberately
-called proposed H until independent review accepts it as the immutable instrument. The review fix
+No implementation blocker remains. `f51ac3f84c3b408510e448311d7a5e15bdbc041e` is deliberately
+called proposed H until independent review accepts it as the immutable instrument. The round-2 fix
 required no production gate behavior, epoch candidate, Covenant benchmark asset, workflow edit, or
 wider two-file candidate allowlist. Calibration is valid only as an instrument sanity check; no B/C
 performance claim exists yet. The Native AOT publish continues to emit known third-party
 EF/DependencyModel and local linker-environment warnings; the first-party host build is warning-free.
+Three Minor items remain deferred: the literal non-degenerate bootstrap golden, the stronger
+asymmetric worker-one completion transition, and subprocess-timeout cleanup.
