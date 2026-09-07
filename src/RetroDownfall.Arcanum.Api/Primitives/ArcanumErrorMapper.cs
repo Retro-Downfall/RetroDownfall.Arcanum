@@ -113,7 +113,8 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Saga.AlreadyRetired =>
                 StatusCodes.Status409Conflict,
 
-            ErrorCodes.Covenant.Unavailable
+            ErrorCodes.Workspace.IndexingUnavailable
+                or ErrorCodes.Covenant.Unavailable
                 or ErrorCodes.Covenant.OperatorAuthorityUnavailable
                 or ErrorCodes.Covenant.HostToolsTransitionRequired
                 or ErrorCodes.Covenant.MaintenanceFailed

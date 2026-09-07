@@ -50,7 +50,7 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 [Collection("ProcessEnvironment")]
-public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
+public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 {
 
     private readonly TempWorkspace _workspace = new();
@@ -6987,6 +6987,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     private sealed class FakeRagDivinationService : IDivinationService
     {
 
+        public string? LastWorkspaceScope { get; private set; }
+
         public DivinationResult[] Results { get; set; } = [];
 
         public bool Fail { get; set; }
@@ -7022,8 +7024,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             Embedding<float> queryEmbedding,
             int maxResults,
             float similarityThreshold,
-            CancellationToken cancellationToken) =>
-            SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
+            CancellationToken cancellationToken)
+        {
+            LastWorkspaceScope = scopeFilterValue;
+
+            return SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
+        }
 
         /// <summary>The scope the turn asked for, or null when the turn used the unscoped search.</summary>
         public DivinationCampaignScope? LastCampaignScope { get; private set; }
@@ -7050,6 +7056,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     private sealed class FakeRagWorkspaceIndexingService : IWorkspaceIndexingService
     {
 
+        public string? IndexedPath { get; set; }
+
+        public string ResolveIndexedWorkspacePath(string workspacePath) => IndexedPath ?? Path.GetFullPath(workspacePath);
+
         public List<string> RegisteredPaths { get; } = [];
 
         public void RegisterWorkspace(string workspacePath)
@@ -7063,7 +7073,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
         }
 
-        public Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Result<WorkspaceIndexQueueDisposition> QueueIndexNow(string workspacePath) =>
+            Result<WorkspaceIndexQueueDisposition>.Success(WorkspaceIndexQueueDisposition.Accepted);
 
     }
 

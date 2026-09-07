@@ -16,9 +16,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// and never mutates state. Skipped-file reasons are not persisted anywhere in Arcanum, so
 /// <see cref="SkippedFilesNote"/> states that honestly rather than synthesizing causes.
 /// </summary>
-public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorService
+public sealed class WorkspaceIndexInspectorService(
+    ArcanumDbContext db,
+    IWorkspaceIndexingService indexingService) : IWorkspaceIndexInspectorService
 {
-
     /// <summary>Hard cap on the returned chunk content preview, in characters (surrogate-safe slice).</summary>
     public const int ContentPreviewChars = 500;
 
@@ -27,14 +28,7 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
         "had no parseable text, failed to chunk/embed, or were skipped for any other reason are logged " +
         "server-side but are not surfaced here.";
 
-    private readonly ArcanumDbContext _db;
-
-    public WorkspaceIndexInspectorService(ArcanumDbContext db)
-    {
-
-        _db = db;
-
-    }
+    private readonly ArcanumDbContext _db = db;
 
     public async Task<WorkspaceIndexStatusDto> GetStatusAsync(
         WorkspaceInfo workspace,
@@ -43,14 +37,13 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
         bool indexingEnabled,
         CancellationToken cancellationToken)
     {
+        string indexedPath = indexingService.ResolveIndexedWorkspacePath(workspace.Path);
 
         DbConnection connection = _db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         int totalFiles = 0;
@@ -63,7 +56,6 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
 
         await using (DbCommand cmd = connection.CreateCommand())
         {
-
             cmd.CommandText =
                 """
                 SELECT COUNT(DISTINCT "RelativePath"), COUNT(*), MIN("IndexedAt"), MAX("IndexedAt")
@@ -71,13 +63,12 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
                 WHERE "WorkspacePath" = @workspacePath
                 """;
 
-            AddParameter(cmd, "@workspacePath", workspace.Path);
+            AddParameter(cmd, "@workspacePath", indexedPath);
 
             await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 totalFiles = reader.IsDBNull(0) ? 0 : reader.GetInt32(0);
 
                 totalChunks = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
@@ -85,12 +76,10 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
                 oldestIndexedAt = ParseIsoOrNull(reader, 2);
 
                 newestIndexedAt = ParseIsoOrNull(reader, 3);
-
             }
-
         }
 
-        int? embeddingsDimensions = await ReadStoredDimensionsAsync(connection, workspace.Path, cancellationToken).ConfigureAwait(false);
+        int? embeddingsDimensions = await ReadStoredDimensionsAsync(connection, indexedPath, cancellationToken).ConfigureAwait(false);
 
         return new WorkspaceIndexStatusDto(
             workspace.Id,
@@ -105,7 +94,6 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
             newestIndexedAt,
             embeddingsDimensions,
             SkippedFilesNote);
-
     }
 
     public async Task<WorkspaceFileChunkPage> GetChunksAsync(
@@ -115,14 +103,13 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
         int offset,
         CancellationToken cancellationToken)
     {
+        string indexedPath = indexingService.ResolveIndexedWorkspacePath(workspace.Path);
 
         DbConnection connection = _db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         bool filtered = !string.IsNullOrEmpty(relativePath);
@@ -131,7 +118,6 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
 
         await using (DbCommand cmd = connection.CreateCommand())
         {
-
             cmd.CommandText =
                 """
                 SELECT "ChunkId", "RelativePath", "ChunkIndex", "Content", "CharOffset", "CharLength", "IndexedAt", "FileLastWriteTime", "StartLine", "EndLine"
@@ -139,15 +125,13 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
                 WHERE "WorkspacePath" = @workspacePath
                 """;
 
-            AddParameter(cmd, "@workspacePath", workspace.Path);
+            AddParameter(cmd, "@workspacePath", indexedPath);
 
             if (filtered)
             {
-
                 cmd.CommandText += " AND \"RelativePath\" = @relativePath";
 
                 AddParameter(cmd, "@relativePath", relativePath!);
-
             }
 
             cmd.CommandText += " ORDER BY \"RelativePath\", \"ChunkIndex\" LIMIT @limit OFFSET @offset";
@@ -160,7 +144,6 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 rows.Add((
                     reader.GetString(0),
                     reader.GetString(1),
@@ -172,16 +155,14 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
                     reader.GetString(7),
                     reader.GetInt32(8),
                     reader.GetInt32(9)));
-
             }
-
         }
 
-        int total = await ReadTotalCountAsync(connection, workspace.Path, filtered ? relativePath : null, cancellationToken).ConfigureAwait(false);
+        int total = await ReadTotalCountAsync(connection, indexedPath, filtered ? relativePath : null, cancellationToken).ConfigureAwait(false);
 
         Dictionary<string, int> totalChunksByPath = await ReadTotalChunksByPathAsync(
             connection,
-            workspace.Path,
+            indexedPath,
             rows.Select(static r => r.RelativePath).Distinct(StringComparer.Ordinal),
             cancellationToken).ConfigureAwait(false);
 
@@ -207,7 +188,6 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
             offset,
             (offset + chunks.Length) < total,
             filtered ? relativePath : null);
-
     }
 
     private static async Task<int?> ReadStoredDimensionsAsync(

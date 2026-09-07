@@ -19,6 +19,10 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private int _effectGroupAttempts;
 
+    private int _generationWaits;
+
+    private int _activeGenerationWaiters;
+
     internal IReadOnlyList<GrimoireWorkKind> RequestedWorkKinds
     {
 
@@ -54,6 +58,14 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
     }
 
     internal int EffectGroupAttempts => Volatile.Read(ref _effectGroupAttempts);
+
+    internal int GenerationWaits => Volatile.Read(ref _generationWaits);
+
+    internal int ActiveGenerationWaiters => Volatile.Read(ref _activeGenerationWaiters);
+
+    internal Action BeforeEffectGroupAdmission { get; set; } = static () => { };
+
+    internal Action<long> AfterOpenGenerationObserved { get; set; } = static _ => { };
 
     internal Func<ValueTask> BeforeWorkLeaseDisposalAsync { get; set; } =
         static () => ValueTask.CompletedTask;
@@ -130,10 +142,27 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             proveNoDestructiveEffectAsync,
             cancellationToken);
 
-    public Task<long> WaitForNextOpenGenerationAsync(
+    public async Task<long> WaitForNextOpenGenerationAsync(
         long observedGeneration,
-        CancellationToken cancellationToken) =>
-        inner.WaitForNextOpenGenerationAsync(observedGeneration, cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _generationWaits);
+
+        Interlocked.Increment(ref _activeGenerationWaiters);
+
+        try
+        {
+            long generation = await inner.WaitForNextOpenGenerationAsync(observedGeneration, cancellationToken);
+
+            AfterOpenGenerationObserved(generation);
+
+            return generation;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeGenerationWaiters);
+        }
+    }
 
     public ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>>
         AcquireExpiredLeaseAdoptionInterlockAsync(
@@ -162,6 +191,8 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         {
 
             Interlocked.Increment(ref gate._effectGroupAttempts);
+
+            gate.BeforeEffectGroupAdmission();
 
             if (!inner.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admitted))
             {

@@ -9,8 +9,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Primitives;
@@ -44,13 +42,13 @@ internal static class WorkspaceDivinationEndpoints
 
     public static RouteGroupBuilder MapWorkspaceDivinationEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapPost(
             "/workspaces/{id}/files/divine",
             async (
                 string id,
                 WorkspaceSemanticSearchRequest? request,
                 IWorkspaceRegistry registry,
+                IWorkspaceIndexingService indexingService,
                 IWeaveService weaveService,
                 IDivinationService divinationService,
                 ArcanumDbContext db,
@@ -58,58 +56,49 @@ internal static class WorkspaceDivinationEndpoints
                 IOptionsMonitor<ArcanumSettings> options,
                 HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
                 if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
                 {
-
                     return DivinationFailureResult(
                         traceId,
                         new Error(
                             ErrorCodes.Embeddings.FeatureDisabled,
                             "Semantic codebase retrieval is disabled (Arcanum:Features:Embeddings and Arcanum:Features:CodebaseRetrieval must both be true)."));
-
                 }
 
                 WorkspaceInfo? workspace = await registry.GetAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
                 if (workspace is null)
                 {
-
                     return DivinationFailureResult(
                         traceId,
                         new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id."));
-
                 }
+
+                string indexedWorkspacePath = indexingService.ResolveIndexedWorkspacePath(workspace.Path);
 
                 if (request is null || string.IsNullOrWhiteSpace(request.Query))
                 {
-
                     return DivinationFailureResult(traceId, new Error(ErrorCodes.Validation.InvalidBody, "Query is required."));
-
                 }
 
                 if (request.Query.Length > MaxQueryChars)
                 {
-
                     return DivinationFailureResult(
                         traceId,
                         new Error(
                             ErrorCodes.Validation.InvalidBody,
                             $"Query must not exceed {MaxQueryChars} characters."));
-
                 }
 
                 if (!weaveService.IsAvailable)
                 {
-
                     return DivinationFailureResult(
                         traceId,
                         new Error(ErrorCodes.Embeddings.ProviderUnavailable, "The embedding provider is unavailable."));
-
                 }
 
                 Result<Embedding<float>> embedResult = await weaveService
@@ -118,9 +107,7 @@ internal static class WorkspaceDivinationEndpoints
 
                 if (embedResult.IsFailure)
                 {
-
                     return DivinationFailureResult(traceId, embedResult.Error);
-
                 }
 
                 CodebaseEmbeddingSettings codebase = embeddings.Codebase ?? new CodebaseEmbeddingSettings();
@@ -141,7 +128,7 @@ internal static class WorkspaceDivinationEndpoints
                         "workspace_file_chunks",
                         "ChunkId",
                         "WorkspacePath",
-                        workspace.Path,
+                        indexedWorkspacePath,
                         embedResult.Value,
                         limit,
                         similarityThreshold,
@@ -150,22 +137,19 @@ internal static class WorkspaceDivinationEndpoints
 
                 if (searchResult.IsFailure)
                 {
-
                     return DivinationFailureResult(traceId, searchResult.Error);
-
                 }
 
                 WorkspaceSearchResult[] joined = await JoinWorkspaceChunksAsync(
                     db,
                     connections,
                     searchResult.Value,
-                    workspace.Path,
+                    indexedWorkspacePath,
                     limit,
                     ctx.RequestAborted).ConfigureAwait(false);
 
                 return Results.Ok(
                     ApiResponse<WorkspaceSearchResult[]>.FromResult(Result<WorkspaceSearchResult[]>.Success(joined), traceId));
-
             })
         .WithName("WorkspaceFileDivination");
 
@@ -176,18 +160,14 @@ internal static class WorkspaceDivinationEndpoints
                 IWorkspaceRegistry registry,
                 IWorkspaceIndexingService indexingService,
                 IOptionsMonitor<ArcanumSettings> options,
-                IHostApplicationLifetime lifetime,
-                ILoggerFactory loggerFactory,
                 HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
                 if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
                 {
-
                     return Results.Json(
                         ApiResponse<bool>.FromResult(
                             Result<bool>.Failure(new Error(
@@ -196,67 +176,38 @@ internal static class WorkspaceDivinationEndpoints
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseBoolean,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Embeddings.FeatureDisabled));
-
                 }
 
                 WorkspaceInfo? workspace = await registry.GetAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
                 if (workspace is null)
                 {
-
                     return Results.Json(
                         ApiResponse<bool>.FromResult(
                             Result<bool>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseBoolean,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Workspace.NotFound));
-
                 }
 
-                // Runs on IHostApplicationLifetime.ApplicationStopping rather than ctx.RequestAborted: a
-                // full re-index of a large workspace can take far longer than callers want to hold a
-                // connection open for, and this must not be silently killed just because the client gave
-                // up waiting or a proxy timed out the request. IndexNowAsync opens its own DI scope, so
-                // it does not depend on this request's scope surviving past the response.
-                ILogger logger = loggerFactory.CreateLogger("WorkspaceFileIndex");
+                Result<WorkspaceIndexQueueDisposition> queued = indexingService.QueueIndexNow(workspace.Path);
 
-                _ = Task.Run(
-                    async () =>
-                    {
-
-                        try
-                        {
-
-                            await indexingService.IndexNowAsync(workspace.Path, lifetime.ApplicationStopping).ConfigureAwait(false);
-
-                        }
-                        catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested)
-                        {
-
-                            // Host shutting down — nothing to log, IndexNowAsync itself already treats
-                            // this as a normal cancellation.
-
-                        }
-                        catch (Exception ex)
-                        {
-
-                            logger.LogWarning(ex, "Background re-index requested via POST /files/index failed for workspace {WorkspaceId}.", id);
-
-                        }
-
-                    },
-                    lifetime.ApplicationStopping);
+                if (queued.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<bool>.FromResult(Result<bool>.Failure(queued.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(queued.Error.Code));
+                }
 
                 return Results.Json(
                     ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId),
                     ArcanumJsonContext.Default.ApiResponseBoolean,
                     statusCode: StatusCodes.Status202Accepted);
-
             })
         .WithName("WorkspaceFileIndex");
 
         return apiGroup;
-
     }
 
     private static IResult DivinationFailureResult(string traceId, Error error) =>

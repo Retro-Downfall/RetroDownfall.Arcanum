@@ -1395,6 +1395,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     private sealed class NoopWorkspaceIndexingService : IWorkspaceIndexingService
     {
 
+        public string ResolveIndexedWorkspacePath(string workspacePath) => Path.GetFullPath(workspacePath);
+
         public void RegisterWorkspace(string workspacePath)
         {
         }
@@ -1403,7 +1405,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         {
         }
 
-        public Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Result<WorkspaceIndexQueueDisposition> QueueIndexNow(string workspacePath) =>
+            Result<WorkspaceIndexQueueDisposition>.Success(WorkspaceIndexQueueDisposition.Accepted);
 
     }
 

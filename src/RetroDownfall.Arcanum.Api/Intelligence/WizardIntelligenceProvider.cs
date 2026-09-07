@@ -5244,11 +5244,8 @@ public sealed partial class WizardIntelligenceProvider(
             return null;
         }
 
-        // Normalized once here (rather than relying solely on RegisterWorkspace's internal
-        // normalization) so this exact string is also used for the WorkspacePath filter below —
-        // WorkspaceIndexingService persists chunks keyed by its own Path.GetFullPath-normalized form,
-        // and a mismatch (trailing slash, relative segments, casing) would silently return zero rows
-        // even though the workspace was indexed successfully.
+        // Resolve once through the indexing boundary: scheduler aliases share the first persisted
+        // spelling, and both scoped ranking and every metadata join must use that exact key.
         string normalizedWorkingDirectory = request.WorkingDirectory;
 
         try
@@ -5256,6 +5253,8 @@ public sealed partial class WizardIntelligenceProvider(
             normalizedWorkingDirectory = Path.GetFullPath(request.WorkingDirectory.Trim());
 
             workspaceIndexingService.RegisterWorkspace(normalizedWorkingDirectory);
+
+            normalizedWorkingDirectory = workspaceIndexingService.ResolveIndexedWorkspacePath(normalizedWorkingDirectory);
         }
         catch (Exception ex)
         {

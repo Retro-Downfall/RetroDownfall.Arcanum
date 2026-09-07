@@ -317,6 +317,8 @@ public static class ErrorCodes
     public static class Workspace
     {
 
+        public const string IndexingUnavailable = "Workspace.IndexingUnavailable";
+
         public const string NotFound = "Workspace.NotFound";
 
         public const string NameEmpty = "Workspace.NameEmpty";

@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
@@ -25,7 +24,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// Indexes workspace files into The Weave for semantic codebase retrieval. Maintains a
 /// thread-safe set of "known" workspace paths (populated by <see cref="RegisterWorkspace"/>, called by
 /// <c>WizardIntelligenceProvider</c> on every inference turn) and re-indexes each of them on a
-/// background interval, plus supports an immediate on-demand re-index via <see cref="IndexNowAsync"/>
+/// background interval, plus supports an immediate on-demand re-index via <see cref="QueueIndexNow"/>
 /// (used by the manual <c>POST /api/workspaces/{id}/files/index</c> endpoint).
 ///
 /// Idles unless <c>Arcanum:Features:CodebaseRetrieval</c> is enabled; the polling cadence is a
@@ -39,18 +38,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// one query per workspace tick (not a per-file SELECT).
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: IHostedService workspace indexing scheduler; covered via WorkspaceIndexingServiceTests exercising the indexing logic directly.
-internal sealed class WorkspaceIndexingService(
+internal sealed partial class WorkspaceIndexingService(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IWeaveService weaveService,
     WeaveIndexAvailability weaveIndexAvailability,
     IServiceScopeFactory scopeFactory,
     IWorkspaceFileWatcherFactory watcherFactory,
+    IGrimoireConnectionAdmissionGate workAdmission,
     ILogger<WorkspaceIndexingService> logger) :
     BackgroundService,
     IWorkspaceIndexingService,
-    IWorkspaceIndexRuntimeStatusProvider
+    IWorkspaceIndexRuntimeStatusProvider,
+    IAsyncDisposable
 {
-
     private static readonly HashSet<string> IgnoredDirectorySegments = new(StringComparer.OrdinalIgnoreCase)
     {
         "bin",
@@ -84,420 +84,18 @@ internal sealed class WorkspaceIndexingService(
 
     private const int MaxPendingPathsPerWorkspace = 4_096;
 
-    private readonly ConcurrentDictionary<string, byte> _knownWorkspaces = new(StringComparer.Ordinal);
+    private readonly IGrimoireConnectionAdmissionGate _workAdmission = workAdmission;
 
-    private readonly ConcurrentDictionary<string, IWorkspaceFileWatcher> _watchers = new(StringComparer.Ordinal);
-
-    private readonly ConcurrentDictionary<string, PendingWorkspaceChanges> _pendingChanges = new(StringComparer.Ordinal);
-
-    private readonly ConcurrentDictionary<string, RuntimeStatusState> _runtimeStatuses = new(StringComparer.Ordinal);
-
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _reconciliationGates = new(StringComparer.Ordinal);
-
-    private readonly SemaphoreSlim _watcherSignal = new(0, 1);
-
-    private readonly object _watcherRegistryGate = new();
-
-    internal int ActiveWatcherCount => _watchers.Count;
-
-    public WorkspaceIndexRuntimeStatus GetRuntimeStatus(string workspacePath)
-    {
-
-        string normalized;
-
-        try
-        {
-
-            normalized = Path.GetFullPath(workspacePath);
-
-        }
-        catch (Exception)
-        {
-
-            return WorkspaceIndexRuntimeStatus.NotWatching;
-
-        }
-
-        return _runtimeStatuses.TryGetValue(normalized, out RuntimeStatusState? state)
-            ? state.Snapshot()
-            : WorkspaceIndexRuntimeStatus.NotWatching;
-
-    }
-
-    public void RegisterWorkspace(string workspacePath)
-    {
-
-        if (string.IsNullOrWhiteSpace(workspacePath))
-        {
-
-            return;
-
-        }
-
-        Result<string> validated = TryValidateWorkspacePath(workspacePath);
-
-        if (validated.IsFailure)
-        {
-
-            logger.LogDebug(
-                "Workspace registration skipped for {WorkspacePath}: {Reason}",
-                workspacePath,
-                validated.Error.Message);
-
-            return;
-
-        }
-
-        _knownWorkspaces[validated.Value] = 0;
-
-        _runtimeStatuses.GetOrAdd(validated.Value, static _ => new RuntimeStatusState());
-
-        EnsureWatcher(validated.Value);
-
-    }
-
-    public void UnregisterWorkspace(string workspacePath)
-    {
-
-        if (string.IsNullOrWhiteSpace(workspacePath))
-        {
-
-            return;
-
-        }
-
-        string normalized;
-
-        try
-        {
-
-            normalized = Path.GetFullPath(workspacePath);
-
-        }
-        catch (Exception)
-        {
-
-            return;
-
-        }
-
-        _knownWorkspaces.TryRemove(normalized, out _);
-
-        _pendingChanges.TryRemove(normalized, out _);
-
-        lock (_watcherRegistryGate)
-        {
-
-            if (_watchers.TryRemove(normalized, out IWorkspaceFileWatcher? watcher))
-            {
-
-                watcher.Dispose();
-
-            }
-
-        }
-
-        if (_runtimeStatuses.TryGetValue(normalized, out RuntimeStatusState? state))
-        {
-
-            state.SetWatching(false);
-
-        }
-
-    }
-
-    public async Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken)
-    {
-
-        Result<string> validated = TryValidateWorkspacePath(workspacePath);
-
-        if (validated.IsFailure)
-        {
-
-            logger.LogWarning(
-                "On-demand workspace re-index rejected for {WorkspacePath}: {Reason}",
-                workspacePath,
-                validated.Error.Message);
-
-            return;
-
-        }
-
-        string normalized = validated.Value;
-
-        _knownWorkspaces[normalized] = 0;
-
-        _runtimeStatuses.GetOrAdd(normalized, static _ => new RuntimeStatusState());
-
-        EnsureWatcher(normalized);
-
-        try
-        {
-
-            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
-
-            if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
-            {
-
-                logger.LogDebug("Workspace re-index skipped for {WorkspacePath}: codebase retrieval is disabled.", normalized);
-
-                return;
-
-            }
-
-            await ReconcileWorkspaceAsync(normalized, embeddings, cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-
-            throw;
-
-        }
-        catch (Exception ex)
-        {
-
-            logger.LogWarning(ex, "On-demand workspace re-index failed for {WorkspacePath}; continuing.", workspacePath);
-
-        }
-
-    }
-
-    /// <summary>
-    /// Applies the same allowlist enforced at campaign-creation time
-    /// (<see cref="CampaignPathPolicy.ValidateAndNormalizePath"/>, gated on
-    /// <see cref="SecuritySettings.CampaignRoots"/>) to workspace registration/indexing. Without this,
-    /// any caller supplying an arbitrary <c>WorkingDirectory</c> on an inference request could get
-    /// unrelated, non-campaign directories (for example a user's home directory or other system paths)
-    /// background-indexed and persisted into The Weave, then retrieved via semantic search — bypassing
-    /// every other workspace-touching feature's path containment (Spells, Perception, Campaigns).
-    /// </summary>
-    private Result<string> TryValidateWorkspacePath(string workspacePath) =>
-        CampaignPathPolicy.ValidateAndNormalizePath(workspacePath, optionsMonitor.CurrentValue);
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-
-        await Task.Yield();
-
-        bool wasEnabled = false;
-
-        DateTimeOffset nextReconciliation = DateTimeOffset.UtcNow;
-
-        try
-        {
-
-            while (!stoppingToken.IsCancellationRequested)
-            {
-
-                try
-                {
-
-                    EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
-
-                    bool enabled = embeddings.Enabled && embeddings.CodebaseRetrievalEnabled;
-
-                    if (!enabled)
-                    {
-
-                        wasEnabled = false;
-
-                        DisposeAllWatchers();
-
-                        await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
-
-                        continue;
-
-                    }
-
-                    if (!wasEnabled)
-                    {
-
-                        logger.LogInformation("Workspace Indexing started tracking known workspaces for semantic codebase retrieval.");
-
-                        wasEnabled = true;
-
-                    }
-
-                    foreach (string workspacePath in _knownWorkspaces.Keys.ToArray())
-                    {
-
-                        EnsureWatcher(workspacePath);
-
-                    }
-
-                    DateTimeOffset now = DateTimeOffset.UtcNow;
-
-                    if (now >= nextReconciliation)
-                    {
-
-                        foreach (string workspacePath in _knownWorkspaces.Keys.ToArray())
-                        {
-
-                            stoppingToken.ThrowIfCancellationRequested();
-
-                            await ReconcileWorkspaceAsync(workspacePath, embeddings, stoppingToken).ConfigureAwait(false);
-
-                        }
-
-                        int intervalMinutes = ArcanumSettingClamps.EmbeddingsCodebaseReconciliationIntervalMinutes(
-                            embeddings.Codebase.ReconciliationIntervalMinutes);
-
-                        nextReconciliation = DateTimeOffset.UtcNow.AddMinutes(intervalMinutes);
-
-                    }
-
-                    int debounceMilliseconds = ArcanumSettingClamps.EmbeddingsCodebaseWatcherDebounceMilliseconds(
-                        embeddings.Codebase.WatcherDebounceMilliseconds);
-
-                    TimeSpan untilReconciliation = nextReconciliation - DateTimeOffset.UtcNow;
-
-                    TimeSpan wait = untilReconciliation <= TimeSpan.Zero
-                        ? TimeSpan.Zero
-                        : untilReconciliation;
-
-                    bool signaled = await _watcherSignal.WaitAsync(wait, stoppingToken).ConfigureAwait(false);
-
-                    if (signaled)
-                    {
-
-                        await Task.Delay(TimeSpan.FromMilliseconds(debounceMilliseconds), stoppingToken).ConfigureAwait(false);
-
-                    }
-
-                    foreach (string workspacePath in _pendingChanges.Keys.ToArray())
-                    {
-
-                        await ProcessPendingWatcherEventsAsync(workspacePath, stoppingToken).ConfigureAwait(false);
-
-                    }
-
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-
-                    break;
-
-                }
-                catch (Exception ex)
-                {
-
-                    logger.LogError(ex, "Workspace Indexing tick failed; continuing.");
-
-                    // nextReconciliation is only stamped after the reconciliation loop completes, so a
-                    // tick that throws (e.g. a locked or corrupt Grimoire) leaves the due time in the
-                    // past and the next iteration would reconcile again immediately. Back off before
-                    // retrying — otherwise a persistent failure spins, flooding logs and burning CPU
-                    // until the underlying problem is fixed. Mirrors EntryWeavingService.
-                    try
-                    {
-
-                        await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
-
-                    }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                    {
-
-                        break;
-
-                    }
-
-                }
-
-            }
-
-        }
-        finally
-        {
-
-            DisposeAllWatchers();
-
-        }
-
-    }
-
-    internal async Task ProcessPendingWatcherEventsAsync(
+    private async Task<WorkspaceUnitOutcome> ProcessIncrementalChangesAsync(
         string workspacePath,
-        CancellationToken cancellationToken)
-    {
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (!_pendingChanges.TryGetValue(workspacePath, out PendingWorkspaceChanges? pending))
-        {
-
-            return;
-
-        }
-
-        PendingWorkspaceSnapshot snapshot = pending.TakeSnapshot();
-
-        if (!snapshot.ReconciliationRequested && snapshot.Actions.Count == 0)
-        {
-
-            return;
-
-        }
-
-        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
-
-        if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
-        {
-
-            return;
-
-        }
-
-        if (snapshot.ReconciliationRequested)
-        {
-
-            await ReconcileWorkspaceAsync(workspacePath, embeddings, cancellationToken).ConfigureAwait(false);
-
-            return;
-
-        }
-
-        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
-            workspacePath,
-            static _ => new RuntimeStatusState());
-
-        bool succeeded = await ProcessIncrementalChangesAsync(
-            workspacePath,
-            snapshot.Actions,
-            embeddings,
-            cancellationToken).ConfigureAwait(false);
-
-        if (succeeded)
-        {
-
-            status.MarkSuccessfulIndex();
-
-        }
-        else
-        {
-
-            status.MarkDegraded(overflowed: false);
-
-            pending.RequestReconciliation();
-
-            SignalWatcherWork();
-
-        }
-
-    }
-
-    private async Task<bool> ProcessIncrementalChangesAsync(
-        string workspacePath,
-        IReadOnlyDictionary<string, PendingPathAction> actions,
+        WorkspaceDemand demand,
+        IGrimoireWorkLease workLease,
         EmbeddingSettings embeddings,
         CancellationToken cancellationToken)
     {
-
         if (!weaveService.IsAvailable || !Directory.Exists(workspacePath))
         {
-
-            return false;
-
+            return WorkspaceUnitOutcome.Failed;
         }
 
         CodebaseEmbeddingSettings codebase = embeddings.Codebase ?? new CodebaseEmbeddingSettings();
@@ -506,518 +104,185 @@ internal sealed class WorkspaceIndexingService(
 
         int maxFilesToIndex = ArcanumSettingClamps.EmbeddingsCodebaseMaxFilesToIndex(codebase.MaxFilesToIndex);
 
-        int filesIndexed = 0;
+        int filesIndexed = demand.FilesIndexed;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
-        foreach ((string fullPath, PendingPathAction action) in actions
+        foreach ((string fullPath, PendingPathAction action) in demand.Actions
                      .OrderBy(static pair => pair.Value == PendingPathAction.Delete ? 0 : 1)
-                     .ThenBy(static pair => pair.Key, StringComparer.Ordinal))
+                     .ThenBy(static pair => pair.Key, StringComparer.Ordinal).ToArray())
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
-            string normalizedPath;
+            bool consumed = true;
 
             try
             {
+                string normalizedPath;
 
-                normalizedPath = Path.GetFullPath(fullPath);
-
-            }
-            catch (Exception)
-            {
-
-                continue;
-
-            }
-
-            if (!WorkspacePathPolicy.IsPathUnderWorkspace(workspacePath, normalizedPath))
-            {
-
-                continue;
-
-            }
-
-            string relativePath = Path.GetRelativePath(workspacePath, normalizedPath);
-
-            if (ContainsIgnoredDirectorySegment(relativePath))
-            {
-
-                await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
-
-                continue;
-
-            }
-
-            if (action == PendingPathAction.Delete)
-            {
-
-                if (Directory.Exists(normalizedPath))
+                try
                 {
-
-                    return false;
-
+                    normalizedPath = Path.GetFullPath(fullPath);
+                }
+                catch (Exception)
+                {
+                    continue;
                 }
 
-                if (!File.Exists(normalizedPath))
+                if (!WorkspacePathPolicy.IsPathUnderWorkspace(workspacePath, normalizedPath))
                 {
+                    continue;
+                }
 
+                string relativePath = Path.GetRelativePath(workspacePath, normalizedPath);
+
+                if (ContainsIgnoredDirectorySegment(relativePath))
+                {
                     await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
                     continue;
-
                 }
 
-            }
+                if (action == PendingPathAction.Delete)
+                {
+                    if (Directory.Exists(normalizedPath))
+                    {
+                        return WorkspaceUnitOutcome.Failed;
+                    }
 
-            if (Directory.Exists(normalizedPath))
-            {
+                    if (!File.Exists(normalizedPath))
+                    {
+                        await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
-                return false;
+                        continue;
+                    }
+                }
 
-            }
+                if (Directory.Exists(normalizedPath))
+                {
+                    return WorkspaceUnitOutcome.Failed;
+                }
 
-            bool ignored = !extensions.Contains(Path.GetExtension(normalizedPath));
+                bool ignored = !extensions.Contains(Path.GetExtension(normalizedPath));
 
-            if (ignored || !File.Exists(normalizedPath))
-            {
+                if (ignored || !File.Exists(normalizedPath))
+                {
+                    await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
-                await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
 
-                continue;
+                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                        workspacePath,
+                        normalizedPath,
+                        out string? resolvedFinalPath))
+                {
+                    await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
-            }
+                    continue;
+                }
 
-            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                string identityPath = Path.GetFullPath(resolvedFinalPath ?? normalizedPath);
+
+                if (!FileHandleIdentityInterop.TryGetPathIdentity(identityPath, out FileHandleIdentity expectedIdentity))
+                {
+                    return WorkspaceUnitOutcome.Failed;
+                }
+
+                FileInfo info = new(normalizedPath);
+
+                if (filesIndexed >= maxFilesToIndex)
+                {
+                    return WorkspaceUnitOutcome.Failed;
+                }
+
+                if (!workLease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admittedEffect))
+                {
+                    consumed = false;
+
+                    return WorkspaceUnitOutcome.Deferred;
+                }
+
+                await using IGrimoireExternalEffectGroup effect = admittedEffect!;
+
+                bool indexed = await IndexFileAsync(
+                    db,
                     workspacePath,
+                    relativePath,
                     normalizedPath,
-                    out string? resolvedFinalPath))
-            {
+                    expectedIdentity,
+                    info.LastWriteTimeUtc,
+                    info.Length,
+                    cancellationToken).ConfigureAwait(false);
 
-                await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
-
-                continue;
-
-            }
-
-            string identityPath = Path.GetFullPath(resolvedFinalPath ?? normalizedPath);
-
-            if (!FileHandleIdentityInterop.TryGetPathIdentity(identityPath, out FileHandleIdentity expectedIdentity))
-            {
-
-                return false;
-
-            }
-
-            FileInfo info = new(normalizedPath);
-
-            if (filesIndexed >= maxFilesToIndex)
-            {
-
-                return false;
-
-            }
-
-            bool indexed = await IndexFileAsync(
-                db,
-                workspacePath,
-                relativePath,
-                normalizedPath,
-                expectedIdentity,
-                info.LastWriteTimeUtc,
-                info.Length,
-                cancellationToken).ConfigureAwait(false);
-
-            if (!indexed)
-            {
-
-                return false;
-
-            }
-
-            filesIndexed++;
-
-        }
-
-        return true;
-
-    }
-
-    /// <summary>
-    /// Single-flight per workspace: a reconciliation requested while that same workspace is already
-    /// reconciling coalesces onto the in-flight run instead of starting a duplicate full scan. The
-    /// timer loop, the watcher drain, and <see cref="IndexNowAsync"/> (therefore
-    /// <c>POST /api/workspaces/{id}/files/index</c>) all pass through this gate, so repeated manual
-    /// re-index requests cannot multiply workspace walks or embedding-provider spend, and two runs can
-    /// never race on the same deterministic <c>ChunkId</c> rows.
-    /// </summary>
-    private async Task<bool> ReconcileWorkspaceAsync(
-        string workspacePath,
-        EmbeddingSettings embeddings,
-        CancellationToken cancellationToken)
-    {
-
-        SemaphoreSlim gate = _reconciliationGates.GetOrAdd(
-            workspacePath,
-            static _ => new SemaphoreSlim(1, 1));
-
-        if (!await gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
-        {
-
-            logger.LogDebug(
-                "Workspace reconciliation for {WorkspacePath} is already in flight; coalescing this request onto it.",
-                workspacePath);
-
-            return false;
-
-        }
-
-        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
-            workspacePath,
-            static _ => new RuntimeStatusState());
-
-        status.SetReconciling(true);
-
-        try
-        {
-
-            bool completed = await IndexWorkspaceAsync(workspacePath, embeddings, cancellationToken).ConfigureAwait(false);
-
-            if (completed)
-            {
-
-                status.MarkReconciled();
-
-                EnsureWatcher(workspacePath);
-
-            }
-            else
-            {
-
-                status.MarkDegraded(overflowed: status.Snapshot().Overflowed);
-
-            }
-
-            return completed;
-
-        }
-        finally
-        {
-
-            status.SetReconciling(false);
-
-            gate.Release();
-
-        }
-
-    }
-
-    private void EnsureWatcher(string workspacePath)
-    {
-
-        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
-
-        if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
-        {
-
-            return;
-
-        }
-
-        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
-            workspacePath,
-            static _ => new RuntimeStatusState());
-
-        int maxWatchers = ArcanumSettingClamps.EmbeddingsCodebaseMaxWatchers(
-            embeddings.Codebase.MaxWatchers);
-
-        lock (_watcherRegistryGate)
-        {
-
-            if (_watchers.ContainsKey(workspacePath))
-            {
-
-                status.SetWatching(true);
-
-                return;
-
-            }
-
-            if (maxWatchers == 0 || _watchers.Count >= maxWatchers)
-            {
-
-                status.SetWatching(false);
-
-                status.MarkDegraded(overflowed: false);
-
-                return;
-
-            }
-
-            try
-            {
-
-                IWorkspaceFileWatcher watcher = watcherFactory.Create(
-                    workspacePath,
-                    QueueWatcherChange,
-                    exception => HandleWatcherError(workspacePath, exception));
-
-                if (_watchers.TryAdd(workspacePath, watcher))
+                if (!indexed)
                 {
-
-                    status.SetWatching(true);
-
-                }
-                else
-                {
-
-                    watcher.Dispose();
-
+                    return WorkspaceUnitOutcome.Failed;
                 }
 
+                filesIndexed++;
+
+                demand.FilesIndexed = filesIndexed;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            finally
             {
-
-                logger.LogWarning(
-                    ex,
-                    "Workspace watcher is unavailable for {WorkspacePath}; periodic reconciliation remains active.",
-                    workspacePath);
-
-                status.SetWatching(false);
-
-                status.MarkDegraded(overflowed: false);
-
-            }
-
-        }
-
-    }
-
-    private void QueueWatcherChange(WorkspaceFileChange change)
-    {
-
-        if (!_knownWorkspaces.ContainsKey(change.WorkspacePath))
-        {
-
-            return;
-
-        }
-
-        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
-            change.WorkspacePath,
-            static _ => new RuntimeStatusState());
-
-        status.MarkEvent();
-
-        PendingWorkspaceChanges pending = _pendingChanges.GetOrAdd(
-            change.WorkspacePath,
-            static _ => new PendingWorkspaceChanges());
-
-        bool overflowed = false;
-
-        if (change.Kind == WorkspaceFileChangeKind.Renamed && change.OldFullPath is not null)
-        {
-
-            overflowed |= pending.Add(change.OldFullPath, PendingPathAction.Delete);
-
-            overflowed |= pending.Add(change.FullPath, PendingPathAction.Upsert);
-
-        }
-        else
-        {
-
-            PendingPathAction action = change.Kind == WorkspaceFileChangeKind.Deleted
-                ? PendingPathAction.Delete
-                : PendingPathAction.Upsert;
-
-            overflowed = pending.Add(change.FullPath, action);
-
-        }
-
-        if (overflowed)
-        {
-
-            status.MarkDegraded(overflowed: true);
-
-        }
-
-        SignalWatcherWork();
-
-    }
-
-    private void HandleWatcherError(string workspacePath, Exception exception)
-    {
-
-        bool overflowed = exception is InternalBufferOverflowException;
-
-        logger.LogWarning(
-            exception,
-            "Workspace watcher failed for {WorkspacePath}; marking the index stale and scheduling reconciliation.",
-            workspacePath);
-
-        lock (_watcherRegistryGate)
-        {
-
-            if (_watchers.TryRemove(workspacePath, out IWorkspaceFileWatcher? watcher))
-            {
-
-                watcher.Dispose();
-
-            }
-
-        }
-
-        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
-            workspacePath,
-            static _ => new RuntimeStatusState());
-
-        status.SetWatching(false);
-
-        status.MarkDegraded(overflowed);
-
-        _pendingChanges.GetOrAdd(workspacePath, static _ => new PendingWorkspaceChanges())
-            .RequestReconciliation();
-
-        SignalWatcherWork();
-
-    }
-
-    /// <summary>
-    /// Raises the "there is watcher work pending" edge, coalescing concurrent signals into the single
-    /// permit <c>_watcherSignal</c> can hold.
-    /// </summary>
-    /// <remarks>
-    /// The <c>CurrentCount</c> probe is only a cheap fast path, never a guard: this runs on the pump
-    /// thread (<see cref="ProcessPendingWatcherEventsAsync"/>) and on every independent
-    /// <c>FileSystemWatcher</c> dispatch thread at once, so two callers can both observe <c>0</c> and both
-    /// call <c>Release</c> on a <c>SemaphoreSlim(0, 1)</c>. The loser gets
-    /// <see cref="SemaphoreFullException"/>, which — because the watcher callback chain has no exception
-    /// guard of its own — would escape onto a watcher-dispatch thread and take down indexing (or the
-    /// host). Swallowing it is exactly right: it means the signal the caller wanted to raise is already
-    /// raised.
-    /// </remarks>
-    private void SignalWatcherWork()
-    {
-
-        if (_watcherSignal.CurrentCount != 0)
-        {
-
-            return;
-
-        }
-
-        try
-        {
-
-            _watcherSignal.Release();
-
-        }
-        catch (SemaphoreFullException)
-        {
-
-            // A concurrent signaller won the race; the pending-work edge is already raised.
-
-        }
-        catch (ObjectDisposedException)
-        {
-
-            // Host shutdown raced the callback; the watcher is being disposed.
-
-        }
-
-    }
-
-    private void DisposeAllWatchers()
-    {
-
-        lock (_watcherRegistryGate)
-        {
-
-            foreach ((string workspacePath, IWorkspaceFileWatcher watcher) in _watchers.ToArray())
-            {
-
-                watcher.Dispose();
-
-                _watchers.TryRemove(workspacePath, out _);
-
-                if (_runtimeStatuses.TryGetValue(workspacePath, out RuntimeStatusState? status))
+                if (consumed)
                 {
-
-                    status.SetWatching(false);
-
+                    demand.Actions.Remove(fullPath);
                 }
-
             }
-
         }
 
-    }
-
-    public override async Task StopAsync(CancellationToken cancellationToken)
-    {
-
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
-
-        DisposeAllWatchers();
-
-    }
-
-    public override void Dispose()
-    {
-
-        DisposeAllWatchers();
-
-        _watcherSignal.Dispose();
-
-        base.Dispose();
-
-    }
-
-    internal ValueTask DisposeAsync()
-    {
-
-        Dispose();
-
-        return ValueTask.CompletedTask;
-
+        return WorkspaceUnitOutcome.Completed;
     }
 
     internal async Task<bool> IndexWorkspaceAsync(string workspacePath, EmbeddingSettings embeddings, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
 
+        if (!_workAdmission.TryAcquireWorkLease(GrimoireWorkKind.WorkspaceIndexing, out IGrimoireWorkLease? admitted))
+        {
+            return false;
+        }
+
+        await using IGrimoireWorkLease workLease = admitted!;
+
+        return await IndexWorkspaceCoreAsync(workspacePath, embeddings, new WorkspaceDemand { Full = true }, workLease, cancellationToken)
+            .ConfigureAwait(false) == WorkspaceUnitOutcome.Completed;
+    }
+
+    private async Task<WorkspaceUnitOutcome> IndexWorkspaceCoreAsync(
+        string workspacePath,
+        EmbeddingSettings embeddings,
+        WorkspaceDemand demand,
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken)
+    {
         if (!weaveService.IsAvailable)
         {
-
             logger.LogDebug(
                 "Workspace indexing tick skipped for {WorkspacePath}: The Weave is unavailable (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model).",
                 workspacePath);
 
-            return false;
-
+            return WorkspaceUnitOutcome.Failed;
         }
 
         CodebaseEmbeddingSettings codebase = embeddings.Codebase ?? new CodebaseEmbeddingSettings();
 
         if (codebase.FileExtensions.Length == 0)
         {
-
             logger.LogDebug("Workspace indexing tick skipped for {WorkspacePath}: no file extensions configured.", workspacePath);
 
-            return false;
-
+            return WorkspaceUnitOutcome.Failed;
         }
 
         if (!Directory.Exists(workspacePath))
         {
-
             logger.LogWarning("Workspace indexing skipped: {WorkspacePath} does not exist or is not a directory.", workspacePath);
 
-            return false;
-
+            return WorkspaceUnitOutcome.Failed;
         }
 
         int maxFilesToIndex = ArcanumSettingClamps.EmbeddingsCodebaseMaxFilesToIndex(codebase.MaxFilesToIndex);
@@ -1028,7 +293,9 @@ internal sealed class WorkspaceIndexingService(
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
-        int filesIndexed = 0;
+        int filesIndexed = demand.FilesIndexed;
+
+        bool failed = false;
 
         IEnumerable<string> candidates =
             EnumerateCandidateFiles(workspacePath, extensions);
@@ -1045,18 +312,14 @@ internal sealed class WorkspaceIndexingService(
 
         foreach (string fullPath in candidates)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             try
             {
-
                 if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspacePath, fullPath, out string? resolvedFinalPath))
                 {
-
                     // Escaping symlink — skipped, never followed.
                     continue;
-
                 }
 
                 string relativePath = Path.GetRelativePath(workspacePath, fullPath);
@@ -1065,12 +328,10 @@ internal sealed class WorkspaceIndexingService(
 
                 if (filesIndexed >= maxFilesToIndex)
                 {
-
                     // Per-tick re-embed budget exhausted — the file is still "seen" (above) so a
                     // later orphan-cleanup pass never mistakes it for deleted, but re-indexing it is
                     // deferred to a future tick.
                     continue;
-
                 }
 
                 // Captures a stable file identity (dev/ino on Unix, volume+file index on Windows) at
@@ -1081,11 +342,9 @@ internal sealed class WorkspaceIndexingService(
 
                 if (!FileHandleIdentityInterop.TryGetPathIdentity(identityPath, out FileHandleIdentity expectedIdentity))
                 {
-
                     // Could not resolve a stable identity (e.g. a race with a delete) — skip rather
                     // than risk reading through a path that may have been swapped.
                     continue;
-
                 }
 
                 FileInfo info = new(fullPath);
@@ -1100,15 +359,21 @@ internal sealed class WorkspaceIndexingService(
                 // skipped by every later tick, permanently, because nothing else revisits it. A row
                 // that predates FileLength holds -1, which no file's length can be, so an inherited
                 // row re-indexes once and then carries a real value.
-                if (existingSignatureByRelativePath.TryGetValue(relativePath, out WorkspaceFileSignature existing)
+                if (!demand.ShouldForceFile(fullPath)
+                    && existingSignatureByRelativePath.TryGetValue(relativePath, out WorkspaceFileSignature existing)
                     && existing.LastWriteUtc == lastWriteUtc
                     && existing.FileLength == fileLength)
                 {
-
                     // Unchanged since last index — skip without consuming the per-tick file budget.
                     continue;
-
                 }
+
+                if (!workLease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admittedEffect))
+                {
+                    return WorkspaceUnitOutcome.Deferred;
+                }
+
+                await using IGrimoireExternalEffectGroup effect = admittedEffect!;
 
                 bool indexed = await IndexFileAsync(
                     db,
@@ -1122,31 +387,32 @@ internal sealed class WorkspaceIndexingService(
 
                 if (indexed)
                 {
-
                     filesIndexed++;
 
-                }
+                    demand.FilesIndexed = filesIndexed;
 
+                    demand.MarkFileCompleted(fullPath);
+                }
+                else
+                {
+                    failed = true;
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (Exception ex)
             {
+                failed = true;
 
                 logger.LogWarning(ex, "Workspace indexing failed for file {FullPath}; continuing with the next file.", fullPath);
-
             }
-
         }
 
         await DeleteOrphanedChunksAsync(db, workspacePath, seenRelativePaths, cancellationToken).ConfigureAwait(false);
 
-        return true;
-
+        return failed ? WorkspaceUnitOutcome.Failed : WorkspaceUnitOutcome.Completed;
     }
 
     /// <summary>
@@ -2264,87 +1530,6 @@ internal sealed class WorkspaceIndexingService(
         Delete,
 
     }
-
-    private sealed class PendingWorkspaceChanges
-    {
-
-        private readonly object _gate = new();
-
-        private readonly Dictionary<string, PendingPathAction> _actions = new(StringComparer.Ordinal);
-
-        private bool _reconciliationRequested;
-
-        public bool Add(string fullPath, PendingPathAction action)
-        {
-
-            lock (_gate)
-            {
-
-                if (_reconciliationRequested)
-                {
-
-                    return false;
-
-                }
-
-                if (!_actions.ContainsKey(fullPath) && _actions.Count >= MaxPendingPathsPerWorkspace)
-                {
-
-                    _actions.Clear();
-
-                    _reconciliationRequested = true;
-
-                    return true;
-
-                }
-
-                _actions[fullPath] = action;
-
-                return false;
-
-            }
-
-        }
-
-        public void RequestReconciliation()
-        {
-
-            lock (_gate)
-            {
-
-                _actions.Clear();
-
-                _reconciliationRequested = true;
-
-            }
-
-        }
-
-        public PendingWorkspaceSnapshot TakeSnapshot()
-        {
-
-            lock (_gate)
-            {
-
-                Dictionary<string, PendingPathAction> actions = new(_actions, StringComparer.Ordinal);
-
-                bool reconciliationRequested = _reconciliationRequested;
-
-                _actions.Clear();
-
-                _reconciliationRequested = false;
-
-                return new PendingWorkspaceSnapshot(actions, reconciliationRequested);
-
-            }
-
-        }
-
-    }
-
-    private sealed record PendingWorkspaceSnapshot(
-        IReadOnlyDictionary<string, PendingPathAction> Actions,
-        bool ReconciliationRequested);
 
     private sealed class RuntimeStatusState
     {

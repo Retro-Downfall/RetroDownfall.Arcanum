@@ -19,7 +19,7 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
+public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 {
 
     [Fact]
@@ -127,6 +127,12 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
     private ArcanumDbContext? _db;
 
+    private readonly List<WorkspaceIndexingService> _services = [];
+
+    private readonly List<ServiceProvider> _scopeProviders = [];
+
+    private readonly List<IReleasableWorkspaceWeave> _releasableWeaves = [];
+
     public WorkspaceIndexingServiceTests(GrimoireFixture fixture)
     {
 
@@ -147,23 +153,32 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        foreach (IReleasableWorkspaceWeave weave in _releasableWeaves)
+        {
+            weave.ReleaseAll();
+        }
+
+        foreach (WorkspaceIndexingService service in _services)
+        {
+            await service.DisposeAsync();
+        }
+
+        foreach (ServiceProvider provider in _scopeProviders)
+        {
+            await provider.DisposeAsync();
+        }
 
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         await _workspace.DisposeAsync();
-
     }
 
     [SkippableFact]
@@ -523,6 +538,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
             new WeaveIndexAvailability(),
             scopeFactory,
             new FakeWorkspaceFileWatcherFactory(),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<WorkspaceIndexingService>.Instance);
 
         service.RegisterWorkspace(_workspace.Root);
@@ -542,7 +558,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task IndexNowAsync_IndexesFile_WhenWorkspaceUnderAllowedCampaignRoot()
+    public async Task QueueIndexNow_IndexesFile_WhenWorkspaceUnderAllowedCampaignRoot()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -553,7 +569,9 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         WorkspaceIndexingService service = CreateService(weave, out _, campaignAllowedRoots: [_workspace.Root]);
 
-        await service.IndexNowAsync(_workspace.Root, CancellationToken.None);
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
+
+        await DrainWorkspaceSchedulerAsync(service);
 
         List<string> indexedPaths = await GetIndexedRelativePathsAsync();
 
@@ -562,7 +580,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task IndexNowAsync_RejectsWorkspace_WhenNotUnderAnyAllowedCampaignRoot()
+    public async Task QueueIndexNow_RejectsWorkspace_WhenNotUnderAnyAllowedCampaignRoot()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -576,7 +594,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         // unvalidated directory — see CampaignPathPolicy.ValidateAndNormalizePath.
         WorkspaceIndexingService service = CreateService(weave, out _, campaignAllowedRoots: []);
 
-        await service.IndexNowAsync(_workspace.Root, CancellationToken.None);
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsFailure);
 
         Assert.Equal(0, weave.EmbedBatchCallCount);
 
@@ -585,7 +603,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task IndexNowAsync_CoalescesASecondRequestWhileTheSameWorkspaceIsAlreadyReconciling()
+    public async Task QueueIndexNow_CoalescesASecondRequestWhileTheSameWorkspaceIsAlreadyReconciling()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -596,23 +614,17 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         WorkspaceIndexingService service = CreateService(weave, out _);
 
-        Task first = service.IndexNowAsync(_workspace.Root, CancellationToken.None);
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
 
         await weave.EmbedEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
-        Task second = service.IndexNowAsync(_workspace.Root, CancellationToken.None);
-
-        Task settled = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(5)));
+        Result<WorkspaceIndexQueueDisposition> second = service.QueueIndexNow(_workspace.Root);
 
         weave.Release();
 
-        await first.WaitAsync(TimeSpan.FromSeconds(30));
+        await DrainWorkspaceSchedulerAsync(service);
 
-        await second.WaitAsync(TimeSpan.FromSeconds(30));
-
-        Assert.True(
-            ReferenceEquals(settled, second),
-            "A re-index requested while the same workspace is still reconciling must coalesce onto the in-flight run instead of starting a duplicate scan.");
+        Assert.Equal(WorkspaceIndexQueueDisposition.Coalesced, second.Value);
 
         Assert.Equal(1, weave.EmbedBatchCallCount);
 
@@ -797,7 +809,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         }
 
-        await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
         Assert.Equal(1, weave.EmbedBatchCallCount);
 
@@ -831,7 +843,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         watchers.Single.TriggerDeleted(target);
 
-        await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
         Assert.Contains("new replacement content", await GetChunkContentsAsync("notes.md"));
 
@@ -877,7 +889,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         Assert.True(stale.Overflowed);
 
-        await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
         WorkspaceIndexRuntimeStatus recovered = service.GetRuntimeStatus(_workspace.Root);
 
@@ -930,7 +942,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
             watchers.Single.TriggerChanged(target);
 
-            await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+            await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
             Assert.DoesNotContain("linked.md", await GetIndexedRelativePathsAsync());
 
@@ -970,7 +982,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         watchers.Single.TriggerCreated(large);
 
-        await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
         Assert.True(weave.EmbedBatchCallCount > 0);
 
@@ -1001,7 +1013,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         cancellation.Cancel();
 
         await Assert.ThrowsAsync<OperationCanceledException>(
-            () => service.ProcessPendingWatcherEventsAsync(_workspace.Root, cancellation.Token));
+            () => ProcessPendingWatcherEventsAsync(service, _workspace.Root, cancellation.Token));
 
         await service.DisposeAsync();
 
@@ -1150,9 +1162,9 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         out EmbeddingSettings embeddings,
         string[]? campaignAllowedRoots = null,
         FakeWorkspaceFileWatcherFactory? watcherFactory = null,
-        IServiceScopeFactory? scopeFactory = null)
+        IServiceScopeFactory? scopeFactory = null,
+        IGrimoireConnectionAdmissionGate? workAdmission = null)
     {
-
         embeddings = ArcanumRuntimeDefaults.Embeddings;
 
         IServiceScopeFactory scopes = scopeFactory ?? BuildScopeFactory();
@@ -1180,30 +1192,40 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         embeddings = settings.ResolveEmbeddings();
 
-        return new WorkspaceIndexingService(
+        WorkspaceIndexingService service = new(
             new TestOptionsMonitor<ArcanumSettings>(settings),
             weave,
             new WeaveIndexAvailability(),
             scopes,
             watcherFactory ?? new FakeWorkspaceFileWatcherFactory(),
+            workAdmission ?? new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<WorkspaceIndexingService>.Instance);
 
+        _services.Add(service);
+
+        if (weave is IReleasableWorkspaceWeave releasable)
+        {
+            _releasableWeaves.Add(releasable);
+        }
+
+        return service;
     }
 
     private IServiceScopeFactory BuildScopeFactory()
     {
-
         ServiceCollection services = new();
 
-        services.AddSingleton(_db!);
+        services.AddScoped(_ => _fixture.CreateContext(_dbPath!));
 
-        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        ServiceProvider provider = services.BuildServiceProvider();
 
+        _scopeProviders.Add(provider);
+
+        return provider.GetRequiredService<IServiceScopeFactory>();
     }
 
     private async Task<List<string>> GetIndexedRelativePathsAsync()
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
@@ -1495,14 +1517,15 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     /// Parks every embedding call until <see cref="Release"/> is called, so a test can hold one
     /// reconciliation run in flight while it issues a second one.
     /// </summary>
-    private sealed class GatedWeaveService : IWeaveService
+    private sealed class GatedWeaveService : IWeaveService, IReleasableWorkspaceWeave
     {
-
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private int _embedBatchCallCount;
 
         public TaskCompletionSource EmbedEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SecondEmbedEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int EmbedBatchCallCount => Volatile.Read(ref _embedBatchCallCount);
 
@@ -1510,13 +1533,17 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public void Release() => _release.TrySetResult();
 
+        public void ReleaseAll() => Release();
+
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("WorkspaceIndexingService only calls EmbedBatchAsync.");
 
         public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
-
-            Interlocked.Increment(ref _embedBatchCallCount);
+            if (Interlocked.Increment(ref _embedBatchCallCount) == 2)
+            {
+                SecondEmbedEntered.TrySetResult();
+            }
 
             EmbedEntered.TrySetResult();
 
@@ -1526,44 +1553,54 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
             for (int i = 0; i < texts.Count; i++)
             {
-
                 generated[i] = new Embedding<float>(new float[] { 1f, 0f, 0f });
-
             }
 
             return Result<Embedding<float>[]>.Success(generated);
-
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             Task.FromResult(Result<(string Chunk, int Offset)[]>.Success(
                 string.IsNullOrEmpty(text) ? [] : [(text, 0)]));
-
     }
 
     private sealed class FakeWorkspaceFileWatcherFactory : IWorkspaceFileWatcherFactory
     {
+        private readonly object _gate = new();
 
         private readonly List<FakeWorkspaceFileWatcher> _watchers = [];
 
-        public FakeWorkspaceFileWatcher Single => Assert.Single(_watchers);
+        internal Action? BeforeReturn { get; set; }
 
-        public IReadOnlyList<FakeWorkspaceFileWatcher> Created => _watchers;
+        public FakeWorkspaceFileWatcher Single => Assert.Single(Created);
+
+        public IReadOnlyList<FakeWorkspaceFileWatcher> Created
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _watchers.ToArray();
+                }
+            }
+        }
 
         public IWorkspaceFileWatcher Create(
             string workspacePath,
             Action<WorkspaceFileChange> onChange,
             Action<Exception> onError)
         {
-
             FakeWorkspaceFileWatcher watcher = new(workspacePath, onChange, onError);
 
-            _watchers.Add(watcher);
+            lock (_gate)
+            {
+                _watchers.Add(watcher);
+            }
+
+            BeforeReturn?.Invoke();
 
             return watcher;
-
         }
-
     }
 
     private sealed class FakeWorkspaceFileWatcher(
@@ -1571,8 +1608,9 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Action<WorkspaceFileChange> onChange,
         Action<Exception> onError) : IWorkspaceFileWatcher
     {
-
         public bool IsDisposed { get; private set; }
+
+        internal Action? AfterDispose { get; set; }
 
         public string WorkspacePath => workspacePath;
 
@@ -1590,8 +1628,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public void TriggerError(Exception exception) => onError(exception);
 
-        public void Dispose() => IsDisposed = true;
+        public void Dispose()
+        {
+            IsDisposed = true;
 
+            AfterDispose?.Invoke();
+        }
     }
-
 }
