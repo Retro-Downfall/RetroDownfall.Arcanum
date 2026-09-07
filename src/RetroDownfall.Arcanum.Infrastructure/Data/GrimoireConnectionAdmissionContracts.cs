@@ -235,6 +235,21 @@ internal interface IGrimoireConnectionAdmissionGate
         long observedGeneration,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Waits for the generation that refused ordinary work to reopen, including when reopening
+    /// wins the race before the waiter is registered.
+    /// </summary>
+    Task<long> WaitForOpenGenerationAfterRefusalAsync(
+        long refusedGeneration,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(refusedGeneration);
+
+        return WaitForNextOpenGenerationAsync(
+            refusedGeneration - 1,
+            cancellationToken);
+    }
+
     ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>> AcquireExpiredLeaseAdoptionInterlockAsync(
         CovenantExclusiveRecoveryOwner candidateOwner,
         Func<CovenantExclusiveRecoveryOwner, CancellationToken, ValueTask<bool>>

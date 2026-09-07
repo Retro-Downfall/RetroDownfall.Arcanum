@@ -105,6 +105,8 @@ public sealed class DataRetentionSweepHostedServiceTests
 
             await WaitUntilAsync(() => admission.ActiveGenerationWaiters == 1);
 
+            Assert.Equal([0L], admission.ObservedGenerationWaits);
+
             DataRetentionHostedSweepContinuation continuation = Assert.IsType<DataRetentionHostedSweepContinuation>(
                 service.Continuation);
 
@@ -187,6 +189,8 @@ public sealed class DataRetentionSweepHostedServiceTests
             CancellationToken.None)).IsSuccess);
 
         await WaitUntilAsync(() => admission.GenerationWaits == 2 && admission.ActiveGenerationWaiters == 1);
+
+        Assert.Equal([0L, 1L], admission.ObservedGenerationWaits);
 
         DataRetentionHostedSweepContinuation continuation = Assert.IsType<DataRetentionHostedSweepContinuation>(
             service.Continuation);

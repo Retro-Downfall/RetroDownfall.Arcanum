@@ -287,6 +287,97 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     }
 
     [Fact]
+    public async Task WinningEffectGroupIgnoresMaintenanceRevocationForSharedInitialization()
+    {
+        await using McpConnectionManager manager = CreateUnconfiguredManager(
+            _settings,
+            _events);
+
+        using RevocableMaintenanceAdmissionGate admission = new(_admission);
+
+        manager.ConfigureGlobalAdmission(admission);
+
+        await manager.RegisterFromConfigAsync(
+            new McpConfig
+            {
+                McpServers = new Dictionary<string, McpServerConfig>(StringComparer.Ordinal)
+                {
+                    [BootstrapProbeServer] = new()
+                    {
+                        Type = "sse",
+                        Url = "https://mcp.invalid/rpc",
+                    },
+                },
+            },
+            scopeWorkingDirectory: null,
+            CancellationToken.None);
+
+        using ManualResetEventSlim parked = new(initialState: false);
+
+        _events.ParkEventsFor(BootstrapProbeServer, parked);
+
+        Task initializer = Task.Factory.StartNew(
+                () => manager.InitializeAsync(),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .Unwrap();
+
+        await _events.ParkedEventObserved.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Task actual = GetPrivateField<Task>(manager, "_globalInitOperation");
+
+        Task joined = manager.InitializeAsync();
+
+        Assert.Same(actual, GetPrivateField<Task>(manager, "_globalInitOperation"));
+
+        admission.RevokeMaintenance();
+
+        parked.Set();
+
+        await Task.WhenAll(initializer, joined).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(0, admission.RefusalWaits);
+
+        Assert.Equal(1, _events.CountEventsFor(BootstrapProbeServer));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AdmissionRefusalUsesRaceSafeGenerationWait(
+        bool refuseEffectGroup)
+    {
+        await using McpConnectionManager manager = CreateUnconfiguredManager(_settings);
+
+        using RevocableMaintenanceAdmissionGate admission = new(
+            _admission,
+            refuseWorkAdmissionOnce: !refuseEffectGroup,
+            refuseEffectGroupOnce: refuseEffectGroup);
+
+        manager.ConfigureGlobalAdmission(admission);
+
+        await manager.RegisterFromConfigAsync(
+            new McpConfig
+            {
+                McpServers = new Dictionary<string, McpServerConfig>(StringComparer.Ordinal)
+                {
+                    [BootstrapProbeServer] = new()
+                    {
+                        Type = "sse",
+                        Url = "https://mcp.invalid/rpc",
+                    },
+                },
+            },
+            scopeWorkingDirectory: null,
+            CancellationToken.None);
+
+        await manager.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, admission.RefusalWaits);
+    }
+
+    [Fact]
     public async Task FirstStarterFixesSharedAuthority()
     {
         await RegisterBootstrapProbeAsync();
@@ -1806,7 +1897,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     }
 
     private static McpConnectionManager CreateUnconfiguredManager(
-        Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings> settings)
+        Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings> settings,
+        IEventBus? eventBus = null)
     {
         IServiceScopeFactory scopeFactory = new ServiceCollection()
             .BuildServiceProvider()
@@ -1823,7 +1915,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             new HumanPromptRegistry(),
             scopeFactory,
             pacer,
-            new FakeEventBus(),
+            eventBus ?? new FakeEventBus(),
             new AlwaysTrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
             settings);
@@ -2138,6 +2230,149 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         {
             DisposeCount++;
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RevocableMaintenanceAdmissionGate(
+        IGrimoireConnectionAdmissionGate inner,
+        bool refuseWorkAdmissionOnce = false,
+        bool refuseEffectGroupOnce = false) :
+        IGrimoireConnectionAdmissionGate,
+        IDisposable
+    {
+        private readonly CancellationTokenSource _maintenance = new();
+
+        private int _refuseWorkAdmissions = refuseWorkAdmissionOnce ? 1 : 0;
+
+        private int _refuseEffectGroups = refuseEffectGroupOnce ? 1 : 0;
+
+        private int _refusalWaits;
+
+        public long CurrentGeneration => inner.CurrentGeneration;
+
+        public int RefusalWaits => Volatile.Read(ref _refusalWaits);
+
+        public bool TryAcquireRequestLease(
+            GrimoireRequestKind kind,
+            out IGrimoireRequestLease? lease) =>
+            inner.TryAcquireRequestLease(kind, out lease);
+
+        public bool TryAcquireWorkLease(
+            GrimoireWorkKind kind,
+            out IGrimoireWorkLease? lease)
+        {
+            if (Interlocked.Exchange(ref _refuseWorkAdmissions, 0) == 1)
+            {
+                lease = null;
+
+                return false;
+            }
+
+            if (!inner.TryAcquireWorkLease(kind, out IGrimoireWorkLease? admitted))
+            {
+                lease = null;
+
+                return false;
+            }
+
+            lease = new RevocableMaintenanceWorkLease(
+                admitted!,
+                _maintenance.Token,
+                this);
+
+            return true;
+        }
+
+        public IGrimoireConnectionOpenTicket AcquireOrdinaryOpen(
+            System.Data.Common.DbConnection connection) =>
+            inner.AcquireOrdinaryOpen(connection);
+
+        public Result<IGrimoireClosingOwner> BeginOrResumeExclusive(
+            CovenantExclusiveRecoveryOwner owner,
+            IGrimoireRequestLease? initiatingRequest = null,
+            System.Data.Common.DbConnection? scopedConnection = null) =>
+            inner.BeginOrResumeExclusive(
+                owner,
+                initiatingRequest,
+                scopedConnection);
+
+        public ValueTask<Result> DrainRequestAndWorkAsync(
+            IGrimoireClosingOwner closingOwner,
+            CancellationToken cancellationToken) =>
+            inner.DrainRequestAndWorkAsync(closingOwner, cancellationToken);
+
+        public ValueTask<Result<IGrimoireExclusiveClosedLease>>
+            CloseConnectionAdmissionAsync(
+                IGrimoireClosingOwner closingOwner,
+                CancellationToken cancellationToken) =>
+            inner.CloseConnectionAdmissionAsync(
+                closingOwner,
+                cancellationToken);
+
+        public ValueTask<Result> AbortClosingAsync(
+            IGrimoireClosingOwner closingOwner,
+            Func<CancellationToken, ValueTask<bool>> proveNoDestructiveEffectAsync,
+            CancellationToken cancellationToken) =>
+            inner.AbortClosingAsync(
+                closingOwner,
+                proveNoDestructiveEffectAsync,
+                cancellationToken);
+
+        public Task<long> WaitForNextOpenGenerationAsync(
+            long observedGeneration,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "MCP refusal handling bypassed the race-safe generation wait.");
+
+        public Task<long> WaitForOpenGenerationAfterRefusalAsync(
+            long refusedGeneration,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _refusalWaits);
+
+            return Task.FromResult(refusedGeneration);
+        }
+
+        public ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>>
+            AcquireExpiredLeaseAdoptionInterlockAsync(
+                CovenantExclusiveRecoveryOwner candidateOwner,
+                Func<CovenantExclusiveRecoveryOwner, CancellationToken, ValueTask<bool>>
+                    revalidateDurableOwnerAsync,
+                CancellationToken cancellationToken) =>
+            inner.AcquireExpiredLeaseAdoptionInterlockAsync(
+                candidateOwner,
+                revalidateDurableOwnerAsync,
+                cancellationToken);
+
+        public void RevokeMaintenance() => _maintenance.Cancel();
+
+        public void Dispose() => _maintenance.Dispose();
+
+        private sealed class RevocableMaintenanceWorkLease(
+            IGrimoireWorkLease innerWork,
+            CancellationToken maintenanceRevocation,
+            RevocableMaintenanceAdmissionGate admission) : IGrimoireWorkLease
+        {
+            public GrimoireWorkKind Kind => innerWork.Kind;
+
+            public long Generation => innerWork.Generation;
+
+            public CancellationToken MaintenanceRevocation => maintenanceRevocation;
+
+            public bool TryBeginExternalEffectGroup(
+                out IGrimoireExternalEffectGroup? effectGroup)
+            {
+                if (Interlocked.Exchange(ref admission._refuseEffectGroups, 0) == 1)
+                {
+                    effectGroup = null;
+
+                    return false;
+                }
+
+                return innerWork.TryBeginExternalEffectGroup(out effectGroup);
+            }
+
+            public ValueTask DisposeAsync() => innerWork.DisposeAsync();
         }
     }
 

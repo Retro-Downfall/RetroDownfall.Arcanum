@@ -100,7 +100,7 @@ internal sealed class DataRetentionSweepHostedService(
                         return;
                     }
 
-                    _ = await admission.WaitForNextOpenGenerationAsync(
+                    _ = await admission.WaitForOpenGenerationAfterRefusalAsync(
                         predecessorGeneration,
                         cancellationToken).ConfigureAwait(false);
 
@@ -150,7 +150,7 @@ internal sealed class DataRetentionSweepHostedService(
 
                 if (outcome.Disposition == DataRetentionHostedSweepDisposition.DeferredForMaintenance)
                 {
-                    _ = await admission.WaitForNextOpenGenerationAsync(
+                    _ = await admission.WaitForOpenGenerationAfterRefusalAsync(
                         predecessorGeneration,
                         cancellationToken).ConfigureAwait(false);
 

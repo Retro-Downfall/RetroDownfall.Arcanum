@@ -272,7 +272,7 @@ internal sealed class LongRunningOperationStartupHostedService(
             {
                 long observedGeneration = lease.Generation;
                 await lease.DisposeAsync().ConfigureAwait(false);
-                await admissionGate.WaitForNextOpenGenerationAsync(
+                await admissionGate.WaitForOpenGenerationAfterRefusalAsync(
                     observedGeneration,
                     cancellationToken).ConfigureAwait(false);
 
@@ -333,7 +333,7 @@ internal sealed class LongRunningOperationStartupHostedService(
                 return lease!;
             }
 
-            await admissionGate.WaitForNextOpenGenerationAsync(
+            await admissionGate.WaitForOpenGenerationAfterRefusalAsync(
                 observedGeneration,
                 cancellationToken).ConfigureAwait(false);
         }

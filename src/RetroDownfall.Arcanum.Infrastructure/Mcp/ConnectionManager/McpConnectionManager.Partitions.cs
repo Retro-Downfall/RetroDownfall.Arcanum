@@ -121,7 +121,7 @@ public sealed partial class McpConnectionManager
                     GrimoireWorkKind.McpServerBootstrap,
                     out IGrimoireWorkLease? admitted))
             {
-                _ = await admission.WaitForNextOpenGenerationAsync(
+                _ = await admission.WaitForOpenGenerationAfterRefusalAsync(
                         observedGeneration,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -144,29 +144,15 @@ public sealed partial class McpConnectionManager
                 {
                     await using IGrimoireExternalEffectGroup effectGroup = admittedGroup!;
 
-                    using CancellationTokenSource linked =
-                        CancellationTokenSource.CreateLinkedTokenSource(
-                            cancellationToken,
-                            work.MaintenanceRevocation);
+                    await RunGlobalInitCoreAsync(cancellationToken).ConfigureAwait(false);
 
-                    try
-                    {
-                        await RunGlobalInitCoreAsync(linked.Token).ConfigureAwait(false);
-
-                        return;
-                    }
-                    catch (OperationCanceledException)
-                        when (work.MaintenanceRevocation.IsCancellationRequested
-                            && !cancellationToken.IsCancellationRequested)
-                    {
-                        retryAfterMaintenance = true;
-                    }
+                    return;
                 }
             }
 
             if (retryAfterMaintenance)
             {
-                _ = await admission.WaitForNextOpenGenerationAsync(
+                _ = await admission.WaitForOpenGenerationAfterRefusalAsync(
                         observedGeneration,
                         cancellationToken)
                     .ConfigureAwait(false);

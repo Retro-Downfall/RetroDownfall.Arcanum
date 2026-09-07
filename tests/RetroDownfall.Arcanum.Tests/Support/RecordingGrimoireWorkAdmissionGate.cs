@@ -17,6 +17,8 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private readonly List<IGrimoireWorkLease> _innerWorkLeases = [];
 
+    private readonly List<long> _observedGenerationWaits = [];
+
     private int _effectGroupAttempts;
 
     private int _generationWaits;
@@ -62,6 +64,17 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
     internal int GenerationWaits => Volatile.Read(ref _generationWaits);
 
     internal int ActiveGenerationWaiters => Volatile.Read(ref _activeGenerationWaiters);
+
+    internal IReadOnlyList<long> ObservedGenerationWaits
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _observedGenerationWaits.ToArray();
+            }
+        }
+    }
 
     internal Action BeforeEffectGroupAdmission { get; set; } = static () => { };
 
@@ -146,6 +159,11 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         long observedGeneration,
         CancellationToken cancellationToken)
     {
+        lock (_observationsGate)
+        {
+            _observedGenerationWaits.Add(observedGeneration);
+        }
+
         Interlocked.Increment(ref _generationWaits);
 
         Interlocked.Increment(ref _activeGenerationWaiters);

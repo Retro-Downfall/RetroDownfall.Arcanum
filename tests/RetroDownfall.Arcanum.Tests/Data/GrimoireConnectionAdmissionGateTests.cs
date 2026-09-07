@@ -1077,6 +1077,37 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
     }
 
     [Fact]
+    public async Task Refused_generation_wait_cannot_miss_a_reopen_that_wins_before_registration()
+    {
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(71));
+
+        Result<IGrimoireExclusiveClosedLease> closed =
+            await gate.CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+        long refusedGeneration = lease.Generation;
+
+        Result reopened = await lease.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            CancellationToken.None);
+
+        Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
+
+        IGrimoireConnectionAdmissionGate contract = gate;
+
+        Assert.Equal(
+            refusedGeneration,
+            await contract.WaitForOpenGenerationAfterRefusalAsync(
+                refusedGeneration,
+                CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Next_open_generation_completes_once_only_after_commit_reopen()
     {
 

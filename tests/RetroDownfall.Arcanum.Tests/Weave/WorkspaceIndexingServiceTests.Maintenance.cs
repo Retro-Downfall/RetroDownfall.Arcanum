@@ -52,6 +52,8 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         try
         {
+            Assert.Equal([inner.CurrentGeneration - 1], gate.ObservedGenerationWaits);
+
             Assert.Equal(1, service.GetScheduledSweepSnapshot().Outstanding);
 
             Assert.Equal(due, service.GetScheduledSweepSnapshot().NextReconciliation);

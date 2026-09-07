@@ -408,7 +408,7 @@ internal sealed partial class WorkspaceIndexingService
 
                 // Scope, whole-file effect and work lease have all settled. This exact handle
                 // retains its slot and identity; no dequeue/requeue loop or suffix may overtake it.
-                await _workAdmission.WaitForNextOpenGenerationAsync(generation, cancellationToken).ConfigureAwait(false);
+                await _workAdmission.WaitForOpenGenerationAfterRefusalAsync(generation, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

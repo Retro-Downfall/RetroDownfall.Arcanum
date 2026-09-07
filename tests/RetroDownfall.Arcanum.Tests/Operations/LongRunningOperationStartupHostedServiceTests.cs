@@ -133,6 +133,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         Assert.Equal(1, summary.Completed);
         Assert.Equal(2, gate.GroupAttempts);
         Assert.Equal(1, gate.GenerationWaits);
+        Assert.Equal([0], gate.ObservedGenerationWaits);
         Assert.Equal(seeded.AttemptCount + 1, settled.AttemptCount);
         Assert.Equal([seeded.Id], handler.Invocations);
     }
@@ -309,6 +310,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         internal int GenerationWaits { get; private set; }
 
+        internal List<long> ObservedGenerationWaits { get; } = [];
+
         internal int ActiveLeases => Volatile.Read(ref _activeLeases);
 
         internal int MaximumActiveLeases => Volatile.Read(ref _maximumActiveLeases);
@@ -345,6 +348,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             CancellationToken cancellationToken)
         {
             GenerationWaits++;
+            ObservedGenerationWaits.Add(observedGeneration);
             cancellationToken.ThrowIfCancellationRequested();
             long next = Interlocked.Increment(ref _generation);
             await Task.Yield();
