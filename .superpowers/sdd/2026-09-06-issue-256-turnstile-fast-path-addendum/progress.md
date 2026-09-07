@@ -142,3 +142,14 @@ proposed H remains subject to independent review.
 Additional deferred Minor review finding for final triage (not changed in fix round 2):
 
 - Ensure subprocess-timeout cleanup terminates and reaps the timed-out child before fixture cleanup.
+- Extend the real delayed-worker regression's cleanup guard around its startup and controller-join
+  assertions so an assertion failure cannot leave the deliberately blocked worker unreleased.
+
+Task A: fix round 1/5 (6 original findings addressed, teardown witness remained open, one live-worker
+handle-disposal Important introduced; commits `7c5c0c0d..37244b88`).
+
+Task A: fix round 2/5 (remaining teardown/witness finding and live-worker handle-disposal regression
+addressed; commits `37244b88..ed66cf55`).
+
+Task A: complete (implementation H `f51ac3f84c3b408510e448311d7a5e15bdbc041e`, report tip
+`ed66cf55a3ca038ccccb98273e884fed268c1170`, scoped re-review clean with four deferred Minors).
