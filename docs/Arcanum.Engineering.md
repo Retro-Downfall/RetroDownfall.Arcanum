@@ -799,6 +799,8 @@ dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.
 ./scripts/verify-aot-il-warnings.sh
 ```
 
+The hosted Grimoire producer inventory is a bidirectional source contract, not a checklist. Any application-owned `IHostedService` registration, owned DI scope, live-Grimoire connection route, provider call, filesystem access, or maintenance effect frontier added or removed under `src/` must update `HostedGrimoireProducerInventory` in the same change. `HostedGrimoireProducerInventoryTests` compiles the real generated production tree and fails for both an undisclosed site and a stale catalog entry; an exact ordinary-work kind or a concrete pre-readiness, stopped-host, owner-bound, or effect-free proof is mandatory for every operation.
+
 Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](docs/Arcanum.DESIGN.md#136-reliable-editing-loop-contract-matrix). Do not use `workspace_check` as the bootstrap verifier for an untrusted repository: it executes repository-authored code and requires explicit feature enablement, trusted workspace bytes, and an eligible macOS containment/runtime chain. Its Ward record is informational.
 
 ---

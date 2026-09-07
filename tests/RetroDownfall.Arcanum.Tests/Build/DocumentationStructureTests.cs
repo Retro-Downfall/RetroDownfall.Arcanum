@@ -17,6 +17,22 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 [Collection("ApiHost")]
 public sealed class DocumentationStructureTests
 {
+    [Theory]
+    [InlineData("docs/Arcanum.DESIGN.md", "**Complete hosted-producer inventory (23 services).**")]
+    [InlineData("docs/Arcanum.DESIGN.md", "one effect group per existing 64-line accounting page")]
+    [InlineData("docs/Arcanum.DESIGN.md", "the actual shared global-initialization task")]
+    [InlineData("docs/Arcanum.Engineering.md", "The hosted Grimoire producer inventory is a bidirectional source contract")]
+    [InlineData("README.md", "Ordinary background work stays on the queue-free fast path")]
+    public void Hosted_maintenance_contract_keeps_its_owning_document_anchors(
+        string relativePath,
+        string anchor)
+    {
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string document = File.ReadAllText(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+
+        Assert.Contains(anchor, document, StringComparison.Ordinal);
+    }
 
     private static readonly Regex NumberedHeading = new(
         @"^(?<hashes>\#{2,6}) (?<number>\d+(?:\.\d+)*)\.? ",

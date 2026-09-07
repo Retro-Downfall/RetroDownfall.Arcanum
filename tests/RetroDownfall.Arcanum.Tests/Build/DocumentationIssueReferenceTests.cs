@@ -29,6 +29,25 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 public sealed class DocumentationIssueReferenceTests
 {
+    [Fact]
+    public void Parent_admission_design_records_the_current_delivery_boundary()
+    {
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string path = Path.Combine(
+            root,
+            "docs",
+            "superpowers",
+            "specs",
+            "2026-08-31-issue-239-grimoire-admission-design.md");
+
+        string document = File.ReadAllText(path);
+
+        Assert.Contains(
+            "**Status:** Approved umbrella; #243/#244 integrated; #245–#256 delivered; #257 and parent #239 remain open.",
+            document,
+            StringComparison.Ordinal);
+    }
 
     /// <summary>Documents that must stand on their own, so neither exempt document appears here.</summary>
     private static readonly string[] GovernedDocuments =

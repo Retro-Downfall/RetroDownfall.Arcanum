@@ -131,6 +131,10 @@ key-by-key reference.
   from where it stopped rather than starting over (issue #254). Saga extraction now does the same at
   page boundaries: committed pages stay paid for, ordered per-turn provenance intervals wait through
   maintenance, and provider work resumes at the first unpaid page after reopening (issue #255).
+  Ordinary background work stays on the queue-free fast path; all 23 registered background services
+  now either join the maintenance drain before opening resources or carry a narrow startup,
+  stopped-host, owner-bound, or effect-free proof. Maintenance pays the waiting cost, while retained
+  jobs keep their identity and completed provider work instead of creating a reopen rush (issue #256).
 - **Your API, not a bespoke one.** An OpenAI Chat Completions compatibility subset means existing
   clients and SDKs work against `arcanum serve` unchanged.
 - **Bring the providers you already pay for.** Any OpenAI-compatible HTTP endpoint, plus opt-in
