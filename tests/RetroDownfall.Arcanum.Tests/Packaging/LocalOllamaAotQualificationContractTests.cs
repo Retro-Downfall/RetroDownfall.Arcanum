@@ -7,6 +7,12 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 public sealed class LocalOllamaAotQualificationContractTests
 {
+    private const string QualifiedImageSha256 =
+        "88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0";
+
+    private const string RetiredImageSha256 =
+        "0495a19041de6db44a4a8eca3b5117e6b1ff0ce14b80a22134bb9d65a7f87b22";
+
     private const string OptInVariable = "ARCANUM_RUN_LOCAL_OLLAMA_AOT_QUALIFICATION";
 
     private const string QualificationClass = "PublishedArcanumOllamaQualificationTests";
@@ -51,9 +57,40 @@ public sealed class LocalOllamaAotQualificationContractTests
         Assert.Contains("trap - EXIT", wrapper, StringComparison.Ordinal);
         Assert.Contains("exit \"$final_status\"", wrapper, StringComparison.Ordinal);
         Assert.Contains("could not remove local qualification temporary directory", wrapper, StringComparison.Ordinal);
-        Assert.Contains("0495a19041de6db44a4a8eca3b5117e6b1ff0ce14b80a22134bb9d65a7f87b22", wrapper, StringComparison.Ordinal);
+        Assert.Contains(QualifiedImageSha256, wrapper, StringComparison.Ordinal);
         Assert.DoesNotContain("dotnet publish", wrapper, StringComparison.Ordinal);
         Assert.DoesNotContain("ollama serve", wrapper, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Qualified_vision_fixture_digest_is_rebaselined_consistently()
+    {
+        string root = FindRepositoryRoot();
+        string[] governedPaths =
+        [
+            Path.Combine(root, "scripts", WrapperName),
+            Path.Combine(
+                root,
+                "tests",
+                "RetroDownfall.Arcanum.Tests",
+                "Packaging",
+                "PublishedArcanumOllamaQualificationTests.cs"),
+            Path.Combine(
+                root,
+                "tests",
+                "RetroDownfall.Arcanum.Tests",
+                "Packaging",
+                "PublishedApphostVerificationScriptTests.cs"),
+            Path.Combine(root, "docs", "Arcanum.DESIGN.md"),
+        ];
+
+        foreach (string governedPath in governedPaths)
+        {
+            string contents = File.ReadAllText(governedPath);
+
+            Assert.Contains(QualifiedImageSha256, contents, StringComparison.Ordinal);
+            Assert.DoesNotContain(RetiredImageSha256, contents, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -228,7 +265,7 @@ public sealed class LocalOllamaAotQualificationContractTests
             "The executable qualification path must reject GitHub Actions before reading inputs or contacting Ollama.");
         Assert.Contains("ARCANUM_PUBLISHED_EXECUTABLE", test, StringComparison.Ordinal);
         Assert.Contains("ARCANUM_OLLAMA_QUALIFICATION_IMAGE", test, StringComparison.Ordinal);
-        Assert.Contains("0495a19041de6db44a4a8eca3b5117e6b1ff0ce14b80a22134bb9d65a7f87b22", test, StringComparison.Ordinal);
+        Assert.Contains(QualifiedImageSha256, test, StringComparison.Ordinal);
         Assert.Contains("AssertNativeBinary", test, StringComparison.Ordinal);
         string guards = File.ReadAllText(
             Path.Combine(root, "tests", "RetroDownfall.Arcanum.Tests", "Packaging", "LocalOllamaQualificationGuards.cs"));
@@ -251,6 +288,21 @@ public sealed class LocalOllamaAotQualificationContractTests
         Assert.Contains("opaque-input.dat", guards, StringComparison.Ordinal);
         Assert.DoesNotContain("dominant sign color", guards, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("AssertEncryptedAttachmentPayloads", test, StringComparison.Ordinal);
+
+        const string snapshotCopy = "File.Copy(sourceImage, isolatedImage, overwrite: false);";
+        const string snapshotVerification = "AssertStopSignImage(isolatedImage);";
+        const string snapshotRead = "File.ReadAllBytesAsync(isolatedImage)";
+
+        Assert.Contains(snapshotCopy, test, StringComparison.Ordinal);
+        Assert.Contains(snapshotVerification, test, StringComparison.Ordinal);
+        Assert.Contains(snapshotRead, test, StringComparison.Ordinal);
+        Assert.True(
+            test.IndexOf(snapshotCopy, StringComparison.Ordinal)
+                < test.IndexOf(snapshotVerification, StringComparison.Ordinal)
+            && test.IndexOf(snapshotVerification, StringComparison.Ordinal)
+                < test.IndexOf(snapshotRead, StringComparison.Ordinal),
+            "The private image snapshot must be reverified before it becomes the sole vision input.");
+        Assert.DoesNotContain("ReadAllBytesAsync(sourceImage)", test, StringComparison.Ordinal);
         Assert.Contains("AggregateException", test, StringComparison.Ordinal);
         Assert.Contains("cleanup", test, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("HostCleanupAttemptBudget", test, StringComparison.Ordinal);

@@ -294,7 +294,7 @@ public sealed class PublishedApphostVerificationScriptTests
     internal sealed class ScriptFixture : IDisposable
     {
         private const string ExpectedImageSha256 =
-            "0495a19041de6db44a4a8eca3b5117e6b1ff0ce14b80a22134bb9d65a7f87b22";
+            "88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0";
 
         private readonly string _root;
 

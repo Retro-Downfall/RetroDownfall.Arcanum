@@ -58,7 +58,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
         + "and reply with exactly MARKER=<conversation marker>; TOKEN=<CURRENT_TOKEN> and no other text.";
 
     private const string RequiredImageSha256 =
-        "0495a19041de6db44a4a8eca3b5117e6b1ff0ce14b80a22134bb9d65a7f87b22";
+        "88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0";
 
     private static readonly TimeSpan HostStartupBudget = TimeSpan.FromMinutes(3);
 
@@ -134,9 +134,10 @@ public sealed class PublishedArcanumOllamaQualificationTests
 
             await File.WriteAllTextAsync(sourceFact, $"CURRENT_TOKEN={wrongToken}\n");
             File.Copy(sourceImage, isolatedImage, overwrite: false);
+            AssertStopSignImage(isolatedImage);
             byte[] firstFactBytes = Encoding.UTF8.GetBytes($"CURRENT_TOKEN={wrongToken}\n");
             byte[] secondFactBytes = Encoding.UTF8.GetBytes($"CURRENT_TOKEN={rightToken}\n");
-            byte[] imageBytes = await File.ReadAllBytesAsync(sourceImage);
+            byte[] imageBytes = await File.ReadAllBytesAsync(isolatedImage);
 
             portReservation = new TcpListener(IPAddress.Loopback, 0);
 
