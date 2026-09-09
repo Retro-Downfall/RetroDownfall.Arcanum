@@ -1125,6 +1125,8 @@ This boundary avoids EF Core's experimental Native AOT query compiler rather tha
 
 The local `dotnet-ef` manifest is pinned to the same version as `Microsoft.EntityFrameworkCore.Design` and the runtime provider. Regenerating the model always starts from `OnModelCreating`, not from the previous generated model, and uses `--nativeaot` so the checked-in state model is the one the shipping runtime requires.
 
+EF Core 10's SQLite compiled-model mappings can otherwise obtain their default value comparers through runtime generic reflection, which fails after Native AOT compilation. `Generated/NativeAotSqliteTypeMappings.cs` is the single removable compatibility boundary: it shadows only the provider mapping names emitted by the pinned optimizer and clones those mappings with statically closed value, key, and provider comparers. The UTC mappings use the same closed-comparer contract through `NativeAotUtcInstantTypeMapping<T>`. A syntax-aware source guard and the shipping AOT launch proof fail if either boundary is lost. Issue #265 owns removal of this layer when Arcanum deliberately adopts stable .NET and EF Core 11, whose generic type mappings contain the upstream fix; regeneration alone must not silently remove or bypass it before then.
+
 ### 9.4 AOT-safe implementation discipline for new code
 
 - Every HTTP payload type needs a `[JsonSerializable]` registration on `ArcanumJsonContext`.

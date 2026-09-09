@@ -1266,6 +1266,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Generated/EntryEntityType.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/EntryUnsafeAccessors.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/MageSettingEntityType.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/MageSettingUnsafeAccessors.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Generated/NativeAotSqliteTypeMappings.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/PromptEntityType.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/PromptUnsafeAccessors.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/SessionEntityType.cs

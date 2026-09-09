@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -6,6 +7,43 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 
 public sealed class NativeAotCompiledModelGuardTests
 {
+    [Fact]
+    public void Every_compiled_model_type_mapping_closes_its_default_comparer_generic()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        (string File, string Mapping, string ClrType)[] expectedMappings =
+        [
+            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteGuidTypeMapping", "Guid"),
+            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteStringTypeMapping", "string"),
+            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteDecimalTypeMapping", "decimal"),
+            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteDateTimeTypeMapping", "DateTime"),
+            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteDateTimeOffsetTypeMapping", "DateTimeOffset"),
+            ("Data/UtcInstantTypeMappings.cs", "UtcDateTimeTypeMapping", "DateTime"),
+            ("Data/UtcInstantTypeMappings.cs", "UtcDateTimeOffsetTypeMapping", "DateTimeOffset"),
+        ];
+
+        foreach ((string relativeFile, string mapping, string clrType) in expectedMappings)
+        {
+            string path = Path.Combine(
+                repositoryRoot,
+                "src",
+                "RetroDownfall.Arcanum.Infrastructure",
+                relativeFile);
+
+            Assert.True(
+                File.Exists(path),
+                $"{relativeFile} must close the {mapping} comparer generic for Native AOT.");
+
+            CompilationUnitSyntax root = CSharpSyntaxTree.ParseText(File.ReadAllText(path))
+                .GetCompilationUnitRoot();
+
+            Assert.True(
+                HasClosedGenericComparerBoundary(root, mapping, clrType),
+                $"{relativeFile} must construct {mapping} through a closed {clrType} comparer "
+                + "boundary so Native AOT never uses MakeGenericMethod().");
+        }
+    }
+
     [Fact]
     public void Every_mapped_entity_uses_its_generated_native_aot_unsafe_accessors()
     {
@@ -156,6 +194,53 @@ public sealed class NativeAotCompiledModelGuardTests
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private static bool HasClosedGenericComparerBoundary(
+        CompilationUnitSyntax root,
+        string mappingName,
+        string clrType)
+    {
+        ClassDeclarationSyntax? mapping = root.DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .SingleOrDefault(type => type.Identifier.ValueText.Equals(mappingName, StringComparison.Ordinal));
+
+        if (mapping is null)
+        {
+            return false;
+        }
+
+        string? boundaryName = mapping.DescendantNodes()
+            .OfType<GenericNameSyntax>()
+            .Where(static generic => generic.Identifier.ValueText is
+                "WithClosedComparers" or "NativeAotUtcInstantTypeMapping")
+            .Where(static generic => generic.TypeArgumentList.Arguments.Count == 1)
+            .Where(generic => generic.TypeArgumentList.Arguments[0]
+                .ToString()
+                .Equals(clrType, StringComparison.Ordinal))
+            .Select(static generic => generic.Identifier.ValueText)
+            .SingleOrDefault();
+
+        if (boundaryName is null)
+        {
+            return false;
+        }
+
+        IEnumerable<SyntaxNode> methodBoundaries = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(method => method.Identifier.ValueText.Equals(boundaryName, StringComparison.Ordinal))
+            .Where(static method => method.TypeParameterList?.Parameters.Count == 1);
+        IEnumerable<SyntaxNode> typeBoundaries = root.DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .Where(type => type.Identifier.ValueText.Equals(boundaryName, StringComparison.Ordinal))
+            .Where(static type => type.TypeParameterList?.Parameters.Count == 1);
+
+        return methodBoundaries
+            .Concat(typeBoundaries)
+            .SelectMany(static boundary => boundary.DescendantNodes().OfType<GenericNameSyntax>())
+            .Count(static generic => generic.Identifier.ValueText.Equals("CreateDefault", StringComparison.Ordinal)
+                && generic.TypeArgumentList.Arguments.Count == 1
+                && generic.TypeArgumentList.Arguments[0].ToString().Equals("T", StringComparison.Ordinal)) >= 3;
     }
 }
 
