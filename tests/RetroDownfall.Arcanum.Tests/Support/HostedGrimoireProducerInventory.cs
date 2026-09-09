@@ -991,7 +991,7 @@ internal static class HostedGrimoireProducerInventory
         Lifecycle("Hosting", "PidFileService", HostedProducerAuthorityKind.PreReadinessStartup, "awaited process PID-file startup", HostedProducerAuthorityKind.StoppedHost, "process PID-file shutdown"),
         new("LongRunningOperationStartupHostedService",
         [
-            AtCall(Operation("Operations", "LongRunningOperationStartupHostedService", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null, "awaited readiness reconciliation budget"), "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationReconciler.ReconcileAsync", 0, "reconciler.ReconcileAsync(startedAt, ownerId, ReconciliationPageSize, MaxStartupConcurrency, budget.Token)"),
+            AtCall(Operation("Operations", "LongRunningOperationStartupHostedService", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null, "awaited readiness reconciliation budget"), "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync", 0, "RunStartupPassAsync(startedAt, ownerId, budget.Token)"),
             Operation("Operations", "LongRunningOperationStartupHostedService", "ContinueInBackgroundAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.LongRunningOperationRecovery),
             Operation("Operations", "LongRunningOperationStartupHostedService", "StopAsync", HostedProducerAuthorityKind.EffectFree, null, "cancels and joins the background task"),
         ]),

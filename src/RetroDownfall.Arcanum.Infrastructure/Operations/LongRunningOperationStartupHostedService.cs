@@ -43,14 +43,9 @@ internal sealed class LongRunningOperationStartupHostedService(
 
         try
         {
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-            LongRunningOperationReconciler reconciler =
-                scope.ServiceProvider.GetRequiredService<LongRunningOperationReconciler>();
-            var summary = await reconciler.ReconcileAsync(
+            LongRunningOperationReconciliationSummary summary = await RunStartupPassAsync(
                 startedAt,
                 ownerId,
-                ReconciliationPageSize,
-                MaxStartupConcurrency,
                 budget.Token).ConfigureAwait(false);
             status.Record(startedAt, summary);
         }
@@ -70,6 +65,23 @@ internal sealed class LongRunningOperationStartupHostedService(
         _backgroundTask = Task.Run(
             () => ContinueInBackgroundAsync(_shutdown.Token),
             CancellationToken.None);
+    }
+
+    private async Task<LongRunningOperationReconciliationSummary> RunStartupPassAsync(
+        DateTimeOffset startedAt,
+        string ownerId,
+        CancellationToken cancellationToken)
+    {
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+        LongRunningOperationReconciler reconciler =
+            scope.ServiceProvider.GetRequiredService<LongRunningOperationReconciler>();
+
+        return await reconciler.ReconcileAsync(
+            startedAt,
+            ownerId,
+            ReconciliationPageSize,
+            MaxStartupConcurrency,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
