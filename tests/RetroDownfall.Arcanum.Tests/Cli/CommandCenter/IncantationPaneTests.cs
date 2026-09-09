@@ -99,30 +99,30 @@ public sealed class IncantationStoreTests
     public void Repeated_refreshes_of_an_unchanged_store_do_not_reformat_every_record()
     {
         // Every composer keystroke re-runs the layout pass, which re-copies the Incantations lines.
-        // Without memoization that re-parses each retained payload as JSON on the UI thread.
+        // Without memoization that re-parses each retained payload as JSON on the UI thread. Reference
+        // identity proves reuse directly without depending on machine speed or coverage instrumentation.
+        const int contentWidth = 60;
+
+        IncantationStore store = Fill(new IncantationStore(), 20);
         ObservableCollection<string> lines = new();
         List<string?> anchors = new();
-        Fill(new IncantationStore(), 20).CopyDisplayLinesTo(lines, anchors, 60);
 
-        IncantationStore store = Fill(new IncantationStore(), 300);
-        lines = new ObservableCollection<string>();
-        anchors = new List<string?>();
+        store.CopyDisplayLinesTo(lines, anchors, contentWidth);
 
-        Stopwatch cold = Stopwatch.StartNew();
-        store.CopyDisplayLinesTo(lines, anchors, 60);
-        cold.Stop();
+        IReadOnlyList<IncantationRecord> records = store.Snapshot();
+        IReadOnlyList<string>[] cachedBlocks = records
+            .Select(record => record.DisplayLines(contentWidth))
+            .ToArray();
 
-        Stopwatch warm = Stopwatch.StartNew();
         for (int i = 0; i < 20; i++)
         {
-            store.CopyDisplayLinesTo(lines, anchors, 60);
+            store.CopyDisplayLinesTo(lines, anchors, contentWidth);
         }
 
-        warm.Stop();
-
-        Assert.True(
-            warm.Elapsed < cold.Elapsed * 5,
-            $"20 unchanged refreshes took {warm.ElapsedMilliseconds}ms after a first pass of {cold.ElapsedMilliseconds}ms.");
+        for (int i = 0; i < records.Count; i++)
+        {
+            Assert.Same(cachedBlocks[i], records[i].DisplayLines(contentWidth));
+        }
     }
 
     /// <summary>

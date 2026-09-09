@@ -47,11 +47,28 @@
 
     <DebuggerSupport>false</DebuggerSupport>
 
+    <DebugType>none</DebugType>
+
+    <NativeDebugSymbols>false</NativeDebugSymbols>
+
     <UseWindowsThreadPool>false</UseWindowsThreadPool>
 
     <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
 
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
+
+  </PropertyGroup>
+
+  <!-- EF Core 10 and Serilog publish known dependency-owned diagnostics even when Arcanum's
+       compiled model is closed for Native AOT. Keep ordinary shipping output warning-free, but
+       never trust this presentation layer as the audit: verify-aot-il-warnings.sh sets
+       ArcanumAotDiagnosticAudit=true, re-enables the diagnostics, and rejects every warning not
+       attributed to the reviewed dependency allowlist. IL2026 and IL3050 stay unsuppressed here so
+       a new incompatible call in Arcanum remains visible in every publish. -->
+
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' and '$(PublishAot)' == 'true' and '$(ArcanumAotDiagnosticAudit)' != 'true'">
+
+    <NoWarn>$(NoWarn);IL2104;IL3002;IL3053</NoWarn>
 
   </PropertyGroup>
 
@@ -64,6 +81,15 @@
   <ItemGroup>
 
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RuntimeIdentifier)' != '' and '$(PublishAot)' == 'true'">
+
+    <RuntimeHostConfigurationOption
+      Include="Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupported"
+      Value="false"
+      Trim="true" />
 
   </ItemGroup>
 

@@ -90,28 +90,23 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
         DbConnection connection,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         cancellationToken.ThrowIfCancellationRequested();
 
         if (connection.State != ConnectionState.Open)
         {
-
             throw new ArgumentException(
                 "Startup recovery adoption requires the already-open installation connection.",
                 nameof(connection));
-
         }
 
         AdoptedCandidate? retained = null;
 
         try
         {
-
             await using (DbCommand command = connection.CreateCommand())
             {
-
                 command.CommandText =
                     """
                     SELECT
@@ -162,84 +157,60 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     Result<AdoptedCandidate?> parsed = Parse(reader);
 
                     if (parsed.IsFailure)
                     {
-
                         return parsed;
-
                     }
 
                     if (parsed.Value is not { } owner)
                     {
-
                         continue;
-
                     }
 
                     if (retained is not null)
                     {
-
                         return Refusal();
-
                     }
 
                     retained = owner;
-
                 }
-
             }
 
             if (retained is { } adopted)
             {
-
                 try
                 {
-
                     _gate.AdoptDurableRecoveryOwner(
                         adopted.Owner,
                         scope: null,
                         cleanupOnlyHistoricalCampaign: false);
-
                 }
                 catch (ArgumentException)
                 {
-
                     return Refusal();
-
                 }
                 catch (InvalidOperationException)
                 {
-
                     return Refusal();
-
                 }
-
             }
 
             return Result<AdoptedCandidate?>.Success(retained);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception)
         {
-
             return Refusal();
-
         }
-
     }
 
     private static Result<AdoptedCandidate?> Parse(DbDataReader reader)
     {
-
         if (reader.GetValue(0) is not string rawId
             || !Guid.TryParseExact(rawId, "N", out Guid operationId)
             || !string.Equals(rawId, operationId.ToString("N"), StringComparison.Ordinal)
@@ -253,9 +224,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || reader.GetValue(4) is not long rawVersion
             || rawVersion is < int.MinValue or > int.MaxValue)
         {
-
             return Refusal();
-
         }
 
         LongRunningOperationState state = (LongRunningOperationState)(int)rawState;
@@ -279,17 +248,13 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || mutation && policy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete
             || factory && policy != LongRunningOperationRecoveryPolicy.RestartIdempotently)
         {
-
             return Refusal();
-
         }
 
         if (mutation && version is >= 0 and <= LastOrdinaryMutationCheckpointVersion
             || factory && version == 0)
         {
-
             return Result<AdoptedCandidate?>.Success(null);
-
         }
 
         if (state is not LongRunningOperationState.Running
@@ -297,9 +262,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             and not LongRunningOperationState.Cancelling
             and not LongRunningOperationState.ReconciliationRequired)
         {
-
             return Refusal();
-
         }
 
         int expectedVersion = mutation
@@ -319,16 +282,13 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || payloadLength is < 1 or > MaximumPayloadBytes
             || payload.Length != payloadLength)
         {
-
             return Refusal();
-
         }
 
         Result<CovenantErasureCheckpointState> checkpoint;
 
         if (mutation)
         {
-
             checkpoint = CovenantErasureCheckpointState.FromMutationCheckpoint(
                 operationId,
                 version,
@@ -337,20 +297,15 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
             if (!describesCovenantErasure)
             {
-
                 return Result<AdoptedCandidate?>.Success(null);
-
             }
-
         }
         else
         {
-
             checkpoint = CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 operationId,
                 version,
                 payload);
-
         }
 
         CovenantExclusiveOperation expectedOperation = mutation
@@ -373,7 +328,6 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
                     kind,
                     version,
                     revision)));
-
     }
 
     private static Result<AdoptedCandidate?> Refusal() =>
@@ -384,7 +338,6 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
     private static void Add(DbCommand command, string name, object value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -392,7 +345,5 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
         parameter.Value = value;
 
         _ = command.Parameters.Add(parameter);
-
     }
-
 }

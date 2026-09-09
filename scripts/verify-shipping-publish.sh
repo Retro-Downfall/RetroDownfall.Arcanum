@@ -169,6 +169,99 @@ if [[ ! -f "$EXECUTABLE" ]]; then
   exit 1
 fi
 
+if [[ "$RID" == osx-* ]]; then
+  for command in file otool; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+      echo "error: required command not found: $command" >&2
+      exit 2
+    fi
+  done
+
+  PUBLISH_ROOT="$(cd "$PUBLISH_DIR" && pwd -P)"
+  NON_PORTABLE_DEPENDENCIES=""
+  MACHO_COUNT=0
+  SYMLINK_MATCH=""
+
+  if ! SYMLINK_MATCH="$(find "$PUBLISH_DIR" -type l -print -quit)"; then
+    echo "error: could not inspect the Native AOT publish shape for symbolic links" >&2
+    exit 1
+  fi
+
+  if [[ -n "$SYMLINK_MATCH" ]]; then
+    echo "error: Native AOT publish contains a symbolic link; dependency closure must be self-contained" >&2
+    exit 1
+  fi
+
+  MACHO_INVENTORY="$WORK/macho-files.list"
+
+  if ! find "$PUBLISH_DIR" -type f -print0 > "$MACHO_INVENTORY"; then
+    echo "error: could not inspect the Native AOT publish shape for Mach-O files" >&2
+    exit 1
+  fi
+
+  while IFS= read -r -d '' MACHO_FILE; do
+    FILE_DESCRIPTION="$(file -b "$MACHO_FILE")"
+
+    if [[ "$FILE_DESCRIPTION" != *Mach-O* ]]; then
+      if [[ "$MACHO_FILE" == *.dylib ]]; then
+        NON_PORTABLE_DEPENDENCIES+="${MACHO_FILE#"$PUBLISH_ROOT"/}: not a Mach-O library"$'\n'
+      fi
+
+      continue
+    fi
+
+    MACHO_COUNT=$((MACHO_COUNT + 1))
+    MACHO_RELATIVE="${MACHO_FILE#"$PUBLISH_ROOT"/}"
+    INSTALL_NAME="$(otool -D "$MACHO_FILE" | tail -n +2 | head -n 1)"
+
+    if [[ -n "$INSTALL_NAME" ]]; then
+      MACHO_BASENAME="${MACHO_FILE##*/}"
+
+      case "$INSTALL_NAME" in
+        "$MACHO_BASENAME" | "@rpath/$MACHO_BASENAME" | "@loader_path/$MACHO_BASENAME" | "@executable_path/$MACHO_BASENAME")
+          ;;
+        *)
+          NON_PORTABLE_DEPENDENCIES+="$MACHO_RELATIVE: unsafe install name $INSTALL_NAME"$'\n'
+          ;;
+      esac
+    fi
+
+    LOAD_COMMAND_OUTPUT="$(otool -l "$MACHO_FILE")"
+
+    if [[ "$LOAD_COMMAND_OUTPUT" == *"LC_RPATH"* ]]; then
+      NON_PORTABLE_DEPENDENCIES+="$MACHO_RELATIVE: LC_RPATH is forbidden in a shipping binary"$'\n'
+    fi
+
+    DEPENDENCY_OUTPUT="$(otool -L "$MACHO_FILE")"
+
+    while read -r dependency _; do
+      if [[ -z "$dependency" || "$dependency" == "$INSTALL_NAME" ]]; then
+        continue
+      fi
+
+      case "$dependency" in
+        /usr/lib/* | /System/Library/*)
+          ;;
+        *)
+          NON_PORTABLE_DEPENDENCIES+="$MACHO_RELATIVE -> $dependency"$'\n'
+          ;;
+      esac
+    done < <(printf '%s\n' "$DEPENDENCY_OUTPUT" | tail -n +2)
+  done < "$MACHO_INVENTORY"
+
+  if [[ "$MACHO_COUNT" -eq 0 ]]; then
+    echo "error: Native AOT publish contains no Mach-O files" >&2
+    exit 1
+  fi
+
+  if [[ -n "$NON_PORTABLE_DEPENDENCIES" ]]; then
+    echo "error: non-portable macOS dependency found in the Native AOT publish closure:" >&2
+    printf '%s' "$NON_PORTABLE_DEPENDENCIES" >&2
+    echo "error: /opt/homebrew/, /usr/local/, unresolved tokenized paths, and LC_RPATH are never valid shipping inputs" >&2
+    exit 1
+  fi
+fi
+
 if [[ -f "$PUBLISH_DIR/RetroDownfall.Arcanum.Cli.dll" ]]; then
   echo "error: Native AOT must not ship RetroDownfall.Arcanum.Cli.dll" >&2
   exit 1

@@ -1201,6 +1201,50 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ProcessBatchAsync_RequiredToolChoiceWithoutTools_RecordsInvalidValueWithoutInference()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider intelligence = new();
+
+        BatchProcessingService service = CreateService(intelligence);
+
+        Guid inputFileId = await SeedInputFileAsync(
+            """{"custom_id":"required-without-tools","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"use a tool"}],"tool_choice":"required"}}""" + "\n");
+
+        BatchRecord batch = new(
+            Guid.NewGuid(),
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord? finished = await _batches.GetByIdAsync(batch.Id, CancellationToken.None);
+
+        Assert.NotNull(finished);
+        Assert.Equal(BatchStatuses.Completed, finished!.Status);
+        Assert.NotNull(finished.OutputFileId);
+        Assert.Null(finished.ErrorFileId);
+        Assert.Equal(0, intelligence.ExecutePromptCallCount);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId!.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        string outputContent = await ReadArtifactTextAsync(outputPath);
+
+        Assert.Contains("required-without-tools", outputContent, StringComparison.Ordinal);
+        Assert.Contains("invalid_value", outputContent, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task TickAsync_OldProgressingBatch_IsNotCancelledByWallClockAge()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);

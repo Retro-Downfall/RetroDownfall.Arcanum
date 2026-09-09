@@ -38,7 +38,6 @@ internal sealed class RecordingRecoveryDispatchSeam(
         ICovenantClosedRecoveryHandoff,
         IGrimoireOfflineTransitionHandlerDispatch
 {
-
     private SqliteConnection? _connection;
 
     internal bool Disposed =>
@@ -67,14 +66,11 @@ internal sealed class RecordingRecoveryDispatchSeam(
         string databasePath,
         CancellationToken cancellationToken)
     {
-
         steps.Add("unlock");
 
         if (failAt == "unlock")
         {
-
             return Result<GrimoireRecoveryUnlockedCatalog>.Failure(Refusal);
-
         }
 
         _connection = new SqliteConnection("Data Source=:memory:");
@@ -83,20 +79,15 @@ internal sealed class RecordingRecoveryDispatchSeam(
         // A double that recorded the step itself would pass a recovery pass that never closed anything.
         _connection.StateChange += (_, change) =>
         {
-
             if (change.CurrentState == ConnectionState.Closed)
             {
-
                 steps.Add("close");
-
             }
-
         };
 
         await _connection.OpenAsync(cancellationToken);
 
         return new GrimoireRecoveryUnlockedCatalog(_connection);
-
     }
 
     public Task<Result<ICovenantClosedRecoveryHandoff>> LoadAsync(
@@ -106,7 +97,6 @@ internal sealed class RecordingRecoveryDispatchSeam(
         GrimoireOfflineTransitionRecoveryEvidence evidence,
         CancellationToken cancellationToken)
     {
-
         steps.Add("load");
 
         Assert.Equal(ConnectionState.Open, recoveryConnection.State);
@@ -115,7 +105,6 @@ internal sealed class RecordingRecoveryDispatchSeam(
             failAt == "load"
                 ? Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal)
                 : Result<ICovenantClosedRecoveryHandoff>.Success(this));
-
     }
 
     public Task<Result> ConsumeAsync(
@@ -125,14 +114,12 @@ internal sealed class RecordingRecoveryDispatchSeam(
         SqliteConnection recoveryConnection,
         CancellationToken cancellationToken)
     {
-
         steps.Add("consume");
 
         Assert.Equal(ConnectionState.Open, recoveryConnection.State);
 
         return Task.FromResult(
             failAt == "consume" ? Result.Failure(Refusal) : Result.Success());
-
     }
 
     public Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
@@ -141,7 +128,6 @@ internal sealed class RecordingRecoveryDispatchSeam(
         LongRunningRecoveryOwnerEvidence ownerEvidence,
         CancellationToken cancellationToken)
     {
-
         // Recorded before the assertion so a probe still open at dispatch time fails as a wrong order
         // rather than as a missing step.
         steps.Add("dispatch");
@@ -156,10 +142,8 @@ internal sealed class RecordingRecoveryDispatchSeam(
             failAt == "dispatch"
                 ? Result<LongRunningOperationSettlementOutcome>.Failure(Refusal)
                 : Result<LongRunningOperationSettlementOutcome>.Success(settlement));
-
     }
 
     private static Error Refusal =>
         new(ErrorCodes.Covenant.ManualRecoveryRequired, "Recording seam refusal.");
-
 }

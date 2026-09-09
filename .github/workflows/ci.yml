@@ -326,6 +326,16 @@ jobs:
             -c Release --no-build --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # The shipping publish below is warning-free because it suppresses dependency summary
+      # diagnostics after this gate has classified the detailed warnings. Run the diagnostic profile
+      # on this native architecture first, or a win-x64-only first-party warning is invisible.
+      - name: Audit win-x64 Native AOT diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          rg --version
+          ./scripts/verify-aot-il-warnings.sh win-x64
+
       - name: Verify warning-free win-x64 shipping executable and provider-contract smoke
         shell: bash
         run: ./scripts/verify-shipping-publish.sh --rid win-x64
@@ -453,6 +463,16 @@ jobs:
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj `
             -c Release --no-build --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # This must execute on the arm64 SDK asserted above. The shipping publish deliberately uses
+      # its warning-free profile, so only this diagnostic profile can reject an arm64-only
+      # first-party IL/AOT warning before the product is accepted.
+      - name: Audit win-arm64 Native AOT diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          rg --version
+          ./scripts/verify-aot-il-warnings.sh win-arm64
 
       - name: Verify warning-free win-arm64 shipping executable and provider-contract smoke
         shell: bash

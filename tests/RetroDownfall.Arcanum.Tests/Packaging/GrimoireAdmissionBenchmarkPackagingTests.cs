@@ -264,6 +264,15 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             File.Exists(Path.Combine(Path.GetDirectoryName(hostProjectPath)!, "packages.lock.json")),
             "The outside-solution benchmark must carry its own locked restore graph.");
 
+        string catalogPath = Path.Combine(
+            Path.GetDirectoryName(hostProjectPath)!,
+            "grimoire-admission-input-catalog-v1.txt");
+
+        Assert.Contains(
+            "R\tDirectory.Build.targets",
+            File.ReadAllLines(catalogPath),
+            StringComparer.Ordinal);
+
         Assert.DoesNotContain(
             new[]
             {

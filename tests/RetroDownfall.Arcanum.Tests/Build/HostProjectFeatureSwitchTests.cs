@@ -1,4 +1,7 @@
+using System.IO.Compression;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Xml.Linq;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -31,6 +34,591 @@ public sealed class HostProjectFeatureSwitchTests
                 (string?)element.Attribute("Name"),
                 "RejectUnsupportedArcanumNativeAotPublish",
                 StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Shipping_aot_uses_trim_visible_mvc_metadata_configuration_without_native_debug_symbols()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string projectPath = Path.Combine(
+            repositoryRoot,
+            "src",
+            "RetroDownfall.Arcanum.Cli",
+            "RetroDownfall.Arcanum.Cli.csproj");
+        XDocument project = XDocument.Load(projectPath);
+        XElement nativeDebugSymbols = Assert.Single(
+            project.Descendants(),
+            static element => element.Name.LocalName == "NativeDebugSymbols");
+        XElement debugType = Assert.Single(
+            project.Descendants(),
+            static element => element.Name.LocalName == "DebugType");
+
+        Assert.Equal("false", nativeDebugSymbols.Value.Trim(), ignoreCase: true);
+        Assert.Equal("none", debugType.Value.Trim(), ignoreCase: true);
+        Assert.True(IsRuntimeIdentifierGated(nativeDebugSymbols));
+        Assert.True(IsRuntimeIdentifierGated(debugType));
+
+        XElement mvcSwitch = Assert.Single(
+            project.Descendants(),
+            static element =>
+                element.Name.LocalName == "RuntimeHostConfigurationOption"
+                && string.Equals(
+                    (string?)element.Attribute("Include"),
+                    "Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupported",
+                    StringComparison.Ordinal));
+
+        Assert.Equal("false", (string?)mvcSwitch.Attribute("Value"), ignoreCase: true);
+        Assert.Equal("true", (string?)mvcSwitch.Attribute("Trim"), ignoreCase: true);
+        Assert.True(IsRuntimeIdentifierGated(mvcSwitch));
+
+        string program = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "src",
+            "RetroDownfall.Arcanum.Cli",
+            "Program.cs"));
+
+        Assert.Contains(
+            "Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupported",
+            program,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("IsEnhancedModelMetadataSupportEnabled", program, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Shipping_aot_suppresses_only_dependency_diagnostics_that_the_audit_reenables()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        XDocument project = XDocument.Load(Path.Combine(
+            repositoryRoot,
+            "src",
+            "RetroDownfall.Arcanum.Cli",
+            "RetroDownfall.Arcanum.Cli.csproj"));
+        XElement noWarn = Assert.Single(
+            project.Descendants(),
+            static element =>
+                element.Name.LocalName == "NoWarn"
+                && element.Value.Contains("IL2104", StringComparison.Ordinal));
+        string condition = (string?)noWarn.Parent?.Attribute("Condition") ?? string.Empty;
+        string[] diagnostics = noWarn.Value
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static diagnostic => diagnostic.StartsWith("IL", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(["IL2104", "IL3002", "IL3053"], diagnostics);
+        Assert.Contains("$(ArcanumAotDiagnosticAudit)", condition, StringComparison.Ordinal);
+        Assert.Contains("$(RuntimeIdentifier)", condition, StringComparison.Ordinal);
+
+        string audit = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "scripts",
+            "verify-aot-il-warnings.sh"));
+
+        Assert.Contains("-p:ArcanumAotDiagnosticAudit=true", audit, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MacOS_native_aot_uses_the_official_portable_runtime_pack()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string buildPropertiesPath = Path.Combine(repositoryRoot, "Directory.Build.props");
+        string buildTargetsPath = Path.Combine(repositoryRoot, "Directory.Build.targets");
+        XDocument buildProperties = XDocument.Load(buildPropertiesPath);
+        XDocument buildTargets = XDocument.Load(buildTargetsPath);
+
+        XElement portablePack = Assert.Single(
+            buildTargets.Descendants(),
+            static element =>
+                element.Name.LocalName == "PackageDownload"
+                && string.Equals(
+                    (string?)element.Attribute("Include"),
+                    "Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64",
+                    StringComparison.Ordinal));
+
+        Assert.Equal("[10.0.11]", (string?)portablePack.Attribute("Version"));
+        Assert.True(IsMacOsNativeAotGated(portablePack));
+
+        XElement auditedPackageVersion = Assert.Single(
+            buildTargets.Descendants(),
+            static element =>
+                element.Name.LocalName == "ArcanumPortableMacOsNativeAotPackageVersion");
+        XElement auditedPackageHash = Assert.Single(
+            buildTargets.Descendants(),
+            static element =>
+                element.Name.LocalName == "ArcanumPortableMacOsNativeAotPackageSha512");
+
+        Assert.Equal("10.0.11", auditedPackageVersion.Value.Trim());
+        Assert.Equal(
+            "NIe+WI0m5L4HrZ9b+wOhCUkrT3WZyIC8MQuHGzkvJyfUyR8ImMXYJIu3TiJsdLHUkgkqPK92AGQt7CQIc6vydQ==",
+            auditedPackageHash.Value.Trim());
+        Assert.True(IsMacOsNativeAotGated(auditedPackageVersion));
+        Assert.True(IsMacOsNativeAotGated(auditedPackageHash));
+
+        string[] localProperties = ((string?)buildTargets.Root?.Attribute("TreatAsLocalProperty") ?? string.Empty)
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string[] expectedLocalProperties =
+        [
+            "ArcanumPortableMacOsNativeAotPackageSha512",
+            "ArcanumPortableMacOsNativeAotPackageVersion",
+            "IlcFrameworkNativePath",
+            "IlcSdkPath",
+            "_ArcanumCryptoArchivePrepared",
+            "_ArcanumCryptoArchiveSource",
+            "_ArcanumMacOsSdkPath",
+            "_ArcanumPortableMacOsNativeAotPackagePath",
+            "_ArcanumPortableMacOsNativeAotPackageRoot",
+            "_ArcanumPortableMacOsNativeAotPackageSha512Path",
+            "_ArcanumPortableNativeAotPath",
+            "_ArcanumPreparedNativeAotPath",
+            "_ArcanumVerifiedPortableNativeAotContents",
+            "_ArcanumVerifiedPortableNativeAotPackage",
+            "_ArcanumVerifiedPortableNativeAotRoot",
+        ];
+
+        Assert.Equal(
+            expectedLocalProperties.Order(StringComparer.Ordinal),
+            localProperties.Order(StringComparer.Ordinal));
+        XElement collectPortablePack = Assert.Single(
+            portablePack.Ancestors(),
+            static element => string.Equals(
+                (string?)element.Attribute("Name"),
+                "CollectArcanumPortableMacOsNativeAotPack",
+                StringComparison.Ordinal));
+        Assert.Equal("CollectPackageDownloads", (string?)collectPortablePack.Attribute("BeforeTargets"));
+        Assert.DoesNotContain(
+            buildProperties
+                .Descendants()
+                .Concat(buildTargets.Descendants()),
+            static element =>
+                element.Name.LocalName == "PackageReference"
+                && string.Equals(
+                    (string?)element.Attribute("Include"),
+                    "Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64",
+                    StringComparison.Ordinal));
+
+        XElement portablePath = Assert.Single(
+            buildTargets.Descendants(),
+            static element => element.Name.LocalName == "_ArcanumPortableNativeAotPath");
+        XElement packageRoot = Assert.Single(
+            buildTargets.Descendants(),
+            static element =>
+                element.Name.LocalName == "_ArcanumPortableMacOsNativeAotPackageRoot");
+
+        Assert.Contains(
+            "$(NuGetPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64/$(ArcanumPortableMacOsNativeAotPackageVersion)",
+            packageRoot.Value,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            "$(_ArcanumVerifiedPortableNativeAotContents)runtimes/osx-arm64/native/",
+            portablePath.Value.Trim());
+        Assert.DoesNotContain(
+            "$(_ArcanumPortableMacOsNativeAotPackageRoot)",
+            portablePath.Value,
+            StringComparison.Ordinal);
+        Assert.True(IsMacOsNativeAotGated(portablePath));
+        Assert.True(IsMacOsNativeAotGated(packageRoot));
+
+        string[] linkerArguments = buildProperties
+            .Descendants()
+            .Where(static element => element.Name.LocalName == "LinkerArg")
+            .Concat(buildTargets
+                .Descendants()
+                .Where(static element => element.Name.LocalName == "LinkerArg"))
+            .Select(static element => (string?)element.Attribute("Include") ?? string.Empty)
+            .ToArray();
+
+        Assert.Contains("-Wl,-Z", linkerArguments, StringComparer.Ordinal);
+        Assert.Contains(
+            linkerArguments,
+            static argument => argument.Contains("$(_ArcanumMacOsSdkPath)/usr/lib", StringComparison.Ordinal));
+        Assert.Contains(
+            linkerArguments,
+            static argument => argument.Contains(
+                "$(_ArcanumMacOsSdkPath)/System/Library/Frameworks",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            linkerArguments,
+            static argument =>
+                argument.Contains("openssl", StringComparison.OrdinalIgnoreCase)
+                || argument.Contains("brotli", StringComparison.OrdinalIgnoreCase));
+
+        string targetsText = File.ReadAllText(buildTargetsPath);
+
+        Assert.Contains("ARCAOT001", targetsText, StringComparison.Ordinal);
+        Assert.Contains("ARCAOT002", targetsText, StringComparison.Ordinal);
+        Assert.Contains("ARCAOT003", targetsText, StringComparison.Ordinal);
+        Assert.Contains("ARCAOT005", targetsText, StringComparison.Ordinal);
+        Assert.Contains("ARCAOT006", targetsText, StringComparison.Ordinal);
+        Assert.Contains("ARCAOT007", targetsText, StringComparison.Ordinal);
+        Assert.Contains("ReadLinesFromFile", targetsText, StringComparison.Ordinal);
+        Assert.Contains("VerifyFileHash", targetsText, StringComparison.Ordinal);
+        Assert.Contains("HashEncoding=\"base64\"", targetsText, StringComparison.Ordinal);
+        Assert.Contains(".nupkg.sha512", targetsText, StringComparison.Ordinal);
+        Assert.Contains(
+            "$(BundledNETCoreAppPackageVersion)' != '$(ArcanumPortableMacOsNativeAotPackageVersion)",
+            targetsText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "@(_ArcanumPortableMacOsNativeAotPackageHash)' != '$(ArcanumPortableMacOsNativeAotPackageSha512)",
+            targetsText,
+            StringComparison.Ordinal);
+        Assert.Contains("libbrotlicommon.a", targetsText, StringComparison.Ordinal);
+        Assert.Contains("libz.a", targetsText, StringComparison.Ordinal);
+        Assert.Contains("nonportable.txt", targetsText, StringComparison.Ordinal);
+
+        XElement requirePortablePack = Assert.Single(
+            buildTargets.Descendants(),
+            static element => string.Equals(
+                (string?)element.Attribute("Name"),
+                "RequireArcanumPortableMacOsNativeAotPack",
+                StringComparison.Ordinal));
+        XElement verifiedRoot = Assert.Single(
+            requirePortablePack.Descendants(),
+            static element => element.Name.LocalName == "_ArcanumVerifiedPortableNativeAotRoot");
+        XElement verifiedPackage = Assert.Single(
+            requirePortablePack.Descendants(),
+            static element => element.Name.LocalName == "_ArcanumVerifiedPortableNativeAotPackage");
+        XElement verifiedContents = Assert.Single(
+            requirePortablePack.Descendants(),
+            static element => element.Name.LocalName == "_ArcanumVerifiedPortableNativeAotContents");
+        XElement cleanVerifiedRoot = Assert.Single(
+            requirePortablePack.Elements(),
+            static element =>
+                element.Name.LocalName == "RemoveDir"
+                && string.Equals(
+                    (string?)element.Attribute("Directories"),
+                    "$(_ArcanumVerifiedPortableNativeAotRoot)",
+                    StringComparison.Ordinal));
+        XElement stageVerifiedPackage = Assert.Single(
+            requirePortablePack.Elements(),
+            static element =>
+                element.Name.LocalName == "Copy"
+                && string.Equals(
+                    (string?)element.Attribute("SourceFiles"),
+                    "$(_ArcanumPortableMacOsNativeAotPackagePath)",
+                    StringComparison.Ordinal));
+        XElement[] packageHashChecks = requirePortablePack
+            .Elements()
+            .Where(static element => element.Name.LocalName == "VerifyFileHash")
+            .ToArray();
+        XElement cachedPackageHashCheck = Assert.Single(
+            packageHashChecks,
+            static element => string.Equals(
+                (string?)element.Attribute("File"),
+                "$(_ArcanumPortableMacOsNativeAotPackagePath)",
+                StringComparison.Ordinal));
+        XElement stagedPackageHashCheck = Assert.Single(
+            packageHashChecks,
+            static element => string.Equals(
+                (string?)element.Attribute("File"),
+                "$(_ArcanumVerifiedPortableNativeAotPackage)",
+                StringComparison.Ordinal));
+        XElement extractVerifiedPackage = Assert.Single(
+            requirePortablePack.Elements(),
+            static element => element.Name.LocalName == "Unzip");
+        XElement validateExtractedRuntime = Assert.Single(
+            requirePortablePack.Elements(),
+            static element => string.Equals(
+                (string?)element.Attribute("Code"),
+                "ARCAOT001",
+                StringComparison.Ordinal));
+
+        Assert.Contains("$(NativeIntermediateOutputPath)", verifiedRoot.Value, StringComparison.Ordinal);
+        Assert.Equal(
+            "$(_ArcanumVerifiedPortableNativeAotRoot)runtime-pack.nupkg",
+            verifiedPackage.Value.Trim());
+        Assert.Equal(
+            "$(_ArcanumVerifiedPortableNativeAotRoot)contents/",
+            verifiedContents.Value.Trim());
+        Assert.Equal(
+            "$(_ArcanumVerifiedPortableNativeAotPackage)",
+            (string?)stageVerifiedPackage.Attribute("DestinationFiles"));
+        Assert.Equal(
+            "$(_ArcanumVerifiedPortableNativeAotPackage)",
+            (string?)extractVerifiedPackage.Attribute("SourceFiles"));
+        Assert.Equal(
+            "$(_ArcanumVerifiedPortableNativeAotContents)",
+            (string?)extractVerifiedPackage.Attribute("DestinationFolder"));
+
+        XElement[] requireSteps = requirePortablePack.Elements().ToArray();
+
+        Assert.True(Array.IndexOf(requireSteps, cachedPackageHashCheck) < Array.IndexOf(requireSteps, cleanVerifiedRoot));
+        Assert.True(Array.IndexOf(requireSteps, cleanVerifiedRoot) < Array.IndexOf(requireSteps, stageVerifiedPackage));
+        Assert.True(Array.IndexOf(requireSteps, stageVerifiedPackage) < Array.IndexOf(requireSteps, stagedPackageHashCheck));
+        Assert.True(Array.IndexOf(requireSteps, stagedPackageHashCheck) < Array.IndexOf(requireSteps, extractVerifiedPackage));
+        Assert.True(Array.IndexOf(requireSteps, extractVerifiedPackage) < Array.IndexOf(requireSteps, validateExtractedRuntime));
+
+        XElement prepareCryptoArchive = Assert.Single(
+            buildTargets.Descendants(),
+            static element => string.Equals(
+                (string?)element.Attribute("Name"),
+                "PrepareArcanumMacOsCryptoArchive",
+                StringComparison.Ordinal));
+
+        Assert.Equal("SetupOSSpecificProps", (string?)prepareCryptoArchive.Attribute("BeforeTargets"));
+        Assert.Equal(
+            "RequireArcanumPortableMacOsNativeAotPack",
+            (string?)prepareCryptoArchive.Attribute("DependsOnTargets"));
+        Assert.Null(prepareCryptoArchive.Attribute("AfterTargets"));
+        XElement cryptoArchiveSource = Assert.Single(
+            prepareCryptoArchive.Descendants(),
+            static element => element.Name.LocalName == "_ArcanumCryptoArchiveSource");
+        XElement frameworkPath = Assert.Single(
+            prepareCryptoArchive.Descendants(),
+            static element => element.Name.LocalName == "IlcFrameworkNativePath");
+        XElement sdkPath = Assert.Single(
+            prepareCryptoArchive.Descendants(),
+            static element => element.Name.LocalName == "IlcSdkPath");
+
+        Assert.Equal(
+            "$(_ArcanumPortableNativeAotPath)libSystem.Security.Cryptography.Native.Apple.a",
+            cryptoArchiveSource.Value.Trim());
+        Assert.Equal("$(_ArcanumPreparedNativeAotPath)", frameworkPath.Value.Trim());
+        Assert.Equal(frameworkPath.Value.Trim(), sdkPath.Value.Trim());
+        Assert.True(IsMacOsNativeAotGated(frameworkPath));
+        Assert.True(IsMacOsNativeAotGated(sdkPath));
+        Assert.Contains("libSystem.Security.Cryptography.Native.Apple.a", targetsText, StringComparison.Ordinal);
+        Assert.Contains("<Copy", targetsText, StringComparison.Ordinal);
+        Assert.Contains("strip -S", targetsText, StringComparison.Ordinal);
+        Assert.Contains("_ArcanumPortableNativeAotFile", targetsText, StringComparison.Ordinal);
+        Assert.Contains(
+            "<IlcFrameworkNativePath>$(_ArcanumPreparedNativeAotPath)</IlcFrameworkNativePath>",
+            targetsText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "<IlcSdkPath>$(_ArcanumPreparedNativeAotPath)</IlcSdkPath>",
+            targetsText,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public Task MacOS_native_aot_hashes_the_package_bytes_instead_of_trusting_nugets_record() =>
+        AssertTamperedPackageRejectedAsync(
+            recordedHash:
+                "NIe+WI0m5L4HrZ9b+wOhCUkrT3WZyIC8MQuHGzkvJyfUyR8ImMXYJIu3TiJsdLHUkgkqPK92AGQt7CQIc6vydQ==",
+            overriddenHash: null,
+            expectedDiagnostic: "MSB3952");
+
+    [Fact]
+    public Task MacOS_native_aot_package_hash_pin_cannot_be_overridden_by_the_caller() =>
+        AssertTamperedPackageRejectedAsync(
+            recordedHash:
+                "scNTItQptu9RlVE4qf6hke/EcUc3CdkHaTCsgjdltzBvaYi6oo/VKckg9zzdQlCGqNH596bKGeEpTcW1ojKHag==",
+            overriddenHash:
+                "scNTItQptu9RlVE4qf6hke/EcUc3CdkHaTCsgjdltzBvaYi6oo/VKckg9zzdQlCGqNH596bKGeEpTcW1ojKHag==",
+            expectedDiagnostic: "ARCAOT007");
+
+    [Fact]
+    public async Task MacOS_native_aot_ignores_caller_path_redirects_and_uses_the_verified_package()
+    {
+        const string version = "10.0.11";
+        byte[] verifiedArchive = Encoding.UTF8.GetBytes("archive from the verified package");
+        byte[] tamperedArchive = Encoding.UTF8.GetBytes("tampered global package-cache extraction");
+        string temporaryRoot = Directory
+            .CreateTempSubdirectory("arcanum-nativeaot-consumption-")
+            .FullName;
+
+        try
+        {
+            string packageContentRoot = Path.Combine(temporaryRoot, "package-content");
+            string packageContentNativeRoot = Path.Combine(
+                packageContentRoot,
+                "runtimes",
+                "osx-arm64",
+                "native");
+            string packageRoot = Path.Combine(
+                temporaryRoot,
+                "packages",
+                "microsoft.netcore.app.runtime.nativeaot.osx-arm64",
+                version);
+            string globalCacheNativeRoot = Path.Combine(packageRoot, "runtimes", "osx-arm64", "native");
+            string packagePath = Path.Combine(
+                packageRoot,
+                $"microsoft.netcore.app.runtime.nativeaot.osx-arm64.{version}.nupkg");
+
+            Directory.CreateDirectory(packageContentNativeRoot);
+            Directory.CreateDirectory(globalCacheNativeRoot);
+            File.WriteAllBytes(
+                Path.Combine(packageContentNativeRoot, "libRuntime.WorkstationGC.a"),
+                verifiedArchive);
+            File.WriteAllBytes(Path.Combine(packageContentNativeRoot, "libbrotlicommon.a"), []);
+            File.WriteAllBytes(Path.Combine(packageContentNativeRoot, "libz.a"), []);
+            ZipFile.CreateFromDirectory(packageContentRoot, packagePath);
+
+            string packageHash = Convert.ToBase64String(SHA512.HashData(File.ReadAllBytes(packagePath)));
+
+            File.WriteAllText(packagePath + ".sha512", packageHash);
+            File.WriteAllBytes(
+                Path.Combine(globalCacheNativeRoot, "libRuntime.WorkstationGC.a"),
+                tamperedArchive);
+            File.WriteAllBytes(Path.Combine(globalCacheNativeRoot, "libbrotlicommon.a"), []);
+            File.WriteAllBytes(Path.Combine(globalCacheNativeRoot, "libz.a"), []);
+
+            string intermediateRoot = Path.Combine(temporaryRoot, "intermediate");
+            string callerControlledRoot = Path.Combine(temporaryRoot, "caller-controlled");
+            string testProject = Path.Combine(temporaryRoot, "VerifiedArchiveConsumption.proj");
+            string verifiedArchiveHash = Convert.ToBase64String(SHA256.HashData(verifiedArchive));
+            XDocument project = new(
+                new XElement(
+                    "Project",
+                    new XElement(
+                        "PropertyGroup",
+                        new XElement("RuntimeIdentifier", "osx-arm64"),
+                        new XElement("PublishAot", "true"),
+                        new XElement("NuGetPackageRoot", Path.Combine(temporaryRoot, "packages") + Path.DirectorySeparatorChar),
+                        new XElement("NativeIntermediateOutputPath", intermediateRoot + Path.DirectorySeparatorChar),
+                        new XElement("BundledNETCoreAppPackageVersion", version)),
+                    new XElement(
+                        "Import",
+                        new XAttribute("Project", Path.Combine(FindRepositoryRoot(), "Directory.Build.targets"))),
+                    new XElement(
+                        "PropertyGroup",
+                        new XElement("ArcanumPortableMacOsNativeAotPackageSha512", packageHash)),
+                    new XElement(
+                        "Target",
+                        new XAttribute("Name", "AssertVerifiedArchiveConsumption"),
+                        new XAttribute("DependsOnTargets", "RequireArcanumPortableMacOsNativeAotPack"),
+                        new XElement(
+                            "VerifyFileHash",
+                            new XAttribute(
+                                "File",
+                                "$(_ArcanumPortableNativeAotPath)libRuntime.WorkstationGC.a"),
+                            new XAttribute("Hash", verifiedArchiveHash),
+                            new XAttribute("Algorithm", "SHA256"),
+                            new XAttribute("HashEncoding", "base64")))));
+
+            project.Save(testProject);
+
+            global::System.Diagnostics.ProcessStartInfo start = new("dotnet")
+            {
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+
+            start.ArgumentList.Add("msbuild");
+            start.ArgumentList.Add(testProject);
+            start.ArgumentList.Add("-t:AssertVerifiedArchiveConsumption");
+            start.ArgumentList.Add(
+                $"-p:_ArcanumPortableNativeAotPath={globalCacheNativeRoot}{Path.DirectorySeparatorChar}");
+            start.ArgumentList.Add(
+                $"-p:_ArcanumPortableMacOsNativeAotPackageRoot={callerControlledRoot}{Path.DirectorySeparatorChar}");
+            start.ArgumentList.Add(
+                $"-p:_ArcanumPortableMacOsNativeAotPackagePath={Path.Combine(callerControlledRoot, "missing.nupkg")}");
+            start.ArgumentList.Add(
+                $"-p:_ArcanumPortableMacOsNativeAotPackageSha512Path={Path.Combine(callerControlledRoot, "missing.nupkg.sha512")}");
+            start.ArgumentList.Add("-nodeReuse:false");
+            start.ArgumentList.Add("-v:minimal");
+            start.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1";
+
+            using global::System.Diagnostics.Process process = new() { StartInfo = start };
+
+            Assert.True(process.Start());
+
+            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
+            Task<string> standardError = process.StandardError.ReadToEndAsync();
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+
+            await process.WaitForExitAsync(timeout.Token);
+
+            string output = await standardOutput + await standardError;
+
+            Assert.True(process.ExitCode == 0, output);
+            Assert.Equal(
+                tamperedArchive,
+                File.ReadAllBytes(Path.Combine(globalCacheNativeRoot, "libRuntime.WorkstationGC.a")));
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    private static async Task AssertTamperedPackageRejectedAsync(
+        string recordedHash,
+        string? overriddenHash,
+        string expectedDiagnostic)
+    {
+        const string version = "10.0.11";
+        string temporaryRoot = Directory
+            .CreateTempSubdirectory("arcanum-nativeaot-package-")
+            .FullName;
+
+        try
+        {
+            string packageRoot = Path.Combine(
+                temporaryRoot,
+                "microsoft.netcore.app.runtime.nativeaot.osx-arm64",
+                version);
+            string nativeRoot = Path.Combine(packageRoot, "runtimes", "osx-arm64", "native");
+
+            Directory.CreateDirectory(nativeRoot);
+            File.WriteAllBytes(Path.Combine(nativeRoot, "libRuntime.WorkstationGC.a"), []);
+            File.WriteAllBytes(Path.Combine(nativeRoot, "libbrotlicommon.a"), []);
+            File.WriteAllBytes(Path.Combine(nativeRoot, "libz.a"), []);
+            File.WriteAllText(
+                Path.Combine(
+                    packageRoot,
+                    $"microsoft.netcore.app.runtime.nativeaot.osx-arm64.{version}.nupkg.sha512"),
+                recordedHash);
+            File.WriteAllText(
+                Path.Combine(
+                    packageRoot,
+                    $"microsoft.netcore.app.runtime.nativeaot.osx-arm64.{version}.nupkg"),
+                "tampered package bytes");
+
+            string project = Path.Combine(
+                FindRepositoryRoot(),
+                "src",
+                "RetroDownfall.Arcanum.Cli",
+                "RetroDownfall.Arcanum.Cli.csproj");
+            global::System.Diagnostics.ProcessStartInfo start = new("dotnet")
+            {
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+
+            start.ArgumentList.Add("msbuild");
+            start.ArgumentList.Add(project);
+            start.ArgumentList.Add("-t:RequireArcanumPortableMacOsNativeAotPack");
+            start.ArgumentList.Add("-p:Configuration=Release");
+            start.ArgumentList.Add("-p:RuntimeIdentifier=osx-arm64");
+            start.ArgumentList.Add("-p:PublishAot=true");
+            start.ArgumentList.Add(
+                $"-p:NuGetPackageRoot={temporaryRoot}{Path.DirectorySeparatorChar}");
+
+            if (overriddenHash is not null)
+            {
+                start.ArgumentList.Add(
+                    $"-p:ArcanumPortableMacOsNativeAotPackageSha512={overriddenHash}");
+            }
+
+            start.ArgumentList.Add("-nodeReuse:false");
+            start.ArgumentList.Add("-v:minimal");
+            start.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1";
+
+            using global::System.Diagnostics.Process process = new() { StartInfo = start };
+
+            Assert.True(process.Start());
+
+            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
+            Task<string> standardError = process.StandardError.ReadToEndAsync();
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+
+            await process.WaitForExitAsync(timeout.Token);
+
+            string output = await standardOutput + await standardError;
+
+            Assert.NotEqual(0, process.ExitCode);
+            Assert.Contains(expectedDiagnostic, output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
     }
 
     [Fact]
@@ -145,6 +733,17 @@ public sealed class HostProjectFeatureSwitchTests
 
         return propertyCondition.Contains("$(RuntimeIdentifier", StringComparison.Ordinal)
             || groupCondition.Contains("$(RuntimeIdentifier", StringComparison.Ordinal);
+    }
+
+    private static bool IsMacOsNativeAotGated(XElement element)
+    {
+        string condition = string.Concat(
+            element
+                .AncestorsAndSelf()
+                .Select(static ancestor => (string?)ancestor.Attribute("Condition") ?? string.Empty));
+
+        return condition.Contains("osx-arm64", StringComparison.Ordinal)
+            && condition.Contains("$(PublishAot)", StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot([CallerFilePath] string sourceFilePath = "")

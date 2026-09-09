@@ -27,7 +27,6 @@ namespace RetroDownfall.Arcanum.Api;
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible HTTP streaming endpoints; covered via OpenAiV1EndpointTests integration smoke.
 internal static partial class OpenAiV1Endpoints
 {
-
     private static readonly byte[] SseDataPrefix = "data: "u8.ToArray();
 
     private static readonly byte[] SseLineBreak = "\n\n"u8.ToArray();
@@ -70,10 +69,6 @@ internal static partial class OpenAiV1Endpoints
     {
         _ = v1.MapGet("/models", HandleListModels).WithName("GetOpenAiModels");
     }
-
-    // Enrichment fields are additive: Arcanum runs its own server-side tool layer regardless of the
-    // resolved model/provider, so every model reports the same tool/streaming capability.
-    private const bool AllModelsSupportTools = true;
 
     private const bool AllModelsSupportStreaming = true;
 
@@ -120,7 +115,7 @@ internal static partial class OpenAiV1Endpoints
                 model.SupportsVision,
                 model.ProviderName,
                 ModelInfoBuilder.ToSnakeCaseProviderType(model.ProviderType),
-                AllModelsSupportTools,
+                model.SupportsTools,
                 AllModelsSupportStreaming,
                 model.WireDialect,
                 model.MaxBudgetTokens,
@@ -275,15 +270,15 @@ internal static partial class OpenAiV1Endpoints
 
         if (result.IsFailure)
         {
-            if (OpenAiStreamErrorMapper.IsReasoningValidationCode(result.Error.Code))
+            if (OpenAiStreamErrorMapper.IsRequestValidationCode(result.Error.Code))
             {
-                OpenAiErrorDetail reasoningError = OpenAiStreamErrorMapper.Map(result.Error);
+                OpenAiErrorDetail requestError = OpenAiStreamErrorMapper.Map(result.Error);
 
                 return JsonError(
-                    reasoningError.Message,
-                    reasoningError.Type,
-                    reasoningError.Code,
-                    reasoningError.Param,
+                    requestError.Message,
+                    requestError.Type,
+                    requestError.Code,
+                    requestError.Param,
                     ResolveOpenAiInferenceFailureStatusCode(result.Error.Code));
             }
 
@@ -406,30 +401,24 @@ internal static partial class OpenAiV1Endpoints
     /// </summary>
     private static OpenAiToolCall[]? MapBufferedToolCalls(List<PromptToolCall>? toolCalls, bool preserveProviderIds)
     {
-
         if (toolCalls is not { Count: > 0 })
         {
-
             return null;
-
         }
 
         OpenAiToolCall[] mapped = new OpenAiToolCall[toolCalls.Count];
 
         for (int i = 0; i < toolCalls.Count; i++)
         {
-
             PromptToolCall call = toolCalls[i];
 
             mapped[i] = new OpenAiToolCall(
                 Id: preserveProviderIds ? call.CallId : GenerateOpenAiToolCallId(),
                 Type: "function",
                 Function: new OpenAiFunctionCall(call.Name, call.ArgumentsJson));
-
         }
 
         return mapped;
-
     }
 
     /// <summary>
@@ -956,7 +945,6 @@ internal static partial class OpenAiV1Endpoints
         int deltaIndex,
         CancellationToken ct)
     {
-
         string id = toolCall.PreserveProviderCallId
             ? toolCall.CallId
             : GenerateOpenAiToolCallId();
@@ -975,7 +963,6 @@ internal static partial class OpenAiV1Endpoints
 
         for (int offset = firstChunkLength; offset < arguments.Length;)
         {
-
             int length = WholeCodePointChunkLength(arguments, offset, Math.Min(ToolCallArgumentChunkChars, arguments.Length - offset));
 
             OpenAiStreamToolCall nextDelta = new(
@@ -985,9 +972,7 @@ internal static partial class OpenAiV1Endpoints
             await WriteToolCallDeltaChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, nextDelta, ct).ConfigureAwait(false);
 
             offset += length;
-
         }
-
     }
 
     /// <summary>
@@ -1004,16 +989,12 @@ internal static partial class OpenAiV1Endpoints
     /// </remarks>
     private static int WholeCodePointChunkLength(string value, int offset, int length)
     {
-
         if (length <= 1 || offset + length >= value.Length)
         {
-
             return length;
-
         }
 
         return char.IsHighSurrogate(value[offset + length - 1]) ? length - 1 : length;
-
     }
 
     private static async Task WriteToolCallDeltaChunkAsync(
@@ -1026,7 +1007,6 @@ internal static partial class OpenAiV1Endpoints
         OpenAiStreamToolCall toolCallDelta,
         CancellationToken ct)
     {
-
         OpenAiChatChunk chunk = new(
             Id: completionId,
             ObjectKind: "chat.completion.chunk",
@@ -1044,7 +1024,6 @@ internal static partial class OpenAiV1Endpoints
             SystemFingerprint: systemFingerprint);
 
         await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
-
     }
 
     private static async Task WriteFinalContentChunkAsync(
@@ -1129,7 +1108,6 @@ internal static partial class OpenAiV1Endpoints
         await httpContext.Response.Body.WriteAsync(SseDone, ct).ConfigureAwait(false);
 
         await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1150,16 +1128,13 @@ internal static partial class OpenAiV1Endpoints
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo,
         CancellationToken cancellationToken)
     {
-
         buffer.Clear();
 
         buffer.Write(SseDataPrefix);
 
         await using (Utf8JsonWriter jsonWriter = new(buffer, new JsonWriterOptions { Indented = false }))
         {
-
             JsonSerializer.Serialize(jsonWriter, value, typeInfo);
-
         }
 
         buffer.Write(SseLineBreak);
@@ -1167,7 +1142,6 @@ internal static partial class OpenAiV1Endpoints
         await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
         await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static string ResolveFinishReason(string? hubFinishReason)
@@ -1184,20 +1158,16 @@ internal static partial class OpenAiV1Endpoints
 
     private static string BuildDefaultSystemFingerprint()
     {
-
         string version = RetroDownfall.Arcanum.Core.ArcanumBuildInfo.InformationalVersion;
 
         int plus = version.IndexOf('+');
 
         if (plus >= 0)
         {
-
             version = version[..plus];
-
         }
 
         return "arcanum-" + version.Trim();
-
     }
 
     private static IResult JsonError(string message, string type, string? code, string? param, int statusCode)
@@ -1254,121 +1224,6 @@ internal static partial class OpenAiV1Endpoints
     private static bool IsSupportedContentPartType(string? type) =>
         string.Equals(type, "text", StringComparison.OrdinalIgnoreCase)
         || string.Equals(type, "image_url", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsValidClientToolChoice(JsonElement toolChoice)
-    {
-
-        if (toolChoice.ValueKind == JsonValueKind.String)
-        {
-
-            ReadOnlySpan<char> text = toolChoice.GetString() ?? ReadOnlySpan<char>.Empty;
-
-            return text.Equals("auto", StringComparison.Ordinal)
-                || text.Equals("none", StringComparison.Ordinal)
-                || text.Equals("required", StringComparison.Ordinal);
-
-        }
-
-        if (toolChoice.ValueKind == JsonValueKind.Object
-            && toolChoice.TryGetProperty("type", out JsonElement typeElement)
-            && string.Equals(typeElement.GetString(), "function", StringComparison.Ordinal)
-            && toolChoice.TryGetProperty("function", out JsonElement functionElement)
-            && functionElement.TryGetProperty("name", out JsonElement nameElement)
-            && nameElement.ValueKind == JsonValueKind.String)
-        {
-
-            return !string.IsNullOrWhiteSpace(nameElement.GetString());
-
-        }
-
-        return false;
-
-    }
-
-    private static Result ValidateClientTools(OpenAiToolDefinition[] tools, int configuredMaxClientTools, int schemaMaxDepth)
-    {
-
-        int maxClientTools = ArcanumSettingClamps.ClientToolForwardingMaxClientTools(configuredMaxClientTools);
-
-        if (tools.Length > maxClientTools)
-        {
-
-            return Result.Failure(new Error(
-                ErrorCodes.ClientTools.TooMany,
-                $"Client-supplied tools exceed the maximum of {maxClientTools}."));
-
-        }
-
-        HashSet<string> seenNames = new(StringComparer.Ordinal);
-
-        for (int i = 0; i < tools.Length; i++)
-        {
-
-            OpenAiToolDefinition tool = tools[i];
-
-            if (!string.Equals(tool.Type, "function", StringComparison.Ordinal))
-            {
-
-                return Result.Failure(new Error(
-                    ErrorCodes.ClientTools.InvalidSchema,
-                    $"tools[{i}].type must be 'function'."));
-
-            }
-
-            if (string.IsNullOrWhiteSpace(tool.Function?.Name))
-            {
-
-                return Result.Failure(new Error(
-                    ErrorCodes.ClientTools.InvalidSchema,
-                    $"tools[{i}].function.name is required."));
-
-            }
-
-            if (!seenNames.Add(tool.Function.Name))
-            {
-
-                return Result.Failure(new Error(
-                    ErrorCodes.ClientTools.InvalidSchema,
-                    $"Duplicate tool function name '{tool.Function.Name}'."));
-
-            }
-
-            JsonElement? parameters = tool.Function?.Parameters;
-
-            if (parameters is { } parametersElement
-                && parametersElement.ValueKind is not JsonValueKind.Null
-                && parametersElement.ValueKind is not JsonValueKind.Undefined)
-            {
-
-                if (parametersElement.ValueKind != JsonValueKind.Object)
-                {
-
-                    return Result.Failure(new Error(
-                        ErrorCodes.ClientTools.InvalidSchema,
-                        $"tools[{i}].function.parameters must be a valid JSON Schema object."));
-
-                }
-
-                using JsonDocument parametersDocument = JsonDocument.Parse(parametersElement.GetRawText());
-
-                Result<JsonSchemaDefinition> parseResult = JsonSchemaHelper.Parse(parametersDocument, schemaMaxDepth);
-
-                if (parseResult.IsFailure)
-                {
-
-                    return Result.Failure(new Error(
-                        ErrorCodes.ClientTools.InvalidSchema,
-                        $"tools[{i}].function.parameters is not a valid JSON Schema: {parseResult.Error.Message}"));
-
-                }
-
-            }
-
-        }
-
-        return Result.Success();
-
-    }
 
     private static string MapClientToolsErrorCode(string internalCode) =>
         internalCode switch
@@ -1427,5 +1282,4 @@ internal static partial class OpenAiV1Endpoints
 
     internal static int ResolveOpenAiInferenceFailureStatusCodeForTests(string internalCode) =>
         ResolveOpenAiInferenceFailureStatusCode(internalCode);
-
 }

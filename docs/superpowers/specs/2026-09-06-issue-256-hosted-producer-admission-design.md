@@ -58,10 +58,17 @@ following #253–#255 rather than introducing a shared worker-outcome vocabulary
 
 ### 1.3 Scope exclusions
 
-This child adds no HTTP route, request or response DTO, CLI verb, option, configuration key, schema
-object, numbered migration, public status, JSON discriminator, or `ErrorCodes` member. It does not
-change provider selection, prompts, retention policy, Tapestry algorithms, Batch accounting policy,
-or long-running-operation recovery semantics.
+The hosted-producer architecture itself adds no HTTP route, CLI verb, option, schema object, numbered
+migration, public status, or JSON discriminator. It does not change retention policy, Tapestry
+algorithms, Batch accounting policy, or long-running-operation recovery semantics.
+
+Final qualification exposed user-approved adjacent defects that had to be repaired before #256 could
+ship: Native AOT startup/runtime-package provenance and compiled-model compatibility, redirected
+initial-run input handling, and factual per-model tool capability. Those repairs add the
+`supportsTools` model field, `ClientTools.ModelUnsupported`, and additive capability projection on the
+existing model-list DTO; they do not add a route or CLI verb. The declarative schema remains the
+authority and gains no #256-specific object; documented v8/v9/v10 convergence corrects the existing
+compiled-model/bootstrap contract rather than introducing a numbered runtime migration.
 
 The five-second work-drain timeout remains unchanged. A provider effect that legitimately wins the
 frontier may exceed it, in which case the transition fails safe with the existing
@@ -621,8 +628,12 @@ The implementation updates:
   statement to the now-complete hosted-producer set; and
 - the #239 design's delivery status without taking #257's full-host/final-qualification ownership.
 
-`docs/Arcanum.API.md`, `docs/Arcanum.Command.Reference.md`, and
-`docs/Compendium.README.md` do not change because this child changes no owned contract.
+The approved final-qualification repairs also update their owning documents:
+
+- `docs/Arcanum.API.md` for factual model tool capability and unsatisfiable `tool_choice` errors;
+- `docs/Arcanum.Command.Reference.md` for corrected initial-run input behavior; and
+- `docs/Compendium.README.md` for `providers.models.supportsTools` and the 85% security-cache
+  coverage floor selected by the user.
 
 After focused tests and review, the feature SHA is qualified locally with:
 

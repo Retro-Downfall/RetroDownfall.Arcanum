@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </summary>
 public interface IUnseenServantPacer
 {
-
     /// <summary>
     /// Applies a polling-interval override for a configured job and awaits its Grimoire write-through
     /// and asynchronous scope disposal. Genuine persistence failures warn while retaining the runtime override.
@@ -28,5 +27,4 @@ public interface IUnseenServantPacer
     /// on scheduler startup. Watermarks with <c>EffectiveIntervalMinutes == 0</c> (no override) are skipped.
     /// </summary>
     Task HydrateAsync(IReadOnlyList<UnseenServantWatermark> watermarks, CancellationToken cancellationToken = default);
-
 }

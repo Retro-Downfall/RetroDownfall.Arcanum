@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Daemons;
 
 public sealed class UnseenServantDaemonJobTests
 {
-
     [Fact]
     public void BuildDaemonStateName_IsDeterministicAndBounded()
     {
@@ -137,7 +136,6 @@ public sealed class UnseenServantDaemonJobTests
 
     private sealed class CapturingIntelligenceProvider : IArcanumIntelligenceProvider
     {
-
         public string LastPrompt { get; private set; } = string.Empty;
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
@@ -161,12 +159,10 @@ public sealed class UnseenServantDaemonJobTests
 
     private sealed class FakeUnseenServantPacer : IUnseenServantPacer
     {
-
         public Task<bool> SetDynamicIntervalAsync(string jobName, int intervalMinutes, CancellationToken cancellationToken = default) => Task.FromResult(true);
 
         public int GetEffectiveInterval(UnseenServantJob job) => job.IntervalMinutes;
 
         public Task HydrateAsync(IReadOnlyList<UnseenServantWatermark> watermarks, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
-
 }

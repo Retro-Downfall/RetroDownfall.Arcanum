@@ -21,6 +21,18 @@ public sealed class ShippingPublishVerificationScriptTests
         Assert.DoesNotContain("PublishReadyToRun", script, StringComparison.Ordinal);
         Assert.Contains("rg --no-config", script, StringComparison.Ordinal);
         Assert.Contains("verify-published-apphost.sh", script, StringComparison.Ordinal);
+        Assert.Contains("otool -L", script, StringComparison.Ordinal);
+        Assert.Contains("otool -D", script, StringComparison.Ordinal);
+        Assert.Contains("otool -l", script, StringComparison.Ordinal);
+        Assert.Contains("LC_RPATH", script, StringComparison.Ordinal);
+        Assert.Contains("find \"$PUBLISH_DIR\" -type f -print0", script, StringComparison.Ordinal);
+        Assert.Contains("non-portable macOS dependency", script, StringComparison.Ordinal);
+        Assert.Contains("/opt/homebrew/", script, StringComparison.Ordinal);
+        Assert.Contains("/usr/local/", script, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "/usr/lib/* | /System/Library/* | @rpath/*",
+            script,
+            StringComparison.Ordinal);
         Assert.Contains("--artifacts-path", apphostGate, StringComparison.Ordinal);
         Assert.Contains("rg --no-config", apphostGate, StringComparison.Ordinal);
         Assert.Contains("ARCANUM_PUBLISHED_EXECUTABLE", apphostGate, StringComparison.Ordinal);

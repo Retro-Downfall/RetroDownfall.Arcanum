@@ -34,7 +34,6 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 [Trait("Category", "Integration")]
 public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLifetime
 {
-
     private static readonly CancellationToken Token = CancellationToken.None;
 
     private readonly GrimoireFixture _fixture;
@@ -53,14 +52,11 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
 
     public LongRunningOperationMaintenanceLeaseAdoptionTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public async Task InitializeAsync()
     {
-
         await _workspace.InitializeAsync();
 
         _root = _workspace.CreateSubdir("lease-adoption");
@@ -74,40 +70,32 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
         await _db.Database.OpenConnectionAsync(Token);
 
         _store = new LongRunningOperationStore(_db, TestOrdinaryConnectionFactory.For(_db));
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         _lock?.Dispose();
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         await _workspace.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task An_unexpired_lease_refuses_the_ordinary_acquisition_and_admits_the_adoption()
     {
-
         RequireSqlCipher();
 
         LongRunningOperation crashed = await SeedLeasedAsync();
@@ -141,13 +129,11 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
         // Adoption is one revision, exactly as the ordinary acquisition is. The journal binds itself
         // to a floor rather than an equality precisely so this write is ordinary rather than fatal.
         Assert.Equal(crashed.Revision + 1, adopted.Operation.Revision);
-
     }
 
     [SkippableFact]
     public async Task A_terminal_row_stays_unadoptable()
     {
-
         RequireSqlCipher();
 
         LongRunningOperation crashed = await SeedLeasedAsync();
@@ -175,13 +161,11 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
         Assert.False(adopted.Acquired);
 
         Assert.Equal(LongRunningOperationState.Completed, adopted.Operation.State);
-
     }
 
     [SkippableFact]
     public async Task A_lock_held_for_another_root_refuses()
     {
-
         RequireSqlCipher();
 
         LongRunningOperation crashed = await SeedLeasedAsync();
@@ -202,7 +186,6 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
                 now,
                 now.AddMinutes(2),
                 Token));
-
     }
 
     private ILongRunningOperationMaintenanceLeaseAdoption Adoption() => _store;
@@ -216,7 +199,6 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
 
     private async Task<LongRunningOperation> SeedLeasedAsync()
     {
-
         LongRunningOperation created = await _store.CreateAsync(
             new LongRunningOperationCreateRequest(
                 LongRunningOperationKinds.DataRetentionMutation,
@@ -234,10 +216,8 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
         Assert.True(leased.Acquired);
 
         return leased.Operation;
-
     }
 
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
 }

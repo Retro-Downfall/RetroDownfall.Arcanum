@@ -8,7 +8,6 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 /// </summary>
 public static class ArcanumRuntimeDefaults
 {
-
     public const int RetainedLogFileCount = 7;
 
     public const long HostMaxRequestBodyBytes = 10L * 1024L * 1024L;
@@ -113,7 +112,6 @@ public static class ArcanumRuntimeDefaults
     public static HostRateLimitSettings HostRateLimit => new();
 
     public static HostAuditLogSettings HostAuditLog => new();
-
 }
 
 /// <summary>
@@ -122,7 +120,6 @@ public static class ArcanumRuntimeDefaults
 /// </summary>
 public static class ArcanumRuntimeSettings
 {
-
     public static IntelligenceSettings ResolveIntelligence(this ArcanumSettings settings)
     {
         IntelligenceSettings defaults = ArcanumRuntimeDefaults.Intelligence;
@@ -502,5 +499,4 @@ public static class ArcanumRuntimeSettings
             RedactToolArguments = policy.RedactToolArguments,
         };
     }
-
 }

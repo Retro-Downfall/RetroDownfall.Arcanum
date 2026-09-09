@@ -19,6 +19,7 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -2440,21 +2441,64 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The no-tools restart used to fire only on an English substring match against the
-    /// provider's error text, so a provider wording the same condition differently (this test's
-    /// "tool calling is not available for this model" -- deliberately missing "does not support
-    /// tools") never triggered it. The model entry's own declared SupportsTools: false is now an
-    /// independent, authoritative signal.
+    /// An explicit no-tools capability is known before provider I/O. Advertising the local tool
+    /// catalog anyway wastes startup work and can make a small-context model fail its context gate
+    /// before the compatibility restart ever reaches the provider.
     /// </summary>
     [Fact]
-    public async Task StreamToolUnsupported_DeclaredCapabilityWithoutMatchingSubstring_StillRetriesWithoutTools()
+    public async Task StreamToolUnsupported_DeclaredCapability_OmitsToolsFromFirstProviderCall()
     {
         ScriptingChatClient chat = new();
 
-        chat.EnqueueImmediateStreamFailure(
-            new InvalidOperationException("tool calling is not available for this model"));
+        chat.EnqueueStreamTokens("without-tools");
 
-        chat.EnqueueStreamTokens("retried");
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("large_remote_tool_catalog"));
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsTools: false)] }],
+        };
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "first call",
+                SkipSpellRouting = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("optional_tool")),
+                ],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\""),
+            });
+
+        Assert.Equal(1, chat.StreamingCallCount);
+
+        Assert.Equal(0, mcp.GetAvailableToolsCallCount);
+
+        Assert.Empty(ToolNames(chat.LastChatOptions));
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "without-tools");
+    }
+
+    [Theory]
+    [InlineData("\"required\"")]
+    [InlineData("\" REQUIRED \"")]
+    [InlineData("{\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}}")]
+    public async Task StreamToolUnsupported_RequiredClientToolChoice_FailsBeforeProviderCall(
+        string toolChoiceJson)
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("must-not-run");
 
         ArcanumSettings settings = DefaultSettings() with
         {
@@ -2462,18 +2506,525 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         };
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
+        JsonElement toolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson);
+
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
-            BaseRequest() with { Prompt = "retry stream", SkipSpellRouting = true, DisableMcpTools = true });
+            BaseRequest() with
+            {
+                Prompt = "must call a tool",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("get_weather")),
+                ],
+                ClientToolChoice = toolChoice,
+            });
 
-        Assert.Contains(
+        Assert.Equal(0, chat.StreamingCallCount);
+
+        IntelligenceEvent error = Assert.Single(
             events,
-            static e => e.Type == IntelligenceEventType.Status
-                && e.Message.Contains("does not support tools", StringComparison.OrdinalIgnoreCase));
+            static e => e.Type == IntelligenceEventType.Error);
 
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+        Assert.Equal("ClientTools.ModelUnsupported", error.Data);
 
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "retried");
+        Assert.Contains("does not support required tool calls", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task BufferedToolUnsupported_RequiredClientToolChoice_FailsBeforeProviderCall()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("must-not-run");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsTools: false)] }],
+        };
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "must call a tool",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("get_weather")),
+                ],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.ClientTools.ModelUnsupported, result.Error.Code);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+    }
+
+    [Theory]
+    [InlineData("\"required\"")]
+    [InlineData("{\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}}")]
+    public async Task BufferedToolUnsupported_RuntimeRejection_DoesNotDowngradeRequiredClientChoice(
+        string toolChoiceJson)
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueException(new InvalidOperationException("model does not support tools"));
+
+        chat.EnqueueText("must-not-retry-without-tools");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "must call a tool",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("get_weather")),
+                ],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.ClientTools.ModelUnsupported, result.Error.Code);
+
+        Assert.Equal(1, chat.BufferedCallCount);
+    }
+
+    [Theory]
+    [InlineData("\"required\"")]
+    [InlineData("{\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}}")]
+    public async Task StreamToolUnsupported_RuntimeRejection_DoesNotDowngradeRequiredClientChoice(
+        string toolChoiceJson)
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueImmediateStreamFailure(new InvalidOperationException("model does not support tools"));
+
+        chat.EnqueueStreamTokens("must-not-retry-without-tools");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "must call a tool",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("get_weather")),
+                ],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+            });
+
+        IntelligenceEvent error = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.ClientTools.ModelUnsupported, error.Data);
+
+        Assert.Equal(1, chat.StreamingCallCount);
+    }
+
+    [Theory]
+    [InlineData("\"required\"", false)]
+    [InlineData("{\"type\":\"function\",\"function\":{\"name\":\"write_file\"}}", true)]
+    public async Task BufferedClientToolChoice_FilteredRequirement_FailsBeforeProviderCall(
+        string toolChoiceJson,
+        bool retainDifferentTool)
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("must-not-run");
+
+        List<OpenAiToolDefinition> clientTools =
+        [
+            new OpenAiToolDefinition(
+                "function",
+                new OpenAiFunctionDefinition("write_file")),
+        ];
+
+        if (retainDifferentTool)
+        {
+            clientTools.Add(
+                new OpenAiToolDefinition(
+                    "function",
+                    new OpenAiFunctionDefinition("read_file_chunk")));
+        }
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "obey the required tool choice",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ForwardClientTools = true,
+                ClientTools = clientTools.ToArray(),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ToolPolicy = ToolPolicy.ReadOnlyTools,
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("ClientTools.ToolChoiceUnavailable", result.Error.Code);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+    }
+
+    [Theory]
+    [InlineData(ToolPolicy.ReadOnlyTools)]
+    [InlineData(ToolPolicy.NoTools)]
+    public async Task BufferedClientToolChoice_PolicyFilteredRequirement_FailsBeforeAuxiliaryRoutingCall(
+        ToolPolicy toolPolicy)
+    {
+        await CreateSpellWithDeclaredToolsAsync("routing-canary", []);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("""{"spellName":"routing-canary","entities":[]}""");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "reject before routing",
+                WorkingDirectory = _workspace.Root,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("write_file")),
+                ],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+                ToolPolicy = toolPolicy,
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.ClientTools.ToolChoiceUnavailable, result.Error.Code);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+    }
+
+    [Theory]
+    [InlineData(ToolPolicy.ReadOnlyTools)]
+    [InlineData(ToolPolicy.NoTools)]
+    public async Task StreamClientToolChoice_PolicyFilteredRequirement_FailsBeforeAuxiliaryRoutingCall(
+        ToolPolicy toolPolicy)
+    {
+        await CreateSpellWithDeclaredToolsAsync("routing-canary", []);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("""{"spellName":"routing-canary","entities":[]}""");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "reject before routing",
+                WorkingDirectory = _workspace.Root,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("write_file")),
+                ],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+                ToolPolicy = toolPolicy,
+            });
+
+        IntelligenceEvent error = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.ClientTools.ToolChoiceUnavailable, error.Data);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+    }
+
+    [Fact]
+    public async Task BufferedToolPolicy_NoTools_AdvertisesNoOptionalClientTools()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("completed without tools");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "do not advertise tools",
+                SkipSpellRouting = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("get_weather")),
+                ],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\""),
+                ToolPolicy = ToolPolicy.NoTools,
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(1, chat.BufferedCallCount);
+
+        Assert.Empty(ToolNames(chat.LastChatOptions));
+    }
+
+    [Fact]
+    public async Task BufferedClientTools_NullDefinition_ReturnsTypedValidationFailure()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("must-not-run");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "validate null tool",
+                SkipSpellRouting = true,
+                ForwardClientTools = true,
+                ClientTools = [null!],
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.ClientTools.InvalidSchema, result.Error.Code);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+    }
+
+    [Fact]
+    public async Task BufferedClientTools_DisabledFeature_ReturnsTypedFailureBeforeProviderCall()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("must-not-run");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Features = DefaultSettings().Features with { ClientTools = false },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "respect the feature gate",
+                SkipSpellRouting = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("get_weather")),
+                ],
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.ClientTools.Disabled, result.Error.Code);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+    }
+
+    [Fact]
+    public async Task StreamClientTools_NullDefinition_ReturnsTypedValidationFailure()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("must-not-run");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "validate null tool",
+                SkipSpellRouting = true,
+                ForwardClientTools = true,
+                ClientTools = [null!],
+            });
+
+        IntelligenceEvent error = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.ClientTools.InvalidSchema, error.Data);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+    }
+
+    [Fact]
+    public async Task StreamClientTools_DisabledFeature_ReturnsTypedFailureBeforeProviderCall()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("must-not-run");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Features = DefaultSettings().Features with { ClientTools = false },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "respect the feature gate",
+                SkipSpellRouting = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("get_weather")),
+                ],
+            });
+
+        IntelligenceEvent error = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.ClientTools.Disabled, error.Data);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+    }
+
+    [Theory]
+    [InlineData("{\"type\":7,\"function\":{\"name\":\"get_weather\"}}", ErrorCodes.ClientTools.InvalidSchema, true)]
+    [InlineData("\"required\"", ErrorCodes.ClientTools.ToolChoiceUnavailable, false)]
+    public async Task StreamClientToolChoice_PreflightFailure_PreservesTypedCode(
+        string toolChoiceJson,
+        string expectedCode,
+        bool includeTool)
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("must-not-run");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "preserve typed failure",
+                SkipSpellRouting = true,
+                ForwardClientTools = true,
+                ClientTools = includeTool
+                    ?
+                    [
+                        new OpenAiToolDefinition(
+                            "function",
+                            new OpenAiFunctionDefinition("get_weather")),
+                    ]
+                    : [],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+            });
+
+        IntelligenceEvent error = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(expectedCode, error.Data);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+    }
+
+    [Theory]
+    [InlineData("{\"type\":7,\"function\":{\"name\":\"get_weather\"}}")]
+    [InlineData("{\"type\":\"function\",\"function\":[]}")]
+    public async Task BufferedClientToolChoice_MalformedNestedKind_ReturnsTypedValidationFailure(
+        string toolChoiceJson)
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("must-not-run");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "validate the tool choice",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ForwardClientTools = true,
+                ClientTools =
+                [
+                    new OpenAiToolDefinition(
+                        "function",
+                        new OpenAiFunctionDefinition("get_weather")),
+                ],
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.ClientTools.InvalidSchema, result.Error.Code);
+
+        Assert.Equal(0, chat.BufferedCallCount);
     }
 
     [Fact]
@@ -8775,6 +9326,36 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ContextPreview_DeclaredNoTools_SkipsToolDiscoveryAndToolAccounting()
+    {
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("remote_tool"));
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsTools: false)] }],
+        };
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, mcp: mcp);
+
+        Result<ContextPreviewResult> preview = await wizard.PreviewContextAsync(
+            new ContextPreviewRequest(
+                Prompt: "inspect the no-tools turn",
+                Model: ModelName,
+                NoRetrieval: true),
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(preview.IsSuccess);
+
+        Assert.Equal(0, mcp.GetAvailableToolsCallCount);
+
+        Assert.DoesNotContain(preview.Value.Tools, static tool => tool.Included);
+    }
+
+    [Fact]
     public async Task ContextPreview_ExplicitSpellAndTransientAttachments_AreAssembledWithoutInferenceOrPersistence()
     {
         await CreateSpellAsync(
@@ -9242,6 +9823,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 // Lexicon-specific scenarios enable it explicitly.
                 Lexicon = false,
+
+                // Client-tool scenarios exercise the enabled path by default; dedicated tests set
+                // this false and prove the public native request cannot bypass the feature gate.
+                ClientTools = true,
             },
         };
     private static ArcanumSettings SettingsWithReasoning()
@@ -10420,6 +11005,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
     {
         public List<AITool> Tools { get; } = [];
 
+        public int GetAvailableToolsCallCount { get; private set; }
+
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -10439,8 +11026,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<McpServerInfo[]> GetAllStatusesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(Array.Empty<McpServerInfo>());
 
-        public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<AITool>>(Tools);
+        public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default)
+        {
+            GetAvailableToolsCallCount++;
+
+            return Task.FromResult<IReadOnlyList<AITool>>(Tools);
+        }
 
         public Task<AIFunction?> GetToolAsync(
             string serverName,

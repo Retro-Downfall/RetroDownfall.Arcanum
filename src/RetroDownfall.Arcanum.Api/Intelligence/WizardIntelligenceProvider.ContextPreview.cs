@@ -29,11 +29,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public sealed partial class WizardIntelligenceProvider
 {
-
     private static readonly AsyncLocal<Action<ContextPreviewAuxiliaryCall>?> PreviewAuxiliaryObserver = new();
 
     public async Task<Result<ContextPreviewResult>> PreviewContextAsync(
-
         ContextPreviewRequest request,
 
         ArcanumInvocationContext invocationContext,
@@ -41,13 +39,11 @@ public sealed partial class WizardIntelligenceProvider
         CancellationToken cancellationToken)
 
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(invocationContext);
 
         PingRequest turn = new(
-
             request.Prompt ?? string.Empty,
 
             request.Model,
@@ -87,7 +83,6 @@ public sealed partial class WizardIntelligenceProvider
             UnattendedMode: request.UnattendedMode);
 
         Result preflight = PingRequestPreflightValidator.Validate(
-
             turn,
 
             settings.Value);
@@ -95,9 +90,7 @@ public sealed partial class WizardIntelligenceProvider
         if (preflight.IsFailure)
 
         {
-
             return Result<ContextPreviewResult>.Failure(preflight.Error);
-
         }
 
         ChatClientLease lease;
@@ -105,28 +98,47 @@ public sealed partial class WizardIntelligenceProvider
         try
 
         {
+            if (healthTracker is null)
 
-            lease = await chatClientFactory
+            {
+                lease = await chatClientFactory
 
-                .ResolveClientAsync(turn.Model, cancellationToken)
+                    .ResolveClientAsync(turn.Model, cancellationToken)
 
-                .ConfigureAwait(false);
+                    .ConfigureAwait(false);
+            }
+            else
 
+            {
+                IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
+                    ProviderResolver.ResolveCandidates(settings.Value, turn.Model, healthTracker);
+
+                if (candidates.Count == 0)
+
+                {
+                    return Result<ContextPreviewResult>.Failure(
+                        new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+                }
+
+                (ProviderSettings provider, string resolvedModel) = candidates[0];
+
+                lease = await chatClientFactory
+
+                    .ResolveClientAsync(provider, resolvedModel, cancellationToken)
+
+                    .ConfigureAwait(false);
+            }
         }
         catch (InvalidOperationException)
 
         {
-
             return Result<ContextPreviewResult>.Failure(
-
                 new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
-
         }
 
         using (lease)
 
         {
-
             List<ContextPreviewAuxiliaryCall> auxiliaryCalls = [];
 
             Action<ContextPreviewAuxiliaryCall>? previousObserver = PreviewAuxiliaryObserver.Value;
@@ -136,9 +148,7 @@ public sealed partial class WizardIntelligenceProvider
             try
 
             {
-
                 return await BuildContextPreviewAsync(
-
                     request,
 
                     turn,
@@ -150,22 +160,16 @@ public sealed partial class WizardIntelligenceProvider
                     auxiliaryCalls,
 
                     cancellationToken).ConfigureAwait(false);
-
             }
             finally
 
             {
-
                 PreviewAuxiliaryObserver.Value = previousObserver;
-
             }
-
         }
-
     }
 
     private async Task<Result<ContextPreviewResult>> BuildContextPreviewAsync(
-
         ContextPreviewRequest previewRequest,
 
         PingRequest turn,
@@ -179,7 +183,6 @@ public sealed partial class WizardIntelligenceProvider
         CancellationToken cancellationToken)
 
     {
-
         Session? thread = await inferenceContextBuilder
 
             .LoadThreadAsync(turn, cancellationToken)
@@ -189,15 +192,11 @@ public sealed partial class WizardIntelligenceProvider
         if (turn.SessionId is not null && thread is null)
 
         {
-
             return Result<ContextPreviewResult>.Failure(
-
                 new Error(ErrorCodes.Session.NotFound, "Session was not found."));
-
         }
 
         List<MeAiChatMessage> messages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
-
             turn,
 
             thread,
@@ -221,7 +220,6 @@ public sealed partial class WizardIntelligenceProvider
         string? codexContent = await CodexReader
 
             .ReadCodexAsync(
-
                 turn.WorkingDirectory,
 
                 ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value),
@@ -243,16 +241,12 @@ public sealed partial class WizardIntelligenceProvider
             && !hasExplicitSpell)
 
         {
-
             routingMode = "disabledByNoRetrieval";
-
         }
         else
 
         {
-
             string? spellRoot = Infrastructure.Security.WorkspacePathPolicy.TryNormalizeWorkspace(
-
                 turn.WorkingDirectory,
 
                 out string? normalizedSpellRoot,
@@ -264,7 +258,6 @@ public sealed partial class WizardIntelligenceProvider
                 : null;
 
             Result<ResolvedSpell?> routed = await ResolveRoutedSpellAsync(
-
                 turn,
 
                 lease.ChatClient,
@@ -282,9 +275,7 @@ public sealed partial class WizardIntelligenceProvider
             if (routed.IsFailure)
 
             {
-
                 return Result<ContextPreviewResult>.Failure(routed.Error);
-
             }
 
             resolvedSpell = routed.Value;
@@ -294,7 +285,6 @@ public sealed partial class WizardIntelligenceProvider
                 ? "explicitOverride"
 
                 : "production";
-
         }
 
         Embedding<float>? queryEmbedding = null;
@@ -312,7 +302,6 @@ public sealed partial class WizardIntelligenceProvider
         if (!previewRequest.NoRetrieval)
 
         {
-
             queryEmbedding = await ResolveRagQueryEmbeddingAsync(turn, cancellationToken).ConfigureAwait(false);
 
             semanticContext = await RetrieveSemanticContextAsync(turn, queryEmbedding, cancellationToken).ConfigureAwait(false);
@@ -322,7 +311,6 @@ public sealed partial class WizardIntelligenceProvider
             sagaMemories = await RetrieveSagaMemoriesAsync(queryEmbedding, invocationContext, cancellationToken).ConfigureAwait(false);
 
             attachmentContext = await RetrieveSessionAttachmentContextAsync(
-
                 turn,
 
                 queryEmbedding,
@@ -332,13 +320,11 @@ public sealed partial class WizardIntelligenceProvider
             // The preview renders the same hierarchical context the real turn would, minus the ledger:
             // this path never mutates a turn ledger, so nodes are projected directly.
             tapestryContext = ProjectTapestryPreview(
-
                 await RetrieveTapestryContextAsync(turn, queryEmbedding, cancellationToken)
 
                     .ConfigureAwait(false));
 
             lexiconEntries = await RetrieveLexiconEntriesAsync(
-
                 turn,
 
                 resolvedSpell?.Entities ?? [],
@@ -352,17 +338,14 @@ public sealed partial class WizardIntelligenceProvider
                 invocationContext,
 
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         AttachmentsSettings attachments = settings.Value.ResolveAttachments();
 
         int maxIndexItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
-
             attachments.MaxIndexItemsInPrompt);
 
         int maxIndexBytes = ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(
-
             attachments.MaxIndexBytesInPrompt);
 
         IReadOnlyList<SessionAttachmentIndexItem> attachmentIndex = turn.SessionId is { } attachmentSessionId
@@ -393,7 +376,6 @@ public sealed partial class WizardIntelligenceProvider
         // Covenant for its own bytes.
         SystemPromptDocument BuildPreviewDocument(CovenantPromptContent? covenant) =>
             SystemPromptBuilder.BuildDocument(
-
                 turn,
 
                 codexContent,
@@ -405,7 +387,6 @@ public sealed partial class WizardIntelligenceProvider
                 dependencySpells: resolvedSpell?.Resonants,
 
                 maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
-
                     ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
 
                 semanticContext: semanticContext,
@@ -415,7 +396,6 @@ public sealed partial class WizardIntelligenceProvider
                 lexiconEntries: lexiconEntries,
 
                 maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
-
                     settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
 
                 sessionAttachmentsIndex: attachmentIndex,
@@ -436,19 +416,33 @@ public sealed partial class WizardIntelligenceProvider
 
         List<ContextPreviewTool> excludedTools = [];
 
-        List<AITool> candidateTools = await BuildToolSetWithMcpAsync(
+        bool modelDeclaresToolsUnsupported = ModelDeclaresToolsUnsupported(lease);
 
-            turn,
+        List<AITool> candidateTools = turn.DisableAllTools
+            || modelDeclaresToolsUnsupported
+                ? []
+                : await BuildToolSetWithMcpAsync(
+                    turn,
 
-            resolvedSpell,
+                    resolvedSpell,
 
-            turn.SessionId ?? Guid.NewGuid(),
+                    turn.SessionId ?? Guid.NewGuid(),
 
-            Guid.NewGuid(),
+                    Guid.NewGuid(),
 
-            cancellationToken,
+                    cancellationToken,
 
-            excludedTools).ConfigureAwait(false);
+                    excludedTools).ConfigureAwait(false);
+
+        if (modelDeclaresToolsUnsupported)
+        {
+            excludedTools.Add(
+                new ContextPreviewTool(
+                    "model:tools",
+                    "model",
+                    false,
+                    $"Model '{lease.ResolvedModel}' declares that it does not support tools."));
+        }
 
         IReadOnlyList<AITool> includedTools = ApplyToolPolicyFilters(turn, candidateTools);
 
@@ -461,7 +455,6 @@ public sealed partial class WizardIntelligenceProvider
         includedTools = FilterAskHumanUnlessAvailable(includedTools, humanInteractionAvailable: false);
 
         List<ContextPreviewTool> tools = BuildPreviewTools(
-
             turn,
 
             candidateTools,
@@ -471,7 +464,6 @@ public sealed partial class WizardIntelligenceProvider
             excludedTools);
 
         ChatOptions options = CreateInferenceChatOptions(
-
             includedTools.Count > 0,
 
             includedTools,
@@ -483,7 +475,6 @@ public sealed partial class WizardIntelligenceProvider
         ModelCallContext callContext = BuildModelCallContext(lease, turn);
 
         int threshold = ComputeCompressionThreshold(
-
             lease.Provider.ContextWindowLimit,
 
             settings.Value.ResolveIntelligence().ContextWindowCompressionThreshold);
@@ -508,17 +499,13 @@ public sealed partial class WizardIntelligenceProvider
 
         if (previewCovenant is not null && messages.Count > 0 && messages[0].Role == ChatRole.System)
         {
-
             document = BuildPreviewDocument(previewCovenant);
 
             messages[0] = new MeAiChatMessage(ChatRole.System, document.Render());
-
         }
 
         int beforeCompression = ModelTokenEstimator.EstimateContext(
-
             new ModelTokenizationRequest(
-
                 lease.Provider,
 
                 lease.ResolvedModel,
@@ -534,11 +521,9 @@ public sealed partial class WizardIntelligenceProvider
         (bool compressed, List<MeAiChatMessage> finalMessages) =
 
             inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
-
                 new ContextCompressionRequest
 
                 {
-
                     Request = turn,
 
                     Messages = messages,
@@ -586,16 +571,13 @@ public sealed partial class WizardIntelligenceProvider
                     // agreement matters most for. It carries the admitted content rather than the plan,
                     // because that is what this turn would send. The dispatch path does the same.
                     Covenant = previewCovenant,
-
                 });
 
         // The attribution map is the only producer of the two Covenant token lanes. Without it the
         // estimator emits a zero-token CovenantProposed row and inspection reports "no effective
         // content" for a prompt that is carrying the operator's standing agreement.
         ContextTokenBreakdown breakdown = ModelTokenEstimator.EstimateContext(
-
             new ModelTokenizationRequest(
-
                 lease.Provider,
 
                 lease.ResolvedModel,
@@ -625,7 +607,6 @@ public sealed partial class WizardIntelligenceProvider
         };
 
         List<ContextPreviewSource> sources = BuildPreviewSources(
-
             breakdown,
 
             previewRequest,
@@ -637,7 +618,6 @@ public sealed partial class WizardIntelligenceProvider
         ContextPreviewContent? content = previewRequest.ShowContent
 
             ? new ContextPreviewContent(
-
                 finalMessages.FirstOrDefault(static message => message.Role == ChatRole.System)?.Text
 
                     ?? string.Empty,
@@ -647,7 +627,6 @@ public sealed partial class WizardIntelligenceProvider
                     .Where(static message => message.Role != ChatRole.System)
 
                     .Select(static message => new CoreChatMessage(
-
                         message.Role.ToString().ToLowerInvariant(),
 
                         message.Text ?? string.Empty))])
@@ -655,7 +634,6 @@ public sealed partial class WizardIntelligenceProvider
             : null;
 
         ContextPreviewResult result = new(
-
             lease.Provider.Name,
 
             lease.ResolvedModel,
@@ -689,7 +667,6 @@ public sealed partial class WizardIntelligenceProvider
             sources,
 
             new ContextPreviewCompression(
-
                 compressed,
 
                 threshold,
@@ -707,7 +684,6 @@ public sealed partial class WizardIntelligenceProvider
             auxiliaryCalls,
 
             new ContextPreviewTokenSummary(
-
                 breakdown.InputTokens,
 
                 breakdown.TotalTokens,
@@ -721,31 +697,25 @@ public sealed partial class WizardIntelligenceProvider
             content);
 
         return Result<ContextPreviewResult>.Success(result);
-
     }
 
     private static int ComputeCompressionThreshold(int contextWindowLimit, int thresholdPercent)
 
     {
-
         int limit = ArcanumSettingClamps.ContextWindowLimit(contextWindowLimit);
 
         int percent = ArcanumSettingClamps.ContextWindowCompressionThreshold(thresholdPercent);
 
         return int.CreateSaturating((long)limit * percent / 100L);
-
     }
 
     private void ObserveSemanticRoutingEmbedding(string purpose, int inputCount)
 
     {
-
         EmbeddingSettings embeddingSettings = settings.Value.ResolveEmbeddings();
 
         PreviewAuxiliaryObserver.Value?.Invoke(
-
             new ContextPreviewAuxiliaryCall(
-
                 purpose,
 
                 true,
@@ -759,11 +729,9 @@ public sealed partial class WizardIntelligenceProvider
                 TokenEstimateClassification.Unknown,
 
                 $"The semantic Spell router embedded {inputCount} input(s); this provider does not report token usage."));
-
     }
 
     private static List<ContextPreviewTool> BuildPreviewTools(
-
         PingRequest request,
 
         IReadOnlyList<AITool> candidates,
@@ -773,7 +741,6 @@ public sealed partial class WizardIntelligenceProvider
         IReadOnlyList<ContextPreviewTool> excluded)
 
     {
-
         HashSet<string> includedNames = included
 
             .Select(static tool => tool.Name)
@@ -785,7 +752,6 @@ public sealed partial class WizardIntelligenceProvider
         result.AddRange(candidates
 
             .Select(tool => new ContextPreviewTool(
-
                 tool.Name,
 
                 ResolveToolSource(tool),
@@ -803,9 +769,7 @@ public sealed partial class WizardIntelligenceProvider
         if (ShouldDisableMcpTools(request))
 
         {
-
             result.Add(new ContextPreviewTool(
-
                 "mcp:*",
 
                 "mcp",
@@ -813,11 +777,9 @@ public sealed partial class WizardIntelligenceProvider
                 false,
 
                 "MCP tools are disabled for this turn."));
-
         }
 
         result.Add(new ContextPreviewTool(
-
             "ask_human",
 
             "native",
@@ -833,21 +795,17 @@ public sealed partial class WizardIntelligenceProvider
             .Select(static group => group.First())
 
             .OrderBy(static tool => tool.Name, StringComparer.OrdinalIgnoreCase)];
-
     }
 
     private static string ResolveToolSource(AITool tool)
 
     {
-
         string typeName = tool.GetType().Name;
 
         if (typeName.Contains("Mcp", StringComparison.OrdinalIgnoreCase))
 
         {
-
             return "mcp";
-
         }
 
         return typeName.Contains("Spell", StringComparison.OrdinalIgnoreCase)
@@ -855,11 +813,9 @@ public sealed partial class WizardIntelligenceProvider
             ? "spell"
 
             : "native";
-
     }
 
     internal static List<ContextPreviewSource> BuildPreviewSources(
-
         ContextTokenBreakdown breakdown,
 
         ContextPreviewRequest request,
@@ -869,7 +825,6 @@ public sealed partial class WizardIntelligenceProvider
         IReadOnlyList<MeAiChatMessage> messages)
 
     {
-
         string? systemContent = request.ShowContent
 
             ? messages.FirstOrDefault(static message => message.Role == ChatRole.System)?.Text
@@ -881,7 +836,6 @@ public sealed partial class WizardIntelligenceProvider
         foreach (ContextTokenComponent component in breakdown.Components)
 
         {
-
             bool retrievalSource = component.Source is
 
                 ContextTokenSource.WorkspaceRag
@@ -895,7 +849,6 @@ public sealed partial class WizardIntelligenceProvider
             bool included = component.Estimate.TokenCount > 0;
 
             string reason = ResolveSourceReason(
-
                 component.Source,
 
                 included,
@@ -911,12 +864,10 @@ public sealed partial class WizardIntelligenceProvider
             // content had been trimmed, which admission never does.
             if (component.Source is ContextTokenSource.CovenantProposed && breakdown.HasCovenantPressure)
             {
-
                 reason = $"{breakdown.DroppedCovenantProposed} proposed "
                     + $"{(breakdown.DroppedCovenantProposed == 1 ? "entry" : "entries")} "
                     + $"({breakdown.DroppedCovenantProposedTokens} tokens) were pressured out by the "
                     + "context budget; Confirmed content is never evicted.";
-
             }
 
             // A refusal withholds the section whole, Confirmed included. Left unsaid, this lane just
@@ -924,11 +875,9 @@ public sealed partial class WizardIntelligenceProvider
             // rather than "this turn could not carry the one it has".
             if (component.Source is ContextTokenSource.CovenantConfirmed && breakdown.CovenantConfirmedNoFit)
             {
-
                 reason = "The Covenant did not fit this turn's context budget and was withheld "
                     + "entirely; Confirmed content is admitted all-or-nothing, so nothing was trimmed "
                     + "and nothing was sent.";
-
             }
 
             string? content = request.ShowContent
@@ -940,7 +889,6 @@ public sealed partial class WizardIntelligenceProvider
                     : null;
 
             result.Add(new ContextPreviewSource(
-
                 component.Source,
 
                 component.Estimate.TokenCount,
@@ -952,15 +900,12 @@ public sealed partial class WizardIntelligenceProvider
                 reason,
 
                 content));
-
         }
 
         return result;
-
     }
 
     private static string ResolveSourceReason(
-
         ContextTokenSource source,
 
         bool included,
@@ -972,27 +917,21 @@ public sealed partial class WizardIntelligenceProvider
         PingRequest turn)
 
     {
-
         if (request.NoRetrieval && retrievalSource)
 
         {
-
             return "Skipped because noRetrieval was requested.";
-
         }
 
         if (included)
 
         {
-
             return "Included by production context assembly.";
-
         }
 
         return source switch
 
         {
-
             ContextTokenSource.History when turn.SessionId is null =>
 
                 "No Session was selected, so no history is available.",
@@ -1010,9 +949,6 @@ public sealed partial class WizardIntelligenceProvider
                 "No Workspace was selected, so workspace retrieval is unavailable.",
 
             _ => "No effective content was available for this source.",
-
         };
-
     }
-
 }

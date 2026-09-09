@@ -25,30 +25,21 @@ internal sealed class DataRetentionSweepHostedService(
     LongRunningOperationOwnership operationOwnership,
     ILogger<DataRetentionSweepHostedService> logger) : BackgroundService
 {
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-
         while (!stoppingToken.IsCancellationRequested)
         {
-
             try
             {
-
                 await RunOnceAsync(stoppingToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
             catch (Exception ex)
             {
-
                 logger.LogError(ex, "Automatic retention sweep failed before it could report a result.");
-
             }
 
             TimeSpan interval = TimeSpan.FromHours(
@@ -57,26 +48,18 @@ internal sealed class DataRetentionSweepHostedService(
 
             if (!policyStore.Current.AutomaticSweepsEnabled)
             {
-
                 interval = TimeSpan.FromMinutes(1);
-
             }
 
             try
             {
-
                 await Task.Delay(interval, timeProvider, stoppingToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
-
         }
-
     }
 
     internal async Task RunOnceAsync(CancellationToken cancellationToken)
@@ -196,5 +179,4 @@ internal sealed class DataRetentionSweepHostedService(
             }
         }
     }
-
 }

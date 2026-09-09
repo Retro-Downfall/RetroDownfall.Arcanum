@@ -23,12 +23,10 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
-
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteSession_WhenCommitFails_RestoresQuarantinedBytes()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -62,14 +60,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountAllAsync("Sessions"));
 
         Assert.Equal(1, await CountAllAsync("SessionAttachments"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteAttachment_WhenCommitFails_RestoresQuarantinedBytes()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -101,14 +97,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(attachment.Bytes, await File.ReadAllBytesAsync(attachment.AbsolutePath));
 
         Assert.Equal(1, await CountAllAsync("SessionAttachments"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_PruneUploadedFile_WhenCommitFails_RestoresQuarantinedBytes()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -150,14 +144,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(bytes, await File.ReadAllBytesAsync(path));
 
         Assert.Equal(1, await CountAllAsync("UploadedFiles"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_ResetMemory_WhenRowsAppearAfterPreview_PreservesEntireScope()
     {
-
         RequireSqlCipher();
 
         (_, Guid firstEntryId) = await SeedSessionAsync(pinned: false);
@@ -197,14 +189,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(ErrorCodes.Data.Conflict, result.Error.Code);
 
         Assert.Equal(2, await CountAllAsync("entry_embeddings"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteSession_WhenWatermarkReappears_FailsReconciliation()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
@@ -247,14 +237,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
 
         Assert.Equal(1, await CountAllAsync("saga_extraction_watermarks"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteAttachment_WhenEmbeddingReappears_FailsReconciliation()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -289,14 +277,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
 
         Assert.Equal(1, await CountAllAsync("session_attachment_embeddings"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_PruneEntry_WhenVectorReappears_FailsReconciliation()
     {
-
         RequireSqlCipher();
 
         (_, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -341,14 +327,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
 
         Assert.Equal(1, await CountAllAsync("entry_embeddings_vec"));
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_PruneAttachment_WithMaxOne_DoesNotLetBlockedOldestStarveEligible()
     {
-
         RequireSqlCipher();
 
         (Guid blockedSessionId, Guid blockedEntryId) = await SeedSessionAsync(pinned: false);
@@ -388,7 +372,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Contains(
             "attachment:" + eligible.AttachmentId.ToString("D"),
             plan.CandidateIds);
-
     }
 
     [SkippableFact]
@@ -1164,5 +1147,4 @@ public sealed partial class DataRetentionServiceTests
                 VALUES (lower(hex(randomblob(16))), OLD.Id);
             END;
             """);
-
 }

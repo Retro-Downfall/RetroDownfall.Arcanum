@@ -416,7 +416,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     public async Task TryStartSingleFlightAsync_OnlyOneActiveOperationPerKind()
     {
-
         RequireSqlCipher();
 
         await using ArcanumDbContext competingDb = _fixture.CreateContext(_dbPath);
@@ -472,14 +471,12 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                 now));
 
         Assert.Equal(LongRunningOperationState.Pending, unrelated.State);
-
     }
 
     [SkippableFact]
 
     public async Task TryStartSingleFlightAsync_RetentionKindsShareOneActiveSlot()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -518,14 +515,12 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(LongRunningOperationKinds.DataRetentionPrune, only.Kind);
 
         Assert.Equal(LongRunningOperationState.Running, only.State);
-
     }
 
     [SkippableFact]
 
     public async Task RenewLeaseAsync_UsesIndependentEncryptedConnection()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -563,13 +558,11 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(leaseExpiresAt, persisted.LeaseExpiresAt);
 
         Assert.Equal(2, persisted.Revision);
-
     }
 
     [SkippableFact]
     public async Task RenewLeaseAsync_UsesAnUnpooledIsolatedHeartbeatOrdinaryLease()
     {
-
         RequireSqlCipher();
 
         RecordingFreshOrdinaryConnectionFactory connections = new(
@@ -628,7 +621,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(System.Data.ConnectionState.Closed, heartbeat.State);
 
         Assert.Equal(0, connections.LiveLeaseCount);
-
     }
 
     /// <summary>
@@ -651,7 +643,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     public async Task RenewLeaseAsync_LeavesNoLiveHandleArtifactBesideTheGrimoire()
     {
-
         RequireSqlCipher();
 
         string pooledPath = _fixture.CopyDatabase();
@@ -692,7 +683,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.True(renewed);
 
         Assert.Empty(LiveHandleSurvivors(pooledPath));
-
     }
 
     /// <summary>
@@ -717,7 +707,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task HeartbeatAsync_RunsOnAConnectionTheStoreOwns()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -769,7 +758,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(heartbeatAt, persisted.HeartbeatAt);
 
         Assert.Equal(leaseExpiresAt, persisted.LeaseExpiresAt);
-
     }
 
     /// <summary>
@@ -780,7 +768,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task CovenantDrain_ClosesTheScopedLedgerHandle_AndTheNextReadReopensIt()
     {
-
         RequireSqlCipher();
 
         CovenantConnectionDrain drain = new();
@@ -807,14 +794,12 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(operation.Id, reopened.Id);
 
         Assert.Equal(System.Data.ConnectionState.Open, connection.State);
-
     }
 
     [SkippableFact]
 
     public async Task RenewLeaseAsync_AppliesConnectionPolicyToItsIndependentConnection()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -852,7 +837,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             startedAt.AddMinutes(6));
 
         Assert.True(renewed);
-
     }
 
     [SkippableFact]
@@ -1143,7 +1127,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task ReconcileAsync_PageSize_DoesNotLimitTotalRecoveryWork()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -1154,7 +1137,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         for (int index = 0; index < operationCount; index++)
         {
-
             LongRunningOperation operation = await CreateAsync(
                 store,
                 now.AddMinutes(-10).AddSeconds(index));
@@ -1164,7 +1146,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                 $"dead-host-{index}",
                 now.AddMinutes(-5),
                 now.AddMinutes(-4));
-
         }
 
         CompletingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex);
@@ -1187,7 +1168,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(operationCount, summary.Completed);
 
         Assert.Equal(operationCount, handler.CallCount);
-
     }
 
     [SkippableFact]
@@ -1263,7 +1243,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     public async Task RetentionRecoveryAttention_IsDiscoverableAndClaimable_WhileUnrelatedAttentionIsNot()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -1281,7 +1260,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         foreach (LongRunningOperation operation in new[] { retention, unrelated })
         {
-
             LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
                 operation.Id,
                 "first-worker",
@@ -1298,7 +1276,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                     LongRunningOperationState.ReconciliationRequired,
                     now.AddSeconds(1),
                     ErrorCodes.Data.ReconciliationFailed));
-
         }
 
         IReadOnlyList<LongRunningOperation> recoverable = await store.FindExpiredAsync(
@@ -1324,13 +1301,11 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.True(retentionLease.Acquired);
 
         Assert.False(unrelatedLease.Acquired);
-
     }
 
     [SkippableFact]
     public async Task CovenantMaintenanceAttention_IsClaimableOnlyForTheTwoCovenantRetentionKinds()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -1362,7 +1337,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         foreach (LongRunningOperation operation in new[] { mutation, factory, prune, unrelated })
         {
-
             LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
                 operation.Id,
                 "failed-disposition-owner",
@@ -1379,7 +1353,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                     LongRunningOperationState.ReconciliationRequired,
                     now.AddSeconds(1),
                     ErrorCodes.Covenant.MaintenanceFailed));
-
         }
 
         IReadOnlyList<LongRunningOperation> recoverable = await store.FindExpiredAsync(
@@ -1417,7 +1390,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             "recovery-owner",
             now.AddSeconds(2),
             now.AddMinutes(2))).Acquired);
-
     }
 
     [SkippableFact]

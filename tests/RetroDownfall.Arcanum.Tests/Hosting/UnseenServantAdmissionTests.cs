@@ -37,7 +37,6 @@ public sealed class UnseenServantAdmissionTests
         Assert.Equal(harness.Clock.GetUtcNow(), harness.ReadField<DateTimeOffset>("_lastIdempotencyCleanupUtc"));
     }
 
-
     [Fact]
     public async Task DeferredStartupHydrationRetriesBeforeTheFirstDispatch()
     {

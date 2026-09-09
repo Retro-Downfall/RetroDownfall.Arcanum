@@ -1483,9 +1483,10 @@ Add exact required anchors/phrases for the complete hosted producer inventory, B
 
 Update `Arcanum.DESIGN.md` §10.20.3, affected service sections, and §13.7; add the
 source-inventory obligation to `Arcanum.Engineering.md`; extend the intentional README
-background-maintenance paragraph; mark #256 delivered but #257/#239 open in the parent design. Do
-not edit API, command-reference, or Compendium docs. Run the documentation contract tests to GREEN,
-then commit all tracked documentation and documentation-test changes with
+background-maintenance paragraph; mark #256 delivered but #257/#239 open in the parent design. The
+subsequently approved final-qualification repairs update API, command-reference, and Compendium docs
+with their owned contracts as recorded in the design's §1.3 and §8. Run the documentation contract
+tests to GREEN, then commit all tracked documentation and documentation-test changes with
 `docs: publish hosted Grimoire admission contract` before branch review or final qualification.
 
 - [ ] **Step 3: Run focused clusters and inspect the branch**

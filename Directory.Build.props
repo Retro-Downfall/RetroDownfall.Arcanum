@@ -59,28 +59,19 @@
 
   </ItemGroup>
 
-  <!-- Every Native AOT link in this repository, not only the shipping CLI's. Homebrew's dotnet ships
-       nonportable.txt, so ILC links keg-only openssl and brotli by name on macOS and the default
-       clang search path does not contain either; and Apple's ld-prime asserts on a large Native AOT
-       object file (dotnet/runtime#119380), which is why the link is pointed at LLVM's lld when it is
-       installed. The CLI carried these alone, so a second AOT publish - the runtime-regex smoke
-       executable that scripts/verify-aot-il-warnings.sh publishes beside it - failed to link with
-       "library 'ssl' not found" and took the whole IL gate down with it on any Homebrew-dotnet macOS
-       host. Living here rather than in each project means a third AOT project cannot reintroduce that
-       by being written without them.
+  <!-- Every Native AOT link in this repository, not only the shipping CLI's. Apple's ld-prime
+       asserts on a large Native AOT object file (dotnet/runtime#119380), which is why the link is
+       pointed at LLVM's lld when it is installed. Apple Clang also injects /usr/local/lib even when
+       that directory does not exist; -Z removes its standard search list while the Native AOT
+       targets continue to pass every required SDK, Swift, and framework path explicitly.
 
-       Inert everywhere else: LinkerArg is read only by the native link step, so a project that never
-       publishes AOT never sees these, and each entry is guarded on the path actually existing. -->
+       Directory.Build.targets requests Microsoft's portable Native AOT runtime pack as an exact,
+       SHA-512-pinned build-time download, then validates and stages it. PackageDownload does not
+       participate in packages.lock.json. Do not add Homebrew OpenSSL or Brotli search paths here:
+       doing so silently makes the shipped executable depend on versions installed on the build
+       machine. -->
 
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/openssl@3/lib')" Include="-L/opt/homebrew/opt/openssl@3/lib" />
-
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/brotli/lib')" Include="-L/opt/homebrew/opt/brotli/lib" />
-
-    <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
-
-    <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
 
     <LinkerArg Condition="Exists('/opt/homebrew/opt/lld/bin/ld64.lld')" Include="--ld-path=/opt/homebrew/opt/lld/bin/ld64.lld" />
 

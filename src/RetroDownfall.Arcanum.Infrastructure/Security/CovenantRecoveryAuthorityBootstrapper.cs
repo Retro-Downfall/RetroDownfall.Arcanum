@@ -38,14 +38,12 @@ internal sealed record GrimoireOfflineTransitionRecoveryEvidence(
 /// </remarks>
 internal interface ICovenantRecoveryAuthorityBootstrapper
 {
-
     Task<Result<ICovenantClosedRecoveryHandoff>> LoadAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         SqliteConnection recoveryConnection,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -58,7 +56,6 @@ internal interface ICovenantRecoveryAuthorityBootstrapper
 /// </remarks>
 internal interface ICovenantClosedRecoveryHandoff
 {
-
     /// <summary>The durable operation the journal names, and the only one this handoff can resume.</summary>
     Guid OperationId { get; }
 
@@ -72,7 +69,6 @@ internal interface ICovenantClosedRecoveryHandoff
         GrimoireOfflineTransitionRecoveryEvidence evidence,
         SqliteConnection recoveryConnection,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>The production handoff, minted only by the bootstrapper that verified it.</summary>
@@ -88,7 +84,6 @@ internal interface ICovenantClosedRecoveryHandoff
 /// </remarks>
 internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHandoff
 {
-
     private readonly CovenantOperationGate _gate;
 
     private readonly CovenantRuntimeGenerationProvider _runtime;
@@ -124,7 +119,6 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
         CovenantExclusiveRecoveryOwner owner,
         GrimoireOfflineTransitionObservedState observedDatabaseState)
     {
-
         _gate = gate;
 
         _runtime = runtime;
@@ -154,7 +148,6 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
         Owner = owner;
 
         ObservedDatabaseState = observedDatabaseState;
-
     }
 
     /// <inheritdoc />
@@ -187,7 +180,6 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
         SqliteConnection recoveryConnection,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(evidence);
@@ -202,25 +194,19 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
             || evidence.EnvelopeDigest != _journalEnvelopeDigest
             || evidence.Binding.OperationId != OperationId)
         {
-
             return CovenantRecoveryAuthorityBootstrapper.Refusal();
-
         }
 
         if (Interlocked.Exchange(ref _consumed, 1) != 0)
         {
-
             return CovenantRecoveryAuthorityBootstrapper.Refusal();
-
         }
 
         string? masterApiKey = await _secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(masterApiKey))
         {
-
             return CovenantRecoveryAuthorityBootstrapper.Refusal();
-
         }
 
         // The persisted canonical position first, because the exclusive lease this recovery is about
@@ -233,9 +219,7 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
                 CovenantHealthTransition.Bootstrap,
                 cancellationToken).ConfigureAwait(false))
         {
-
             return CovenantRecoveryAuthorityBootstrapper.Refusal();
-
         }
 
         // The same read-only publication the ordinary bootstrap performs. Here its failure is a
@@ -250,32 +234,24 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
                 masterApiKey,
                 cancellationToken).ConfigureAwait(false))
         {
-
             return CovenantRecoveryAuthorityBootstrapper.Refusal();
-
         }
 
         try
         {
-
             _gate.AdoptDurableRecoveryOwner(
                 Owner,
                 scope: null,
                 cleanupOnlyHistoricalCampaign: false);
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or InvalidOperationException)
         {
-
             return CovenantRecoveryAuthorityBootstrapper.Refusal();
-
         }
 
         return Result.Success();
-
     }
-
 }
 
 /// <summary>The production recovery-authority bootstrapper, over this process's own runtime holder.</summary>
@@ -289,7 +265,6 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
     GrimoireOfflineTransitionEffectHandlerRegistry effects)
     : ICovenantRecoveryAuthorityBootstrapper
 {
-
     private const int MaximumPayloadBytes = 4096;
 
     private readonly CovenantOperationGate _gate =
@@ -320,7 +295,6 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         GrimoireOfflineTransitionRecoveryEvidence evidence,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
@@ -336,9 +310,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         // everything after this point exists to obtain authority a handler then spends.
         if (!_hostToolsPolicy.CovenantPermitted)
         {
-
             return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
-
         }
 
         // The one durable operation the journal names, rather than a scan. A scan is the adopter's
@@ -351,9 +323,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
 
         if (row.IsFailure)
         {
-
             return Result<ICovenantClosedRecoveryHandoff>.Failure(row.Error);
-
         }
 
         Result<GrimoireOfflineTransitionLaunchBinding> launch =
@@ -363,18 +333,14 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
 
         if (launch.IsFailure)
         {
-
             return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
-
         }
 
         Result agreement = Agrees(evidence, row.Value, launch.Value);
 
         if (agreement.IsFailure)
         {
-
             return Result<ICovenantClosedRecoveryHandoff>.Failure(agreement.Error);
-
         }
 
         Result<CovenantOfflineTransitionSourceState> observed = await CovenantErasureInventorySource
@@ -383,9 +349,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
 
         if (observed.IsFailure)
         {
-
             return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
-
         }
 
         // The load-bearing check, and the reason these facts are verified rather than merely read. A
@@ -402,9 +366,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
 
         if (state is GrimoireOfflineTransitionObservedState.Ambiguous)
         {
-
             return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
-
         }
 
         return Result<ICovenantClosedRecoveryHandoff>.Success(new CovenantClosedRecoveryHandoff(
@@ -426,7 +388,6 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
                 launch.Value.Operation,
                 launch.Value.EffectDigest),
             state));
-
     }
 
     /// <summary>
@@ -447,7 +408,6 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         LaunchRow row,
         GrimoireOfflineTransitionLaunchBinding launch)
     {
-
         if (launch.OperationId != evidence.Binding.OperationId
             || launch.Kind != evidence.Binding.Kind
             || launch.EffectDigest != evidence.Binding.EffectDigest
@@ -456,9 +416,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
             || launch.RecoveryPolicy != row.RecoveryPolicy
             || row.Revision < launch.StartingRevision)
         {
-
             return Refusal();
-
         }
 
         Result<IGrimoireOfflineTransitionEffectHandler> effect = _effects.Resolve(
@@ -468,7 +426,6 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         return effect.IsFailure || effect.Value.Operation != launch.Operation
             ? Refusal()
             : Result.Success();
-
     }
 
     private static async Task<Result<LaunchRow>> ReadLaunchRowAsync(
@@ -476,10 +433,8 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         Guid operationId,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             command.CommandText =
@@ -511,9 +466,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
 
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 return Result<LaunchRow>.Failure(Refusal().Error);
-
             }
 
             if (reader.GetValue(0) is not string kind
@@ -529,9 +482,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
                 || reader.GetValue(5) is not long revision
                 || reader.GetValue(6) is not byte[] payload)
             {
-
                 return Result<LaunchRow>.Failure(Refusal().Error);
-
             }
 
             LongRunningOperationState state = (LongRunningOperationState)(int)rawState;
@@ -542,9 +493,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
                 or LongRunningOperationState.Failed
                 or LongRunningOperationState.Abandoned)
             {
-
                 return Result<LaunchRow>.Failure(Refusal().Error);
-
             }
 
             if (!string.Equals(
@@ -552,9 +501,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
                     CovenantResetCheckpointInitiator.CheckpointReference(kind, operationId),
                     StringComparison.Ordinal))
             {
-
                 return Result<LaunchRow>.Failure(Refusal().Error);
-
             }
 
             return new LaunchRow(
@@ -564,26 +511,19 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
                 (int)rawVersion,
                 revision,
                 payload);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception)
         {
-
             return Result<LaunchRow>.Failure(Refusal().Error);
-
         }
-
     }
 
     private static void Add(SqliteCommand command, string name, object value)
     {
-
         SqliteParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -591,7 +531,6 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         parameter.Value = value;
 
         _ = command.Parameters.Add(parameter);
-
     }
 
     /// <summary>
@@ -614,5 +553,4 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         int CheckpointVersion,
         long Revision,
         byte[] CheckpointPayload);
-
 }

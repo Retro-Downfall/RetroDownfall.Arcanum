@@ -91,22 +91,18 @@ public sealed class DocumentationIssueReferenceTests
         string line,
         bool expected)
     {
-
         Assert.Equal(expected, TrackerIssueReference.IsMatch(line));
-
     }
 
     [Fact]
     public void No_governed_document_explains_itself_by_naming_a_tracker_issue()
     {
-
         string root = NativeSqlCipherTestPaths.RepositoryRoot();
 
         List<string> offenders = [];
 
         foreach (string relative in GovernedDocuments)
         {
-
             string path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
 
             Assert.True(File.Exists(path), $"{relative} is missing; the inventory names a document that does not exist.");
@@ -115,22 +111,15 @@ public sealed class DocumentationIssueReferenceTests
 
             for (int index = 0; index < lines.Length; index++)
             {
-
                 Match match = TrackerIssueReference.Match(lines[index]);
 
                 if (match.Success)
                 {
-
                     offenders.Add($"{relative}:{index + 1} names {match.Value}");
-
                 }
-
             }
-
         }
 
         Assert.Empty(offenders);
-
     }
-
 }

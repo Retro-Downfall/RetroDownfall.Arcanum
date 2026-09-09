@@ -50,7 +50,6 @@ public sealed class DocumentationStructureTests
     [Fact]
     public void Every_design_subsection_sits_inside_the_chapter_its_number_claims()
     {
-
         string[] lines = ReadDocumentLines("Arcanum.DESIGN.md");
 
         string? chapter = null;
@@ -61,52 +60,40 @@ public sealed class DocumentationStructureTests
 
         for (int index = 0; index < lines.Length; index++)
         {
-
             string line = lines[index];
 
             if (line.StartsWith("```", StringComparison.Ordinal))
             {
-
                 inFence = !inFence;
 
                 continue;
-
             }
 
             if (inFence)
             {
-
                 continue;
-
             }
 
             Match match = NumberedHeading.Match(line);
 
             if (!match.Success)
             {
-
                 continue;
-
             }
 
             string first = match.Groups["number"].Value.Split('.')[0];
 
             if (match.Groups["hashes"].Value.Length == 2)
             {
-
                 chapter = first;
 
                 continue;
-
             }
 
             if (first != chapter)
             {
-
                 offenders.Add($"line {index + 1}: {line.Trim()} is nested under chapter {chapter ?? "(none)"}");
-
             }
-
         }
 
         Assert.True(
@@ -114,7 +101,6 @@ public sealed class DocumentationStructureTests
             "A DESIGN subsection is filed under a chapter its number does not belong to:"
                 + global::System.Environment.NewLine
                 + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
@@ -126,7 +112,6 @@ public sealed class DocumentationStructureTests
     [Fact]
     public void Every_api_reference_table_row_belongs_to_a_table_with_a_header()
     {
-
         string[] lines = ReadDocumentLines("Arcanum.API.md");
 
         List<string> offenders = [];
@@ -139,7 +124,6 @@ public sealed class DocumentationStructureTests
 
         for (int index = 0; index <= lines.Length; index++)
         {
-
             string line = index < lines.Length ? lines[index] : string.Empty;
 
             bool isFence = index < lines.Length && line.TrimStart().StartsWith("```", StringComparison.Ordinal);
@@ -148,45 +132,34 @@ public sealed class DocumentationStructureTests
 
             if (isRow)
             {
-
                 if (runStart < 0)
                 {
-
                     runStart = index;
-
                 }
 
                 runLength++;
 
                 continue;
-
             }
 
             if (runStart >= 0)
             {
-
                 bool headed = runLength >= 2 && SeparatorRow.IsMatch(lines[runStart + 1].Trim());
 
                 if (!headed)
                 {
-
                     offenders.Add($"line {runStart + 1}: {runLength} row(s) with no header separator — {lines[runStart].Trim()[..Math.Min(80, lines[runStart].Trim().Length)]}");
-
                 }
 
                 runStart = -1;
 
                 runLength = 0;
-
             }
 
             if (isFence)
             {
-
                 inFence = !inFence;
-
             }
-
         }
 
         Assert.True(
@@ -194,7 +167,6 @@ public sealed class DocumentationStructureTests
             "An API reference table row run has no header separator, so it renders as literal text:"
                 + global::System.Environment.NewLine
                 + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
@@ -210,7 +182,6 @@ public sealed class DocumentationStructureTests
     [Fact]
     public void Compendium_quotes_the_covenant_capacity_the_product_enforces()
     {
-
         string compendium = string.Join('\n', ReadDocumentLines("Compendium.README.md"));
 
         Assert.Contains("### What the Covenant can hold", compendium, StringComparison.Ordinal);
@@ -240,7 +211,6 @@ public sealed class DocumentationStructureTests
             $"**{CovenantLimits.MaxActiveSnapshotRows} active entries in the pair a single turn would load.**",
             compendium,
             StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -265,7 +235,6 @@ public sealed class DocumentationStructureTests
     [Collection("ApiHost")]
     public sealed class ApiReferenceRouteTable(ArcanumWebApplicationFactory factory)
     {
-
         /// <summary>
         /// The one route deliberately outside the route table, with the reason it is not a row.
         /// </summary>
@@ -283,7 +252,6 @@ public sealed class DocumentationStructureTests
         [Fact]
         public void Every_registered_endpoint_has_a_row_in_the_api_reference()
         {
-
             _ = factory.CreateAuthenticatedClient();
 
             EndpointDataSource endpoints = factory.Services.GetRequiredService<EndpointDataSource>();
@@ -294,26 +262,20 @@ public sealed class DocumentationStructureTests
 
             foreach (RouteEndpoint endpoint in endpoints.Endpoints.OfType<RouteEndpoint>())
             {
-
                 string path = NormalizeRoutePattern(endpoint.RoutePattern.RawText ?? string.Empty);
 
                 foreach (string method in endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? [])
                 {
-
                     string registered = $"{method} {path}";
 
                     if (documented.Contains(registered)
                         || NotRouteTableRows.Contains(registered, StringComparer.Ordinal))
                     {
-
                         continue;
-
                     }
 
                     undocumented.Add(registered);
-
                 }
-
             }
 
             Assert.True(
@@ -323,7 +285,6 @@ public sealed class DocumentationStructureTests
                     + string.Join(
                         global::System.Environment.NewLine,
                         undocumented.Order(StringComparer.Ordinal)));
-
         }
 
         /// <summary>
@@ -333,39 +294,29 @@ public sealed class DocumentationStructureTests
         /// </summary>
         private static HashSet<string> ReadDocumentedRoutes()
         {
-
             HashSet<string> routes = new(StringComparer.Ordinal);
 
             foreach (string line in ReadDocumentLines("Arcanum.API.md"))
             {
-
                 Match match = DocumentedRouteRow.Match(line);
 
                 if (!match.Success)
                 {
-
                     match = DocumentedRouteCell.Match(line);
-
                 }
 
                 if (!match.Success)
                 {
-
                     continue;
-
                 }
 
                 foreach (string path in ExpandOptionalSegment(match.Groups["path"].Value))
                 {
-
                     routes.Add($"{match.Groups["method"].Value} {NormalizeRoutePattern(path)}");
-
                 }
-
             }
 
             return routes;
-
         }
 
         /// <summary>
@@ -377,24 +328,20 @@ public sealed class DocumentationStructureTests
         /// </remarks>
         private static IEnumerable<string> ExpandOptionalSegment(string path)
         {
-
             int open = path.IndexOf('[', StringComparison.Ordinal);
 
             int close = path.IndexOf(']', StringComparison.Ordinal);
 
             if (open < 0 || close < open)
             {
-
                 yield return path;
 
                 yield break;
-
             }
 
             yield return path[..open] + path[(close + 1)..];
 
             yield return path[..open] + path[(open + 1)..close] + path[(close + 1)..];
-
         }
 
         /// <summary>Drops route constraints and catch-all markers, which the reference does not spell.</summary>
@@ -402,7 +349,6 @@ public sealed class DocumentationStructureTests
             RouteParameterConstraint
                 .Replace(RouteCatchAll.Replace(pattern, "{${name}}"), "{${name}}")
                 .TrimEnd('/');
-
     }
 
     private static readonly Regex DocumentedRouteRow = new(
@@ -426,5 +372,4 @@ public sealed class DocumentationStructureTests
             .ReadAllText(Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), "docs", fileName))
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n');
-
 }

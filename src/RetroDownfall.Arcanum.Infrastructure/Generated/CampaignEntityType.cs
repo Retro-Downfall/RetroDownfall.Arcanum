@@ -342,29 +342,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
-            type.TypeMapping = IntTypeMapping.Default.Clone(
-                comparer: new ValueComparer<WorkspaceType>(
-                    bool (WorkspaceType v1, WorkspaceType v2) => object.Equals(((object)v1), ((object)v2)),
-                    int (WorkspaceType v) => ((object)v).GetHashCode(),
-                    WorkspaceType (WorkspaceType v) => v),
-                keyComparer: new ValueComparer<WorkspaceType>(
-                    bool (WorkspaceType v1, WorkspaceType v2) => object.Equals(((object)v1), ((object)v2)),
-                    int (WorkspaceType v) => ((object)v).GetHashCode(),
-                    WorkspaceType (WorkspaceType v) => v),
-                providerValueComparer: new ValueComparer<int>(
-                    bool (int v1, int v2) => v1 == v2,
-                    int (int v) => v,
-                    int (int v) => v),
-                mappingInfo: new RelationalTypeMappingInfo(
-                    storeTypeName: "INTEGER"),
-                converter: new ValueConverter<WorkspaceType, int>(
-                    int (WorkspaceType value) => ((int)value),
-                    WorkspaceType (int value) => ((WorkspaceType)value)),
-                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<WorkspaceType, int>(
-                    JsonInt32ReaderWriter.Instance,
-                    new ValueConverter<WorkspaceType, int>(
-                        int (WorkspaceType value) => ((int)value),
-                        WorkspaceType (int value) => ((WorkspaceType)value))));
+            type.TypeMapping = NativeAotSqliteEnumTypeMappings.ForWorkspaceType();
             type.SetSentinelFromProviderValue(0);
 
             var updatedAt = runtimeEntityType.AddProperty(

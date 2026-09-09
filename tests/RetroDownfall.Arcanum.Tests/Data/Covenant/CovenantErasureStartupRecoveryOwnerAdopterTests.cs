@@ -31,7 +31,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLifetime
 {
-
     /// <summary>
     /// The highest checkpoint version an ordinary retention mutation writes.
     /// </summary>
@@ -63,43 +62,33 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
     public CovenantErasureStartupRecoveryOwnerAdopterTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public async Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         await _db.Database.OpenConnectionAsync();
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection = Connection;
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     /// <summary>
@@ -123,7 +112,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
     [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset)]
     public async Task Every_current_launch_adopts_its_exact_owner_before_readiness(string kind)
     {
-
         RequireSqlCipher();
 
         CovenantExclusiveRecoveryOwner expected = await SeedCurrentAsync(kind);
@@ -144,7 +132,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
             (await gate.ResumeExclusiveAsync(expected, CancellationToken.None)).Value;
 
         Assert.Equal(expected, resumed.Snapshot.RecoveryOwner);
-
     }
 
     [SkippableTheory]
@@ -175,7 +162,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
     public async Task Malformed_current_evidence_refuses_without_installing_an_owner(
         string assignment)
     {
-
         RequireSqlCipher();
 
         CovenantExclusiveRecoveryOwner owner = await SeedCurrentAsync(
@@ -192,7 +178,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         Assert.True(adopted.IsFailure);
 
         Assert.True((await gate.ResumeExclusiveAsync(owner, CancellationToken.None)).IsFailure);
-
     }
 
     /// <summary>
@@ -218,7 +203,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
     [InlineData(2)]
     public async Task Malformed_current_payload_identity_refuses_content_free(int malformedPart)
     {
-
         RequireSqlCipher();
 
         CovenantExclusiveRecoveryOwner owner = await SeedCurrentAsync(
@@ -264,7 +248,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         Assert.True(adopted.IsFailure);
 
         Assert.DoesNotContain("xyz", adopted.Error.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -283,7 +266,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
     [SkippableFact]
     public async Task Legacy_and_non_covenant_rows_are_ignored_without_projecting_large_payloads()
     {
-
         RequireSqlCipher();
 
         CovenantExclusiveRecoveryOwner mutation = await SeedCurrentAsync(
@@ -310,7 +292,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         Assert.True(adopted.IsSuccess);
 
         Assert.Null(adopted.Value);
-
     }
 
     /// <summary>
@@ -332,7 +313,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
     [SkippableFact]
     public async Task A_row_still_at_the_retired_reset_checkpoint_version_refuses()
     {
-
         RequireSqlCipher();
 
         CovenantExclusiveRecoveryOwner mutation = await SeedCurrentAsync(
@@ -358,13 +338,11 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         Assert.True(adopted.IsFailure);
 
         Assert.True((await gate.ResumeExclusiveAsync(mutation, CancellationToken.None)).IsFailure);
-
     }
 
     [SkippableFact]
     public async Task Pending_pre_covenant_rows_are_ignored_and_do_not_block_readiness()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = new(
@@ -403,13 +381,11 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         Assert.True(read.IsSuccess);
 
         await read.Value.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task Two_valid_owners_refuse_before_either_is_installed()
     {
-
         RequireSqlCipher();
 
         CovenantExclusiveRecoveryOwner first = await SeedCurrentAsync(
@@ -429,13 +405,11 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         Assert.True((await gate.ResumeExclusiveAsync(first, CancellationToken.None)).IsFailure);
 
         Assert.True((await gate.ResumeExclusiveAsync(second, CancellationToken.None)).IsFailure);
-
     }
 
     [SkippableFact]
     public async Task A_conflicting_or_post_readiness_gate_refuses_adoption()
     {
-
         RequireSqlCipher();
 
         _ = await SeedCurrentAsync(LongRunningOperationKinds.DataRetentionMutation);
@@ -456,13 +430,11 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         Assert.True((await new CovenantErasureStartupRecoveryOwnerAdopter(ready)
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None)).IsFailure);
-
     }
 
     [SkippableFact]
     public async Task Caller_cancellation_is_preserved()
     {
-
         RequireSqlCipher();
 
         using CancellationTokenSource cancelled = new();
@@ -472,12 +444,10 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new
             CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
             .AdoptBeforeReadinessAsync(Connection, cancelled.Token));
-
     }
 
     private async Task<CovenantExclusiveRecoveryOwner> SeedCurrentAsync(string kind)
     {
-
         LongRunningOperationStore store = new(
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
@@ -548,7 +518,6 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
             DateTimeOffset.UtcNow));
 
         return new CovenantExclusiveRecoveryOwner(created.Id, operation, digest);
-
     }
 
     private static void RequireSqlCipher() =>
@@ -558,20 +527,15 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync();
-
     }
-
 }

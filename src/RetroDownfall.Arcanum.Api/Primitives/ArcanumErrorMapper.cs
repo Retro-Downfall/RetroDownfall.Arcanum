@@ -183,7 +183,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Attachment.TooLarge =>
                 StatusCodes.Status413PayloadTooLarge,
 
-            ErrorCodes.Scrying.VisionNotSupported or ErrorCodes.Scrying.TooManyImages or ErrorCodes.Scrying.UnsupportedMimeType or ErrorCodes.Scrying.InvalidImageData or ErrorCodes.Files.InvalidMimeType or ErrorCodes.Batches.InvalidEndpoint or ErrorCodes.WebBrowsing.InvalidUrl or ErrorCodes.WebBrowsing.TooLarge or ErrorCodes.WebResearch.InvalidUrl or ErrorCodes.WebResearch.RequestRejected or ErrorCodes.ClientTools.Disabled or ErrorCodes.ClientTools.TooMany or ErrorCodes.ClientTools.InvalidSchema or ErrorCodes.Guardrails.PiiDetected or ErrorCodes.Guardrails.Blocked =>
+            ErrorCodes.Scrying.VisionNotSupported or ErrorCodes.Scrying.TooManyImages or ErrorCodes.Scrying.UnsupportedMimeType or ErrorCodes.Scrying.InvalidImageData or ErrorCodes.Files.InvalidMimeType or ErrorCodes.Batches.InvalidEndpoint or ErrorCodes.WebBrowsing.InvalidUrl or ErrorCodes.WebBrowsing.TooLarge or ErrorCodes.WebResearch.InvalidUrl or ErrorCodes.WebResearch.RequestRejected or ErrorCodes.ClientTools.Disabled or ErrorCodes.ClientTools.TooMany or ErrorCodes.ClientTools.InvalidSchema or ErrorCodes.ClientTools.ModelUnsupported or ErrorCodes.ClientTools.ToolChoiceUnavailable or ErrorCodes.Guardrails.PiiDetected or ErrorCodes.Guardrails.Blocked =>
                 StatusCodes.Status400BadRequest,
 
             ErrorCodes.Scrying.FeatureDisabled =>

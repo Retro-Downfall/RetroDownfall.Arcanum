@@ -137,6 +137,8 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.ClientTools.Disabled, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.ClientTools.TooMany, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.ClientTools.InvalidSchema, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.ClientTools.ModelUnsupported, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.ClientTools.ToolChoiceUnavailable, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Guardrails.PiiDetected, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Guardrails.Blocked, StatusCodes.Status400BadRequest)]
     // The durable-operation, perception and codex routes each spelled their code out as a literal and

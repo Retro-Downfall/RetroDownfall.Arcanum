@@ -254,29 +254,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
-            role.TypeMapping = IntTypeMapping.Default.Clone(
-                comparer: new ValueComparer<MessageRole>(
-                    bool (MessageRole v1, MessageRole v2) => object.Equals(((object)v1), ((object)v2)),
-                    int (MessageRole v) => ((object)v).GetHashCode(),
-                    MessageRole (MessageRole v) => v),
-                keyComparer: new ValueComparer<MessageRole>(
-                    bool (MessageRole v1, MessageRole v2) => object.Equals(((object)v1), ((object)v2)),
-                    int (MessageRole v) => ((object)v).GetHashCode(),
-                    MessageRole (MessageRole v) => v),
-                providerValueComparer: new ValueComparer<int>(
-                    bool (int v1, int v2) => v1 == v2,
-                    int (int v) => v,
-                    int (int v) => v),
-                mappingInfo: new RelationalTypeMappingInfo(
-                    storeTypeName: "INTEGER"),
-                converter: new ValueConverter<MessageRole, int>(
-                    int (MessageRole value) => ((int)value),
-                    MessageRole (int value) => ((MessageRole)value)),
-                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<MessageRole, int>(
-                    JsonInt32ReaderWriter.Instance,
-                    new ValueConverter<MessageRole, int>(
-                        int (MessageRole value) => ((int)value),
-                        MessageRole (int value) => ((MessageRole)value))));
+            role.TypeMapping = NativeAotSqliteEnumTypeMappings.ForMessageRole();
             role.SetSentinelFromProviderValue(0);
 
             var sequence = runtimeEntityType.AddProperty(

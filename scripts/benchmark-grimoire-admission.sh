@@ -193,6 +193,7 @@ derive_revision_catalog()
     ' "$derive_revision_catalog__tree" > "$derive_revision_catalog__selected" || return 2
     for derive_revision_catalog__path in \
         Directory.Build.props \
+        Directory.Build.targets \
         scripts/benchmark-grimoire-admission.sh \
         tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-input-catalog-v1.txt \
         tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-workload-v1.json \

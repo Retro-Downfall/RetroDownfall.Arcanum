@@ -148,6 +148,18 @@ jobs:
               throw "$($env:RID) needs an SDK whose host RID is $($env:RID); this runner's is $($match.Groups['rid'].Value), so the publish would cross-compile."
           }
 
+      # Package creation performs a fresh Native AOT publish under the normal warning-free profile.
+      # Audit detailed diagnostics on the same validated native SDK first; a prior CI run may belong
+      # to another commit and cannot prove this release input.
+      - name: Audit Native AOT diagnostics for the exact RID
+        shell: bash
+        env:
+          RID: ${{ inputs.rid }}
+        run: |
+          set -euo pipefail
+          rg --version
+          ./scripts/verify-aot-il-warnings.sh "$RID"
+
       - name: Package Arcanum, Compendium, and The Forge
         shell: pwsh
         env:

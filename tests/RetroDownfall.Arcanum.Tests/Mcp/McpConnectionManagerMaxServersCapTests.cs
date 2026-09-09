@@ -212,7 +212,6 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
             CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>

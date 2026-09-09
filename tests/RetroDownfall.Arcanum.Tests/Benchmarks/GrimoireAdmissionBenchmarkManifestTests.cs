@@ -127,6 +127,7 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
         [
             catalogPath,
             "Directory.Build.props",
+            "Directory.Build.targets",
             "scripts/benchmark-grimoire-admission.sh",
             "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-workload-v1.json",
             "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/packages.lock.json",

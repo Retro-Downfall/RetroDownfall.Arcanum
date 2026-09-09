@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
-
     [SkippableTheory]
 
     [InlineData("pinned-entry", ErrorCodes.Data.Blocked)]
@@ -45,7 +44,6 @@ public sealed partial class DataRetentionServiceTests
         string protection,
         string expectedErrorCode)
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -60,10 +58,8 @@ public sealed partial class DataRetentionServiceTests
             settings,
             async (_, _) =>
             {
-
                 switch (protection)
                 {
-
                     case "pinned-entry":
                         await ExecuteAsync(
                             "UPDATE Entries SET IsPinned = 1 WHERE lower(replace(Id, '-', '')) = @id",
@@ -90,9 +86,7 @@ public sealed partial class DataRetentionServiceTests
                             nameof(protection),
                             protection,
                             "Unknown boundary protection.");
-
                 }
-
             },
             logger);
 
@@ -134,7 +128,6 @@ public sealed partial class DataRetentionServiceTests
                 Canonical(attachment.AttachmentId)));
 
         Assert.True(File.Exists(attachment.AbsolutePath));
-
     }
 
     [SkippableTheory]
@@ -149,7 +142,6 @@ public sealed partial class DataRetentionServiceTests
         string protection,
         string expectedErrorCode)
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -162,17 +154,14 @@ public sealed partial class DataRetentionServiceTests
             settings,
             async (_, _) =>
             {
-
                 if (string.Equals(
                         protection,
                         "operator-hold",
                         StringComparison.Ordinal))
                 {
-
                     settings.Retention.ProtectedSessionIds = [sessionId];
 
                     return;
-
                 }
 
                 if (string.Equals(
@@ -180,18 +169,15 @@ public sealed partial class DataRetentionServiceTests
                         "attachment-pin",
                         StringComparison.Ordinal))
                 {
-
                     await SeedContextPinAsync(
                         sessionId,
                         SessionContextPinKind.Attachment,
                         attachment.AttachmentId.ToString());
 
                     return;
-
                 }
 
                 await SeedActiveOperationAsync(sessionId);
-
             });
 
         DataRetentionRequest request = new(
@@ -224,14 +210,12 @@ public sealed partial class DataRetentionServiceTests
                 Canonical(attachment.AttachmentId)));
 
         Assert.True(File.Exists(attachment.AbsolutePath));
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_DeleteAttachment_WhenOwningSessionIsHeld_ReportsBlocker()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -257,7 +241,6 @@ public sealed partial class DataRetentionServiceTests
             blocker => blocker.ReasonCode == "Data.SessionHold");
 
         Assert.True(File.Exists(attachment.AbsolutePath));
-
     }
 
     [SkippableTheory]
@@ -269,7 +252,6 @@ public sealed partial class DataRetentionServiceTests
     public async Task ApplyAsync_ResetMemory_WhenRelevantWorkAppearsAtBoundary_FailsClosed(
         MemoryResetScope scope)
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -339,14 +321,12 @@ public sealed partial class DataRetentionServiceTests
             "session_attachment_chunks",
             "AttachmentId",
             Canonical(attachment.AttachmentId)));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_PruneEntry_WhenActiveWorkAppearsDuringDerivedDelete_RollsBackCandidate()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -403,14 +383,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountAllAsync("Entries"));
 
         Assert.Equal(1, await CountAllAsync("entry_embeddings"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteSession_ReportsExactDerivedPlanAndApplyCounts()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -478,7 +456,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.True(result.IsSuccess, result.Error.Message);
 
         Assert.Equal(plan.DerivedRecords, result.Value.DerivedRecordsDeleted);
-
     }
 
     /// <summary>
@@ -492,7 +469,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_WhenCancellationRacesAnUnavailableStore_StillSurfacesTheCancellation()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -508,13 +484,11 @@ public sealed partial class DataRetentionServiceTests
             new ArcanumSettings(),
             (_, _) =>
             {
-
                 // Armed only once the apply is under way, so the lease acquisition itself still succeeds
                 // and the failure lands exactly where the cancellation handler reads the operation back.
                 operations.FailNextGet();
 
                 throw new OperationCanceledException();
-
             },
             operationStore: operations);
 
@@ -533,7 +507,6 @@ public sealed partial class DataRetentionServiceTests
 
         // Pins that the surrender was actually attempted, so the test cannot pass by never reaching it.
         Assert.True(operations.GetFailed);
-
     }
 
     private DataRetentionService CreateBoundaryService(
@@ -545,7 +518,6 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperationOwnership? operationOwnership = null,
         ILongRunningOperationSameOwnerLeaseResumption? sameOwnerLeaseResumption = null)
     {
-
         ILongRunningOperationStore operations = operationStore
             ?? new LongRunningOperationStore(
                 _db!,
@@ -565,7 +537,6 @@ public sealed partial class DataRetentionServiceTests
                 acquireSessionGate: acquireSessionGate),
             operationOwnership: operationOwnership,
             sameOwnerLeaseResumption: sameOwnerLeaseResumption);
-
     }
 
     private Task SeedContextPinAsync(
@@ -609,12 +580,9 @@ public sealed partial class DataRetentionServiceTests
         string idColumn,
         string id)
     {
-
         if (!await TableExistsInTestAsync(table))
         {
-
             return false;
-
         }
 
         string? createSql = await ReadScalarStringAsync(
@@ -629,9 +597,7 @@ public sealed partial class DataRetentionServiceTests
 
         if (marker < 0)
         {
-
             return false;
-
         }
 
         int start = marker + dimensionMarker.Length;
@@ -645,9 +611,7 @@ public sealed partial class DataRetentionServiceTests
                 CultureInfo.InvariantCulture,
                 out int dimensions))
         {
-
             return false;
-
         }
 
         await ExecuteAsync(
@@ -656,14 +620,12 @@ public sealed partial class DataRetentionServiceTests
             ("@embedding", new byte[dimensions * sizeof(float)]));
 
         return true;
-
     }
 
     private async Task<string?> ReadScalarStringAsync(
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         Microsoft.Data.Sqlite.SqliteConnection connection =
             (Microsoft.Data.Sqlite.SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -673,9 +635,7 @@ public sealed partial class DataRetentionServiceTests
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         object? result = await command.ExecuteScalarAsync();
@@ -683,7 +643,6 @@ public sealed partial class DataRetentionServiceTests
         return result is null || result == DBNull.Value
             ? null
             : Convert.ToString(result, CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -693,7 +652,6 @@ public sealed partial class DataRetentionServiceTests
     private sealed class LeaseSurrenderFailingOperationStore(ILongRunningOperationStore inner)
         : ILongRunningOperationStore
     {
-
         private int _failNextGet;
 
         public bool GetFailed { get; private set; }
@@ -704,18 +662,14 @@ public sealed partial class DataRetentionServiceTests
             Guid operationId,
             CancellationToken cancellationToken = default)
         {
-
             if (Interlocked.Exchange(ref _failNextGet, 0) == 1)
             {
-
                 GetFailed = true;
 
                 throw new Microsoft.Data.Sqlite.SqliteException("database is locked", 5);
-
             }
 
             return inner.GetAsync(operationId, cancellationToken);
-
         }
 
         public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
@@ -865,7 +819,5 @@ public sealed partial class DataRetentionServiceTests
         public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
             CancellationToken cancellationToken = default) =>
             inner.GetCountsAsync(cancellationToken);
-
     }
-
 }

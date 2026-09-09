@@ -44,6 +44,49 @@ public sealed class NativeAotCompiledModelGuardTests
         }
     }
 
+    [Theory]
+    [InlineData("EntryEntityType.cs", "MessageRole", "ForMessageRole")]
+    [InlineData("CampaignEntityType.cs", "WorkspaceType", "ForWorkspaceType")]
+    public void Enum_mappings_use_named_scoped_ef10_aot_compatibility_boundaries(
+        string generatedFile,
+        string enumType,
+        string boundaryName)
+    {
+        string generatedDirectory = Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Infrastructure",
+            "Generated");
+        string mappingSource = File.ReadAllText(Path.Combine(
+            generatedDirectory,
+            "NativeAotSqliteTypeMappings.cs"));
+        CompilationUnitSyntax mappingRoot = CSharpSyntaxTree.ParseText(mappingSource)
+            .GetCompilationUnitRoot();
+        MethodDeclarationSyntax boundary = Assert.Single(
+            mappingRoot.DescendantNodes().OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText.Equals(boundaryName, StringComparison.Ordinal));
+        string boundarySource = boundary.NormalizeWhitespace().ToFullString();
+
+        Assert.Contains(
+            $"NativeAotSqliteInt32EnumTypeMapping<{enumType}>.Default",
+            boundarySource,
+            StringComparison.Ordinal);
+        Assert.Contains("UnconditionalSuppressMessage", boundarySource, StringComparison.Ordinal);
+        Assert.Contains("\"IL3050", boundarySource, StringComparison.Ordinal);
+        Assert.Contains("System.Enum.GetValues(System.Type)", boundarySource, StringComparison.Ordinal);
+
+        string entitySource = File.ReadAllText(Path.Combine(generatedDirectory, generatedFile));
+
+        Assert.Contains(
+            $"NativeAotSqliteEnumTypeMappings.{boundaryName}()",
+            entitySource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            $"NativeAotSqliteInt32EnumTypeMapping<{enumType}>.Default",
+            entitySource,
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Every_mapped_entity_uses_its_generated_native_aot_unsafe_accessors()
     {

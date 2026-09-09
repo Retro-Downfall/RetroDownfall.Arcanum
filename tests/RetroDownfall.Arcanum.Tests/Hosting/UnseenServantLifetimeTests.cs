@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
+[Collection(UnseenServantLifetimeCollection.Name)]
 public sealed class UnseenServantLifetimeTests
 {
     [Fact]

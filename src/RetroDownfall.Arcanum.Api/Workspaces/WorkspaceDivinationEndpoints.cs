@@ -31,7 +31,6 @@ namespace RetroDownfall.Arcanum.Api.Workspaces;
 /// </summary>
 internal static class WorkspaceDivinationEndpoints
 {
-
     private const int ContentPreviewChars = 500;
 
     // Bounds the free-text query sent to the embedding provider — matches
@@ -229,27 +228,21 @@ internal static class WorkspaceDivinationEndpoints
         int limit,
         CancellationToken cancellationToken)
     {
-
         if (hits.Length == 0)
         {
-
             return [];
-
         }
 
         Dictionary<string, float> similarityByChunkId = new(StringComparer.Ordinal);
 
         foreach (DivinationResult hit in hits)
         {
-
             similarityByChunkId[hit.Id] = hit.Similarity;
-
         }
 
         if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
         {
             throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
-
         }
 
         Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
@@ -261,9 +254,7 @@ internal static class WorkspaceDivinationEndpoints
 
         if (acquired.IsFailure)
         {
-
             throw new GrimoireMaintenanceUnavailableException();
-
         }
 
         await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
@@ -274,7 +265,6 @@ internal static class WorkspaceDivinationEndpoints
 
         await using (DbCommand cmd = connection.CreateCommand())
         {
-
             StringBuilder sql = new(
                 """
                 SELECT "ChunkId", "RelativePath", "ChunkIndex", "Content"
@@ -286,12 +276,9 @@ internal static class WorkspaceDivinationEndpoints
 
             for (int i = 0; i < hits.Length; i++)
             {
-
                 if (i > 0)
                 {
-
                     sql.Append(", ");
-
                 }
 
                 string paramName = $"@id{i.ToString(CultureInfo.InvariantCulture)}";
@@ -299,7 +286,6 @@ internal static class WorkspaceDivinationEndpoints
                 sql.Append(paramName);
 
                 AddParameter(cmd, paramName, hits[i].Id);
-
             }
 
             sql.Append(')');
@@ -310,18 +296,13 @@ internal static class WorkspaceDivinationEndpoints
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 rows.Add((reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3)));
-
             }
-
         }
 
         if (rows.Count == 0)
         {
-
             return [];
-
         }
 
         Dictionary<string, int> totalChunksByPath = await GetTotalChunksByPathAsync(
@@ -340,7 +321,6 @@ internal static class WorkspaceDivinationEndpoints
             .OrderByDescending(static r => r.Similarity)
             .Take(limit)
             .ToArray();
-
     }
 
     private static async Task<Dictionary<string, int>> GetTotalChunksByPathAsync(
@@ -349,16 +329,13 @@ internal static class WorkspaceDivinationEndpoints
         IEnumerable<string> relativePaths,
         CancellationToken cancellationToken)
     {
-
         List<string> paths = [.. relativePaths];
 
         Dictionary<string, int> result = new(StringComparer.Ordinal);
 
         if (paths.Count == 0)
         {
-
             return result;
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -374,12 +351,9 @@ internal static class WorkspaceDivinationEndpoints
 
         for (int i = 0; i < paths.Count; i++)
         {
-
             if (i > 0)
             {
-
                 sql.Append(", ");
-
             }
 
             string paramName = $"@path{i.ToString(CultureInfo.InvariantCulture)}";
@@ -387,7 +361,6 @@ internal static class WorkspaceDivinationEndpoints
             sql.Append(paramName);
 
             AddParameter(cmd, paramName, paths[i]);
-
         }
 
         sql.Append(") GROUP BY \"RelativePath\"");
@@ -398,9 +371,7 @@ internal static class WorkspaceDivinationEndpoints
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             result[reader.GetString(0)] = reader.GetInt32(1);
-
         }
 
         await GrimoireScopedConsumerTestSeam
@@ -412,12 +383,10 @@ internal static class WorkspaceDivinationEndpoints
             .ConfigureAwait(false);
 
         return result;
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -425,7 +394,5 @@ internal static class WorkspaceDivinationEndpoints
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
-
 }

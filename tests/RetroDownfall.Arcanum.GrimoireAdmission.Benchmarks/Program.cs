@@ -37,6 +37,7 @@ internal static class Program
     private static readonly string[] FixedRuntimeInputs =
     [
         "Directory.Build.props",
+        "Directory.Build.targets",
         "scripts/benchmark-grimoire-admission.sh",
         CatalogPath,
         BenchmarkPrefix + "grimoire-admission-workload-v1.json",

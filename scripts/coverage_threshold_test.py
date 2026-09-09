@@ -34,6 +34,7 @@ class CoverageThresholdParserTests(unittest.TestCase):
         )
         self.assertIn('COVERAGE_LINE_TARGET" -Default 80.0', powershell)
         self.assertIn('COVERAGE_BRANCH_TARGET" -Default 70.0', powershell)
+        self.assertIn('"ApiKeyDigestCache" = 85.0', powershell)
 
     def _write_xml(self, content: str) -> Path:
         path = Path(tempfile.mktemp(suffix=".cobertura.xml"))
@@ -47,6 +48,7 @@ class CoverageThresholdParserTests(unittest.TestCase):
         omitted: str | None = None,
         partial: str | None = None,
         nested_partial: str | None = None,
+        conditions: dict[str, str] | None = None,
         line_rate: str = "1.00",
         branch_rate: str = "1.00",
     ) -> str:
@@ -55,10 +57,9 @@ class CoverageThresholdParserTests(unittest.TestCase):
             if security_type == omitted:
                 continue
 
-            condition = (
-                "50% (1/2)"
-                if security_type == partial
-                else "100% (2/2)"
+            condition = (conditions or {}).get(
+                security_type,
+                "50% (1/2)" if security_type == partial else "100% (2/2)",
             )
             filename = f"RetroDownfall.Arcanum/Security/{security_type}.cs"
             classes.append(
@@ -116,6 +117,76 @@ class CoverageThresholdParserTests(unittest.TestCase):
         )
         path = self._write_xml(xml)
         self.assertEqual(coverage_threshold.main([str(path)]), 1)
+
+    def test_api_key_digest_cache_uses_explicit_85_percent_target(self) -> None:
+        self.assertEqual(
+            coverage_threshold.security_branch_target("ApiKeyDigestCache"),
+            85.0,
+        )
+        self.assertEqual(
+            coverage_threshold.security_branch_target("ApiKeyEndpointFilter"),
+            100.0,
+        )
+
+        path = self._write_xml(
+            self._coverage_xml(
+                conditions={"ApiKeyDigestCache": "85% (17/20)"},
+            )
+        )
+
+        self.assertEqual(coverage_threshold.main([str(path)]), 0)
+
+    def test_api_key_digest_cache_below_explicit_target_fails(self) -> None:
+        path = self._write_xml(
+            self._coverage_xml(
+                conditions={"ApiKeyDigestCache": "80% (4/5)"},
+            )
+        )
+
+        self.assertEqual(coverage_threshold.main([str(path)]), 1)
+
+    def test_powershell_api_key_digest_cache_at_85_percent_passes(self) -> None:
+        pwsh = shutil.which("pwsh")
+        if pwsh is None:
+            self.skipTest("pwsh is not installed")
+
+        path = self._write_xml(
+            self._coverage_xml(
+                conditions={"ApiKeyDigestCache": "85% (17/20)"},
+            )
+        )
+        script = Path(__file__).parent / "coverage_threshold.ps1"
+
+        completed = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(script), str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_powershell_api_key_digest_cache_below_85_percent_fails(self) -> None:
+        pwsh = shutil.which("pwsh")
+        if pwsh is None:
+            self.skipTest("pwsh is not installed")
+
+        path = self._write_xml(
+            self._coverage_xml(
+                conditions={"ApiKeyDigestCache": "80% (4/5)"},
+            )
+        )
+        script = Path(__file__).parent / "coverage_threshold.ps1"
+
+        completed = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(script), str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("ApiKeyDigestCache", completed.stderr)
 
     def test_declaring_type_name_folds_async_state_machines(self) -> None:
         self.assertEqual(

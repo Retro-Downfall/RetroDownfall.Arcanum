@@ -228,13 +228,18 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     [InlineData("ld64.lld")]
 
-    public void Every_lane_running_the_aot_il_gate_installs_what_the_gate_needs(string requirement)
+    public void Every_macos_lane_running_the_aot_il_gate_installs_what_the_gate_needs(string requirement)
     {
         List<string> offenders = [];
 
         foreach (WorkflowJob job in ContinuousIntegrationJobs(FindRepositoryRoot()))
         {
             if (!job.Body.Contains("verify-aot-il-warnings.sh", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!job.RunsOn.StartsWith("macos", StringComparison.Ordinal))
             {
                 continue;
             }
@@ -302,6 +307,84 @@ public sealed class ContinuousIntegrationWorkflowTests
             + "another architecture's evidence:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, untested));
+    }
+
+    /// <summary>
+    /// The ordinary shipping publish deliberately suppresses dependency summary diagnostics after
+    /// the diagnostic audit has classified their detailed warnings. Running only that ordinary
+    /// publish on Windows would therefore let a Windows-only first-party IL warning merge green.
+    /// Each shipping RID must run the diagnostic profile on its own native runner before the
+    /// warning-free product publish.
+    /// </summary>
+    [Fact]
+    public void Every_shipping_windows_architecture_audits_first_party_aot_diagnostics_before_publish()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlyList<WorkflowJob> jobs = ContinuousIntegrationJobs(repositoryRoot);
+
+        foreach (string rid in ShippingRuntimeIdentifiers(repositoryRoot)
+            .Where(static candidate => candidate.StartsWith("win-", StringComparison.Ordinal)))
+        {
+            WorkflowJob lane = Assert.Single(
+                jobs,
+                job =>
+                    RuntimeIdentifierFor(job.RunsOn) == rid
+                    && job.Body.Contains(
+                        $"./scripts/verify-shipping-publish.sh --rid {rid}",
+                        StringComparison.Ordinal));
+
+            int audit = lane.Body.IndexOf(
+                $"./scripts/verify-aot-il-warnings.sh {rid}",
+                StringComparison.Ordinal);
+            int publish = lane.Body.IndexOf(
+                $"./scripts/verify-shipping-publish.sh --rid {rid}",
+                StringComparison.Ordinal);
+
+            Assert.True(
+                audit >= 0,
+                $"The native {rid} CI lane never runs the AOT diagnostic profile, so a first-party "
+                + "warning unique to that Windows architecture is hidden by the ordinary shipping "
+                + "publish's dependency-warning suppression.");
+            Assert.True(
+                audit < publish,
+                $"The native {rid} CI lane audits AOT diagnostics only after its shipping publish. "
+                + "The diagnostic profile must clear before the product publish can be trusted.");
+            Assert.Contains("rg --version", lane.Body, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The reusable Windows workflow is also a release entry point. Its package step performs a
+    /// fresh Native AOT publish, so it must audit the same validated RID first instead of relying on
+    /// a possibly older pull-request run.
+    /// </summary>
+    [Fact]
+    public void Windows_release_audits_the_validated_native_rid_before_packaging()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        WorkflowJob package = Assert.Single(
+            JobsIn(Path.Combine(repositoryRoot, ".github", "workflows", "build-windows.yml")),
+            static job => job.Body.Contains("package-windows.ps1", StringComparison.Ordinal));
+
+        int nativeSdk = package.Body.IndexOf(
+            "Assert the SDK is native to the RID",
+            StringComparison.Ordinal);
+        int audit = package.Body.IndexOf(
+            "./scripts/verify-aot-il-warnings.sh \"$RID\"",
+            StringComparison.Ordinal);
+        int packaging = package.Body.IndexOf("package-windows.ps1", StringComparison.Ordinal);
+
+        Assert.True(nativeSdk >= 0, "The Windows release must validate its SDK architecture.");
+        Assert.True(
+            audit > nativeSdk,
+            "The Windows release must run its AOT diagnostic profile after validating the native SDK.");
+        Assert.True(
+            audit < packaging,
+            "The Windows release must clear its AOT diagnostic profile before creating archives.");
+        Assert.Contains("RID: ${{ inputs.rid }}", package.Body, StringComparison.Ordinal);
+        Assert.Contains("rg --version", package.Body, StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -150,6 +150,24 @@ public sealed class PublishedApphostVerificationScriptTests
     }
 
     [Fact]
+    public async Task Shipping_gate_fails_when_its_macho_file_inventory_cannot_run()
+    {
+        using ScriptFixture fixture = new(receiptKind: "published");
+        fixture.FailRegularFileSearches();
+
+        ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", "verify-shipping-publish.sh"),
+            "--rid",
+            "osx-arm64");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(
+            "could not inspect the Native AOT publish shape for Mach-O files",
+            result.StandardError,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Shipping_publish_delegates_the_exact_output_to_the_reusable_non_publishing_gate()
     {
         string root = FindRepositoryRoot();
@@ -499,6 +517,23 @@ public sealed class PublishedApphostVerificationScriptTests
                 #!/usr/bin/env bash
                 printf '%s\n' 'simulated find failure' >&2
                 exit 2
+                """);
+        }
+
+        public void FailRegularFileSearches()
+        {
+            WriteExecutable(
+                Path.Combine(FakeBin, "find"),
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                if [[ " $* " == *' -type f '* ]]; then
+                  printf '%s\n' 'simulated regular-file find failure' >&2
+                  exit 2
+                fi
+
+                exec /usr/bin/find "$@"
                 """);
         }
 

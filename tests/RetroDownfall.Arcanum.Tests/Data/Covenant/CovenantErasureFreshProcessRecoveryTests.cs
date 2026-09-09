@@ -31,7 +31,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantErasureFreshProcessRecoveryTests
 {
-
     private const string OriginalOwner = "task-9-original-process";
 
     private const string RecoveryOwner = "task-9-recovery-process";
@@ -39,7 +38,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
     [SkippableFact]
     public async Task Inventory_checkpoint_is_adopted_before_readiness_and_completed_by_the_fresh_process()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string testHome = Path.Combine(
@@ -57,7 +55,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
         try
         {
-
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", testHome);
 
             global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
@@ -82,7 +79,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             await using (ServiceProvider original = CreateProcess(fixture.Passphrase))
             {
-
                 await using (SqliteConnection install = await InitializeProcessAsync(original))
                 {
                 }
@@ -98,7 +94,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
                 foreach (CovenantEnvelopePurpose purpose in Enum.GetValues<CovenantEnvelopePurpose>())
                 {
-
                     Result<string> encoded = codec.Encode(
                         purpose,
                         [(byte)purpose],
@@ -107,7 +102,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
                     Assert.True(encoded.IsSuccess, encoded.Error.Message);
 
                     oldTokens.Add(purpose, encoded.Value);
-
                 }
 
                 await using AsyncServiceScope scope = original.CreateAsyncScope();
@@ -151,7 +145,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
                 operationId = started.Operation.Id;
 
                 durableOwner = prepared.Value.Owner;
-
             }
 
             SqliteConnection.ClearAllPools();
@@ -164,12 +157,9 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             await using (SqliteConnection install = await InitializeProcessAsync(recovery))
             {
-
                 foreach ((CovenantEnvelopePurpose purpose, string token) in oldTokens)
                 {
-
                     Assert.True(recoveryCodec.Decode(purpose, token).IsFailure);
-
                 }
 
                 Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await recovery
@@ -185,7 +175,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
                 Assert.True((await gate.AcquireReadAsync(
                     CovenantOperationScope.Global,
                     CancellationToken.None)).IsFailure);
-
             }
 
             await using AsyncServiceScope recoveryScope = recovery.CreateAsyncScope();
@@ -233,15 +222,11 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             foreach ((CovenantEnvelopePurpose purpose, string token) in oldTokens)
             {
-
                 Assert.True(recoveryCodec.Decode(purpose, token).IsFailure);
-
             }
-
         }
         finally
         {
-
             SqliteConnection.ClearAllPools();
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", originalTestHome);
@@ -252,18 +237,13 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             if (Directory.Exists(testHome))
             {
-
                 Directory.Delete(testHome, recursive: true);
-
             }
-
         }
-
     }
 
     private static ServiceProvider CreateProcess(string passphrase)
     {
-
         HostApplicationBuilder builder = Host.CreateApplicationBuilder();
 
         builder.Services.AddSingleton<IWeaveService>(static _ => null!);
@@ -288,11 +268,9 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
         ServiceProvider provider = builder.Services.BuildServiceProvider(
             new ServiceProviderOptions
             {
-
                 ValidateOnBuild = true,
 
                 ValidateScopes = true,
-
             });
 
         Assert.IsType<GrimoireDbPassphraseSource>(
@@ -300,12 +278,10 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
             .SetPassphrase(passphrase);
 
         return provider;
-
     }
 
     private static async Task<SqliteConnection> InitializeProcessAsync(ServiceProvider provider)
     {
-
         IDesignTimeGrimoireConnectionFactory connections =
             new DesignTimeGrimoireConnectionFactory(
                 provider.GetRequiredService<IGrimoireDbPassphraseSource>());
@@ -314,7 +290,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
         try
         {
-
             await provider.GetRequiredService<ICovenantSqliteConnectionInitializer>()
                 .InitializeAsync(
                     connection,
@@ -378,17 +353,12 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
             Assert.NotNull(runtime.Current.Keys);
 
             return connection;
-
         }
         catch
         {
-
             await connection.DisposeAsync();
 
             throw;
-
         }
-
     }
-
 }

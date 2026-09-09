@@ -200,6 +200,7 @@ publish_cli_rid() {
     -c Release
     -r "$rid"
     --artifacts-path "$artifacts"
+    -p:ArcanumAotDiagnosticAudit=true
   )
 
   echo "  Publishing $rid via Native AOT — this performs native compilation and can take several minutes..." >&2

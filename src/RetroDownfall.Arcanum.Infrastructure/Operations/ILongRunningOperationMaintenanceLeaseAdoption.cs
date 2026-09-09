@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 /// </remarks>
 internal interface ILongRunningOperationMaintenanceLeaseAdoption
 {
-
     Task<LongRunningOperationLeaseResult> AdoptUnderInstallationLockAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
@@ -27,5 +26,4 @@ internal interface ILongRunningOperationMaintenanceLeaseAdoption
         DateTimeOffset utcNow,
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default);
-
 }

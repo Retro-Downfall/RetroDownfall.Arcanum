@@ -7,7 +7,6 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// </summary>
 public interface IUnseenServantWatermarkStore
 {
-
     Task<UnseenServantWatermark?> GetAsync(string jobKey, CancellationToken cancellationToken = default);
 
     Task SaveAsync(string jobKey, DateTimeOffset lastRunAt, int effectiveIntervalMinutes, CancellationToken cancellationToken = default);
@@ -21,5 +20,4 @@ public interface IUnseenServantWatermarkStore
     Task<IReadOnlyList<UnseenServantWatermark>> GetAllAsync(CancellationToken cancellationToken = default);
 
     Task DeleteAsync(string jobKey, CancellationToken cancellationToken = default);
-
 }

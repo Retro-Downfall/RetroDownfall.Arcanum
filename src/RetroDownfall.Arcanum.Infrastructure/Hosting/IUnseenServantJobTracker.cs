@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </summary>
 public interface IUnseenServantJobTracker
 {
-
     void RecordCompletion(UnseenServantJob job, bool success, string? resultSummary);
 
     DateTimeOffset? GetLastRunAt(UnseenServantJob job);
@@ -23,5 +22,4 @@ public interface IUnseenServantJobTracker
     /// in the past) retain the real timestamp, so they remain due on the first scheduler tick.
     /// </summary>
     Task HydrateAsync(IReadOnlyList<UnseenServantWatermark> watermarks, CancellationToken cancellationToken = default);
-
 }

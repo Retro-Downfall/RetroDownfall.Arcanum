@@ -867,6 +867,10 @@ public static class ErrorCodes
         public const string TooMany = "ClientTools.TooMany";
 
         public const string InvalidSchema = "ClientTools.InvalidSchema";
+
+        public const string ModelUnsupported = "ClientTools.ModelUnsupported";
+
+        public const string ToolChoiceUnavailable = "ClientTools.ToolChoiceUnavailable";
     }
 
     /// <summary>Guardrails — content filter (PII / toxicity / topic) violations (Tier 3 Phase 4).</summary>
