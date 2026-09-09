@@ -36,6 +36,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
+[Collection(HostedServiceLifetimeCollection.Name)]
 public sealed class LoremasterTests
 {
     [Fact]
