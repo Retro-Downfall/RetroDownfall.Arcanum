@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.Benchmarks;
 /// </remarks>
 public sealed partial class CovenantBenchmarkManifestTests
 {
-
     /// <summary>Matches one arm of the host's operation switch, which is the list of what it can run.</summary>
     [GeneratedRegex("\"(?<id>[a-z][a-z.]*)\"\\s*=>", RegexOptions.ExplicitCapture)]
     private static partial Regex SwitchArm();
@@ -30,10 +29,8 @@ public sealed partial class CovenantBenchmarkManifestTests
     [Fact]
     public void Every_measured_operation_states_all_three_ceilings()
     {
-
         foreach (JsonElement operation in Manifest().GetProperty("operations").EnumerateArray())
         {
-
             string id = operation.GetProperty("id").GetString()!;
 
             // An unset ceiling and an unlimited one read identically in the file and oppositely in the
@@ -49,9 +46,7 @@ public sealed partial class CovenantBenchmarkManifestTests
             Assert.False(
                 operation.GetProperty("allocationCeilingBytes").ValueKind is JsonValueKind.Null,
                 $"{id} states no allocation ceiling.");
-
         }
-
     }
 
     [Theory]
@@ -72,7 +67,6 @@ public sealed partial class CovenantBenchmarkManifestTests
         double p99Bound,
         long allocationBound)
     {
-
         JsonElement operation = Operation(id);
 
         // These are bounds, not the ceilings. Ten times the values this test was written against, so
@@ -90,13 +84,11 @@ public sealed partial class CovenantBenchmarkManifestTests
         Assert.True(
             operation.GetProperty("allocationCeilingBytes").GetInt64() <= allocationBound,
             $"{id} states an allocation ceiling above {allocationBound}B.");
-
     }
 
     [Fact]
     public void The_manifest_and_the_host_name_the_same_operations()
     {
-
         HashSet<string> declared = new(
             Manifest().GetProperty("operations").EnumerateArray()
                 .Select(static operation => operation.GetProperty("id").GetString()!),
@@ -110,13 +102,11 @@ public sealed partial class CovenantBenchmarkManifestTests
         // so a gutted workload gates one operation and every lane stays green. A restated list would
         // drift the other way, leaving an arm the host can run that the workload never exercises.
         Assert.Equal(runnable.Order(StringComparer.Ordinal), declared.Order(StringComparer.Ordinal));
-
     }
 
     [Fact]
     public void Every_operation_the_manifest_declares_is_bounded_by_this_file()
     {
-
         HashSet<string> declared = new(
             Manifest().GetProperty("operations").EnumerateArray()
                 .Select(static operation => operation.GetProperty("id").GetString()!),
@@ -135,13 +125,11 @@ public sealed partial class CovenantBenchmarkManifestTests
             StringComparer.Ordinal);
 
         Assert.Equal(bounded.Order(StringComparer.Ordinal), declared.Order(StringComparer.Ordinal));
-
     }
 
     [Fact]
     public void The_pinned_corpus_digest_is_the_digest_of_what_the_manifest_describes()
     {
-
         JsonElement corpus = Manifest().GetProperty("corpus");
 
         // Recomputed, not measured for length. Any sixty-four characters passed the old assertion, so
@@ -155,13 +143,11 @@ public sealed partial class CovenantBenchmarkManifestTests
         Assert.True(corpus.GetProperty("globalConfirmedEntries").GetInt32() > 0);
 
         Assert.True(corpus.GetProperty("campaigns").GetInt32() > 0);
-
     }
 
     [Fact]
     public void The_manifest_digest_separates_runs_the_corpus_digest_cannot()
     {
-
         WorkloadManifest pinned = PinnedManifest();
 
         WorkloadManifest rebatched = pinned with
@@ -186,13 +172,11 @@ public sealed partial class CovenantBenchmarkManifestTests
         ];
 
         Assert.Equal(digests.Length, digests.Distinct(StringComparer.Ordinal).Count());
-
     }
 
     [Fact]
     public void The_comparison_rule_in_the_manifest_matches_the_one_the_code_applies()
     {
-
         JsonElement comparison = Manifest().GetProperty("comparison");
 
         // Against the constants the rule is written from, not against literals restated here. Asserting
@@ -215,7 +199,6 @@ public sealed partial class CovenantBenchmarkManifestTests
         Assert.Equal(
             $"0x{BenchmarkComparison.Seed:X16}",
             comparison.GetProperty("pairedBootstrapSeed").GetString());
-
     }
 
     /// <summary>The operation ids the host's switch actually has arms for, read from its source.</summary>
@@ -226,7 +209,6 @@ public sealed partial class CovenantBenchmarkManifestTests
     /// </remarks>
     private static IEnumerable<string> RunnableOperations()
     {
-
         string source = File.ReadAllText(
             Path.Combine(
                 RepositoryRoot(),
@@ -246,12 +228,10 @@ public sealed partial class CovenantBenchmarkManifestTests
 
         return SwitchArm().Matches(source[start..end])
             .Select(static match => match.Groups["id"].Value);
-
     }
 
     private static WorkloadCorpus CorpusShape()
     {
-
         JsonElement corpus = Manifest().GetProperty("corpus");
 
         return new WorkloadCorpus(
@@ -264,12 +244,10 @@ public sealed partial class CovenantBenchmarkManifestTests
             [.. corpus.GetProperty("fillerWords").EnumerateArray().Select(static word => word.GetString()!)],
             corpus.GetProperty("fillerWordsPerEntry").GetInt32(),
             corpus.GetProperty("corpusDigest").GetString());
-
     }
 
     private static WorkloadManifest PinnedManifest()
     {
-
         JsonElement root = Manifest();
 
         JsonElement measurement = root.GetProperty("measurement");
@@ -295,31 +273,23 @@ public sealed partial class CovenantBenchmarkManifestTests
                 comparison.GetProperty("intervalLowerBoundThreshold").GetDouble(),
                 comparison.GetProperty("bootstrapReplicates").GetInt32(),
                 comparison.GetProperty("pairedBootstrapSeed").GetString()!));
-
     }
 
     private static JsonElement Operation(string id)
     {
-
         foreach (JsonElement operation in Manifest().GetProperty("operations").EnumerateArray())
         {
-
             if (string.Equals(operation.GetProperty("id").GetString(), id, StringComparison.Ordinal))
             {
-
                 return operation;
-
             }
-
         }
 
         throw new InvalidOperationException($"The pinned benchmark workload no longer declares '{id}'.");
-
     }
 
     private static JsonElement Manifest()
     {
-
         string path = Path.Combine(
             RepositoryRoot(),
             "tests",
@@ -329,30 +299,8 @@ public sealed partial class CovenantBenchmarkManifestTests
         Assert.True(File.Exists(path), $"The pinned benchmark workload is missing from {path}.");
 
         return JsonDocument.Parse(File.ReadAllText(path)).RootElement;
-
     }
 
-    private static string RepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("The repository root could not be located from the test output.");
-
-    }
-
+    private static string RepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

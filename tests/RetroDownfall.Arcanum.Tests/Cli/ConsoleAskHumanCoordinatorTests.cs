@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 using Spectre.Console;
 using Spectre.Console.Testing;
 
@@ -452,13 +453,15 @@ public sealed class ConsoleAskHumanCoordinatorTests
         Func<string, string, CancellationToken, bool> submitValidator)
     {
         DelegatingHandler handler = new SubmitHandler(submitValidator);
-        return new ArcanumApiClient(new HttpClientFactoryStub(handler), new SecretStoreStub());
+        return new ArcanumApiClient(
+            new HttpClientFactoryStub(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
     }
 
     private sealed class HttpClientFactoryStub(DelegatingHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) =>
-            new(handler) { BaseAddress = new Uri("http://localhost:5000/") };
+            new(handler) { BaseAddress = new Uri("http://localhost:5001/") };
     }
 
     private sealed class SecretStoreStub : ISecretStore
@@ -506,9 +509,13 @@ public sealed class ConsoleAskHumanCoordinatorTests
     private sealed class FakePalette : IThemePalette
     {
         public Color Text { get; } = Color.White;
+
         public Color Heading { get; } = Color.White;
+
         public Color Highlight { get; } = Color.White;
+
         public Color Error { get; } = Color.Red;
+
         public Color Muted { get; } = Color.Grey;
     }
 }

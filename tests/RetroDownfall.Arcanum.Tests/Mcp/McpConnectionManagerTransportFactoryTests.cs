@@ -1,5 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 
+using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -24,6 +26,108 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 public sealed class McpConnectionManagerTransportFactoryTests
 {
+    [Fact]
+    public async Task FinishStartAsync_disposes_the_unattached_client_when_tool_projection_fails()
+    {
+        RecordingMcpClient client = new(tools: [null!]);
+
+        await using McpConnectionManager manager = CreateManager(new ArcanumSettings());
+
+        ManagedMcpServerEntry entry = Entry();
+
+        Result result = await manager.FinishStartAsync(
+            entry,
+            entry.Config,
+            client,
+            "global",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Mcp.StartFailed", result.Error.Code);
+
+        Assert.Equal(1, client.DisposeCount);
+
+        Assert.Null(entry.Client);
+
+        Assert.Empty(entry.LoadedTools);
+
+        Assert.Empty(entry.Tools);
+    }
+
+    [Fact]
+    public async Task FinishStartAsync_preserves_the_start_failure_when_cleanup_also_fails()
+    {
+        InvalidOperationException primary = new("initialize failed");
+
+        ApplicationException cleanup = new("cleanup failed");
+
+        RecordingMcpClient client = new(
+            initializeFailure: primary,
+            disposalFailure: cleanup);
+
+        TestCapturingLogger<McpConnectionManager> logger = new();
+
+        await using McpConnectionManager manager = CreateManager(new ArcanumSettings(), logger);
+
+        ManagedMcpServerEntry entry = Entry();
+
+        Result result = await manager.FinishStartAsync(
+            entry,
+            entry.Config,
+            client,
+            "global",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Mcp.StartFailed", result.Error.Code);
+
+        Assert.Equal(primary.Message, result.Error.Message);
+
+        Assert.Equal(1, client.DisposeCount);
+
+        Assert.Contains(
+            logger.Entries,
+            item => item.Level == LogLevel.Warning
+                && ReferenceEquals(item.Exception, cleanup));
+    }
+
+    [Fact]
+    public async Task FinishStartAsync_preserves_cancellation_when_cleanup_also_fails()
+    {
+        OperationCanceledException primary = new("initialize canceled");
+
+        ApplicationException cleanup = new("cleanup failed");
+
+        RecordingMcpClient client = new(
+            initializeFailure: primary,
+            disposalFailure: cleanup);
+
+        TestCapturingLogger<McpConnectionManager> logger = new();
+
+        await using McpConnectionManager manager = CreateManager(new ArcanumSettings(), logger);
+
+        ManagedMcpServerEntry entry = Entry();
+
+        OperationCanceledException actual = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => manager.FinishStartAsync(
+                entry,
+                entry.Config,
+                client,
+                "global",
+                CancellationToken.None));
+
+        Assert.Same(primary, actual);
+
+        Assert.Equal(1, client.DisposeCount);
+
+        Assert.Contains(
+            logger.Entries,
+            item => item.Level == LogLevel.Warning
+                && ReferenceEquals(item.Exception, cleanup));
+    }
+
     [Fact]
     public async Task StartAsync_sse_server_returns_sse_not_supported()
     {
@@ -123,7 +227,17 @@ public sealed class McpConnectionManagerTransportFactoryTests
             McpServers = new Dictionary<string, McpServerConfig> { [name] = server },
         };
 
-    private static McpConnectionManager CreateManager(ArcanumSettings settings)
+    private static ManagedMcpServerEntry Entry() => new(
+        "lifetime-test",
+        scopeWorkingDirectory: null,
+        new McpServerConfig(),
+        McpServerTransport.Stdio,
+        alwaysOn: false,
+        sourceDigest: null);
+
+    private static McpConnectionManager CreateManager(
+        ArcanumSettings settings,
+        ILogger<McpConnectionManager>? logger = null)
     {
         IServiceScopeFactory scopeFactory = new ServiceCollection()
             .BuildServiceProvider()
@@ -136,7 +250,7 @@ public sealed class McpConnectionManagerTransportFactoryTests
             NullLogger<UnseenServantPacer>.Instance);
 
         McpConnectionManager manager = new(
-            NullLogger<McpConnectionManager>.Instance,
+            logger ?? NullLogger<McpConnectionManager>.Instance,
             new HumanPromptRegistry(),
             scopeFactory,
             pacer,
@@ -149,6 +263,39 @@ public sealed class McpConnectionManagerTransportFactoryTests
             new GrimoireConnectionAdmissionGate(TimeProvider.System));
 
         return manager;
+    }
+
+    private sealed class RecordingMcpClient(
+        Exception? initializeFailure = null,
+        Exception? disposalFailure = null,
+        IReadOnlyList<McpBridgeTool>? tools = null) : IMcpClient
+    {
+        public int DisposeCount { get; private set; }
+
+        public Task InitializeAsync(CancellationToken cancellationToken = default) =>
+            initializeFailure is null
+                ? Task.CompletedTask
+                : Task.FromException(initializeFailure);
+
+        public Task<IReadOnlyList<McpBridgeTool>> GetToolsAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(tools ?? (IReadOnlyList<McpBridgeTool>)[]);
+
+        public Task<ModelContextProtocol.Protocol.CallToolResult> CallToolAsync(
+            string toolName,
+            IReadOnlyDictionary<string, object?> arguments,
+            TimeSpan? requestTimeout = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+
+            return disposalFailure is null
+                ? ValueTask.CompletedTask
+                : new ValueTask(Task.FromException(disposalFailure));
+        }
     }
 
     private sealed class UntrustedWorkspaceStore : ITrustedMcpWorkspaceStore

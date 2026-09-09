@@ -34,9 +34,7 @@ internal sealed record ManagedFileProducerRow(
 /// </remarks>
 internal interface IManagedFileErasureRevalidator
 {
-
     ValueTask<Result> AssertCurrentAsync(CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -55,7 +53,6 @@ internal sealed class ManagedFileErasureStateMachine(
     IManagedFileOwnershipVerifier verifier,
     TimeProvider timeProvider)
 {
-
     private readonly ICovenantSqliteConnectionInitializer _initializer =
         initializer ?? throw new ArgumentNullException(nameof(initializer));
 
@@ -82,7 +79,6 @@ internal sealed class ManagedFileErasureStateMachine(
         IManagedFileErasureRevalidator? revalidator,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(item);
@@ -91,7 +87,6 @@ internal sealed class ManagedFileErasureStateMachine(
 
         if (current.State == LocalErasureWorkItemState.Prepared)
         {
-
             Result<LocalErasureWorkItemRow> verified = await ProveAbsenceAsync(
                 connection,
                 current,
@@ -101,37 +96,29 @@ internal sealed class ManagedFileErasureStateMachine(
 
             if (verified.IsFailure)
             {
-
                 return Result<CovenantArtifactErasureProgress>.Failure(verified.Error);
-
             }
 
             current = verified.Value;
-
         }
 
         if (current.State == LocalErasureWorkItemState.ManualBlocker)
         {
-
             // The file, its producer row, and its label are all deliberately untouched. Reporting one
             // preserved evidence row rather than one erased artifact is the honest count: nothing was
             // removed, and an operator has to look at the file itself.
             return Result<CovenantArtifactErasureProgress>.Success(
                 new CovenantArtifactErasureProgress(1, 0, 1, CovenantErasureBlocker.ManualOwnershipMismatch));
-
         }
 
         if (current.State == LocalErasureWorkItemState.Completed)
         {
-
             return Result<CovenantArtifactErasureProgress>.Success(
                 new CovenantArtifactErasureProgress(1, 1, 0, CovenantErasureBlocker.None));
-
         }
 
         return await CompleteAsync(connection, current, authorization, revalidator, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -144,33 +131,26 @@ internal sealed class ManagedFileErasureStateMachine(
         IManagedFileErasureRevalidator? revalidator,
         CancellationToken cancellationToken)
     {
-
         Result<ManagedFileResolvedRoot?> root = await ManagedFileRootResolver
             .ResolveAsync(connection, transaction: null, item.Location, cancellationToken)
             .ConfigureAwait(false);
 
         if (root.IsFailure)
         {
-
             return Result<LocalErasureWorkItemRow>.Failure(root.Error);
-
         }
 
         if (root.Value is not { } resolved)
         {
-
             return await TerminalizeManualAsync(connection, item, authorization, revalidator, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         Result current = await StillCurrentAsync(revalidator, cancellationToken).ConfigureAwait(false);
 
         if (current.IsFailure)
         {
-
             return Result<LocalErasureWorkItemRow>.Failure(current.Error);
-
         }
 
         Result<ManagedFileOpenOutcome> opened = await _opener
@@ -179,19 +159,15 @@ internal sealed class ManagedFileErasureStateMachine(
 
         if (opened.IsFailure)
         {
-
             return Result<LocalErasureWorkItemRow>.Failure(opened.Error);
-
         }
 
         ManagedFileOpenHandle? handle = opened.Value.Handle;
 
         try
         {
-
             switch (opened.Value.Kind)
             {
-
                 case ManagedFileOpenKind.Absent:
 
                     return await AdvanceAsync(
@@ -216,7 +192,6 @@ internal sealed class ManagedFileErasureStateMachine(
                 default:
 
                     break;
-
             }
 
             // The compare, the unlink, the name-reuse recheck, and the parent flush are one
@@ -226,9 +201,7 @@ internal sealed class ManagedFileErasureStateMachine(
 
             if (stillCurrent.IsFailure)
             {
-
                 return Result<LocalErasureWorkItemRow>.Failure(stillCurrent.Error);
-
             }
 
             Result<ManagedFileCompareDeleteResult> deleted = await _verifier
@@ -237,9 +210,7 @@ internal sealed class ManagedFileErasureStateMachine(
 
             if (deleted.IsFailure)
             {
-
                 return Result<LocalErasureWorkItemRow>.Failure(deleted.Error);
-
             }
 
             return deleted.Value == ManagedFileCompareDeleteResult.Deleted
@@ -258,18 +229,14 @@ internal sealed class ManagedFileErasureStateMachine(
                         revalidator,
                         cancellationToken)
                     .ConfigureAwait(false);
-
         }
         finally
         {
-
             // Disposed on every terminal and failure path, including the ones that never opened a
             // handle at all. A leaked descriptor here would keep the file's inode alive after the
             // unlink and make "the bytes are gone" untrue for as long as the process lives.
             handle?.Dispose();
-
         }
-
     }
 
     /// <summary>
@@ -287,24 +254,19 @@ internal sealed class ManagedFileErasureStateMachine(
         IManagedFileErasureRevalidator? revalidator,
         CancellationToken cancellationToken)
     {
-
         Result current = await StillCurrentAsync(revalidator, cancellationToken).ConfigureAwait(false);
 
         if (current.IsFailure)
         {
-
             return Blocked(CovenantErasureBlocker.AuthorityStale);
-
         }
 
         try
         {
-
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
             using (_initializer.Authorize(connection, authorization))
             {
-
                 await ExecuteAsync(
                     connection,
                     transaction,
@@ -322,23 +284,19 @@ internal sealed class ManagedFileErasureStateMachine(
                     """,
                     command =>
                     {
-
                         _ = command.Parameters.AddWithValue("$now", Iso(_time.GetUtcNow()));
 
                         _ = command.Parameters.AddWithValue("$source", Format(item.SourceWriteOperationId));
 
                         return command.Parameters.AddWithValue("$revision", item.ExpectedSourceRevision);
-
                     },
                     cancellationToken).ConfigureAwait(false);
 
                 if (producer != 1)
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     return Blocked(CovenantErasureBlocker.IntegrityFailure);
-
                 }
 
                 bool completed = await LocalErasureWorkItemStore.TryAdvanceAsync(
@@ -354,28 +312,21 @@ internal sealed class ManagedFileErasureStateMachine(
 
                 if (!completed)
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     return Blocked(CovenantErasureBlocker.IntegrityFailure);
-
                 }
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<CovenantArtifactErasureProgress>.Success(
                 new CovenantArtifactErasureProgress(1, 1, 0, CovenantErasureBlocker.None));
-
         }
         catch (SqliteException)
         {
-
             return Blocked(CovenantErasureBlocker.IntegrityFailure);
-
         }
-
     }
 
     private async Task<Result<LocalErasureWorkItemRow>> AdvanceAsync(
@@ -387,26 +338,21 @@ internal sealed class ManagedFileErasureStateMachine(
         LocalErasureDeletionEvidenceCode? evidence,
         CancellationToken cancellationToken)
     {
-
         Result current = await StillCurrentAsync(revalidator, cancellationToken).ConfigureAwait(false);
 
         if (current.IsFailure)
         {
-
             return Result<LocalErasureWorkItemRow>.Failure(current.Error);
-
         }
 
         try
         {
-
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
             bool advanced;
 
             using (_initializer.Authorize(connection, authorization))
             {
-
                 advanced = await LocalErasureWorkItemStore.TryAdvanceAsync(
                     connection,
                     transaction,
@@ -417,19 +363,16 @@ internal sealed class ManagedFileErasureStateMachine(
                     evidence,
                     _time.GetUtcNow(),
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             if (!advanced)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return Result<LocalErasureWorkItemRow>.Failure(
                     new Error(
                         ErrorCodes.Covenant.RevisionConflict,
                         "A local erasure work item moved underneath this attempt."));
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -441,16 +384,12 @@ internal sealed class ManagedFileErasureStateMachine(
                     DeletionEvidence = evidence,
                     CheckpointRevision = item.CheckpointRevision + 1,
                 });
-
         }
         catch (SqliteException exception)
         {
-
             return Result<LocalErasureWorkItemRow>.Failure(
                 new Error(ErrorCodes.Covenant.ManualArtifactErasureRequired, exception.Message));
-
         }
-
     }
 
     private Task<Result<LocalErasureWorkItemRow>> TerminalizeManualAsync(
@@ -486,7 +425,6 @@ internal sealed class ManagedFileErasureStateMachine(
         Func<SqliteCommand, object> bind,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -496,7 +434,6 @@ internal sealed class ManagedFileErasureStateMachine(
         _ = bind(command);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static Result<CovenantArtifactErasureProgress> Blocked(CovenantErasureBlocker blocker) =>
@@ -504,10 +441,9 @@ internal sealed class ManagedFileErasureStateMachine(
             new CovenantArtifactErasureProgress(1, 0, 1, blocker));
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
 }
 
 /// <summary>
@@ -520,14 +456,12 @@ internal sealed class ManagedFileErasureStateMachine(
 /// </remarks>
 internal static class ManagedFileRootResolver
 {
-
     internal static async Task<Result<ManagedFileResolvedRoot?>> ResolveAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         ManagedFileDurableLocationEvidence location,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -550,9 +484,7 @@ internal static class ManagedFileRootResolver
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<ManagedFileResolvedRoot?>.Success(null);
-
         }
 
         long revision = reader.GetInt64(1);
@@ -564,9 +496,7 @@ internal static class ManagedFileRootResolver
             revision == location.PathRevision
                 ? new ManagedFileResolvedRoot(reader.GetString(0), revision)
                 : null);
-
     }
-
 }
 
 /// <summary>
@@ -583,7 +513,6 @@ internal sealed partial class CovenantManagedFileErasureKernel(
     ManagedFileErasureStateMachine stateMachine,
     TimeProvider timeProvider) : ICovenantManagedFileErasureKernel
 {
-
     private readonly ICovenantConnectionSource _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
 
@@ -600,7 +529,6 @@ internal sealed partial class CovenantManagedFileErasureKernel(
         CovenantArtifactErasureAuthority authority,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(authority);
@@ -609,10 +537,8 @@ internal sealed partial class CovenantManagedFileErasureKernel(
 
         if (current.IsFailure)
         {
-
             return Result<CovenantArtifactErasureProgress>.Success(
                 new CovenantArtifactErasureProgress(0, 0, 0, CovenantErasureBlocker.AuthorityStale));
-
         }
 
         CovenantSqliteAuthorizationKind authorization = Authorization(authority);
@@ -630,16 +556,13 @@ internal sealed partial class CovenantManagedFileErasureKernel(
 
         if (prepared.IsFailure)
         {
-
             return Result<CovenantArtifactErasureProgress>.Success(
                 new CovenantArtifactErasureProgress(1, 0, 1, MapBlocker(prepared.Error)));
-
         }
 
         return await _stateMachine
             .ResolveAsync(connection, prepared.Value, authorization, revalidator: null, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -652,21 +575,17 @@ internal sealed partial class CovenantManagedFileErasureKernel(
         CovenantSqliteAuthorizationKind authorization,
         CancellationToken cancellationToken)
     {
-
         Result<LocalErasureWorkItemRow?> existing = await LocalErasureWorkItemStore
             .TryReadAsync(connection, transaction: null, request.WorkItemId, cancellationToken)
             .ConfigureAwait(false);
 
         if (existing.IsFailure)
         {
-
             return Result<LocalErasureWorkItemRow>.Failure(existing.Error);
-
         }
 
         if (existing.Value is { } resumed)
         {
-
             // A resumed attempt never re-derives authority from the producer row: the work item is
             // itself the durable authorization, and re-deriving it would let a producer that has since
             // moved retarget work the database already authorized.
@@ -678,7 +597,6 @@ internal sealed partial class CovenantManagedFileErasureKernel(
                         new Error(
                             ErrorCodes.Covenant.ManualArtifactErasureRequired,
                             "The work item identity names a different managed file than the request."));
-
         }
 
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
@@ -691,43 +609,35 @@ internal sealed partial class CovenantManagedFileErasureKernel(
 
         if (producer.IsFailure)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<LocalErasureWorkItemRow>.Failure(producer.Error);
-
         }
 
         if (producer.Value is not { } row)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<LocalErasureWorkItemRow>.Failure(
                 new Error(
                     ErrorCodes.Covenant.ManualArtifactErasureRequired,
                     "No adopted managed-file producer matches this erasure request."));
-
         }
 
         if (!covers(row.OwnerScope))
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<LocalErasureWorkItemRow>.Failure(
                 new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "The managed file's current owner is outside this erasure authority's coverage."));
-
         }
 
         try
         {
-
             using (_initializer.Authorize(connection, authorization))
             {
-
                 await LocalErasureWorkItemStore.InsertPreparedAsync(
                     connection,
                     transaction,
@@ -741,20 +651,16 @@ internal sealed partial class CovenantManagedFileErasureKernel(
                     row.Ownership,
                     _time.GetUtcNow(),
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch (SqliteException exception)
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return Result<LocalErasureWorkItemRow>.Failure(
                 new Error(ErrorCodes.Covenant.ManualArtifactErasureRequired, exception.Message));
-
         }
 
         return Result<LocalErasureWorkItemRow>.Success(
@@ -770,7 +676,6 @@ internal sealed partial class CovenantManagedFileErasureKernel(
                 LocalErasureWorkItemState.Prepared,
                 DeletionEvidence: null,
                 CheckpointRevision: 0));
-
     }
 
     private static async Task<Result<ManagedFileProducerRow?>> ReadProducerAsync(
@@ -779,7 +684,6 @@ internal sealed partial class CovenantManagedFileErasureKernel(
         CovenantManagedFileErasureRequest request,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -813,9 +717,7 @@ internal sealed partial class CovenantManagedFileErasureKernel(
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<ManagedFileProducerRow?>.Success(null);
-
         }
 
         Result<ManagedFileWriteDurableLocationEvidence> location =
@@ -823,9 +725,7 @@ internal sealed partial class CovenantManagedFileErasureKernel(
 
         if (location.IsFailure)
         {
-
             return Result<ManagedFileProducerRow?>.Failure(location.Error);
-
         }
 
         Result<ManagedFileOwnershipEvidence> ownership =
@@ -833,9 +733,7 @@ internal sealed partial class CovenantManagedFileErasureKernel(
 
         if (ownership.IsFailure)
         {
-
             return Result<ManagedFileProducerRow?>.Failure(ownership.Error);
-
         }
 
         Guid? campaignId = reader.IsDBNull(6)
@@ -853,7 +751,6 @@ internal sealed partial class CovenantManagedFileErasureKernel(
                 campaignId is { } present
                     ? CovenantOperationScope.ForCampaign(present)
                     : CovenantOperationScope.Global));
-
     }
 
     /// <summary>
@@ -884,5 +781,4 @@ internal sealed partial class CovenantManagedFileErasureKernel(
             : CovenantErasureBlocker.IntegrityFailure;
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
 }

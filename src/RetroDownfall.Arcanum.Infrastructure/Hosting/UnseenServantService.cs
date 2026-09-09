@@ -306,13 +306,26 @@ internal sealed class UnseenServantService(
     {
         TaskCompletionSource<Task> handle = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        activeJobTasks[taskId] = handle.Task.Unwrap();
+        Task publishedTask = handle.Task.Unwrap();
 
-        Task jobTask = startJob();
+        activeJobTasks[taskId] = publishedTask;
 
-        handle.SetResult(jobTask);
+        try
+        {
+            Task jobTask = startJob();
 
-        return jobTask;
+            handle.SetResult(jobTask);
+
+            return jobTask;
+        }
+        catch
+        {
+            handle.SetResult(Task.CompletedTask);
+
+            _ = activeJobTasks.TryRemove(new KeyValuePair<Guid, Task>(taskId, publishedTask));
+
+            throw;
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

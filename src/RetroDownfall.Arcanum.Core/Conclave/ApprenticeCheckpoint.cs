@@ -2,7 +2,6 @@ namespace RetroDownfall.Arcanum.Core.Conclave;
 
 public sealed record ApprenticeCheckpoint
 {
-
     public int CurrentStep { get; init; }
 
     public string? ConversationSummary { get; init; }
@@ -11,7 +10,6 @@ public sealed record ApprenticeCheckpoint
 
     public IReadOnlyList<string> CompletedToolCallIds
     {
-
         // Return a non-downcastable read-only view so a consumer cannot cast back to List<string>
         // and mutate a checkpoint that is frozen once persisted.
         get => _completedToolCallIds.AsReadOnly();
@@ -21,7 +19,6 @@ public sealed record ApprenticeCheckpoint
         // the JSON member is absent or explicitly null, which would otherwise throw out of a
         // CheckpointData read.
         init => _completedToolCallIds = value is null ? [] : new List<string>(value);
-
     }
 
     public DateTimeOffset Timestamp { get; init; }
@@ -39,4 +36,9 @@ public sealed record ApprenticeCheckpoint
     /// </summary>
     public IReadOnlyList<string>? DelegationChain { get; init; }
 
+    /// <summary>
+    /// True when the creating operation durably requested execution. An Idle Apprentice carrying this
+    /// intent is restarted after a process crash; manually minted Idle children remain idle.
+    /// </summary>
+    public bool LaunchRequested { get; init; }
 }

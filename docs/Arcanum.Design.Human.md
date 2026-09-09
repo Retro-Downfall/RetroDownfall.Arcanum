@@ -416,7 +416,7 @@ Metrics use bounded labels. High-cardinality identities, prompt fragments, paths
 
 ## 14. Native AOT, packaging, and configuration
 
-Source-generated JSON, request delegates, generated regexes, and trimming annotations are design constraints, not cleanup tasks. Windows and Linux publish the CLI as Native AOT. macOS ships a self-contained folder while retaining the same AOT-safe code shape.
+Source-generated JSON, request delegates, generated regexes, and trimming annotations are design constraints, not cleanup tasks. Every shipping RID uses the same Native AOT CLI/host with no managed fallback. EF Core owns the compiled entity model, tracked writes, and transaction boundary; application-authored reads, filtering, paging, aggregates, and set-based updates/deletes use parameterized SQLite on that same scoped connection. Tests reject EF query APIs in production, and the CI shipping gate runs a deterministic in-process provider-contract smoke through the exact native apphost. Real-model inference qualification runs only on a local machine that owns the configured provider.
 
 Package and distribution scripts live under `scripts/packaging`. Signing and notarization are platform workflows; unsigned local artifacts retain the operating system's normal trust warnings. On macOS a developer can also sign a build with the Apple certificate already installed in Keychain Access by passing `--local-sign`, which is enough to confirm the signed application actually starts on that machine. Apple only notarizes certificates issued for distribution, so such a build is deliberately not notarized and stays trusted only where that certificate is already trusted — it is a check, not a release.
 
@@ -464,7 +464,7 @@ Keep these boundaries in mind:
 - retention and factory reset provide logical deletion, not physical secure erasure or backup destruction;
 - Comm Link webhooks are not HMAC-signed;
 - the product is single-operator; `PromptId` acts as the human-input ownership capability;
-- macOS packaging is self-contained rather than Native AOT;
+- every shipping RID requires a working Native AOT toolchain and has no managed fallback;
 - SQLCipher tests may skip when the native asset is unavailable.
 
 The complete and more precise limitations list is [`Arcanum.DESIGN.md` §16](Arcanum.DESIGN.md#16-known-limitations-and-operator-constraints).

@@ -10,7 +10,6 @@ public sealed class DataProtectionSecretStore(
     IDataProtectionProvider dataProtectionProvider,
     IApiKeyDigestCache apiKeyDigestCache) : ISecretStore, IDisposable
 {
-
     internal const int MaxProtectedSecretBytes = 64 * 1024;
 
     private const string ProtectorPurpose = "Arcanum.Core.ApiKey";
@@ -43,17 +42,27 @@ public sealed class DataProtectionSecretStore(
 
     public async Task<string?> GetApiKeyAsync()
     {
-
         SecretStoreReadResult result = await GetApiKeyReadResultAsync().ConfigureAwait(false);
 
         return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
-
     }
 
     public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
         ReadProtectedResultAsync(StorePath, _protector, corruptMessage: CorruptApiKeyRecoveryMessage);
 
-    public async Task SaveApiKeyAsync(string apiKey)
+    public Task SaveApiKeyAsync(string apiKey) =>
+        SaveApiKeyCoreAsync(apiKey, invalidateCanonicalDigest: true);
+
+    /// <summary>
+    /// Synchronizes the encrypted recovery/client mirror after the canonical OS credential has
+    /// already been read. This copy-only write must not invalidate that canonical key's live digest.
+    /// </summary>
+    internal Task SaveApiKeyMirrorAsync(string apiKey) =>
+        SaveApiKeyCoreAsync(apiKey, invalidateCanonicalDigest: false);
+
+    private async Task SaveApiKeyCoreAsync(
+        string apiKey,
+        bool invalidateCanonicalDigest)
     {
         ArgumentNullException.ThrowIfNull(apiKey);
 
@@ -61,28 +70,24 @@ public sealed class DataProtectionSecretStore(
 
         try
         {
-
             await WriteProtectedAsync(StorePath, apiKey, _protector).ConfigureAwait(false);
 
-            apiKeyDigestCache.Invalidate();
-
+            if (invalidateCanonicalDigest)
+            {
+                apiKeyDigestCache.Invalidate();
+            }
         }
         finally
         {
-
             _fileLock.Release();
-
         }
-
     }
 
     public async Task<string?> GetGrimoireEncryptionSecretAsync()
     {
-
         SecretStoreReadResult result = await GetGrimoireEncryptionSecretReadResultAsync().ConfigureAwait(false);
 
         return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
-
     }
 
     /// <summary>
@@ -98,24 +103,18 @@ public sealed class DataProtectionSecretStore(
 
     public async Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
     {
-
         ArgumentNullException.ThrowIfNull(encryptionSecret);
 
         await _fileLock.WaitAsync().ConfigureAwait(false);
 
         try
         {
-
             await WriteProtectedAsync(GrimoireStorePath, encryptionSecret, _grimoireProtector).ConfigureAwait(false);
-
         }
         finally
         {
-
             _fileLock.Release();
-
         }
-
     }
 
     public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
@@ -150,12 +149,10 @@ public sealed class DataProtectionSecretStore(
         IDataProtector protector,
         string corruptMessage)
     {
-
         await _fileLock.WaitAsync().ConfigureAwait(false);
 
         try
         {
-
             using SecureFileReadResult read = await SecureFileReader
                 .ReadBytesAsync(
                     path,
@@ -165,32 +162,25 @@ public sealed class DataProtectionSecretStore(
 
             if (read.Status == SecureFileReadStatus.NotFound)
             {
-
                 return SecretStoreReadResult.Missing();
-
             }
 
             if (read.Status != SecureFileReadStatus.Success)
             {
-
                 return SecretStoreReadResult.Corrupted(corruptMessage);
-
             }
 
             byte[] cipher = read.Bytes.ToArray();
 
             if (cipher.Length == 0)
             {
-
                 CryptographicOperations.ZeroMemory(cipher);
 
                 return SecretStoreReadResult.Corrupted(corruptMessage);
-
             }
 
             try
             {
-
                 byte[] plain = protector.Unprotect(cipher);
 
                 string value = Encoding.UTF8.GetString(plain);
@@ -198,29 +188,20 @@ public sealed class DataProtectionSecretStore(
                 CryptographicOperations.ZeroMemory(plain);
 
                 return SecretStoreReadResult.Ok(value);
-
             }
             catch (CryptographicException)
             {
-
                 return SecretStoreReadResult.Corrupted(corruptMessage);
-
             }
             finally
             {
-
                 CryptographicOperations.ZeroMemory(cipher);
-
             }
-
         }
         finally
         {
-
             _fileLock.Release();
-
         }
-
     }
 
     /// <summary>
@@ -233,7 +214,6 @@ public sealed class DataProtectionSecretStore(
 
     private static async Task WriteProtectedAsync(string path, string plainText, IDataProtector protector)
     {
-
         string directory = Path.GetDirectoryName(path)
             ?? throw new InvalidOperationException("Invalid secret store path.");
 
@@ -249,10 +229,8 @@ public sealed class DataProtectionSecretStore(
 
         try
         {
-
             await using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
             {
-
                 await stream.WriteAsync(cipher).ConfigureAwait(false);
 
                 await stream.FlushAsync().ConfigureAwait(false);
@@ -261,20 +239,16 @@ public sealed class DataProtectionSecretStore(
                 // OS-credential copy, so the rename must not be able to outrun the data: fsync
                 // before the atomic replace, matching GrimoireKdfSidecarFile.Write.
                 stream.Flush(flushToDisk: true);
-
             }
 
             File.Move(tempPath, path, overwrite: true);
 
             SecureFilePermissions.ApplyOwnerOnlyFile(path);
-
         }
         finally
         {
-
             if (File.Exists(tempPath))
             {
-
                 try
                 {
                     File.Delete(tempPath);
@@ -289,13 +263,9 @@ public sealed class DataProtectionSecretStore(
                     // afterwards. TheForge's OpenAiCompatApiClient already catches the pair for the
                     // same reason.
                 }
-
             }
-
         }
-
     }
 
     internal static bool GrimoireDatabaseExists() => File.Exists(ArcanumPaths.GrimoireDatabaseFile);
-
 }

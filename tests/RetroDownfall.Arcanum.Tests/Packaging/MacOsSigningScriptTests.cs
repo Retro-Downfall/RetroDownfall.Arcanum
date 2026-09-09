@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// </summary>
 public sealed class MacOsSigningScriptTests
 {
-
     /// <summary>
     /// Nested Mach-O files must be signed deepest-first and the main executable last, and the
     /// function must actually sign every one of them. bash 3.2 is the macOS runner shell, so the
@@ -22,14 +21,12 @@ public sealed class MacOsSigningScriptTests
     [SkippableFact]
     public void Sign_publish_dir_signs_every_nested_macho_deepest_first()
     {
-
         Skip.IfNot(OperatingSystem.IsMacOS(), "sign_publish_dir is a macOS packaging primitive.");
 
         string root = Directory.CreateTempSubdirectory("arcanum-sign-publish-").FullName;
 
         try
         {
-
             string stage = Path.Combine(root, "stage");
 
             string deep = Path.Combine(stage, "runtimes", "osx-arm64", "native");
@@ -45,9 +42,7 @@ public sealed class MacOsSigningScriptTests
             // /bin/echo is a real Mach-O, which is what the `file -b | grep Mach-O` filter selects on.
             foreach (string target in new[] { main, shallowLibrary, deepLibrary })
             {
-
                 File.Copy("/bin/echo", target);
-
             }
 
             // A managed assembly is not Mach-O and must never reach codesign.
@@ -58,15 +53,11 @@ public sealed class MacOsSigningScriptTests
             Assert.Equal(
                 [deepLibrary, shallowLibrary, main],
                 signed);
-
         }
         finally
         {
-
             Directory.Delete(root, recursive: true);
-
         }
-
     }
 
     /// <summary>
@@ -80,14 +71,12 @@ public sealed class MacOsSigningScriptTests
     [SkippableFact]
     public void Sign_app_bundle_signs_every_file_under_contents_macos_deepest_first()
     {
-
         Skip.IfNot(OperatingSystem.IsMacOS(), "sign_app_bundle is a macOS packaging primitive.");
 
         string root = Directory.CreateTempSubdirectory("arcanum-sign-app-").FullName;
 
         try
         {
-
             string appPath = Path.Combine(root, "Arcanum.app");
 
             string macosDirectory = Path.Combine(appPath, "Contents", "MacOS");
@@ -115,30 +104,24 @@ public sealed class MacOsSigningScriptTests
 
             foreach (string name in new[] { "libalpha.dylib", "libbeta.dylib", "libgamma.dylib" })
             {
-
                 shallow.Add(Path.Combine(macosDirectory, name));
-
             }
 
             List<string> deep = [];
 
             foreach (string name in new[] { "one", "two", "three" })
             {
-
                 string directory = Path.Combine(macosDirectory, "nested-" + name, "native");
 
                 _ = Directory.CreateDirectory(directory);
 
                 deep.Add(Path.Combine(directory, "lib" + name + ".dylib"));
-
             }
 
             // /bin/echo is a real Mach-O, standing in for the dylibs and apphost a bundle really holds.
             foreach (string target in shallow.Concat(deep).Append(main))
             {
-
                 File.Copy("/bin/echo", target);
-
             }
 
             // A managed assembly must reach codesign. The first release to get this far signed and
@@ -166,22 +149,16 @@ public sealed class MacOsSigningScriptTests
 
             for (int index = 1; index < depths.Length; index++)
             {
-
                 Assert.True(
                     depths[index] <= depths[index - 1],
                     $"'{nested[index]}' was signed after the shallower '{nested[index - 1]}', so a dependent "
                     + "was sealed before the library it loads.");
-
             }
-
         }
         finally
         {
-
             Directory.Delete(root, recursive: true);
-
         }
-
     }
 
     /// <summary>
@@ -196,7 +173,6 @@ public sealed class MacOsSigningScriptTests
     /// </summary>
     private static IReadOnlyList<string> RunSigningFunction(string root, string function, string target)
     {
-
         string binDirectory = Path.Combine(root, "bin");
 
         _ = Directory.CreateDirectory(binDirectory);
@@ -271,28 +247,22 @@ public sealed class MacOsSigningScriptTests
             .Where(static line => line.StartsWith("sign ", StringComparison.Ordinal))
             .Select(static line => line["sign ".Length..])
             .ToArray();
-
     }
 
     private static void WriteExecutable(string path, string contents)
     {
-
         File.WriteAllText(path, contents + global::System.Environment.NewLine);
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(
                 path,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
-
     }
 
     private static string CommonScript()
     {
-
         string path = Path.Combine(
             RepositoryRoot(),
             "scripts",
@@ -303,30 +273,8 @@ public sealed class MacOsSigningScriptTests
         Assert.True(File.Exists(path), $"Missing macOS packaging helpers: {path}");
 
         return path;
-
     }
 
-    private static string RepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
+    private static string RepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

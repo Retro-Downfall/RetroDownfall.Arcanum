@@ -192,11 +192,10 @@ jobs:
       - name: Install ripgrep
         run: command -v rg >/dev/null 2>&1 || brew install ripgrep
 
-      # Without ld64.lld the csproj cannot enable Native AOT on macOS (Apple's ld-prime asserts on
-      # the large object file, dotnet/runtime#119380), and the gate quietly degrades to Roslyn
-      # analyzer diagnostics with no ILC whole-program analysis. That is a weaker gate that still
-      # reports success, so the linker is a hard requirement of this lane rather than a nicety.
-      - name: Install LLVM lld so the gate runs real ILC closure analysis
+      # Without ld64.lld the shipping Native AOT publish cannot link on macOS: Apple's ld-prime
+      # asserts on the large object file (dotnet/runtime#119380). Missing lld is a hard failure,
+      # because Arcanum has no managed fallback.
+      - name: Install LLVM lld for the Native AOT link
         run: |
           set -euo pipefail
           command -v /opt/homebrew/opt/lld/bin/ld64.lld >/dev/null 2>&1 || brew install lld
@@ -327,6 +326,10 @@ jobs:
             -c Release --no-build --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify warning-free win-x64 shipping executable and provider-contract smoke
+        shell: bash
+        run: ./scripts/verify-shipping-publish.sh --rid win-x64
+
   windows-arm64-suite:
     # The release ships win-arm64 alongside win-x64 and osx-arm64: it is built, packaged, signed and
     # handed to operators. Until this lane, not one test had ever executed on it. Three things it
@@ -451,9 +454,14 @@ jobs:
             -c Release --no-build --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify warning-free win-arm64 shipping executable and provider-contract smoke
+        shell: bash
+        run: ./scripts/verify-shipping-publish.sh --rid win-arm64
+
   aot-il:
-    name: AOT IL warning gate
-    # Same reason as build-test: the AOT closure needs the native asset for the RID it publishes.
+    name: Native AOT IL and executable gates
+    # Both executable smokes open the Grimoire, so this host RID needs its verified native
+    # SQLCipher asset just like build-test.
     runs-on: macos-26
     env:
       DOTNET_NOLOGO: true
@@ -478,11 +486,9 @@ jobs:
       - name: Install ripgrep
         run: command -v rg >/dev/null 2>&1 || brew install ripgrep
 
-      # Without ld64.lld the csproj cannot enable Native AOT on macOS (Apple's ld-prime asserts on
-      # the large object file, dotnet/runtime#119380), and the gate quietly degrades to Roslyn
-      # analyzer diagnostics with no ILC whole-program analysis. That is a weaker gate that still
-      # reports success, so the linker is a hard requirement of this lane rather than a nicety.
-      - name: Install LLVM lld so the gate runs real ILC closure analysis
+      # Both the shipping CLI and the regex smoke are real Native AOT executables. Missing lld must
+      # fail the lane instead of weakening it to analyzer-only evidence.
+      - name: Install LLVM lld for the Native AOT links
         run: |
           set -euo pipefail
           command -v /opt/homebrew/opt/lld/bin/ld64.lld >/dev/null 2>&1 || brew install lld
@@ -497,15 +503,20 @@ jobs:
       - name: Verify AOT IL warnings and regex smoke (host RID)
         run: ./scripts/verify-aot-il-warnings.sh
 
+      - name: Verify warning-free shipping executable and provider-contract smoke
+        run: ./scripts/verify-shipping-publish.sh --rid osx-arm64
+
   static-analysis:
-    # Both tools ship in the repository but nothing invoked them, so the formatter and every
-    # packaging script drifted with no lane to catch it. This job compiles nothing and runs in
-    # under a minute, which is what makes it affordable to gate on.
+    # These tools ship in the repository, so their own regression tests and checks must run here.
+    # This job compiles nothing and runs in under a minute, which is what makes it affordable to gate on.
     name: Formatting and shell lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Test the C# blank-line formatter
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
       - name: Verify C# blank-line formatting
         run: python3 scripts/align_csharp_blanklines.py --repo . --check

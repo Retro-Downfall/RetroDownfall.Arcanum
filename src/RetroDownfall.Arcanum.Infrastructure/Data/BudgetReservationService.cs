@@ -17,7 +17,6 @@ internal sealed class BudgetReservationService(
     ArcanumDbContext db,
     IOptionsMonitor<ArcanumSettings> settings) : IBudgetReservationService
 {
-
     public async Task<Result<BudgetReservation>> ReserveAsync(
         BudgetReservationRequest request,
         CancellationToken cancellationToken = default)
@@ -59,9 +58,13 @@ internal sealed class BudgetReservationService(
                     decimal outstanding = await SumOutstandingAsync(connection, transaction, request.BudgetPeriod, cancellationToken)
                         .ConfigureAwait(false);
 
-                    if (committed + outstanding + request.ReservedUsd > dailyLimit)
+                    decimal committedAndOutstanding = ExactUsdText.CheckedAdd(committed, outstanding);
+
+                    decimal projected = ExactUsdText.CheckedAdd(committedAndOutstanding, request.ReservedUsd);
+
+                    if (projected > dailyLimit)
                     {
-                        throw new BudgetExceededException(dailyLimit, committed + outstanding);
+                        throw new BudgetExceededException(dailyLimit, committedAndOutstanding);
                     }
 
                     await using DbCommand cmd = connection.CreateCommand();
@@ -71,17 +74,18 @@ internal sealed class BudgetReservationService(
                         INSERT INTO "BudgetReservations"
                             ("Id", "RunId", "BudgetPeriod", "ReservedUsd", "ReconciledUsd", "Status", "ExpiresAt", "CreatedAt", "UpdatedAt")
                         VALUES
-                            (@id, @runId, @period, @reserved, 0, @status, @expires, @created, @updated)
+                            (@id, @runId, @period, @reserved, @reconciled, @status, @expires, @created, @updated)
                         """;
 
                     AddParameter(cmd, "@id", id.ToString("N"));
                     AddParameter(cmd, "@runId", request.RunId.ToString("N"));
                     AddParameter(cmd, "@period", request.BudgetPeriod);
-                    AddParameter(cmd, "@reserved", request.ReservedUsd);
+                    _ = ExactUsdText.AddParameter(cmd, "@reserved", request.ReservedUsd);
+                    _ = ExactUsdText.AddParameter(cmd, "@reconciled", 0m);
                     AddParameter(cmd, "@status", (int)BudgetReservationStatus.Reserved);
-                    AddParameter(cmd, "@expires", request.ExpiresAt.ToString("o", CultureInfo.InvariantCulture));
-                    AddParameter(cmd, "@created", createdAt.ToString("o", CultureInfo.InvariantCulture));
-                    AddParameter(cmd, "@updated", createdAt.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(cmd, "@expires", UtcInstantText.Format(request.ExpiresAt));
+                    AddParameter(cmd, "@created", UtcInstantText.Format(createdAt));
+                    AddParameter(cmd, "@updated", UtcInstantText.Format(createdAt));
 
                     _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -155,7 +159,7 @@ internal sealed class BudgetReservationService(
                             .ConfigureAwait(false);
                         if (reservationFound)
                         {
-                            currentReserved = Convert.ToDecimal(reader.GetValue(0), CultureInfo.InvariantCulture);
+                            currentReserved = ExactUsdText.Read(reader, 0);
                             budgetPeriod = reader.GetString(1);
                             status = (BudgetReservationStatus)reader.GetInt32(2);
                         }
@@ -181,10 +185,14 @@ internal sealed class BudgetReservationService(
                             budgetPeriod,
                             cancellationToken)
                         .ConfigureAwait(false);
-                    decimal projected = committed + outstanding - currentReserved + requested;
+                    decimal projected = checked(
+                        ExactUsdText.CheckedAdd(committed, outstanding) - currentReserved + requested);
+
                     if (projected > dailyLimit)
                     {
-                        throw new BudgetExceededException(dailyLimit, committed + outstanding);
+                        throw new BudgetExceededException(
+                            dailyLimit,
+                            ExactUsdText.CheckedAdd(committed, outstanding));
                     }
 
                     await using DbCommand update = connection.CreateCommand();
@@ -196,8 +204,8 @@ internal sealed class BudgetReservationService(
                         WHERE "Id" = @id AND "Status" = @status
                         """;
                     AddParameter(update, "@id", reservationId.ToString("N"));
-                    AddParameter(update, "@reserved", requested);
-                    AddParameter(update, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                    _ = ExactUsdText.AddParameter(update, "@reserved", requested);
+                    AddParameter(update, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
                     AddParameter(update, "@status", (int)BudgetReservationStatus.Reserved);
                     _ = await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -231,10 +239,10 @@ internal sealed class BudgetReservationService(
                     """;
 
                 AddParameter(cmd, "@id", reservationId.ToString("N"));
-                AddParameter(cmd, "@actual", Math.Max(0m, actualCostUsd));
+                _ = ExactUsdText.AddParameter(cmd, "@actual", Math.Max(0m, actualCostUsd));
                 AddParameter(cmd, "@status", (int)BudgetReservationStatus.Reconciled);
                 AddParameter(cmd, "@reserved", (int)BudgetReservationStatus.Reserved);
-                AddParameter(cmd, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
@@ -253,14 +261,15 @@ internal sealed class BudgetReservationService(
                 cmd.CommandText =
                     """
                     UPDATE "BudgetReservations"
-                    SET "Status" = @status, "ReconciledUsd" = 0, "UpdatedAt" = @updated
+                    SET "Status" = @status, "ReconciledUsd" = @zero, "UpdatedAt" = @updated
                     WHERE "Id" = @id AND "Status" = @reserved
                     """;
 
                 AddParameter(cmd, "@id", reservationId.ToString("N"));
                 AddParameter(cmd, "@status", (int)BudgetReservationStatus.Released);
+                _ = ExactUsdText.AddParameter(cmd, "@zero", 0m);
                 AddParameter(cmd, "@reserved", (int)BudgetReservationStatus.Reserved);
-                AddParameter(cmd, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
@@ -315,8 +324,8 @@ internal sealed class BudgetReservationService(
 
                 AddParameter(cmd, "@expired", (int)BudgetReservationStatus.Expired);
                 AddParameter(cmd, "@reserved", (int)BudgetReservationStatus.Reserved);
-                AddParameter(cmd, "@now", utcNow.ToString("o", CultureInfo.InvariantCulture));
-                AddParameter(cmd, "@updated", utcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@now", UtcInstantText.Format(utcNow));
+                AddParameter(cmd, "@updated", UtcInstantText.Format(utcNow));
 
                 return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
@@ -396,16 +405,20 @@ internal sealed class BudgetReservationService(
         // Committed spend = billable ops completed on this UTC day. Per DESIGN §22.2 the day's spend
         // authority is BillableOperations plus outstanding BudgetReservations; "CostAdjustments" rows
         // are deliberately NOT summed here and never move the reservation ceiling.
-        string dayStart = budgetPeriod + "T00:00:00.0000000+00:00";
-        string dayEnd = DateTimeOffset.Parse(budgetPeriod + "T00:00:00Z", CultureInfo.InvariantCulture)
-            .AddDays(1)
-            .ToString("o", CultureInfo.InvariantCulture);
+        DateTimeOffset start = DateTimeOffset.Parse(
+            budgetPeriod + "T00:00:00Z",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+
+        string dayStart = UtcInstantText.Format(start);
+
+        string dayEnd = UtcInstantText.Format(start.AddDays(1));
 
         await using DbCommand cmd = connection.CreateCommand();
         cmd.Transaction = transaction;
         cmd.CommandText =
             """
-            SELECT COALESCE(SUM("ActualCostUsd"), 0)
+            SELECT "ActualCostUsd"
             FROM "BillableOperations"
             WHERE "CompletedAt" >= @dayStart AND "CompletedAt" < @dayEnd
             """;
@@ -413,9 +426,16 @@ internal sealed class BudgetReservationService(
         AddParameter(cmd, "@dayStart", dayStart);
         AddParameter(cmd, "@dayEnd", dayEnd);
 
-        object? scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        decimal total = 0m;
 
-        return Convert.ToDecimal(scalar, CultureInfo.InvariantCulture);
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            total = ExactUsdText.CheckedAdd(total, ExactUsdText.Read(reader, 0));
+        }
+
+        return total;
     }
 
     private static async Task<decimal> SumOutstandingAsync(
@@ -428,7 +448,7 @@ internal sealed class BudgetReservationService(
         cmd.Transaction = transaction;
         cmd.CommandText =
             """
-            SELECT COALESCE(SUM("ReservedUsd" - "ReconciledUsd"), 0)
+            SELECT "ReservedUsd", "ReconciledUsd"
             FROM "BudgetReservations"
             WHERE "BudgetPeriod" = @period AND "Status" = @reserved
             """;
@@ -436,9 +456,18 @@ internal sealed class BudgetReservationService(
         AddParameter(cmd, "@period", budgetPeriod);
         AddParameter(cmd, "@reserved", (int)BudgetReservationStatus.Reserved);
 
-        object? scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        decimal total = 0m;
 
-        return Convert.ToDecimal(scalar, CultureInfo.InvariantCulture);
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            decimal outstanding = checked(ExactUsdText.Read(reader, 0) - ExactUsdText.Read(reader, 1));
+
+            total = ExactUsdText.CheckedAdd(total, outstanding);
+        }
+
+        return total;
     }
 
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)
@@ -467,5 +496,4 @@ internal sealed class BudgetReservationService(
 
         public decimal Current { get; } = current;
     }
-
 }

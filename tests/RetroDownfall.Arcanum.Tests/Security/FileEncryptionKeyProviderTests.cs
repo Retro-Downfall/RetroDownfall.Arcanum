@@ -8,6 +8,130 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 public sealed class FileEncryptionKeyProviderTests
 {
     [Fact]
+    public async Task Startup_validation_without_ciphertext_does_not_open_or_create_secret_store()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
+
+        FileEncryptionRuntimeStatus status = new();
+
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Absent),
+            status);
+
+        await provider.ValidateStartupStateAsync();
+
+        Assert.Equal(0, secrets.ReadCount);
+        Assert.Equal(0, secrets.PeekCount);
+        Assert.Equal(0, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Deferred, status.Current.State);
+    }
+
+    [Fact]
+    public async Task Startup_validation_with_ciphertext_loads_the_existing_key()
+    {
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
+
+        FileEncryptionRuntimeStatus status = new();
+
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Present),
+            status);
+
+        await provider.ValidateStartupStateAsync();
+
+        Assert.Equal(1, secrets.ReadCount);
+        Assert.Equal(0, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Ready, status.Current.State);
+    }
+
+    [Fact]
+    public async Task Startup_validation_with_ciphertext_and_a_missing_key_fails_closed()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
+
+        FileEncryptionRuntimeStatus status = new();
+
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Present),
+            status);
+
+        EncryptedBlobKeyException error = await Assert.ThrowsAsync<EncryptedBlobKeyException>(
+            () => provider.ValidateStartupStateAsync().AsTask());
+
+        Assert.Contains("restore", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Unavailable, status.Current.State);
+    }
+
+    [Fact]
+    public async Task Startup_validation_with_indeterminate_inventory_fails_without_opening_secure_storage()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
+
+        FileEncryptionRuntimeStatus status = new();
+
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Indeterminate),
+            status);
+
+        EncryptedBlobKeyException error = await Assert.ThrowsAsync<EncryptedBlobKeyException>(
+            () => provider.ValidateStartupStateAsync().AsTask());
+
+        Assert.Contains("safely determine", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, secrets.ReadCount);
+        Assert.Equal(0, secrets.PeekCount);
+        Assert.Equal(0, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Unavailable, status.Current.State);
+    }
+
+    [Fact]
+    public async Task Startup_inventory_failure_publishes_unavailable_without_opening_secure_storage()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
+        FileEncryptionRuntimeStatus status = new();
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new ThrowingEncryptedBlobPresenceInspector(),
+            status);
+
+        await Assert.ThrowsAsync<IOException>(
+            () => provider.ValidateStartupStateAsync().AsTask());
+
+        Assert.Equal(0, secrets.ReadCount);
+        Assert.Equal(0, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Unavailable, status.Current.State);
+    }
+
+    [Fact]
+    public async Task First_write_after_empty_startup_validation_creates_the_key_once()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
+
+        FileEncryptionRuntimeStatus status = new();
+
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Absent),
+            status);
+
+        await provider.ValidateStartupStateAsync();
+
+        FileEncryptionKeyMaterial first = await provider.GetForWriteAsync();
+        FileEncryptionKeyMaterial second = await provider.GetForWriteAsync();
+
+        Assert.Equal(first.KeyId, second.KeyId);
+        Assert.Equal(1, secrets.ReadCount);
+        Assert.Equal(1, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Ready, status.Current.State);
+    }
+
+    [Fact]
     public async Task GetForWriteAsync_generates_a_dedicated_256_bit_secret_once()
     {
         RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
@@ -78,7 +202,13 @@ public sealed class FileEncryptionKeyProviderTests
     public async Task Missing_secret_with_existing_ciphertext_never_generates_a_replacement()
     {
         RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
-        FileEncryptionKeyProvider provider = new(secrets, encryptedBlobsExist: static () => true);
+
+        FileEncryptionRuntimeStatus status = new();
+
+        FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Present),
+            status);
 
         EncryptedBlobKeyException error =
             await Assert.ThrowsAsync<EncryptedBlobKeyException>(
@@ -86,6 +216,83 @@ public sealed class FileEncryptionKeyProviderTests
 
         Assert.Contains("restore", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Unavailable, status.Current.State);
+    }
+
+    [Fact]
+    public async Task Missing_secret_with_indeterminate_inventory_never_generates_a_replacement()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
+
+        FileEncryptionRuntimeStatus status = new();
+
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Indeterminate),
+            status);
+
+        EncryptedBlobKeyException error = await Assert.ThrowsAsync<EncryptedBlobKeyException>(
+            () => provider.GetForWriteAsync().AsTask());
+
+        Assert.Contains("safely determine", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, secrets.ReadCount);
+        Assert.Equal(0, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Unavailable, status.Current.State);
+    }
+
+    [Fact]
+    public async Task First_write_inventory_failure_publishes_unavailable_without_saving()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
+        FileEncryptionRuntimeStatus status = new();
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new ThrowingEncryptedBlobPresenceInspector(),
+            status);
+
+        await Assert.ThrowsAsync<IOException>(() => provider.GetForWriteAsync().AsTask());
+
+        Assert.Equal(1, secrets.ReadCount);
+        Assert.Equal(0, secrets.SaveCount);
+        Assert.Equal(FileEncryptionRuntimeState.Unavailable, status.Current.State);
+    }
+
+    [Fact]
+    public async Task Secret_store_read_failure_publishes_unavailable()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing())
+        {
+            ReadException = new IOException("credential store unavailable"),
+        };
+        FileEncryptionRuntimeStatus status = new();
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Absent),
+            status);
+
+        await Assert.ThrowsAsync<IOException>(() => provider.GetForWriteAsync().AsTask());
+
+        Assert.Equal(FileEncryptionRuntimeState.Unavailable, status.Current.State);
+        Assert.Equal(0, secrets.SaveCount);
+    }
+
+    [Fact]
+    public async Task First_write_persistence_failure_publishes_unavailable()
+    {
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Missing())
+        {
+            SaveException = new IOException("credential store unavailable"),
+        };
+        FileEncryptionRuntimeStatus status = new();
+        using FileEncryptionKeyProvider provider = new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Absent),
+            status);
+
+        await Assert.ThrowsAsync<IOException>(() => provider.GetForWriteAsync().AsTask());
+
+        Assert.Equal(FileEncryptionRuntimeState.Unavailable, status.Current.State);
+        Assert.Equal(1, secrets.SaveCount);
     }
 
     [Fact]
@@ -197,7 +404,6 @@ public sealed class FileEncryptionKeyProviderTests
     [Fact]
     public async Task GetForReadAsync_lookup_allocation_does_not_scale_with_ring_size()
     {
-
         const int Repetitions = 100;
 
         const string UnknownKeyId = "does-not-exist-in-the-ring";
@@ -216,9 +422,7 @@ public sealed class FileEncryptionKeyProviderTests
 
         for (int i = 0; i < 4; i++)
         {
-
             _ = await fiveKeyRing.RotateAsync();
-
         }
 
         // Warm up: JIT the lookup and the exception path on both providers before measuring
@@ -240,7 +444,6 @@ public sealed class FileEncryptionKeyProviderTests
             deltaBytes < Repetitions * 200,
             $"oneKeyRing={oneKeyBytes}; fiveKeyRing={fiveKeyBytes}; delta={deltaBytes}; "
                 + $"repetitions={Repetitions}");
-
     }
 
     private static async Task MissRepeatedlyAsync(
@@ -248,23 +451,16 @@ public sealed class FileEncryptionKeyProviderTests
         string unknownKeyId,
         int repetitions)
     {
-
         for (int i = 0; i < repetitions; i++)
         {
-
             try
             {
-
                 _ = await provider.GetForReadAsync(unknownKeyId);
-
             }
             catch (EncryptedBlobKeyException)
             {
-
             }
-
         }
-
     }
 
     private static async Task<long> MeasureMissAllocationAsync(
@@ -272,7 +468,6 @@ public sealed class FileEncryptionKeyProviderTests
         string unknownKeyId,
         int repetitions)
     {
-
         int managedThreadId = System.Environment.CurrentManagedThreadId;
 
         long before = GC.GetAllocatedBytesForCurrentThread();
@@ -283,17 +478,18 @@ public sealed class FileEncryptionKeyProviderTests
 
         if (System.Environment.CurrentManagedThreadId != managedThreadId)
         {
-
             throw new InvalidOperationException("Allocation measurement changed managed threads.");
-
         }
 
         return allocatedBytes;
-
     }
 
     private sealed class RecordingSecretStore(SecretStoreReadResult readResult) : ISecretStore
     {
+        public Exception? ReadException { get; init; }
+
+        public Exception? SaveException { get; init; }
+
         public int SaveCount { get; private set; }
 
         public int ReadCount { get; private set; }
@@ -319,6 +515,11 @@ public sealed class FileEncryptionKeyProviderTests
         {
             ReadCount++;
 
+            if (ReadException is not null)
+            {
+                throw ReadException;
+            }
+
             if (SavedSecret is not null)
             {
                 return Task.FromResult(SecretStoreReadResult.Ok(SavedSecret));
@@ -342,8 +543,32 @@ public sealed class FileEncryptionKeyProviderTests
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
         {
             SaveCount++;
+
+            if (SaveException is not null)
+            {
+                throw SaveException;
+            }
+
             SavedSecret = encryptionSecret;
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence presence) :
+        IEncryptedBlobPresenceInspector
+    {
+        public EncryptedBlobPresence Inspect(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return presence;
+        }
+    }
+
+    private sealed class ThrowingEncryptedBlobPresenceInspector :
+        IEncryptedBlobPresenceInspector
+    {
+        public EncryptedBlobPresence Inspect(CancellationToken cancellationToken = default) =>
+            throw new IOException("managed inventory unavailable");
     }
 }

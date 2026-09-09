@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 [Collection("Grimoire")]
 public sealed class GrimoireRepositoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -34,45 +33,34 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     public GrimoireRepositoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task CommitTurnAsync_retains_read_write_admission_through_its_transaction()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FixtureOrdinaryConnectionFactory connections = new();
@@ -95,7 +83,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             GenerationProvenance.CreateExact([]));
 
         {
-
             using ScopedConsumerPause pause = new("GrimoireRepository.CommitWithinImmediateTransactionAsync");
 
             Task<Result<TurnCommitReceipt>> committing = repository.CommitTurnAsync(
@@ -104,7 +91,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
             try
             {
-
                 await pause.WaitUntilEnteredAsync();
 
                 Assert.Equal(GrimoireScopedConsumerFinalUseKind.TransactionCommitted, pause.FinalUse.Kind);
@@ -122,15 +108,12 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                     .SingleAsync(CancellationToken.None);
 
                 Assert.Equal("The sigil is cobalt.", persisted);
-
             }
             finally
             {
-
                 pause.Release();
 
                 _ = await committing.WaitAsync(TimeSpan.FromSeconds(10));
-
             }
 
             Result<TurnCommitReceipt> committed = await committing;
@@ -140,7 +123,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             Assert.Equal(2, committed.Value.ThroughEntrySequence);
 
             Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
-
         }
 
         using ScopedConsumerPause replayPause = new("GrimoireRepository.CommitWithinImmediateTransactionAsync");
@@ -151,7 +133,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         try
         {
-
             await replayPause.WaitUntilEnteredAsync();
 
             Assert.Equal(GrimoireScopedConsumerFinalUseKind.TransactionRolledBack, replayPause.FinalUse.Kind);
@@ -159,15 +140,12 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             Assert.Equal((int)AssistantFinalizationOutcome.Committed, replayPause.FinalUse.Observation);
 
             Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
-
         }
         finally
         {
-
             replayPause.Release();
 
             _ = await replaying.WaitAsync(TimeSpan.FromSeconds(10));
-
         }
 
         Result<TurnCommitReceipt> replayed = await replaying;
@@ -179,13 +157,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(2, replayed.Value.ThroughEntrySequence);
 
         Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
-
     }
 
     [SkippableFact]
     public async Task BeginAssistantReplyAsync_and_FinalizeAssistantEntryAsync_persist_exchange()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -211,13 +187,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal("The sigil is cobalt.", assistantEntry!.Content);
 
         Assert.True(await repository.SessionExistsAsync(sessionId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task FinalizeAssistantEntryWithFrontierAsync_IncludesToolInteractionsCommittedBeforeFinalization()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -250,7 +224,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(6, throughEntrySequence);
-
     }
 
     [SkippableFact]
@@ -305,13 +278,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Null(toolResult.ToolName);
         Assert.Null(toolResult.ToolArguments);
         Assert.Equal(model, toolResult.ModelUsed);
-
     }
 
     [SkippableFact]
     public async Task DiscardAssistantEntryAsync_removes_empty_placeholder_without_user_row()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -338,13 +309,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Single(entries!);
 
         Assert.Equal(MessageRole.User, entries![0].Role);
-
     }
 
     [SkippableFact]
     public async Task ScribeLoreAsync_ReadLoreAsync_and_DeleteLoreAsync_manage_lore()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -366,13 +335,34 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.True(deleted);
 
         Assert.Null(await repository.GetLoreAsync("ward.color", CancellationToken.None));
+    }
 
+    [SkippableFact]
+    public async Task ScribeLoreAsync_updates_an_existing_key_without_duplicating_it()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        _ = await repository.ScribeLoreAsync("ward.color", "cobalt", CancellationToken.None);
+
+        LoreDto updated = await repository.ScribeLoreAsync("ward.color", "silver", CancellationToken.None);
+
+        List<MageSetting> rows = await _db!.MageSettings
+            .AsNoTracking()
+            .Where(setting => setting.Key == "ward.color")
+            .ToListAsync(CancellationToken.None);
+
+        MageSetting row = Assert.Single(rows);
+
+        Assert.Equal("silver", updated.Value);
+        Assert.Equal("silver", row.Value);
+        Assert.Equal(DateTimeKind.Utc, updated.UpdatedAtUtc.Kind);
     }
 
     [SkippableFact]
     public async Task GetLoreAsync_and_ListLoreAsync_return_UpdatedAtUtc_marked_as_Utc()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -396,13 +386,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         string json = JsonSerializer.Serialize(fetched, ArcanumJsonContext.Default.LoreDto);
 
         Assert.Contains("Z\"", json, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task SaveCompletedExchangeAsync_and_PurgeSessionAsync_round_trip()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -426,13 +414,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(1, removed);
 
         Assert.False(await repository.SessionExistsAsync(session.Id, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task PurgeSessionAsync_removes_only_the_sessions_entry_embeddings()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -470,13 +456,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings_vec", retainedEntryId));
 
         Assert.True(await repository.SessionExistsAsync(retainedSessionId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task IncrementSessionTokensAsync_updates_total()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -492,13 +476,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Session? session = await _db!.Sessions.AsNoTracking().FirstAsync(s => s.Id == sessionId, CancellationToken.None);
 
         Assert.Equal(42, session.TotalTokensUsed);
-
     }
 
     [SkippableFact]
     public async Task IncrementSessionTokensAndCostAsync_updates_total_and_cost()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -516,13 +498,100 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(42, session.TotalTokensUsed);
 
         Assert.Equal(1.23m, session.TotalCostUsd);
+    }
 
+    [SkippableFact]
+    public async Task IncrementSessionTokensAndCostAsync_preserves_decimal_18_8_precision_across_updates()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "exact cost",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.IncrementSessionTokensAndCostAsync(
+            sessionId,
+            totalTokens: 0,
+            costUsd: 1_234_567_890.12345678m,
+            CancellationToken.None);
+
+        await repository.IncrementSessionTokensAndCostAsync(
+            sessionId,
+            totalTokens: 0,
+            costUsd: 0.00000001m,
+            CancellationToken.None);
+
+        await repository.IncrementSessionTokensAndCostAsync(
+            sessionId,
+            totalTokens: 0,
+            costUsd: 0.00000001m,
+            CancellationToken.None);
+
+        Session persisted = await _db!.Sessions
+            .AsNoTracking()
+            .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        Assert.Equal(1_234_567_890.12345680m, persisted.TotalCostUsd);
+    }
+
+    [SkippableFact]
+    public async Task IncrementSessionTokensAndCostAsync_rolls_back_tokens_when_checked_cost_overflows()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "overflow must be atomic",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await _db!.Database.OpenConnectionAsync(CancellationToken.None);
+
+        await using (System.Data.Common.DbCommand seed = _db.Database.GetDbConnection().CreateCommand())
+        {
+            seed.CommandText =
+                "UPDATE \"Sessions\" SET \"TotalCostUsd\" = $cost WHERE \"Id\" = $sessionId;";
+
+            _ = ExactUsdText.AddParameter(seed, "$cost", decimal.MaxValue);
+
+            AddParameter(seed, "$sessionId", sessionId.ToString("D").ToUpperInvariant());
+
+            Assert.Equal(1, await seed.ExecuteNonQueryAsync(CancellationToken.None));
+        }
+
+        _ = await Assert.ThrowsAsync<OverflowException>(
+            () => repository.IncrementSessionTokensAndCostAsync(
+                sessionId,
+                totalTokens: 42,
+                costUsd: 0.00000001m,
+                CancellationToken.None));
+
+        await using System.Data.Common.DbCommand read = _db.Database.GetDbConnection().CreateCommand();
+
+        read.CommandText =
+            "SELECT \"TotalTokensUsed\", \"TotalCostUsd\" FROM \"Sessions\" WHERE \"Id\" = $sessionId;";
+
+        AddParameter(read, "$sessionId", sessionId.ToString("D").ToUpperInvariant());
+
+        await using System.Data.Common.DbDataReader reader =
+            await read.ExecuteReaderAsync(CancellationToken.None);
+
+        Assert.True(await reader.ReadAsync(CancellationToken.None));
+
+        Assert.Equal(0, reader.GetInt64(0));
+
+        Assert.Equal(decimal.MaxValue, ExactUsdText.Read(reader, 1));
     }
 
     [SkippableFact]
     public async Task GetTodaySpendAsync_sums_sessions_created_today()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -546,7 +615,248 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         decimal todaySpend = await repository.GetTodaySpendAsync(CancellationToken.None);
 
         Assert.Equal(5.50m, todaySpend);
+    }
 
+    [SkippableFact]
+    public async Task GetTodaySpendAsync_uses_UTC_day_across_stored_offsets()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        DateTimeOffset dayStart = new(now.Year, now.Month, now.Day, 0, 0, 0, TimeSpan.Zero);
+
+        DateTimeOffset dayEnd = dayStart.AddDays(1);
+
+        _db!.Sessions.AddRange(
+            new Session
+            {
+                Id = Guid.NewGuid(),
+                Title = "inside-utc-day",
+                Status = "active",
+                CreatedAt = dayStart.AddMinutes(30).ToOffset(TimeSpan.FromHours(2)),
+                UpdatedAt = dayStart.AddMinutes(30).ToOffset(TimeSpan.FromHours(2)),
+                TotalCostUsd = 7.25m,
+            },
+            new Session
+            {
+                Id = Guid.NewGuid(),
+                Title = "previous-utc-day",
+                Status = "active",
+                CreatedAt = dayStart.AddMinutes(-30).ToOffset(TimeSpan.FromHours(2)),
+                UpdatedAt = dayStart.AddMinutes(-30).ToOffset(TimeSpan.FromHours(2)),
+                TotalCostUsd = 100m,
+            },
+            new Session
+            {
+                Id = Guid.NewGuid(),
+                Title = "next-utc-day",
+                Status = "active",
+                CreatedAt = dayEnd.AddMinutes(30).ToOffset(TimeSpan.FromHours(-2)),
+                UpdatedAt = dayEnd.AddMinutes(30).ToOffset(TimeSpan.FromHours(-2)),
+                TotalCostUsd = 200m,
+            });
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+
+        decimal todaySpend = await repository.GetTodaySpendAsync(CancellationToken.None);
+
+        Assert.Equal(7.25m, todaySpend);
+    }
+
+    [SkippableFact]
+    public async Task GetTodaySpendAsync_reads_scientific_notation_from_legacy_cost_evolution()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Session session = new()
+        {
+            Id = Guid.NewGuid(),
+            Title = "legacy-small-cost",
+            Status = "active",
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+
+        _db!.Sessions.Add(session);
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        await _db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        await using (System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand())
+        {
+            command.CommandText =
+                "UPDATE \"Sessions\" SET \"TotalCostUsd\" = '1.0e-08' WHERE \"Id\" = $sessionId;";
+
+            AddParameter(command, "$sessionId", session.Id.ToString("D").ToUpperInvariant());
+
+            _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        GrimoireRepository repository = CreateRepository();
+
+        decimal todaySpend = await repository.GetTodaySpendAsync(CancellationToken.None);
+
+        Assert.Equal(0.00000001m, todaySpend);
+    }
+
+    [SkippableFact]
+    public async Task AdvanceCampaignLogWatermarkAsync_uses_the_latest_entry_UTC_timestamp_and_resets_count()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+        DateTimeOffset createdAt = new(2026, 7, 19, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset latest = createdAt.AddMinutes(2).AddTicks(4_567);
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            CreatedAt = createdAt,
+            UpdatedAt = latest,
+            Status = "active",
+            UnsummarizedEntryCount = 2,
+        });
+        _db.Entries.AddRange(
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = "first",
+                ModelUsed = "test-model",
+                CreatedAt = createdAt.AddMinutes(1),
+                Sequence = 1,
+            },
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                SessionId = sessionId,
+                Role = MessageRole.Assistant,
+                Content = "second",
+                ModelUsed = "test-model",
+                CreatedAt = latest,
+                Sequence = 2,
+            });
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+
+        await repository.AdvanceCampaignLogWatermarkAsync(sessionId, CancellationToken.None);
+
+        Session persisted = await _db.Sessions
+            .AsNoTracking()
+            .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        Assert.Equal(latest.UtcDateTime, persisted.LastSummarizedMessageAt);
+        Assert.Equal(0, persisted.UnsummarizedEntryCount);
+    }
+
+    [SkippableFact]
+    public async Task AdvanceCampaignLogWatermarkAsync_orders_entries_by_instant_across_offsets()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+        DateTimeOffset chronologicallyLatest = new DateTimeOffset(
+            2026,
+            7,
+            19,
+            1,
+            2,
+            3,
+            TimeSpan.FromHours(-10)).AddTicks(4_567);
+        DateTimeOffset lexicallyLatest = new DateTimeOffset(
+            2026,
+            7,
+            19,
+            10,
+            2,
+            3,
+            TimeSpan.FromHours(14)).AddTicks(9_876);
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            CreatedAt = lexicallyLatest,
+            UpdatedAt = chronologicallyLatest,
+            Status = "active",
+            UnsummarizedEntryCount = 2,
+        });
+        _db.Entries.AddRange(
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = "earlier instant with later wall-clock time",
+                ModelUsed = "test-model",
+                CreatedAt = lexicallyLatest,
+                Sequence = 1,
+            },
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                SessionId = sessionId,
+                Role = MessageRole.Assistant,
+                Content = "later instant with earlier wall-clock time",
+                ModelUsed = "test-model",
+                CreatedAt = chronologicallyLatest,
+                Sequence = 2,
+            });
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+
+        await repository.AdvanceCampaignLogWatermarkAsync(sessionId, CancellationToken.None);
+
+        Session persisted = await _db.Sessions
+            .AsNoTracking()
+            .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        Assert.Equal(chronologicallyLatest.UtcDateTime, persisted.LastSummarizedMessageAt);
+        Assert.Equal(0, persisted.UnsummarizedEntryCount);
+    }
+
+    [SkippableFact]
+    public async Task AdvanceCampaignLogWatermarkAsync_uses_current_UTC_time_for_an_empty_session()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+        DateTimeOffset createdAt = new(2026, 7, 19, 12, 0, 0, TimeSpan.Zero);
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            CreatedAt = createdAt,
+            UpdatedAt = createdAt,
+            Status = "active",
+            UnsummarizedEntryCount = 4,
+        });
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+        DateTime before = DateTime.UtcNow;
+
+        await repository.AdvanceCampaignLogWatermarkAsync(sessionId, CancellationToken.None);
+
+        DateTime after = DateTime.UtcNow;
+        Session persisted = await _db.Sessions
+            .AsNoTracking()
+            .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        Assert.NotNull(persisted.LastSummarizedMessageAt);
+        Assert.InRange(persisted.LastSummarizedMessageAt.Value, before, after);
+        Assert.Equal(0, persisted.UnsummarizedEntryCount);
     }
 
     /// <summary>
@@ -560,7 +870,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     [SkippableFact]
     public async Task New_session_reply_writes_the_unsummarized_counter_in_the_insert_transaction()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -583,13 +892,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             .FirstAsync(session => session.Id == sessionId, CancellationToken.None);
 
         Assert.Equal(2, persisted.UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task UnsummarizedEntryCount_increments_on_begin_and_resets_on_rollup()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -634,13 +941,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Session? afterRollup = await _db.Sessions.AsNoTracking().FirstAsync(s => s.Id == sessionId, CancellationToken.None);
 
         Assert.Equal(0, afterRollup!.UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task GetSessionsNeedingSummarizationAsync_returns_all_candidates_in_updated_order()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         const int candidateCount = 101;
@@ -651,7 +956,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         for (int i = candidateCount - 1; i >= 0; i--)
         {
-
             Guid id = Guid.NewGuid();
 
             expected[i] = id;
@@ -667,7 +971,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 UpdatedAt = timestamp,
                 UnsummarizedEntryCount = 26,
             });
-
         }
 
         await _db!.SaveChangesAsync(CancellationToken.None);
@@ -682,13 +985,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(candidateCount, result.Count);
 
         Assert.Equal(expected, result);
-
     }
 
     [SkippableFact]
     public async Task GetUnsummarizedEntriesAsync_pages_a_long_session_window()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTime watermark = new(2026, 7, 2, 0, 0, 0, DateTimeKind.Utc);
@@ -708,7 +1009,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         for (int i = 1; i <= 60; i++)
         {
-
             _db.Entries.Add(new Entry
             {
                 Id = EntryId(i),
@@ -719,7 +1019,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
                 Sequence = i,
             });
-
         }
 
         await _db.SaveChangesAsync(CancellationToken.None);
@@ -737,13 +1036,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             Enumerable.Range(1, 50).Select(EntryId),
             result.Select(entry => entry.Id));
-
     }
 
     [SkippableFact]
     public async Task GetUnsummarizedEntriesAsync_keeps_tied_tool_pair_and_rollup_count_correct()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTime watermark = new(2026, 7, 3, 0, 0, 0, DateTimeKind.Utc);
@@ -763,7 +1060,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         for (int i = 1; i <= 24; i++)
         {
-
             _db.Entries.Add(new Entry
             {
                 Id = EntryId(i),
@@ -774,7 +1070,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
                 Sequence = i,
             });
-
         }
 
         DateTimeOffset tiedTimestamp =
@@ -839,13 +1134,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(0, updated.UnsummarizedEntryCount);
 
         Assert.Equal(tiedTimestamp.UtcDateTime, updated.LastSummarizedMessageAt);
-
     }
 
     [SkippableFact]
     public async Task GetSagaExtractionEntriesAsync_UsesSequenceCursorAcrossSharedTimestampFrontiers()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -864,7 +1157,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         for (int sequence = 1; sequence <= 4; sequence++)
         {
-
             _db.Entries.Add(new Entry
             {
                 Id = EntryId(sequence),
@@ -875,7 +1167,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 CreatedAt = sharedCreatedAt,
                 Sequence = sequence,
             });
-
         }
 
         await _db.SaveChangesAsync(CancellationToken.None);
@@ -899,13 +1190,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal([1L, 2L], first.Select(entry => entry.Sequence));
 
         Assert.Equal([3L, 4L], second.Select(entry => entry.Sequence));
-
     }
 
     [SkippableFact]
     public async Task GetUnsummarizedEntriesAsync_returns_one_checkpoint_page()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         const int entryCeiling = 100;
@@ -930,13 +1219,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             Enumerable.Range(1, 25).Select(EntryId),
             result.Select(entry => entry.Id));
-
     }
 
     [SkippableFact]
     public async Task GetUnsummarizedEntriesAsync_more_than_former_ceiling_is_checkpointed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         const int entryCeiling = 100;
@@ -965,13 +1252,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(watermark, unchanged.LastSummarizedMessageAt);
 
         Assert.Equal(entryCeiling + 1, unchanged.UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task GetSessionsNeedingSummarizationAsync_legacy_backfill_recomputes_under_session_write_lock()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTime watermark = new(2026, 7, 6, 0, 0, 0, DateTimeKind.Utc);
@@ -1008,13 +1293,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.True(lockWasHeld);
         Assert.Equal(3, updated.UnsummarizedEntryCount);
         Assert.Contains(sessionId, candidates);
-
     }
 
     [SkippableFact]
     public async Task UpdateSessionCampaignRollupAsync_serializes_concurrent_append_and_preserves_remaining_count()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTime watermark = new(2026, 7, 7, 0, 0, 0, DateTimeKind.Utc);
@@ -1099,22 +1382,20 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
 
         int actualRemaining = await EntryTemporalQueries
-            .CountAfter(
+            .CountAfterAsync(
                 verificationDb,
                 sessionId,
-                new DateTimeOffset(watermark.AddMinutes(1), TimeSpan.Zero))
-            .FirstAsync(CancellationToken.None);
+                new DateTimeOffset(watermark.AddMinutes(1), TimeSpan.Zero),
+                CancellationToken.None);
 
         Assert.True(lockWasHeld);
         Assert.Equal(2, actualRemaining);
         Assert.Equal(actualRemaining, updated.UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task GetSessionHeaderAsync_returns_session_without_entries()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1136,13 +1417,61 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.NotNull(full);
 
         Assert.NotEmpty(full!.Entries);
+    }
 
+    [SkippableFact]
+    public async Task GetSessionHeaderAsync_materializes_every_EF_written_scalar_exactly()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+        Guid campaignId = Guid.NewGuid();
+        Guid forkedFrom = Guid.NewGuid();
+        DateTimeOffset createdAt = new(2026, 7, 20, 1, 2, 3, 456, TimeSpan.Zero);
+        DateTimeOffset updatedAt = createdAt.AddMinutes(4);
+        DateTime watermark = new(2026, 7, 20, 1, 5, 6, 789, DateTimeKind.Utc);
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            CampaignId = campaignId,
+            Title = "complete scalar header",
+            Status = "archived",
+            CreatedAt = createdAt,
+            UpdatedAt = updatedAt,
+            Summary = "The exact persisted summary.",
+            LastSummarizedMessageAt = watermark,
+            TotalTokensUsed = 12_345,
+            TotalCostUsd = 67.89012345m,
+            UnsummarizedEntryCount = 9,
+            ForkedFromSessionId = forkedFrom,
+        });
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+
+        Session? actual = await repository.GetSessionHeaderAsync(sessionId, CancellationToken.None);
+
+        Assert.NotNull(actual);
+        Assert.Equal(sessionId, actual!.Id);
+        Assert.Equal(campaignId, actual.CampaignId);
+        Assert.Equal("complete scalar header", actual.Title);
+        Assert.Equal("archived", actual.Status);
+        Assert.Equal(createdAt, actual.CreatedAt);
+        Assert.Equal(updatedAt, actual.UpdatedAt);
+        Assert.Equal("The exact persisted summary.", actual.Summary);
+        Assert.Equal(watermark, actual.LastSummarizedMessageAt);
+        Assert.Equal(12_345, actual.TotalTokensUsed);
+        Assert.Equal(67.89012345m, actual.TotalCostUsd);
+        Assert.Equal(9, actual.UnsummarizedEntryCount);
+        Assert.Equal(forkedFrom, actual.ForkedFromSessionId);
+        Assert.Empty(actual.Entries);
     }
 
     [SkippableFact]
     public async Task GetSessionAsync_loads_every_post_watermark_entry_even_beyond_max_messages()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1166,7 +1495,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         for (int i = 1; i <= 3; i++)
         {
-
             _db.Entries.Add(new Entry
             {
                 Id = Guid.NewGuid(),
@@ -1178,7 +1506,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 // Seeded newest-first, so invert the loop index to keep sequence chronological.
                 Sequence = 4 - i,
             });
-
         }
 
         int postWatermarkCount = maxMessages + 10;
@@ -1187,7 +1514,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         for (int i = 1; i <= postWatermarkCount; i++)
         {
-
             Guid entryId = Guid.NewGuid();
 
             postWatermarkIds.Add(entryId);
@@ -1202,7 +1528,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
                 Sequence = 3 + i,
             });
-
         }
 
         await _db.SaveChangesAsync(CancellationToken.None);
@@ -1218,7 +1543,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.True(
             dropped.Length == 0,
             $"Expected all {postWatermarkCount} post-watermark entries to be loaded, but {dropped.Length} were dropped.");
-
     }
 
     // W3.4 Group D #8: SearchArchivesAsync builds a raw DbCommand over the EF connection but
@@ -1229,7 +1553,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     [SkippableFact]
     public async Task SearchArchivesAsync_runs_on_a_cold_closed_connection()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1245,7 +1568,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         string result = await repository.SearchArchivesAsync("cobalt", maxResults: 10, CancellationToken.None);
 
         Assert.Contains("cobalt", result, StringComparison.OrdinalIgnoreCase);
-
     }
 
     // A hundred maximum-size entry bodies concatenated into one string is hundreds of megabytes of
@@ -1254,7 +1576,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     [SkippableFact]
     public async Task SearchArchivesAsync_stops_building_at_the_tool_output_cap()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1269,11 +1590,9 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         for (int index = 0; index < 10; index++)
         {
-
             _ = _db!.Entries.Add(
                 new Entry
                 {
-
                     Id = Guid.NewGuid(),
 
                     SessionId = sessionId,
@@ -1289,9 +1608,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                     Sequence = 100 + index,
 
                     IsPinned = false,
-
                 });
-
         }
 
         _ = await _db!.SaveChangesAsync(CancellationToken.None);
@@ -1309,13 +1626,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.True(
             result.Length <= cap + 4096,
             $"Archive search returned {result.Length} characters against a {cap}-byte cap.");
-
     }
 
     [SkippableFact]
     public async Task DeleteEntryAsync_removes_existing_entry()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1333,13 +1648,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.True(deleted);
 
         Assert.Null(await repository.GetEntryByIdAsync(sessionId, assistantEntryId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task DeleteEntryAsync_returns_false_when_entry_missing()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1353,7 +1666,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         bool deleted = await repository.DeleteEntryAsync(sessionId, Guid.NewGuid(), CancellationToken.None);
 
         Assert.False(deleted);
-
     }
 
     /// <summary>
@@ -1366,7 +1678,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     [SkippableFact]
     public async Task DeleteEntryAsync_surfaces_the_original_failure_when_the_token_cancels_before_rollback()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using CancellationTokenSource cts = new();
@@ -1376,13 +1687,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         NoOpSessionAttachmentStore attachments = new(
             clearEntryIds: (_, _, _) =>
             {
-
                 // Cancels exactly where BeginTransactionAsync has already succeeded and the write
                 // has not yet committed, matching the finding's own interleaving.
                 cts.Cancel();
 
                 return Task.FromException(synthetic);
-
             });
 
         GrimoireRepository repository = CreateRepository(attachments: attachments);
@@ -1407,13 +1716,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         // is still there and the connection is left with no open transaction to trip a later call.
         Assert.NotNull(
             await repository.GetEntryByIdAsync(sessionId, assistantEntryId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task SetEntryPinnedAsync_toggles_pinned_flag()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1451,13 +1758,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.NotNull(final);
 
         Assert.False(final!.IsPinned);
-
     }
 
     [SkippableFact]
     public async Task SetEntryPinnedAsync_returns_false_when_entry_missing()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1471,13 +1776,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         bool pinned = await repository.SetEntryPinnedAsync(sessionId, Guid.NewGuid(), true, CancellationToken.None);
 
         Assert.False(pinned);
-
     }
 
     [SkippableFact]
     public async Task GetPinnedEntryCountAsync_counts_only_pinned_entries()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1507,13 +1810,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         await repository.SetEntryPinnedAsync(sessionId, entryId2, true, CancellationToken.None);
 
         Assert.Equal(2, await repository.GetPinnedEntryCountAsync(sessionId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task GetSessionEntriesAsync_includes_is_pinned_projection()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -1533,7 +1834,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.NotNull(entries);
 
         Assert.Contains(entries!, e => e.Id == entryId && e.IsPinned);
-
     }
 
     [SkippableFact]
@@ -1577,6 +1877,47 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(second.CreatedAt, latest.CreatedAt);
     }
 
+    [SkippableFact]
+    public async Task RecordWorkspaceContextAsync_keeps_only_the_newest_configured_window()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+        string workspacePath = "/tmp/arcanum-retention/" + Guid.NewGuid().ToString("N");
+        int retain = ArcanumSettingClamps.WorkspaceContextRetentionCount(
+            ArcanumRuntimeDefaults.Grimoire.WorkspaceContextRetentionCount);
+        DateTimeOffset baseline = new(2026, 7, 18, 12, 0, 0, TimeSpan.Zero);
+        Guid newestId = Guid.Empty;
+
+        for (int index = 0; index < retain + 2; index++)
+        {
+            newestId = Guid.NewGuid();
+
+            await repository.RecordWorkspaceContextAsync(
+                new WorkspaceContext
+                {
+                    Id = newestId,
+                    CreatedAt = baseline.AddMinutes(index),
+                    WorkspacePath = workspacePath,
+                    SerializedSnapshot = $"{{\"ordinal\":{index}}}",
+                },
+                CancellationToken.None);
+        }
+
+        List<WorkspaceContext> retained = await _db!.WorkspaceContexts
+            .AsNoTracking()
+            .Where(context => context.WorkspacePath == workspacePath)
+            .ToListAsync(CancellationToken.None);
+
+        WorkspaceContext? latest = await repository.GetLatestWorkspaceContextAsync(
+            workspacePath,
+            CancellationToken.None);
+
+        Assert.Equal(retain, retained.Count);
+        Assert.DoesNotContain(retained, context => context.CreatedAt < baseline.AddMinutes(2));
+        Assert.Equal(newestId, latest?.Id);
+    }
+
     /// <summary>
     /// Creating a Session through the production turn-begin path writes a binding row that agrees with
     /// the Session it names, so the Session can actually be created and the binding can be read back.
@@ -1610,7 +1951,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     public async Task CreateBoundSessionAsync_writes_a_binding_that_agrees_with_the_Session_it_names(
         bool campaignBound)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CanonicalCampaignContext campaign = campaignBound
@@ -1643,7 +1983,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         (string session, string binding) = await ReadSessionAndBindingAsync(created.Value);
 
         Assert.Equal(session, binding);
-
     }
 
     /// <summary>
@@ -1652,14 +1991,12 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     /// </summary>
     private async Task<CanonicalCampaignContext> SeedCampaignContextAsync()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         _ = _db!.Campaigns.Add(new Campaign
         {
-
             Id = campaignId,
 
             Name = "binding-" + campaignId.ToString("N"),
@@ -1673,7 +2010,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             CreatedAt = now,
 
             UpdatedAt = now,
-
         });
 
         _ = await _db.SaveChangesAsync(CancellationToken.None);
@@ -1684,7 +2020,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             pathIdentityPolicyVersion: 1,
             pathIdentityRevision: null,
             rootIdentityDigest: null);
-
     }
 
     /// <summary>
@@ -1692,14 +2027,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     /// </summary>
     private async Task<(string Session, string Binding)> ReadSessionAndBindingAsync(Guid sessionId)
     {
-
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(CancellationToken.None);
-
         }
 
         await using System.Data.Common.DbCommand command = connection.CreateCommand();
@@ -1726,7 +2058,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.True(await reader.ReadAsync(CancellationToken.None), "No Session and binding pair was written.");
 
         return (reader.GetString(0), reader.GetString(1));
-
     }
 
     /// <summary>
@@ -1747,7 +2078,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     public async Task Deleting_a_labelled_entry_through_the_composed_repository_is_refused(
         GrimoireComposition composition)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ServiceProvider provider = _fixture.CreateComposedProvider(composition);
@@ -1778,7 +2108,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 .AsNoTracking()
                 .AnyAsync(entry => entry.Id == assistantEntryId, CancellationToken.None),
             "The refused delete removed the labelled Entry anyway.");
-
     }
 
     /// <summary>
@@ -1794,14 +2123,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Guid entryId,
         CancellationToken cancellationToken)
     {
-
         System.Data.Common.DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State is not System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(cancellationToken);
-
         }
 
         await using System.Data.Common.DbCommand command = connection.CreateCommand();
@@ -1828,12 +2154,10 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         AddParameter(command, "$now", "2026-01-01T00:00:00.0000000Z");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
     {
-
         System.Data.Common.DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -1841,7 +2165,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         parameter.Value = value;
 
         command.Parameters.Add(parameter);
-
     }
 
     private GrimoireRepository CreateRepository(
@@ -1861,19 +2184,15 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             covenantKernel: null,
             connections ?? FixtureOrdinaryConnectionFactory.For(context),
             FixtureLabeledArtifactGuard.For(context));
-
     }
 
     private async Task EnsureEntryEmbeddingTablesAsync()
     {
-
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(CancellationToken.None);
-
         }
 
         await using System.Data.Common.DbCommand command = connection.CreateCommand();
@@ -1893,12 +2212,10 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             """;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private async Task InsertEntryEmbeddingAsync(Guid entryId)
     {
-
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
         await using System.Data.Common.DbCommand command = connection.CreateCommand();
@@ -1931,12 +2248,10 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         command.Parameters.Add(embeddingParameter);
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private async Task<long> CountEntryEmbeddingAsync(string table, Guid entryId)
     {
-
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
         await using System.Data.Common.DbCommand command = connection.CreateCommand();
@@ -1956,7 +2271,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         object? result = await command.ExecuteScalarAsync(CancellationToken.None);
 
         return Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private async Task<Guid> SeedUnsummarizedWindowAsync(
@@ -1965,7 +2279,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         int entryCount,
         int? unsummarizedEntryCount = null)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         _db!.Sessions.Add(new Session
@@ -1996,10 +2309,8 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         await _db.SaveChangesAsync(CancellationToken.None);
 
         return sessionId;
-
     }
 
     private static Guid EntryId(int ordinal) =>
         Guid.Parse($"00000000-0000-0000-0000-{ordinal:000000000000}");
-
 }

@@ -201,7 +201,9 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         Assert.Equal(new WorkspaceIndexingService.WorkspaceSchedulerSnapshot(0, 0, false), service.GetSchedulerSnapshot());
 
-        Assert.Empty(gate.RequestedWorkKinds);
+        Assert.Equal([GrimoireWorkKind.WorkspaceIndexing], gate.RequestedWorkKinds);
+
+        Assert.Equal(0, gate.EffectGroupAttempts);
 
         await service.StopAsync(CancellationToken.None);
     }
@@ -325,14 +327,16 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         TaskCompletionSource releaseLease = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, scopeFactory: scopes, workAdmission: gate);
+
+        service.RegisterWorkspace(_workspace.Root);
+
         gate.BeforeWorkLeaseDisposalAsync = () =>
         {
             leaseEntered.TrySetResult();
 
             return new ValueTask(releaseLease.Task);
         };
-
-        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, scopeFactory: scopes, workAdmission: gate);
 
         Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
 

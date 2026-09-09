@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -12,6 +13,106 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 
 public sealed class LongRunningOperationStartupHostedServiceTests
 {
+    [Fact]
+    public async Task Expired_host_shutdown_budget_cannot_release_the_background_owner_early()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        RecoveryScopeFactory scopes = new(
+            new FakeLongRunningOperationStore(time),
+            Reconciler(new FakeLongRunningOperationStore(time), time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SetBackgroundTask(host, release.Task);
+
+        using CancellationTokenSource expiredBudget = new();
+        expiredBudget.Cancel();
+
+        Task stop = host.StopAsync(expiredBudget.Token);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
+
+        Assert.False(stop.IsCompleted);
+
+        release.TrySetResult();
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Host_shutdown_budget_expiring_during_join_cannot_release_the_background_owner_early()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SetBackgroundTask(host, release.Task);
+
+        using CancellationTokenSource expiringBudget = new(
+            TimeSpan.FromMilliseconds(25));
+
+        Task stop = host.StopAsync(expiringBudget.Token);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(75));
+
+        Assert.True(expiringBudget.IsCancellationRequested);
+        Assert.False(stop.IsCompleted);
+
+        release.TrySetResult();
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Cancellation_callback_failure_is_reported_only_after_the_background_owner_joins()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SetBackgroundTask(host, release.Task);
+
+        using CancellationTokenRegistration registration = ShutdownSource(host)
+            .Token
+            .Register(static () => throw new InvalidOperationException("shutdown callback failed"));
+
+        Task stop = host.StopAsync(CancellationToken.None);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
+
+        Assert.False(stop.IsCompleted);
+
+        release.TrySetResult();
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(
+            () => stop.WaitAsync(TimeSpan.FromSeconds(2)));
+
+        Assert.Contains(
+            "shutdown callback failed",
+            failure.ToString(),
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Background_db_only_recovery_acquires_before_each_private_scope_without_a_group()
     {
@@ -56,7 +157,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
     }
 
     [Fact]
-    public async Task External_group_spans_claim_handler_and_settlement_then_closes_before_scope()
+    public async Task External_group_spans_claim_handler_settlement_and_private_scope_cleanup()
     {
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
@@ -97,9 +198,64 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         Assert.Equal(1, summary.Completed);
         Assert.Equal(1, gate.GroupAttempts);
-        Assert.True(order.IndexOf("handler") < order.IndexOf("group-dispose"));
-        Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("scope-dispose"));
-        Assert.True(order.LastIndexOf("scope-dispose") < order.LastIndexOf("work-dispose"));
+        Assert.True(order.IndexOf("handler") < order.LastIndexOf("scope-dispose"));
+        Assert.True(order.LastIndexOf("scope-dispose") < order.IndexOf("group-dispose"));
+        Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("work-dispose"));
+    }
+
+    [Fact]
+    public async Task Effect_group_and_lease_remain_owned_until_async_scope_cleanup_completes()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        _ = store.Seed(
+            LongRunningOperationKinds.Batch,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        TaskCompletionSource scopeCleanupStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releaseScopeCleanup = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(
+                store,
+                time,
+                new RecordingRecoveryHandler(
+                    LongRunningOperationKinds.Batch,
+                    supportedCheckpointVersion: 0)),
+            order,
+            () => gate.ActiveLeases > 0)
+        {
+            OnSecondDisposalAsync = async () =>
+            {
+                scopeCleanupStarted.TrySetResult();
+                await releaseScopeCleanup.Task.ConfigureAwait(false);
+            },
+        };
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        Task<LongRunningOperationReconciliationSummary> pass = host.RunBackgroundPassAsync(
+            time.GetUtcNow(),
+            "background-owner",
+            CancellationToken.None);
+
+        await scopeCleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(pass.IsCompleted);
+        Assert.Equal(1, gate.ActiveGroups);
+        Assert.Equal(1, gate.ActiveLeases);
+        Assert.DoesNotContain("group-dispose", order);
+
+        releaseScopeCleanup.TrySetResult();
+
+        LongRunningOperationReconciliationSummary summary = await pass.WaitAsync(
+            TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, summary.Completed);
+        Assert.Equal(0, gate.ActiveGroups);
+        Assert.Equal(0, gate.ActiveLeases);
+        Assert.True(order.LastIndexOf("scope-dispose") < order.IndexOf("group-dispose"));
+        Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("work-dispose"));
     }
 
     [Fact]
@@ -168,8 +324,41 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         Assert.Equal(2, scopes.Disposed);
         Assert.Equal(0, gate.ActiveLeases);
-        Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("scope-dispose"));
-        Assert.True(order.LastIndexOf("scope-dispose") < order.LastIndexOf("work-dispose"));
+        Assert.True(order.LastIndexOf("scope-dispose") < order.IndexOf("group-dispose"));
+        Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("work-dispose"));
+    }
+
+    [Fact]
+    public async Task A_group_begin_failure_still_disposes_the_acquired_work_lease()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        _ = store.Seed(
+            LongRunningOperationKinds.Batch,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order) { ThrowOnGroupBegin = true };
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(
+                store,
+                time,
+                new RecordingRecoveryHandler(
+                    LongRunningOperationKinds.Batch,
+                    supportedCheckpointVersion: 0)),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            host.RunBackgroundPassAsync(
+                time.GetUtcNow(),
+                "background-owner",
+                CancellationToken.None));
+
+        Assert.Equal(0, gate.ActiveLeases);
+        Assert.Equal(1, scopes.Disposed);
+        Assert.Equal("work-dispose", order[^1]);
     }
 
     [Fact]
@@ -208,6 +397,84 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         Assert.True(order.LastIndexOf("scope-dispose") < order.LastIndexOf("work-dispose"));
     }
 
+    [Fact]
+    public async Task An_external_scope_disposal_failure_still_disposes_the_group_and_work_lease()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        _ = store.Seed(
+            LongRunningOperationKinds.Batch,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(
+                store,
+                time,
+                new RecordingRecoveryHandler(
+                    LongRunningOperationKinds.Batch,
+                    supportedCheckpointVersion: 0)),
+            order,
+            () => gate.ActiveLeases > 0)
+        {
+            ThrowOnSecondDisposal = true,
+        };
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() =>
+            host.RunBackgroundPassAsync(
+                time.GetUtcNow(),
+                "background-owner",
+                CancellationToken.None));
+
+        Assert.Contains("scope disposal failed", failure.ToString(), StringComparison.Ordinal);
+        Assert.Equal(2, scopes.Disposed);
+        Assert.Equal(0, gate.ActiveGroups);
+        Assert.Equal(0, gate.ActiveLeases);
+        Assert.True(order.LastIndexOf("scope-dispose") < order.IndexOf("group-dispose"));
+        Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("work-dispose"));
+    }
+
+    [Fact]
+    public async Task Scope_and_group_disposal_failures_still_dispose_the_work_lease()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        _ = store.Seed(
+            LongRunningOperationKinds.Batch,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order) { ThrowOnGroupDisposal = true };
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(
+                store,
+                time,
+                new RecordingRecoveryHandler(
+                    LongRunningOperationKinds.Batch,
+                    supportedCheckpointVersion: 0)),
+            order,
+            () => gate.ActiveLeases > 0)
+        {
+            ThrowOnSecondDisposal = true,
+        };
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() =>
+            host.RunBackgroundPassAsync(
+                time.GetUtcNow(),
+                "background-owner",
+                CancellationToken.None));
+
+        Assert.Contains("group disposal failed", failure.ToString(), StringComparison.Ordinal);
+        Assert.Equal(2, scopes.Disposed);
+        Assert.Equal(0, gate.ActiveGroups);
+        Assert.Equal(0, gate.ActiveLeases);
+        Assert.True(order.LastIndexOf("scope-dispose") < order.IndexOf("group-dispose"));
+        Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("work-dispose"));
+    }
+
     private static LongRunningOperationStartupHostedService Host(
         IServiceScopeFactory scopes,
         TimeProvider time,
@@ -218,6 +485,31 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             new LongRunningOperationReconciliationStatus(),
             gate,
             NullLogger<LongRunningOperationStartupHostedService>.Instance);
+
+    private static void SetBackgroundTask(
+        LongRunningOperationStartupHostedService host,
+        Task task)
+    {
+        FieldInfo? field = typeof(LongRunningOperationStartupHostedService).GetField(
+            "_backgroundTask",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(field);
+
+        field.SetValue(host, task);
+    }
+
+    private static CancellationTokenSource ShutdownSource(
+        LongRunningOperationStartupHostedService host)
+    {
+        FieldInfo? field = typeof(LongRunningOperationStartupHostedService).GetField(
+            "_shutdown",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(field);
+
+        return Assert.IsType<CancellationTokenSource>(field.GetValue(host));
+    }
 
     private static LongRunningOperationReconciler Reconciler(
         FakeLongRunningOperationStore store,
@@ -245,6 +537,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         private readonly Func<bool> _isAdmitted = isAdmitted;
 
         private int _created;
+
         private int _disposed;
 
         internal int Created => Volatile.Read(ref _created);
@@ -252,6 +545,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         internal int Disposed => Volatile.Read(ref _disposed);
 
         internal bool ThrowOnSecondDisposal { get; init; }
+
+        internal Func<ValueTask>? OnSecondDisposalAsync { get; init; }
 
         internal List<bool> ScopeCreatedWhileAdmitted { get; } = [];
 
@@ -276,22 +571,25 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 _ => null,
             };
 
-            public void Dispose()
+            public void Dispose() =>
+                DisposeCoreAsync().AsTask().GetAwaiter().GetResult();
+
+            public ValueTask DisposeAsync() => DisposeCoreAsync();
+
+            private async ValueTask DisposeCoreAsync()
             {
                 int disposed = Interlocked.Increment(ref owner._disposed);
                 owner._order.Add("scope-dispose");
+
+                if (disposed == 2 && owner.OnSecondDisposalAsync is not null)
+                {
+                    await owner.OnSecondDisposalAsync().ConfigureAwait(false);
+                }
 
                 if (owner.ThrowOnSecondDisposal && disposed == 2)
                 {
                     throw new InvalidOperationException("scope disposal failed");
                 }
-            }
-
-            public ValueTask DisposeAsync()
-            {
-                Dispose();
-
-                return ValueTask.CompletedTask;
             }
         }
     }
@@ -301,7 +599,11 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         private readonly List<string> _order = order;
 
         private long _generation = 1;
+
         private int _activeLeases;
+
+        private int _activeGroups;
+
         private int _maximumActiveLeases;
 
         internal int Acquisitions { get; private set; }
@@ -314,11 +616,15 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         internal int ActiveLeases => Volatile.Read(ref _activeLeases);
 
+        internal int ActiveGroups => Volatile.Read(ref _activeGroups);
+
         internal int MaximumActiveLeases => Volatile.Read(ref _maximumActiveLeases);
 
         internal bool RefuseFirstGroup { get; init; }
 
         internal bool ThrowOnGroupDisposal { get; init; }
+
+        internal bool ThrowOnGroupBegin { get; init; }
 
         internal Action BeforeGroupDisposal { get; init; } = static () => { };
 
@@ -401,8 +707,14 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)
             {
                 owner.GroupAttempts++;
+
+                if (owner.ThrowOnGroupBegin)
+                {
+                    throw new InvalidOperationException("group begin failed");
+                }
+
                 bool refuse = owner.RefuseFirstGroup && owner.GroupAttempts == 1;
-                effectGroup = refuse ? null : new Group(owner);
+                effectGroup = refuse ? null : owner.CreateGroup();
 
                 return !refuse;
             }
@@ -416,16 +728,30 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             }
         }
 
+        private IGrimoireExternalEffectGroup CreateGroup()
+        {
+            Interlocked.Increment(ref _activeGroups);
+
+            return new Group(this);
+        }
+
         private sealed class Group(RecoveryAdmissionGate owner) : IGrimoireExternalEffectGroup
         {
             public ValueTask DisposeAsync()
             {
-                owner.BeforeGroupDisposal();
-                owner._order.Add("group-dispose");
-
-                if (owner.ThrowOnGroupDisposal)
+                try
                 {
-                    throw new InvalidOperationException("group disposal failed");
+                    owner.BeforeGroupDisposal();
+                    owner._order.Add("group-dispose");
+
+                    if (owner.ThrowOnGroupDisposal)
+                    {
+                        throw new InvalidOperationException("group disposal failed");
+                    }
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref owner._activeGroups);
                 }
 
                 return ValueTask.CompletedTask;

@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </remarks>
 internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
 {
-
     private const string CursorVersion = "v1";
 
     private const int WatermarkWriteCost = 1;
@@ -41,7 +40,6 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
         string? cursor,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -56,17 +54,13 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
 
         if (pending is null)
         {
-
             if (position is not null)
             {
-
                 throw new InvalidOperationException(
                     "The Saga extraction cursor names a watermark that is no longer pending.");
-
             }
 
             return new GrimoireSchemaBackfillBatch(NextCursor: null, RowsProcessed: 0, IsComplete: true);
-
         }
 
         long afterEntrySequence = position?.LastProvenEntrySequence ?? 0;
@@ -82,12 +76,10 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
 
         if (!page.IsComplete)
         {
-
             return new GrimoireSchemaBackfillBatch(
                 SerializeCursor(new BackfillPosition(pending.SessionId, page.LastProvenEntrySequence)),
                 page.EntriesExamined,
                 IsComplete: false);
-
         }
 
         await SetResolvedSequenceAsync(
@@ -101,7 +93,6 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
             NextCursor: null,
             page.EntriesExamined + WatermarkWriteCost,
             IsComplete: false);
-
     }
 
     private static async Task<PendingWatermark?> ReadPendingWatermarkAsync(
@@ -110,7 +101,6 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
         BackfillPosition? position,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand read = connection.CreateCommand();
 
         read.Transaction = transaction;
@@ -135,9 +125,7 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
 
         if (position is not null)
         {
-
             _ = read.Parameters.AddWithValue("$sessionId", position.SessionId);
-
         }
 
         await using SqliteDataReader reader =
@@ -145,15 +133,12 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         return new PendingWatermark(
             reader.GetString(0),
-            DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture));
-
+            UtcInstantText.Parse(reader.GetString(1)));
     }
 
     private static async Task SetResolvedSequenceAsync(
@@ -163,7 +148,6 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
         long entrySequence,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand update = connection.CreateCommand();
 
         update.Transaction = transaction;
@@ -182,17 +166,13 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
 
         if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
-
             throw new InvalidOperationException(
                 "The Saga extraction watermark moved while its sequence cursor was being backfilled.");
-
         }
-
     }
 
     private static string SerializeCursor(BackfillPosition position)
     {
-
         string encodedSessionId = Convert.ToBase64String(Encoding.UTF8.GetBytes(position.SessionId));
 
         return string.Join(
@@ -200,17 +180,13 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
             CursorVersion,
             position.LastProvenEntrySequence.ToString(CultureInfo.InvariantCulture),
             encodedSessionId);
-
     }
 
     private static BackfillPosition? ParseCursor(string? cursor)
     {
-
         if (cursor is null)
         {
-
             return null;
-
         }
 
         string[] parts = cursor.Split(':', 3, StringSplitOptions.None);
@@ -224,35 +200,26 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
                 out long lastProvenEntrySequence)
             || lastProvenEntrySequence < 0)
         {
-
             throw InvalidCursor();
-
         }
 
         try
         {
-
             string sessionId = Encoding.UTF8.GetString(Convert.FromBase64String(parts[2]));
 
             if (string.IsNullOrWhiteSpace(sessionId))
             {
-
                 throw InvalidCursor();
-
             }
 
             return new BackfillPosition(sessionId, lastProvenEntrySequence);
-
         }
         catch (FormatException exception)
         {
-
             throw new InvalidOperationException(
                 "The Saga extraction schema backfill cursor is malformed.",
                 exception);
-
         }
-
     }
 
     private static InvalidOperationException InvalidCursor() =>
@@ -261,5 +228,4 @@ internal sealed class SagaExtractionCursorBackfill : IGrimoireSchemaBackfill
     private sealed record BackfillPosition(string SessionId, long LastProvenEntrySequence);
 
     private sealed record PendingWatermark(string SessionId, DateTimeOffset EntryCreatedAt);
-
 }

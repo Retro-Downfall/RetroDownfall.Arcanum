@@ -14,20 +14,20 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class CliResourceCatalogSpellPagingTests
 {
-
     [Fact]
     public async Task SelectSpellAsync_follows_the_opaque_cursor_to_a_later_page()
     {
-
         SpellCatalogHandler handler = new();
 
         ArcanumApiClient client = new(
             new FakeHttpClientFactory(handler),
-            new FakeSecretStore());
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
 
         CliResourceCatalog catalog = new(
             client,
@@ -56,19 +56,16 @@ public sealed class CliResourceCatalogSpellPagingTests
             "cursor=opaque-page-two",
             handler.Requests[1].RequestUri!.Query,
             StringComparison.Ordinal);
-
     }
 
     private sealed class SpellCatalogHandler : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             Requests.Add(new HttpRequestMessage(request.Method, request.RequestUri));
@@ -96,11 +93,8 @@ public sealed class CliResourceCatalogSpellPagingTests
             return Task.FromResult(
                 new HttpResponseMessage(HttpStatusCode.OK)
                 {
-
                     Content = new ByteArrayContent(payload),
-
                 });
-
         }
 
         private static SpellSummary Summary(string name) =>
@@ -109,26 +103,20 @@ public sealed class CliResourceCatalogSpellPagingTests
                 "description",
                 SpellSource.Workspace,
                 []);
-
     }
 
     private sealed class FakeHttpClientFactory(
         HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001/"),
-
             };
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>("test-key");
 
@@ -142,35 +130,29 @@ public sealed class CliResourceCatalogSpellPagingTests
 
         public Task SaveGrimoireEncryptionSecretAsync(
             string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class NonInteractiveEnvironment : ICliEnvironment
     {
-
         public bool IsInteractive => false;
 
         public bool ColorEnabled => false;
 
         public bool ShouldShowManaBar => false;
-
     }
 
     private sealed class NeverPicker : IResourcePicker
     {
-
         public Task<ResourcePickerResult<T>> PickAsync<T>(
             ResourcePickerRequest<T> request,
             CancellationToken cancellationToken)
             where T : class =>
             throw new InvalidOperationException(
                 "An exact non-interactive selection must not open the picker.");
-
     }
 
     private sealed class RecordingRecentStore : IRecentResourceStore
     {
-
         public IReadOnlyList<string> GetRecentIds(string resourceKind) => [];
 
         public Task RememberAsync(
@@ -179,7 +161,6 @@ public sealed class CliResourceCatalogSpellPagingTests
             Func<CancellationToken, Task<Result<bool>>> revalidateAsync,
             CancellationToken cancellationToken = default)
         {
-
             _ = resourceKind;
 
             _ = id;
@@ -187,9 +168,6 @@ public sealed class CliResourceCatalogSpellPagingTests
             _ = revalidateAsync;
 
             return Task.CompletedTask;
-
         }
-
     }
-
 }

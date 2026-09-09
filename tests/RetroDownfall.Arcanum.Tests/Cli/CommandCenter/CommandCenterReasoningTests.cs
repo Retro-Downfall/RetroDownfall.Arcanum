@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class CommandCenterReasoningTests
@@ -55,7 +57,6 @@ public sealed class CommandCenterReasoningTests
     public async Task Session_bound_persistence_refusal_warns_without_failing_the_remote_turn(
         byte dispositionValue)
     {
-
         Guid prior = Guid.Parse(
             "22222222-3333-4444-5555-666666666666");
 
@@ -111,7 +112,6 @@ public sealed class CommandCenterReasoningTests
             "Turn failed",
             state.Log.RenderPlainText(),
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
@@ -397,7 +397,9 @@ public sealed class CommandCenterReasoningTests
         HttpMessageHandler handler,
         ILastSessionStore? lastSessionStore = null)
     {
-        ArcanumApiClient client = new(new FakeHttpClientFactory(handler), new FakeSecretStore());
+        ArcanumApiClient client = new(
+            new FakeHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
         SessionWorkspaceService workspace = new(
             client,
             lastSessionStore ?? new NoopLastSessionStore(),
@@ -446,12 +448,10 @@ public sealed class CommandCenterReasoningTests
                 Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
                 CancellationToken cancellationToken)
         {
-
             _ = revalidateAsync;
 
             if (refusalDisposition is { } disposition)
             {
-
                 Error error = disposition is
                     ArcanumClientMutationDisposition.Blocked
                     ? new Error(
@@ -465,13 +465,11 @@ public sealed class CommandCenterReasoningTests
                     disposition is ArcanumClientMutationDisposition.Blocked
                         ? ArcanumClientMutationResult<CliContextDocument>.Blocked(error)
                         : ArcanumClientMutationResult<CliContextDocument>.Unsafe(error));
-
             }
 
             return Task.FromResult(
                 ArcanumClientMutationResult<CliContextDocument>.Completed(
                     CliContextDocument.Empty with { SessionId = id }));
-
         }
     }
 
@@ -609,5 +607,4 @@ public sealed class CommandCenterReasoningTests
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
-
 }

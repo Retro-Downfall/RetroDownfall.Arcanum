@@ -13,14 +13,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class SagaMemoryStore
 {
-
     public async Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -52,9 +49,7 @@ internal sealed partial class SagaMemoryStore
 
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     return null;
-
                 }
 
                 SagaMemoryDto memory = ReadMemory(reader);
@@ -64,16 +59,13 @@ internal sealed partial class SagaMemoryStore
                 SagaMemoryLifecycle lifecycle = new(memory.RetiredAtUtc, memory.PinnedAtUtc);
 
                 return new SagaMemoryCurationRow(memory, lifecycle, hasEmbedding);
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task<SagaCurationOutcome> RetireAsync(
         string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         ArgumentNullException.ThrowIfNull(expectedContentDigest);
@@ -81,7 +73,6 @@ internal sealed partial class SagaMemoryStore
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // Transaction and commands are created fresh on every invocation of this delegate, exactly
@@ -118,19 +109,16 @@ internal sealed partial class SagaMemoryStore
 
                 await using (DbDataReader reader = await readCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null);
-
                     }
 
                     content = reader.GetString(0);
 
-                    createdAt = DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture);
+                    createdAt = UtcInstantText.Parse(reader.GetString(1));
 
                     sessionId = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2));
 
@@ -138,48 +126,40 @@ internal sealed partial class SagaMemoryStore
 
                     campaignId = reader.IsDBNull(4) ? null : reader.GetString(4);
 
-                    pinnedAtUtc = reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture);
+                    pinnedAtUtc = reader.IsDBNull(6) ? null : UtcInstantText.Parse(reader.GetString(6));
 
                     if (!reader.IsDBNull(5))
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return new SagaCurationOutcome(SagaCurationOutcomeKind.AlreadyRetired, null);
-
                     }
-
                 }
 
                 byte[] currentDigest = AnnalContentDigest.ForSagaMemory(content);
 
                 if (!CryptographicOperations.FixedTimeEquals(currentDigest, expectedContentDigest))
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     return new SagaCurationOutcome(SagaCurationOutcomeKind.StaleContent, null);
-
                 }
 
                 await using (DbCommand retireCmd = connection.CreateCommand())
                 {
-
                     retireCmd.Transaction = transaction;
 
                     retireCmd.CommandText = """UPDATE saga_memories SET RetiredAtUtc = @retiredAt WHERE Id = @id""";
 
-                    AddParameter(retireCmd, "@retiredAt", retiredAt.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(retireCmd, "@retiredAt", UtcInstantText.Format(retiredAt));
 
                     AddParameter(retireCmd, "@id", id);
 
                     _ = await retireCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await using (DbCommand embeddingCmd = connection.CreateCommand())
                 {
-
                     embeddingCmd.Transaction = transaction;
 
                     embeddingCmd.CommandText = """DELETE FROM "saga_memory_embeddings" WHERE "MemoryId" = @id""";
@@ -187,12 +167,10 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(embeddingCmd, "@id", id);
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 if (availability.IsVecAvailable)
                 {
-
                     await using DbCommand vecCmd = connection.CreateCommand();
 
                     vecCmd.Transaction = transaction;
@@ -202,7 +180,6 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(vecCmd, "@id", id);
 
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 byte[] suppressionKey = await SagaSuppressionKeyStore
@@ -212,7 +189,6 @@ internal sealed partial class SagaMemoryStore
 
                 await using (DbCommand suppressionCmd = connection.CreateCommand())
                 {
-
                     suppressionCmd.Transaction = transaction;
 
                     // ON CONFLICT(SuppressionDigest) DO NOTHING rather than INSERT OR IGNORE: two
@@ -249,10 +225,9 @@ internal sealed partial class SagaMemoryStore
                         (object?)SagaMemoryScopeClassifier.CanonicalCampaignIdentity(campaignId)
                             ?? DBNull.Value);
 
-                    AddParameter(suppressionCmd, "@retiredAt", retiredAt.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(suppressionCmd, "@retiredAt", UtcInstantText.Format(retiredAt));
 
                     _ = await suppressionCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 // Both Annals writes below are deliberately ungated: they run whatever
@@ -297,10 +272,8 @@ internal sealed partial class SagaMemoryStore
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(retiredAt, pinnedAtUtc));
-
             },
             cancellationToken);
-
     }
 
     public Task<SagaCurationOutcome> ReinstateAsync(
@@ -310,7 +283,6 @@ internal sealed partial class SagaMemoryStore
         DateTimeOffset reinstatedAt,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         ArgumentNullException.ThrowIfNull(expectedContentDigest);
@@ -322,16 +294,13 @@ internal sealed partial class SagaMemoryStore
 
         if (embedding.Length != expectedDimensions)
         {
-
             throw new InvalidOperationException(
                 $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting reinstate to avoid corrupting the vec0 index.""");
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // Fresh transaction per attempt, for the same reason RetireAsync and InsertCoreAsync are:
@@ -365,19 +334,16 @@ internal sealed partial class SagaMemoryStore
 
                 await using (DbDataReader reader = await readCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null);
-
                     }
 
                     content = reader.GetString(0);
 
-                    createdAt = DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture);
+                    createdAt = UtcInstantText.Parse(reader.GetString(1));
 
                     sessionId = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2));
 
@@ -385,33 +351,27 @@ internal sealed partial class SagaMemoryStore
 
                     campaignId = reader.IsDBNull(4) ? null : reader.GetString(4);
 
-                    pinnedAtUtc = reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture);
+                    pinnedAtUtc = reader.IsDBNull(6) ? null : UtcInstantText.Parse(reader.GetString(6));
 
                     if (reader.IsDBNull(5))
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return new SagaCurationOutcome(SagaCurationOutcomeKind.NotRetired, null);
-
                     }
-
                 }
 
                 byte[] currentDigest = AnnalContentDigest.ForSagaMemory(content);
 
                 if (!CryptographicOperations.FixedTimeEquals(currentDigest, expectedContentDigest))
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     return new SagaCurationOutcome(SagaCurationOutcomeKind.StaleContent, null);
-
                 }
 
                 await using (DbCommand clearCmd = connection.CreateCommand())
                 {
-
                     clearCmd.Transaction = transaction;
 
                     clearCmd.CommandText = """UPDATE saga_memories SET RetiredAtUtc = NULL WHERE Id = @id""";
@@ -419,14 +379,12 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(clearCmd, "@id", id);
 
                     _ = await clearCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 byte[] blob = EmbeddingBlobCodec.Encode(embedding);
 
                 await using (DbCommand embeddingCmd = connection.CreateCommand())
                 {
-
                     embeddingCmd.Transaction = transaction;
 
                     embeddingCmd.CommandText =
@@ -442,12 +400,10 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(embeddingCmd, "@dim", embedding.Length);
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 if (availability.IsVecAvailable)
                 {
-
                     await using DbCommand vecCmd = connection.CreateCommand();
 
                     vecCmd.Transaction = transaction;
@@ -463,7 +419,6 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(vecCmd, "@embedding", blob);
 
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 // The digest is recomputed from the installation's key rather than remembered from the
@@ -484,7 +439,6 @@ internal sealed partial class SagaMemoryStore
 
                 if (suppressionKey is not null)
                 {
-
                     // Both digests, symmetrically with the check the write path makes. A memory retired
                     // before the Campaign spelling was settled has its suppression recorded under the
                     // minority rendering, and releasing only the settled one deleted nothing at all - so
@@ -514,7 +468,6 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(releaseCmd, "@legacyDigest", legacySuppressionDigest);
 
                     _ = await releaseCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 // Ungated for the same reason RetireAsync's Annals writes are: the record that the
@@ -538,10 +491,8 @@ internal sealed partial class SagaMemoryStore
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, pinnedAtUtc));
-
             },
             cancellationToken);
-
     }
 
     public Task<SagaCurationOutcome> CorrectAsync(
@@ -552,7 +503,6 @@ internal sealed partial class SagaMemoryStore
         DateTimeOffset correctedAt,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         ArgumentNullException.ThrowIfNull(expectedContentDigest);
@@ -566,16 +516,13 @@ internal sealed partial class SagaMemoryStore
 
         if (embedding.Length != expectedDimensions)
         {
-
             throw new InvalidOperationException(
                 $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting correct to avoid corrupting the vec0 index.""");
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // Fresh transaction per attempt, for the same reason RetireAsync's and ReinstateAsync's
@@ -609,19 +556,16 @@ internal sealed partial class SagaMemoryStore
 
                 await using (DbDataReader reader = await readCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null);
-
                     }
 
                     currentContent = reader.GetString(0);
 
-                    createdAt = DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture);
+                    createdAt = UtcInstantText.Parse(reader.GetString(1));
 
                     sessionId = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2));
 
@@ -629,44 +573,36 @@ internal sealed partial class SagaMemoryStore
 
                     campaignId = reader.IsDBNull(4) ? null : reader.GetString(4);
 
-                    pinnedAtUtc = reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture);
+                    pinnedAtUtc = reader.IsDBNull(6) ? null : UtcInstantText.Parse(reader.GetString(6));
 
                     if (!reader.IsDBNull(5))
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return new SagaCurationOutcome(SagaCurationOutcomeKind.AlreadyRetired, null);
-
                     }
-
                 }
 
                 byte[] currentDigest = AnnalContentDigest.ForSagaMemory(currentContent);
 
                 if (!CryptographicOperations.FixedTimeEquals(currentDigest, expectedContentDigest))
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     return new SagaCurationOutcome(SagaCurationOutcomeKind.StaleContent, null);
-
                 }
 
                 byte[] newDigest = AnnalContentDigest.ForSagaMemory(content);
 
                 if (CryptographicOperations.FixedTimeEquals(currentDigest, newDigest))
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     return new SagaCurationOutcome(SagaCurationOutcomeKind.Unchanged, null);
-
                 }
 
                 await using (DbCommand contentCmd = connection.CreateCommand())
                 {
-
                     contentCmd.Transaction = transaction;
 
                     contentCmd.CommandText = """UPDATE saga_memories SET Content = @content WHERE Id = @id""";
@@ -676,14 +612,12 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(contentCmd, "@id", id);
 
                     _ = await contentCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 byte[] blob = EmbeddingBlobCodec.Encode(embedding);
 
                 await using (DbCommand embeddingCmd = connection.CreateCommand())
                 {
-
                     embeddingCmd.Transaction = transaction;
 
                     // An upsert rather than an update, because the row this replaces can be absent. A
@@ -710,12 +644,10 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(embeddingCmd, "@dim", embedding.Length);
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 if (availability.IsVecAvailable)
                 {
-
                     await using DbCommand vecCmd = connection.CreateCommand();
 
                     vecCmd.Transaction = transaction;
@@ -731,7 +663,6 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(vecCmd, "@embedding", blob);
 
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 // The same ungated pair RetireAsync and ReinstateAsync write, and for the same reason:
@@ -775,22 +706,18 @@ internal sealed partial class SagaMemoryStore
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, pinnedAtUtc));
-
             },
             cancellationToken);
-
     }
 
     public Task<SagaCurationOutcome> SetPinAsync(
         string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // A single RETURNING statement is already atomic on its own, so this transaction buys
@@ -816,7 +743,7 @@ internal sealed partial class SagaMemoryStore
                 AddParameter(
                     pinCmd,
                     "@value",
-                    pinned ? changedAt.ToString("o", CultureInfo.InvariantCulture) : DBNull.Value);
+                    pinned ? UtcInstantText.Format(changedAt) : DBNull.Value);
 
                 AddParameter(pinCmd, "@id", id);
 
@@ -824,20 +751,16 @@ internal sealed partial class SagaMemoryStore
 
                 await using (DbDataReader reader = await pinCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null);
-
                     }
 
                     retiredAtUtc = reader.IsDBNull(0)
                         ? null
-                        : DateTimeOffset.Parse(reader.GetString(0), CultureInfo.InvariantCulture);
-
+                        : UtcInstantText.Parse(reader.GetString(0));
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -845,10 +768,7 @@ internal sealed partial class SagaMemoryStore
                 return new SagaCurationOutcome(
                     SagaCurationOutcomeKind.Applied,
                     new SagaMemoryLifecycle(retiredAtUtc, pinned ? changedAt : null));
-
             },
             cancellationToken);
-
     }
-
 }

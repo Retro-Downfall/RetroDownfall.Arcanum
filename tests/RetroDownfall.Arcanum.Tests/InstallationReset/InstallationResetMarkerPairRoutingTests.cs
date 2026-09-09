@@ -26,11 +26,9 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// </remarks>
 public sealed partial class InstallationResetServiceTests
 {
-
     [Fact]
     public async Task Full_admission_hands_the_durable_publication_to_the_marker_pair_coordinator()
     {
-
         Guid operationId = Guid.Parse("51515151-5151-4151-8151-515151515151");
 
         FakeActiveStore active = new();
@@ -70,13 +68,11 @@ public sealed partial class InstallationResetServiceTests
         // After the claim is durable, never before. A coordinator that ran first would be
         // authenticating against a record that does not exist yet.
         Assert.True(active.Written);
-
     }
 
     [Fact]
     public async Task Full_admission_retry_resumes_from_a_persisted_pair_checkpoint()
     {
-
         Guid operationId = Guid.Parse("52525252-5252-4252-8252-525252525252");
 
         FakeActiveStore active = new();
@@ -106,13 +102,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(1, coordinator.BeginCalls);
 
         Assert.Equal(1, coordinator.ResumeCalls);
-
     }
 
     [Fact]
     public async Task Full_admission_retry_begins_again_while_no_checkpoint_exists()
     {
-
         Guid operationId = Guid.Parse("53535353-5353-4353-8353-535353535353");
 
         FakeActiveStore active = new();
@@ -129,13 +123,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(2, coordinator.BeginCalls);
 
         Assert.Equal(0, coordinator.ResumeCalls);
-
     }
 
     [Fact]
     public async Task Marker_pair_refusal_leaves_the_admission_outcome_unchanged()
     {
-
         Guid operationId = Guid.Parse("54545454-5454-4454-8454-545454545454");
 
         RecordingMarkerPairCoordinator refusing = new()
@@ -163,13 +155,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(1, refusing.BeginCalls);
 
         Assert.True(active.Written);
-
     }
 
     [Fact]
     public async Task Ordinary_locked_apply_never_resolves_the_marker_pair_coordinator()
     {
-
         FakeActiveStore active = new();
 
         InstallationResetService service = CreateService(
@@ -200,13 +190,11 @@ public sealed partial class InstallationResetServiceTests
         // encrypted database — so a resolution here would be a database requirement smuggled into
         // paths built specifically not to need one.
         Assert.True(applied.IsSuccess || applied.IsFailure);
-
     }
 
     [Fact]
     public void Reset_composition_registers_one_marker_pair_coordinator_and_one_port_each()
     {
-
         ServiceCollection services = new();
 
         services.AddLogging();
@@ -230,12 +218,10 @@ public sealed partial class InstallationResetServiceTests
                      typeof(IHostToolsMarkerPairResetOsPort),
                      typeof(IFullInstallationResetCampaignSchemaReadiness),
                      typeof(HostProcessToolsMarkerMutationGate),
-                     typeof(Func<IHostToolsMarkerPairResetCoordinator>),
+                     typeof(IInstallationResetDeferredServices),
                  })
         {
-
             Assert.Single(services, descriptor => descriptor.ServiceType == port);
-
         }
 
         using ServiceProvider provider = services.BuildServiceProvider(
@@ -273,7 +259,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.Same(
             scope.ServiceProvider.GetRequiredService<IHostToolsMarkerPairResetOsPort>(),
             second.ServiceProvider.GetRequiredService<IHostToolsMarkerPairResetOsPort>());
-
     }
 
     /// <summary>
@@ -285,7 +270,6 @@ public sealed partial class InstallationResetServiceTests
             FakeActiveStore active,
             Func<IHostToolsMarkerPairResetCoordinator> markerPairReset)
     {
-
         InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("global-data")),
             new FakeCredentialInventory([]),
@@ -309,7 +293,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(planned.IsSuccess, planned.Error.Message);
 
         return (service, FullRequest(operationId, planned.Value.PlanId, planRequest));
-
     }
 
     /// <summary>
@@ -317,7 +300,6 @@ public sealed partial class InstallationResetServiceTests
     /// </summary>
     private static HostToolsMarkerPairResetCheckpointV1 PairCheckpoint(Guid operationId)
     {
-
         CovenantDigest digest = new(Enumerable.Repeat((byte)0x77, 32).ToArray());
 
         HostProcessToolsDatabaseMarkerEvidence database = new(
@@ -368,12 +350,10 @@ public sealed partial class InstallationResetServiceTests
             MarkerIntentVectorDigest: null,
             DeletedCount: null,
             OrphanCount: null);
-
     }
 
     private sealed class RecordingMarkerPairCoordinator : IHostToolsMarkerPairResetCoordinator
     {
-
         internal int BeginCalls { get; private set; }
 
         internal int ResumeCalls { get; private set; }
@@ -396,7 +376,6 @@ public sealed partial class InstallationResetServiceTests
             FullInstallationResetExternalRemediationAttestation attestation,
             CancellationToken cancellationToken)
         {
-
             BeginCalls++;
 
             HeldLock = heldInstallationLock;
@@ -406,7 +385,6 @@ public sealed partial class InstallationResetServiceTests
             Attestation = attestation;
 
             return Task.FromResult(Answer());
-
         }
 
         public Task<Result<InstallationResetActivePublication>> ResumeAsync(
@@ -414,7 +392,6 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetActivePublication checkpoint,
             CancellationToken cancellationToken)
         {
-
             ResumeCalls++;
 
             HeldLock = heldInstallationLock;
@@ -422,7 +399,6 @@ public sealed partial class InstallationResetServiceTests
             Publication = checkpoint;
 
             return Task.FromResult(Answer());
-
         }
 
         private Result<InstallationResetActivePublication> Answer() =>
@@ -431,7 +407,5 @@ public sealed partial class InstallationResetServiceTests
                     ErrorCodes.Data.RecoveryRequired,
                     "The full-installation reset marker-pair operation requires recovery."))
                 : Result<InstallationResetActivePublication>.Success(Publication);
-
     }
-
 }

@@ -14,9 +14,13 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+public interface IGrimoirePostTopologyStartupAction
+{
+    IDisposable? Activate();
+}
+
 internal static class InstallationResetHostStartupAdmission
 {
-
     public static bool AllowsRecoveryHost(
         ActiveInstallationReset active) =>
         active.Scope is InstallationResetScope.Global or InstallationResetScope.All
@@ -38,7 +42,6 @@ internal static class InstallationResetHostStartupAdmission
         evidence is InstallationResetNestedTransitionEvidenceOutcome.StandaloneTransition
             or InstallationResetNestedTransitionEvidenceOutcome.NestedBound
             or InstallationResetNestedTransitionEvidenceOutcome.NestedReceiptStoredRetirementSuffix;
-
 }
 
 [ExcludeFromCodeCoverage] // Reason: IHostedService DB bootstrap
@@ -46,10 +49,10 @@ public sealed class GrimoireDatabaseHostedService(
     IServiceScopeFactory scopeFactory,
     ISecretStore secretStore,
     IGrimoireDbPassphraseSource passphraseSource,
-    IInstallationStartupProbe? startupProbe = null)
+    IInstallationStartupProbe? startupProbe = null,
+    IGrimoirePostTopologyStartupAction? postTopologyStartupAction = null)
     : IHostedService, IDisposable
 {
-
     private readonly IInstallationStartupProbe _startupProbe =
         startupProbe ?? InstallationStartupProbe.CreateDefault();
 
@@ -71,11 +74,13 @@ public sealed class GrimoireDatabaseHostedService(
 
     private HostLockSerilogFileSink? _fileSink;
 
-    private Func<CancellationToken, Task<string?>>? _masterKeyBootstrap;
+    private Func<CancellationToken, Task<MasterApiKeyBootstrapResult?>>?
+        _masterKeyBootstrap;
 
     private string? _generatedMasterApiKey;
 
-    private Func<IDisposable?>? _postTopologyStartupAction;
+    private readonly IGrimoirePostTopologyStartupAction?
+        _postTopologyStartupAction = postTopologyStartupAction;
 
     private IDisposable? _postTopologyStartupLease;
 
@@ -102,10 +107,15 @@ public sealed class GrimoireDatabaseHostedService(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
         string maintenanceDirectory,
-        IInstallationStartupProbe? startupProbe = null)
-        : this(scopeFactory, secretStore, passphraseSource, startupProbe)
+        IInstallationStartupProbe? startupProbe = null,
+        IGrimoirePostTopologyStartupAction? postTopologyStartupAction = null)
+        : this(
+            scopeFactory,
+            secretStore,
+            passphraseSource,
+            startupProbe,
+            postTopologyStartupAction)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(maintenanceDirectory);
 
         _maintenanceDirectory = maintenanceDirectory;
@@ -113,7 +123,6 @@ public sealed class GrimoireDatabaseHostedService(
         _databasePath = Path.Combine(
             maintenanceDirectory,
             Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     internal GrimoireDatabaseHostedService(
@@ -125,15 +134,16 @@ public sealed class GrimoireDatabaseHostedService(
         IInstallationResetStartupRecovery startupRecovery,
         InstallationResetApiAdmission? apiAdmission = null,
         InstallationMaintenanceCoordination? startupCoordination = null,
-        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery = null)
+        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery = null,
+        IGrimoirePostTopologyStartupAction? postTopologyStartupAction = null)
         : this(
             scopeFactory,
             secretStore,
             passphraseSource,
             maintenanceDirectory,
-            startupProbe: null)
+            startupProbe: null,
+            postTopologyStartupAction)
     {
-
         _maintenanceLockAccessor = maintenanceLockAccessor
             ?? throw new ArgumentNullException(nameof(maintenanceLockAccessor));
 
@@ -145,7 +155,6 @@ public sealed class GrimoireDatabaseHostedService(
         _startupCoordination = startupCoordination;
 
         _transitionRecovery = transitionRecovery;
-
     }
 
     internal GrimoireDatabaseHostedService(
@@ -156,10 +165,11 @@ public sealed class GrimoireDatabaseHostedService(
         InstallationResetMaintenanceLockAccessor maintenanceLockAccessor,
         IInstallationResetStartupRecovery startupRecovery,
         HostLockSerilogFileSink fileSink,
-        Func<CancellationToken, Task<string?>> masterKeyBootstrap,
+        Func<CancellationToken, Task<MasterApiKeyBootstrapResult?>> masterKeyBootstrap,
         InstallationResetApiAdmission? apiAdmission = null,
         InstallationMaintenanceCoordination? startupCoordination = null,
-        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery = null)
+        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery = null,
+        IGrimoirePostTopologyStartupAction? postTopologyStartupAction = null)
         : this(
             scopeFactory,
             secretStore,
@@ -169,9 +179,9 @@ public sealed class GrimoireDatabaseHostedService(
             startupRecovery,
             apiAdmission,
             startupCoordination: null,
-            transitionRecovery)
+            transitionRecovery,
+            postTopologyStartupAction)
     {
-
         _fileSink = fileSink
             ?? throw new ArgumentNullException(nameof(fileSink));
 
@@ -179,61 +189,23 @@ public sealed class GrimoireDatabaseHostedService(
             ?? throw new ArgumentNullException(nameof(masterKeyBootstrap));
 
         _startupCoordination = startupCoordination;
-
     }
 
     public string? TakeGeneratedMasterApiKey() =>
         Interlocked.Exchange(ref _generatedMasterApiKey, null);
 
-    public void ConfigurePostTopologyStartupAction(
-        Func<IDisposable?> startupAction)
-    {
-
-        ArgumentNullException.ThrowIfNull(startupAction);
-
-        lock (_maintenanceLockSync)
-        {
-
-            if (_maintenanceLock is not null)
-            {
-
-                throw new InvalidOperationException(
-                    "Post-topology startup actions must be configured before the host starts.");
-
-            }
-
-            if (_postTopologyStartupAction is not null)
-            {
-
-                throw new InvalidOperationException(
-                    "A post-topology startup action is already configured.");
-
-            }
-
-            _postTopologyStartupAction = startupAction;
-
-        }
-
-    }
-
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-
         await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-
             await StartUnderLifecycleGateAsync(cancellationToken).ConfigureAwait(false);
-
         }
         finally
         {
-
             _lifecycleGate.Release();
-
         }
-
     }
 
     private async Task StartUnderLifecycleGateAsync(CancellationToken cancellationToken)
@@ -246,31 +218,24 @@ public sealed class GrimoireDatabaseHostedService(
 
         try
         {
-
             acquisition = TryAcquireAndAttachHostLock(out alreadyStarted);
-
         }
         catch (Exception exception)
         {
-
             await MarkFailedAsync(exception).ConfigureAwait(false);
 
             throw;
-
         }
 
         if (alreadyStarted)
         {
-
             throw new InvalidOperationException(
                 "The Grimoire database hosted service is already started.");
-
         }
 
         if (acquisition.Disposition
             is not ArcanumMaintenanceLockAcquisitionDisposition.Acquired)
         {
-
             InvalidOperationException exception = acquisition.Disposition
                 is ArcanumMaintenanceLockAcquisitionDisposition.Contended
                 ? new InvalidOperationException(
@@ -281,7 +246,6 @@ public sealed class GrimoireDatabaseHostedService(
             await MarkFailedAsync(exception).ConfigureAwait(false);
 
             throw exception;
-
         }
 
         ArcanumMaintenanceLock heldInstallationLock =
@@ -291,14 +255,12 @@ public sealed class GrimoireDatabaseHostedService(
 
         try
         {
-
             GrimoireGuardedRootTopology.EnsureOwnedRootIsSafe(
                 heldInstallationLock,
                 _maintenanceDirectory);
 
             if (_startupCoordination is not null)
             {
-
                 InstallationStartupCoordinationResult coordinated =
                     await _startupCoordination
                         .AcquireHostStartupAsync(
@@ -309,7 +271,6 @@ public sealed class GrimoireDatabaseHostedService(
                 if (coordinated.Disposition
                     is not InstallationStartupCoordinationDisposition.Acquired)
                 {
-
                     throw new InvalidOperationException(
                         coordinated.Disposition
                             is InstallationStartupCoordinationDisposition.Contended
@@ -317,11 +278,9 @@ public sealed class GrimoireDatabaseHostedService(
                                 + coordinated.Error.Message
                             : "Host startup could not validate client-mutation coordination safely. "
                                 + coordinated.Error.Message);
-
                 }
 
                 startupCoordinationLease = coordinated.BorrowAcquiredLease();
-
             }
 
             Result<ActiveInstallationReset?> activeRead;
@@ -334,7 +293,6 @@ public sealed class GrimoireDatabaseHostedService(
 
             if (_startupRecovery is not null)
             {
-
                 Result<InstallationResetStartupRecoveryState> recovered = await _startupRecovery
                     .RecoverBeforeBootstrapAsync(heldInstallationLock, cancellationToken)
                     .ConfigureAwait(false);
@@ -345,41 +303,32 @@ public sealed class GrimoireDatabaseHostedService(
 
                 if (recovered.IsSuccess)
                 {
-
                     expectedInstallationId = recovered.Value.ExpectedInstallationId;
 
                     nestedTransitionEvidence = recovered.Value.NestedTransitionEvidence;
 
                     transitionJournal = recovered.Value.TransitionJournal;
-
                 }
-
             }
             else
             {
-
                 activeRead = await _startupProbe
                     .ReadActiveResetAsync(cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             if (activeRead.IsFailure)
             {
-
                 throw new InvalidOperationException(
                     "Installation reset recovery state could not be read safely. "
                     + activeRead.Error.Message);
-
             }
 
             if (activeRead.Value is { } active
                 && !InstallationResetHostStartupAdmission.AllowsRecoveryHost(active))
             {
-
                 throw new InvalidOperationException(
                     "An installation factory reset is active. Resume it before starting the host.");
-
             }
 
             // After the reset record and before the bootstrap, because an unfinished offline transition
@@ -389,7 +338,6 @@ public sealed class GrimoireDatabaseHostedService(
             // borrowed lock, and only then does the ordinary bootstrap run.
             if (_transitionRecovery is { } transitions)
             {
-
                 Result<GrimoireOfflineTransitionStartupRecoveryOutcome> resumed = await transitions
                     .RecoverBeforeBootstrapAsync(
                         heldInstallationLock,
@@ -406,23 +354,18 @@ public sealed class GrimoireDatabaseHostedService(
                 // content-free sentence every unfinished-maintenance refusal uses.
                 if (resumed.IsFailure)
                 {
-
                     throw new InvalidOperationException(
                         "An offline Grimoire transition is active. Resume it before starting the host.");
-
                 }
-
             }
             else if (InstallationResetHostStartupAdmission
                 .LeavesTransitionUnfinished(nestedTransitionEvidence))
             {
-
                 // A host composed without the resuming pass keeps the refusal it had before there was
                 // one. The absence of a recoverer is not permission to bootstrap over an active
                 // journal; it only means nobody in this composition can finish it.
                 throw new InvalidOperationException(
                     "An offline Grimoire transition is active. Resume it before starting the host.");
-
             }
 
             // The one lock this process owns, borrowed rather than re-acquired. Nesting a second
@@ -449,52 +392,42 @@ public sealed class GrimoireDatabaseHostedService(
 
             if (activeRead.Value is { } admittedRecovery)
             {
-
                 if (startupCoordinationLease is not null
                     && !startupCoordinationLease.Protects(admittedRecovery))
                 {
-
                     throw new InvalidOperationException(
                         "The recovery host does not own a durable client-mutation blocker for the exact active reset identity.");
-
                 }
 
                 // Publish only after schema convergence and expected installation-UUID verification.
                 // Once published it stays closed through Kestrel drain and host shutdown.
                 _apiAdmission.PublishRecovery(admittedRecovery);
-
             }
             else if (startupCoordinationLease is not null)
             {
-
                 Result removed = await startupCoordinationLease
                     .RemoveBlockerIfSafeAsync(cancellationToken)
                     .ConfigureAwait(false);
 
                 if (removed.IsFailure)
                 {
-
                     throw new InvalidOperationException(
                         "Host startup could not retire the terminal client-mutation blocker safely. "
                         + removed.Error.Message);
-
                 }
 
                 startupCoordinationLease.Dispose();
 
                 startupCoordinationLease = null;
-
             }
 
             lock (_maintenanceLockSync)
             {
-
                 _startupCoordinationLease = startupCoordinationLease;
 
                 startupCoordinationLease = null;
 
                 _startedSuccessfully = true;
-
             }
         }
         catch (Exception ex)
@@ -502,17 +435,13 @@ public sealed class GrimoireDatabaseHostedService(
             // Ensure WaitUntilReadyAsync cannot hang if bootstrap throws before MarkReady.
             try
             {
-
                 await MarkFailedAsync(ex).ConfigureAwait(false);
-
             }
             finally
             {
-
                 startupCoordinationLease?.Dispose();
 
                 ReleaseMaintenanceLockUnderLifecycleGate();
-
             }
 
             throw;
@@ -524,66 +453,49 @@ public sealed class GrimoireDatabaseHostedService(
     // never block shutdown.
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-
         await _lifecycleGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
 
         try
         {
-
             try
             {
-
                 if (ClaimOwnedShutdownCheckpoint())
                 {
-
                     await GrimoireDatabaseBootstrapper
                         .CheckpointOnShutdownAsync(
                             passphraseSource,
                             _databasePath,
                             cancellationToken)
                         .ConfigureAwait(false);
-
                 }
-
             }
             finally
             {
-
                 ReleaseMaintenanceLockUnderLifecycleGate();
-
             }
         }
         finally
         {
-
             _lifecycleGate.Release();
-
         }
     }
 
     public void Dispose()
     {
-
         _lifecycleGate.Wait();
 
         try
         {
-
             ReleaseMaintenanceLockUnderLifecycleGate();
-
         }
         finally
         {
-
             _lifecycleGate.Release();
-
         }
-
     }
 
     private bool ClaimOwnedShutdownCheckpoint()
     {
-
         ArcanumMaintenanceLock? heldInstallationLock;
 
         bool attached;
@@ -592,7 +504,6 @@ public sealed class GrimoireDatabaseHostedService(
 
         lock (_maintenanceLockSync)
         {
-
             heldInstallationLock = _maintenanceLock;
 
             attached = _maintenanceLockAttached;
@@ -600,16 +511,13 @@ public sealed class GrimoireDatabaseHostedService(
             startedSuccessfully = _startedSuccessfully;
 
             _startedSuccessfully = false;
-
         }
 
         if (!startedSuccessfully
             || !attached
             || heldInstallationLock is null)
         {
-
             return false;
-
         }
 
         Result<ArcanumMaintenanceLock> borrowed =
@@ -617,12 +525,10 @@ public sealed class GrimoireDatabaseHostedService(
 
         return borrowed.IsSuccess
             && ReferenceEquals(borrowed.Value, heldInstallationLock);
-
     }
 
     private void ReleaseMaintenanceLockUnderLifecycleGate()
     {
-
         ArcanumMaintenanceLock? heldInstallationLock;
 
         bool attached;
@@ -633,7 +539,6 @@ public sealed class GrimoireDatabaseHostedService(
 
         lock (_maintenanceLockSync)
         {
-
             heldInstallationLock = _maintenanceLock;
 
             attached = _maintenanceLockAttached;
@@ -651,108 +556,75 @@ public sealed class GrimoireDatabaseHostedService(
             startupCoordinationLease = _startupCoordinationLease;
 
             _startupCoordinationLease = null;
-
         }
 
         if (heldInstallationLock is null)
         {
-
             try
             {
-
                 startupLease?.Dispose();
-
             }
             finally
             {
-
                 try
                 {
-
                     _fileSink?.Deactivate();
-
                 }
                 finally
                 {
-
                     startupCoordinationLease?.Dispose();
-
                 }
-
             }
 
             return;
-
         }
 
         try
         {
-
             startupLease?.Dispose();
-
         }
         finally
         {
-
             try
             {
-
                 _fileSink?.Deactivate();
-
             }
             finally
             {
                 try
                 {
-
                     startupCoordinationLease?.Dispose();
-
                 }
                 finally
                 {
-
                     try
                     {
-
                         if (attached)
                         {
-
                             _maintenanceLockAccessor.DetachHostLock(heldInstallationLock);
-
                         }
-
                     }
                     finally
                     {
-
                         _ = Interlocked.Exchange(ref _generatedMasterApiKey, null);
 
                         heldInstallationLock.Dispose();
-
                     }
-
                 }
-
             }
-
         }
-
     }
 
     private ArcanumMaintenanceLockAcquisitionResult TryAcquireAndAttachHostLock(
         out bool alreadyStarted)
     {
-
         lock (_maintenanceLockSync)
         {
-
             alreadyStarted = _maintenanceLock is not null;
 
             if (alreadyStarted)
             {
-
                 return ArcanumMaintenanceLockAcquisitionResult.Unsafe();
-
             }
 
             ArcanumMaintenanceLockAcquisitionResult acquisition =
@@ -761,9 +633,7 @@ public sealed class GrimoireDatabaseHostedService(
             if (acquisition.Disposition
                 is not ArcanumMaintenanceLockAcquisitionDisposition.Acquired)
             {
-
                 return acquisition;
-
             }
 
             ArcanumMaintenanceLock heldInstallationLock =
@@ -773,7 +643,6 @@ public sealed class GrimoireDatabaseHostedService(
 
             try
             {
-
                 _maintenanceLockAccessor.AttachHostLock(
                     heldInstallationLock,
                     _maintenanceDirectory);
@@ -785,39 +654,29 @@ public sealed class GrimoireDatabaseHostedService(
                 _maintenanceLockAttached = true;
 
                 return acquisition;
-
             }
             finally
             {
-
                 if (!attached)
                 {
-
                     heldInstallationLock.Dispose();
-
                 }
-
             }
-
         }
-
     }
 
-    private async Task ActivatePostRestoreTopologyAsync(
+    private async Task<MasterApiKeyBootstrapResult?> ActivatePostRestoreTopologyAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken)
     {
-
         Result<ArcanumMaintenanceLock> borrowed =
             _maintenanceLockAccessor.BorrowHeldLock(_maintenanceDirectory);
 
         if (borrowed.IsFailure
             || !ReferenceEquals(borrowed.Value, heldInstallationLock))
         {
-
             throw new InvalidOperationException(
                 "Post-topology startup mutation requires the exact attached host lock.");
-
         }
 
         GrimoireGuardedRootTopology.EnsureOwnedRootIsSafe(
@@ -828,37 +687,37 @@ public sealed class GrimoireDatabaseHostedService(
 
         if (_postTopologyStartupAction is not null)
         {
-
-            IDisposable? startupLease = _postTopologyStartupAction();
+            IDisposable? startupLease = _postTopologyStartupAction.Activate();
 
             lock (_maintenanceLockSync)
             {
-
                 _postTopologyStartupLease = startupLease;
-
             }
-
         }
 
-        if (_masterKeyBootstrap is not null
-            && await _masterKeyBootstrap(cancellationToken).ConfigureAwait(false) is string generated)
+        if (_masterKeyBootstrap is null)
         {
-
-            _generatedMasterApiKey = generated;
-
+            return null;
         }
 
+        MasterApiKeyBootstrapResult? result = await _masterKeyBootstrap(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (result?.WasGenerated == true)
+        {
+            _generatedMasterApiKey = result.ApiKey;
+        }
+
+        return result;
     }
 
     private async Task MarkFailedAsync(Exception exception)
     {
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IGrimoireDbReadiness readiness =
             scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>();
 
         readiness.MarkFailed(exception);
-
     }
 }

@@ -195,7 +195,6 @@ public sealed class WorkspaceIndexInspectorService(
         string workspacePath,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText =
@@ -213,13 +212,10 @@ public sealed class WorkspaceIndexInspectorService(
 
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false) && !reader.IsDBNull(0))
         {
-
             return reader.GetInt32(0);
-
         }
 
         return null;
-
     }
 
     private static async Task<int> ReadTotalCountAsync(
@@ -228,7 +224,6 @@ public sealed class WorkspaceIndexInspectorService(
         string? relativePath,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText = "SELECT COUNT(*) FROM \"workspace_file_chunks\" WHERE \"WorkspacePath\" = @workspacePath";
@@ -237,17 +232,14 @@ public sealed class WorkspaceIndexInspectorService(
 
         if (!string.IsNullOrEmpty(relativePath))
         {
-
             cmd.CommandText += " AND \"RelativePath\" = @relativePath";
 
             AddParameter(cmd, "@relativePath", relativePath);
-
         }
 
         object? scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return scalar is int i ? i : Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<Dictionary<string, int>> ReadTotalChunksByPathAsync(
@@ -256,16 +248,13 @@ public sealed class WorkspaceIndexInspectorService(
         IEnumerable<string> relativePaths,
         CancellationToken cancellationToken)
     {
-
         List<string> paths = [.. relativePaths];
 
         Dictionary<string, int> result = new(StringComparer.Ordinal);
 
         if (paths.Count == 0)
         {
-
             return result;
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -281,12 +270,9 @@ public sealed class WorkspaceIndexInspectorService(
 
         for (int i = 0; i < paths.Count; i++)
         {
-
             if (i > 0)
             {
-
                 sql.Append(", ");
-
             }
 
             string paramName = $"@path{i.ToString(CultureInfo.InvariantCulture)}";
@@ -294,7 +280,6 @@ public sealed class WorkspaceIndexInspectorService(
             sql.Append(paramName);
 
             AddParameter(cmd, paramName, paths[i]);
-
         }
 
         sql.Append(") GROUP BY \"RelativePath\"");
@@ -305,41 +290,33 @@ public sealed class WorkspaceIndexInspectorService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             result[reader.GetString(0)] = reader.GetInt32(1);
-
         }
 
         return result;
-
     }
 
     private static DateTimeOffset? ParseIsoOrNull(DbDataReader reader, int ordinal)
     {
-
         if (reader.IsDBNull(ordinal))
         {
-
             return null;
-
         }
 
         string raw = reader.GetString(ordinal);
 
-        return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset value)
+        return UtcInstantText.TryParse(raw, out DateTimeOffset value)
             ? value
             : null;
-
     }
 
     private static DateTimeOffset ParseIsoOrMin(string raw) =>
-        DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset value)
+        UtcInstantText.TryParse(raw, out DateTimeOffset value)
             ? value
             : DateTimeOffset.MinValue;
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -347,7 +324,5 @@ public sealed class WorkspaceIndexInspectorService(
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
-
 }

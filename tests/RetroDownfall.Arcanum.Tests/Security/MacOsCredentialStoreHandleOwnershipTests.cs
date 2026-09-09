@@ -22,15 +22,14 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </remarks>
 public sealed class MacOsCredentialStoreHandleOwnershipTests
 {
-
     private const string SourceFileName = "MacOsCredentialStore.cs";
 
     [Theory]
     [InlineData("SecKeychainFindGenericPassword")]
+    [InlineData("SecKeychainFindGenericPasswordMetadata")]
     [InlineData("SecKeychainAddGenericPassword")]
     public void Every_keychain_item_ref_is_captured_and_released(string function)
     {
-
         string source = MacOsCredentialStoreSource();
 
         IReadOnlyList<string> itemRefArguments = ItemRefArgumentsOfCallsTo(source, function);
@@ -39,7 +38,6 @@ public sealed class MacOsCredentialStoreHandleOwnershipTests
 
         foreach (string argument in itemRefArguments)
         {
-
             Assert.False(
                 argument is "out _" or "_",
                 $"{function} writes a retained SecKeychainItemRef into its last argument, so a call "
@@ -50,9 +48,33 @@ public sealed class MacOsCredentialStoreHandleOwnershipTests
                 .Replace("nint ", string.Empty, StringComparison.Ordinal);
 
             Assert.Contains($"CFRelease({name})", source, StringComparison.Ordinal);
-
         }
+    }
 
+    [Fact]
+    public void Presence_probe_requests_an_item_reference_without_password_bytes()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        Assert.Contains(
+            "internal static OsCredentialStoreStatus ProbePresence",
+            source,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "SecKeychainFindGenericPasswordMetadata(\n            nint.Zero,",
+            source,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "accountBytes,\n            nint.Zero,\n            nint.Zero,\n            out nint itemRef)",
+            source,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "ProbePresence(string service, string account) => TryGet",
+            source,
+            StringComparison.Ordinal);
     }
 
     private static string MacOsCredentialStoreSource() =>
@@ -66,52 +88,41 @@ public sealed class MacOsCredentialStoreHandleOwnershipTests
     /// </summary>
     private static IReadOnlyList<string> ItemRefArgumentsOfCallsTo(string source, string function)
     {
-
         List<string> arguments = [];
 
         for (int index = source.IndexOf(function, StringComparison.Ordinal);
              index >= 0;
              index = source.IndexOf(function, index + function.Length, StringComparison.Ordinal))
         {
-
             int lineStart = source.LastIndexOf('\n', index) + 1;
 
             if (source[lineStart..index].Contains("partial", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             int open = index + function.Length;
 
             while (open < source.Length && char.IsWhiteSpace(source[open]))
             {
-
                 open++;
-
             }
 
             // The name also appears inside the failure messages, where it is prose rather than a call.
             if (open >= source.Length || source[open] != '(')
             {
-
                 continue;
-
             }
 
             arguments.Add(Collapse(TopLevelArguments(source, open)[^1]));
-
         }
 
         return arguments;
-
     }
 
     /// <summary>Splits the parenthesized argument list opening at <paramref name="open"/>.</summary>
     private static List<string> TopLevelArguments(string source, int open)
     {
-
         List<string> arguments = [];
 
         int depth = 0;
@@ -120,52 +131,40 @@ public sealed class MacOsCredentialStoreHandleOwnershipTests
 
         for (int index = open; index < source.Length; index++)
         {
-
             char value = source[index];
 
             if (value == '(')
             {
-
                 depth++;
 
                 continue;
-
             }
 
             if (value == ')')
             {
-
                 depth--;
 
                 if (depth == 0)
                 {
-
                     arguments.Add(source[start..index]);
 
                     return arguments;
-
                 }
 
                 continue;
-
             }
 
             if (value == ',' && depth == 1)
             {
-
                 arguments.Add(source[start..index]);
 
                 start = index + 1;
-
             }
-
         }
 
         throw new InvalidOperationException($"Unbalanced argument list in {SourceFileName}.");
-
     }
 
     private static string Collapse(string argument) =>
         string.Join(' ', argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-
 }

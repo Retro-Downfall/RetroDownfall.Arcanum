@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal interface IGrimoireOrdinaryConnectionFactory
 {
-
     Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
         SqliteConnection connection,
         CovenantSqliteConnectionMode mode,
@@ -20,19 +19,15 @@ internal interface IGrimoireOrdinaryConnectionFactory
     Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
         GrimoireOrdinaryFreshConnectionKind kind,
         CancellationToken cancellationToken);
-
 }
 
 internal interface IGrimoireOrdinaryConnectionLease : IDisposable, IAsyncDisposable
 {
-
     SqliteConnection Connection { get; }
-
 }
 
 internal interface IGrimoireMaintenanceConnectionFactory
 {
-
     Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
         IGrimoireMaintenanceConnectionCapability capability,
         IGrimoireMaintenanceIoLane lane,
@@ -73,19 +68,15 @@ internal interface IGrimoireMaintenanceConnectionFactory
         IGrimoireMaintenanceConnectionCapability capability,
         IGrimoireMaintenanceIoLane lane,
         CancellationToken cancellationToken);
-
 }
 
 internal interface IGrimoireMaintenanceConnectionLease : IAsyncDisposable
 {
-
     SqliteConnection Connection { get; }
-
 }
 
 internal static class GrimoireScopedConsumerTestSeam
 {
-
     private static readonly ConcurrentDictionary<
         string,
         Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask>> Checkpoints =
@@ -95,20 +86,16 @@ internal static class GrimoireScopedConsumerTestSeam
         string checkpoint,
         Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask> callback)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(checkpoint);
 
         ArgumentNullException.ThrowIfNull(callback);
 
         if (!Checkpoints.TryAdd(checkpoint, callback))
         {
-
             throw new InvalidOperationException($"The scoped consumer checkpoint '{checkpoint}' is already overridden.");
-
         }
 
         return new OverrideScope(checkpoint, callback);
-
     }
 
     internal static ValueTask PauseAsync(
@@ -128,36 +115,26 @@ internal static class GrimoireScopedConsumerTestSeam
         string checkpoint,
         Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask> callback) : IDisposable
     {
-
         private int _disposed;
 
         public void Dispose()
         {
-
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-
                 if (Checkpoints.TryGetValue(
                         checkpoint,
                         out Func<GrimoireScopedConsumerFinalUse, CancellationToken, ValueTask>? registered)
                     && ReferenceEquals(registered, callback))
                 {
-
                     _ = Checkpoints.TryRemove(checkpoint, out _);
-
                 }
-
             }
-
         }
-
     }
-
 }
 
 internal enum GrimoireScopedConsumerFinalUseKind : byte
 {
-
     ScalarConverted = 1,
 
     ReaderMaterialized = 2,
@@ -165,7 +142,6 @@ internal enum GrimoireScopedConsumerFinalUseKind : byte
     TransactionCommitted = 3,
 
     TransactionRolledBack = 4,
-
 }
 
 internal readonly record struct GrimoireScopedConsumerFinalUse(
@@ -175,24 +151,20 @@ internal readonly record struct GrimoireScopedConsumerFinalUse(
 
 internal enum GrimoireOrdinaryFreshConnectionKind : byte
 {
-
     ReadOnly = 1,
 
     ReadWrite = 2,
 
     IsolatedHeartbeat = 3,
-
 }
 
 internal interface IGrimoireOrdinaryConnectionFactoryTestSeam
 {
-
     void BeforeProviderConstruction();
 
     ValueTask BeforeNativeOpenAsync(CancellationToken cancellationToken);
 
     void AfterExactPoolClear(SqliteConnection connection);
-
 }
 
 /// <summary>
@@ -200,7 +172,6 @@ internal interface IGrimoireOrdinaryConnectionFactoryTestSeam
 /// </summary>
 internal interface IGrimoireConnectionAdmissionGate
 {
-
     long CurrentGeneration { get; }
 
     bool TryAcquireRequestLease(
@@ -255,7 +226,6 @@ internal interface IGrimoireConnectionAdmissionGate
         Func<CovenantExclusiveRecoveryOwner, CancellationToken, ValueTask<bool>>
             revalidateDurableOwnerAsync,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -263,11 +233,9 @@ internal interface IGrimoireConnectionAdmissionGate
 /// </summary>
 internal enum GrimoireRequestKind : byte
 {
-
     Finite = 1,
 
     QuiesceableStream = 2,
-
 }
 
 /// <summary>
@@ -275,7 +243,6 @@ internal enum GrimoireRequestKind : byte
 /// </summary>
 internal enum GrimoireWorkKind : byte
 {
-
     SessionAttachmentIndexing = 1,
 
     EntryWeaving = 2,
@@ -307,7 +274,6 @@ internal enum GrimoireWorkKind : byte
     ProviderHealthProbe = 15,
 
     McpServerBootstrap = 16,
-
 }
 
 /// <summary>
@@ -315,13 +281,11 @@ internal enum GrimoireWorkKind : byte
 /// </summary>
 internal interface IGrimoireRequestLease : IAsyncDisposable
 {
-
     GrimoireRequestKind Kind { get; }
 
     long Generation { get; }
 
     CancellationToken MaintenanceRevocation { get; }
-
 }
 
 /// <summary>
@@ -329,7 +293,6 @@ internal interface IGrimoireRequestLease : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireWorkLease : IAsyncDisposable
 {
-
     GrimoireWorkKind Kind { get; }
 
     long Generation { get; }
@@ -338,7 +301,6 @@ internal interface IGrimoireWorkLease : IAsyncDisposable
 
     bool TryBeginExternalEffectGroup(
         out IGrimoireExternalEffectGroup? effectGroup);
-
 }
 
 /// <summary>
@@ -353,7 +315,6 @@ internal interface IGrimoireExternalEffectGroup : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireConnectionOpenTicket : IDisposable
 {
-
     long Generation { get; }
 
     Result RevalidateAfterNativeOpen();
@@ -363,7 +324,6 @@ internal interface IGrimoireConnectionOpenTicket : IDisposable
     void MarkFailed();
 
     void MarkRefusedAfterOpen();
-
 }
 
 /// <summary>
@@ -371,11 +331,9 @@ internal interface IGrimoireConnectionOpenTicket : IDisposable
 /// </summary>
 internal interface IGrimoireClosingOwner : IAsyncDisposable
 {
-
     CovenantExclusiveRecoveryOwner Owner { get; }
 
     long Generation { get; }
-
 }
 
 /// <summary>
@@ -383,7 +341,6 @@ internal interface IGrimoireClosingOwner : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireExclusiveClosedLease : IAsyncDisposable
 {
-
     CovenantExclusiveRecoveryOwner Owner { get; }
 
     long Generation { get; }
@@ -415,7 +372,6 @@ internal interface IGrimoireExclusiveClosedLease : IAsyncDisposable
     ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -423,13 +379,11 @@ internal interface IGrimoireExclusiveClosedLease : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireScopedConnectionPermit : IAsyncDisposable
 {
-
     Result<IGrimoireTrackedMaintenanceHandle> AcquireOpen(
         DbConnection connection,
         CovenantExclusiveRecoveryOwner owner,
         long generation,
         IGrimoireMaintenanceIoLane lane);
-
 }
 
 /// <summary>
@@ -437,12 +391,10 @@ internal interface IGrimoireScopedConnectionPermit : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireMaintenanceRenewalTicket : IAsyncDisposable
 {
-
     Result<IGrimoireTrackedMaintenanceHandle> Consume(
         CovenantExclusiveRecoveryOwner owner,
         long generation,
         IGrimoireMaintenanceIoLane lane);
-
 }
 
 /// <summary>
@@ -450,7 +402,6 @@ internal interface IGrimoireMaintenanceRenewalTicket : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 {
-
     /// <summary>The path the gate bound to this capability's purpose, which no caller chose.</summary>
     string CanonicalPath { get; }
 
@@ -465,7 +416,6 @@ internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
         long generation,
         CovenantMaintenanceConnectionPurpose purpose,
         IGrimoireMaintenanceIoLane lane);
-
 }
 
 /// <summary>
@@ -489,13 +439,11 @@ internal interface IGrimoireMaintenanceConnectionCapability : IAsyncDisposable
 /// </remarks>
 internal interface IGrimoireTrackedMaintenanceHandle : IAsyncDisposable
 {
-
     Result ReportOpenStarted();
 
     Result ReportNotOpened();
 
     Result ReportPhysicallyClosed();
-
 }
 
 /// <summary>
@@ -503,7 +451,6 @@ internal interface IGrimoireTrackedMaintenanceHandle : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireMaintenanceIoLane : IAsyncDisposable
 {
-
     CovenantExclusiveRecoveryOwner Owner { get; }
 
     long Generation { get; }
@@ -512,7 +459,6 @@ internal interface IGrimoireMaintenanceIoLane : IAsyncDisposable
         Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
             revalidateDurableOwnerAsync,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -520,9 +466,7 @@ internal interface IGrimoireMaintenanceIoLane : IAsyncDisposable
 /// </summary>
 internal interface IGrimoireExpiredLeaseAdoptionInterlock : IAsyncDisposable
 {
-
     CovenantExclusiveRecoveryOwner CandidateOwner { get; }
-
 }
 
 /// <summary>
@@ -530,11 +474,9 @@ internal interface IGrimoireExpiredLeaseAdoptionInterlock : IAsyncDisposable
 /// </summary>
 internal enum CovenantMaintenanceConnectionMode : byte
 {
-
     ReadOnly = 1,
 
     ReadWrite = 2,
-
 }
 
 /// <summary>
@@ -542,7 +484,6 @@ internal enum CovenantMaintenanceConnectionMode : byte
 /// </summary>
 internal enum CovenantMaintenanceConnectionPurpose : byte
 {
-
     CanonicalErasure = 1,
 
     Compaction = 2,
@@ -570,7 +511,6 @@ internal enum CovenantMaintenanceConnectionPurpose : byte
     /// nothing, which is exactly the silence a step whose whole job is a read-back must not have.
     /// </remarks>
     PostReplaceJournalRestore = 9,
-
 }
 
 /// <summary>
@@ -590,7 +530,6 @@ internal enum CovenantMaintenanceConnectionPurpose : byte
 /// </remarks>
 internal interface IGrimoireMaintenancePathAuthority
 {
-
     /// <summary>The installation's canonical Grimoire database.</summary>
     string CanonicalDatabasePath { get; }
 
@@ -605,7 +544,6 @@ internal interface IGrimoireMaintenancePathAuthority
     /// with the same caller's value.
     /// </remarks>
     string ExportStagingDatabasePath(Guid operationId);
-
 }
 
 /// <summary>
@@ -613,7 +551,6 @@ internal interface IGrimoireMaintenancePathAuthority
 /// </summary>
 internal sealed class GrimoireMaintenanceUnavailableException : InvalidOperationException
 {
-
     /// <summary>
     /// The code a caller reports when it turns this refusal into a <c>Result</c>.
     /// </summary>
@@ -633,5 +570,4 @@ internal sealed class GrimoireMaintenanceUnavailableException : InvalidOperation
         : base("The Grimoire is temporarily unavailable while maintenance owns connection admission.")
     {
     }
-
 }

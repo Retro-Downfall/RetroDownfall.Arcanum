@@ -4,18 +4,15 @@ namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 internal enum AdmissionBenchmarkPhaseKind : byte
 {
-
     Warmup = 1,
 
     Latency = 2,
 
     Throughput = 3,
-
 }
 
 internal enum AdmissionBenchmarkProbeEvent : byte
 {
-
     WorkerArmed = 1,
 
     ProcessBaseline = 2,
@@ -29,14 +26,11 @@ internal enum AdmissionBenchmarkProbeEvent : byte
     ProcessTerminal = 6,
 
     WorkerParked = 7,
-
 }
 
 internal interface IAdmissionBenchmarkOrderProbe
 {
-
     void Record(int phase, int worker, AdmissionBenchmarkProbeEvent value);
-
 }
 
 internal delegate bool AdmissionBenchmarkOperationDelegate(
@@ -51,9 +45,7 @@ internal sealed record AdmissionBenchmarkPhaseCommand(
     int BundleSize,
     AdmissionBenchmarkOperationDelegate Operation)
 {
-
     internal int ActiveWorkerCount { get; init; }
-
 }
 
 internal sealed record AdmissionBenchmarkPhaseResult(
@@ -78,9 +70,7 @@ internal sealed record AdmissionBenchmarkMeasuredResourceWitness(
     bool WorkerThreadsTerminated,
     bool WorkerConnectionsDisposed)
 {
-
     internal bool HomeDeletionAuthorized => WorkerThreadsTerminated && WorkerConnectionsDisposed;
-
 }
 
 internal sealed record AdmissionBenchmarkTeardownWitness(
@@ -91,15 +81,12 @@ internal sealed record AdmissionBenchmarkTeardownWitness(
     bool PoolsCleared,
     string[] Errors)
 {
-
     internal bool HomeDeletionAuthorized => !RuntimeResourcesCreated
         || ProviderDisposed && FinalDrainSucceeded && PoolsCleared;
-
 }
 
 internal static class AdmissionBenchmarkTeardownCoordinator
 {
-
     internal static async ValueTask<AdmissionBenchmarkTeardownWitness> RunAsync(
         bool runtimeResourcesCreated,
         Func<CancellationToken, ValueTask> preDrain,
@@ -108,7 +95,6 @@ internal static class AdmissionBenchmarkTeardownCoordinator
         Action clearPools,
         CancellationToken cleanupCancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(preDrain);
 
         ArgumentNullException.ThrowIfNull(disposeProvider);
@@ -141,19 +127,15 @@ internal static class AdmissionBenchmarkTeardownCoordinator
 
         try
         {
-
             clearPools();
 
             poolsCleared = true;
-
         }
         catch (Exception exception)
         {
-
             errors.Add($"pool clearing: {exception.Message}");
 
             poolsCleared = false;
-
         }
 
         return new(
@@ -163,7 +145,6 @@ internal static class AdmissionBenchmarkTeardownCoordinator
             finalDrainSucceeded,
             poolsCleared,
             errors.ToArray());
-
     }
 
     private static async ValueTask<bool> AttemptAsync(
@@ -172,37 +153,28 @@ internal static class AdmissionBenchmarkTeardownCoordinator
         CancellationToken cleanupCancellationToken,
         ICollection<string> errors)
     {
-
         try
         {
-
             await operation().AsTask().WaitAsync(cleanupCancellationToken).ConfigureAwait(false);
 
             return true;
-
         }
         catch (Exception exception)
         {
-
             errors.Add($"{name}: {exception.Message}");
 
             return false;
-
         }
-
     }
-
 }
 
 internal static class AdmissionBenchmarkLifecycleCoordinator
 {
-
     internal static async ValueTask<T> DisposeThenSampleAsync<T>(
         Func<AdmissionBenchmarkMeasuredResourceWitness> disposeMeasuredResources,
         Func<CancellationToken, ValueTask<T>> sampleFinalState,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(disposeMeasuredResources);
 
         ArgumentNullException.ThrowIfNull(sampleFinalState);
@@ -211,55 +183,40 @@ internal static class AdmissionBenchmarkLifecycleCoordinator
 
         if (!witness.HomeDeletionAuthorized)
         {
-
             throw new InvalidDataException(
                 "Measured-resource teardown did not establish worker termination and connection disposal.");
-
         }
 
         return await sampleFinalState(cancellationToken).ConfigureAwait(false);
-
     }
-
 }
 
 internal static class AdmissionBenchmarkWorkerTeardown
 {
-
     internal static Exception[] AttemptAll(IEnumerable<Action> actions)
     {
-
         ArgumentNullException.ThrowIfNull(actions);
 
         List<Exception> errors = [];
 
         foreach (Action action in actions)
         {
-
             try
             {
-
                 action();
-
             }
             catch (Exception exception)
             {
-
                 errors.Add(exception);
-
             }
-
         }
 
         return errors.ToArray();
-
     }
-
 }
 
 internal static class AdmissionBenchmarkCellRunner
 {
-
     internal static AdmissionBenchmarkCellMeasurement Run(
         PersistentWorkerHarness harness,
         AdmissionBenchmarkProfile profile,
@@ -268,7 +225,6 @@ internal static class AdmissionBenchmarkCellRunner
         Func<long> readMaterializedTerminalCallbacks,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(harness);
 
         ArgumentNullException.ThrowIfNull(profile);
@@ -315,14 +271,11 @@ internal static class AdmissionBenchmarkCellRunner
         long callbackDelta = checked(readMaterializedTerminalCallbacks() - callbackBaseline);
 
         return new(warmup, latency, throughput, callbackDelta);
-
     }
-
 }
 
 internal sealed class PersistentWorkerHarness : IDisposable
 {
-
     private readonly Thread[] _threads;
 
     private readonly AutoResetEvent[] _wake;
@@ -387,7 +340,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
         int workerCount,
         IAdmissionBenchmarkOrderProbe? probe = null)
     {
-
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(workerCount);
 
         _probe = probe;
@@ -420,7 +372,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         for (int index = 0; index < workerCount; index++)
         {
-
             int worker = index;
 
             _wake[index] = new(false);
@@ -434,9 +385,7 @@ internal sealed class PersistentWorkerHarness : IDisposable
             };
 
             _threads[index].Start();
-
         }
-
     }
 
     internal int ThreadsCreated => _threads.Length;
@@ -452,7 +401,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
         AdmissionBenchmarkPhaseCommand command,
         CancellationToken cancellationToken)
     {
-
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
         ArgumentNullException.ThrowIfNull(command);
@@ -469,9 +417,7 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         if (activeWorkers <= 0 || activeWorkers > _threads.Length)
         {
-
             throw new ArgumentOutOfRangeException(nameof(command), "The active worker prefix is invalid.");
-
         }
 
         int epoch = checked(Volatile.Read(ref _commandEpoch) + 1);
@@ -496,7 +442,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         for (int worker = 0; worker < _threads.Length; worker++)
         {
-
             _workerArmedStamp[worker] = 0;
 
             _workerStartedStamp[worker] = 0;
@@ -512,16 +457,13 @@ internal sealed class PersistentWorkerHarness : IDisposable
             _results[worker].Reset(
                 units,
                 command.Kind == AdmissionBenchmarkPhaseKind.Latency ? units : 0);
-
         }
 
         Volatile.Write(ref _commandEpoch, epoch);
 
         for (int worker = 0; worker < activeWorkers; worker++)
         {
-
             _wake[worker].Set();
-
         }
 
         WaitForSignal(_allArmed, cancellationToken);
@@ -554,9 +496,7 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         if (_error is not null)
         {
-
             throw _error;
-
         }
 
         long operations = 0;
@@ -577,7 +517,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         for (int worker = 0; worker < activeWorkers; worker++)
         {
-
             WorkerResult result = _results[worker];
 
             operations = checked(operations + result.Operations);
@@ -595,7 +534,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
             maximumEnd = Math.Max(maximumEnd, result.EndTimestamp);
 
             samples.AddRange(result.Samples.AsSpan(0, result.SampleCount));
-
         }
 
         return new(
@@ -609,7 +547,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
             gen0,
             contention,
             samples.ToArray());
-
     }
 
     internal static string ScheduledOperation(
@@ -617,28 +554,21 @@ internal sealed class PersistentWorkerHarness : IDisposable
         int workerIndex,
         int iteration)
     {
-
         ArgumentNullException.ThrowIfNull(schedule);
 
         if (schedule.Count == 0)
         {
-
             throw new ArgumentException("The mixed schedule must not be empty.", nameof(schedule));
-
         }
 
         return schedule[checked(workerIndex + iteration) % schedule.Count];
-
     }
 
     public void Dispose()
     {
-
         if (Volatile.Read(ref _handlesDisposed) != 0)
         {
-
             return;
-
         }
 
         Interlocked.Exchange(ref _disposed, 1);
@@ -656,9 +586,7 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         foreach (AutoResetEvent signal in _wake)
         {
-
             signalActions.Add(() => signal.Set());
-
         }
 
         Exception[] signalErrors = AdmissionBenchmarkWorkerTeardown.AttemptAll(signalActions);
@@ -667,34 +595,26 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         foreach (Thread thread in _threads)
         {
-
             joinActions.Add(() =>
             {
-
                 long remainingTicks = deadline - Stopwatch.GetTimestamp();
 
                 if (remainingTicks <= 0
                     || !thread.Join(TimeSpan.FromSeconds(remainingTicks / (double)Stopwatch.Frequency)))
                 {
-
                     throw new InvalidOperationException(
                         "A persistent benchmark worker did not stop within the bounded join.");
-
                 }
-
             });
-
         }
 
         Exception[] joinErrors = AdmissionBenchmarkWorkerTeardown.AttemptAll(joinActions);
 
         if (joinErrors.Length != 0)
         {
-
             throw new InvalidOperationException(
                 "Persistent benchmark worker teardown was incomplete.",
                 new AggregateException(signalErrors.Concat(joinErrors)));
-
         }
 
         Interlocked.Exchange(ref _workerTerminationSucceeded, 1);
@@ -705,9 +625,7 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         foreach (AutoResetEvent signal in _wake)
         {
-
             handleActions.Add(signal.Dispose);
-
         }
 
         handleActions.Add(_allArmed.Dispose);
@@ -722,28 +640,21 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         if (signalErrors.Length != 0 || handleErrors.Length != 0)
         {
-
             throw new InvalidOperationException(
                 "Persistent benchmark worker teardown was incomplete.",
                 new AggregateException(signalErrors.Concat(handleErrors)));
-
         }
-
     }
 
     private void WorkerLoop(int workerIndex)
     {
-
         while (true)
         {
-
             _wake[workerIndex].WaitOne();
 
             if (Volatile.Read(ref _stop) != 0)
             {
-
                 return;
-
             }
 
             int epoch = Volatile.Read(ref _commandEpoch);
@@ -757,16 +668,12 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
             if (Interlocked.Increment(ref _armedCount) == Volatile.Read(ref _activeWorkerCount))
             {
-
                 _allArmed.Set();
-
             }
 
             while (Volatile.Read(ref _runEpoch) < epoch)
             {
-
                 Thread.SpinWait(32);
-
             }
 
             _workerStartedStamp[workerIndex] = NextStamp();
@@ -777,15 +684,11 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
             try
             {
-
                 Execute(command, workerIndex, result, _cancellationToken);
-
             }
             catch (Exception exception)
             {
-
                 Interlocked.CompareExchange(ref _error, exception, null);
-
             }
 
             result.AllocatedBytes = checked(GC.GetAllocatedBytesForCurrentThread() - allocationStart);
@@ -796,44 +699,33 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
             if (Interlocked.Increment(ref _loopCompleteCount) == Volatile.Read(ref _activeWorkerCount))
             {
-
                 _allCompleted.Set();
-
             }
 
             _parkRelease.WaitOne();
 
             if (Volatile.Read(ref _processTerminalEpoch) < epoch)
             {
-
                 Interlocked.CompareExchange(
                     ref _error,
                     new InvalidOperationException("A worker parked before the process terminal."),
                     null);
-
             }
 
             _workerParkedStamp[workerIndex] = NextStamp();
 
             if (Interlocked.Increment(ref _parkedCount) == Volatile.Read(ref _activeWorkerCount))
             {
-
                 _allParked.Set();
-
             }
-
         }
-
     }
 
     private void ReplayProbe(int epoch)
     {
-
         if (_probe is null)
         {
-
             return;
-
         }
 
         int activeWorkers = Volatile.Read(ref _activeWorkerCount);
@@ -847,7 +739,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
         for (int worker = 0; worker < activeWorkers; worker++)
         {
-
             events.Add((_workerArmedStamp[worker], worker, AdmissionBenchmarkProbeEvent.WorkerArmed));
 
             events.Add((_workerStartedStamp[worker], worker, AdmissionBenchmarkProbeEvent.WorkerLoopStarted));
@@ -855,23 +746,17 @@ internal sealed class PersistentWorkerHarness : IDisposable
             events.Add((_workerCompletedStamp[worker], worker, AdmissionBenchmarkProbeEvent.WorkerLoopCompleted));
 
             events.Add((_workerParkedStamp[worker], worker, AdmissionBenchmarkProbeEvent.WorkerParked));
-
         }
 
         foreach ((long stamp, int worker, AdmissionBenchmarkProbeEvent value) in events.OrderBy(static item => item.Stamp))
         {
-
             if (stamp <= 0)
             {
-
                 throw new InvalidOperationException("A worker omitted a measured lifecycle transition.");
-
             }
 
             _probe.Record(epoch, worker, value);
-
         }
-
     }
 
     private static void Execute(
@@ -880,38 +765,28 @@ internal sealed class PersistentWorkerHarness : IDisposable
         WorkerResult result,
         CancellationToken cancellationToken)
     {
-
         for (int iteration = 0; iteration < result.AssignedUnits; iteration++)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (command.Kind == AdmissionBenchmarkPhaseKind.Latency)
             {
-
                 long start = Stopwatch.GetTimestamp();
 
                 for (int bundle = 0; bundle < command.BundleSize; bundle++)
                 {
-
                     RunOperation(command, workerIndex, checked(iteration * command.BundleSize + bundle), result, cancellationToken);
-
                 }
 
                 long elapsed = checked(Stopwatch.GetTimestamp() - start);
 
                 result.Samples[result.SampleCount++] = elapsed * 1_000_000_000d / Stopwatch.Frequency / command.BundleSize;
-
             }
             else
             {
-
                 RunOperation(command, workerIndex, iteration, result, cancellationToken);
-
             }
-
         }
-
     }
 
     private static void RunOperation(
@@ -921,24 +796,18 @@ internal sealed class PersistentWorkerHarness : IDisposable
         WorkerResult result,
         CancellationToken cancellationToken)
     {
-
         bool success = command.Operation(workerIndex, iteration, cancellationToken, ref result.Checksum);
 
         result.Operations++;
 
         if (success)
         {
-
             result.Successes++;
-
         }
         else
         {
-
             result.Failures++;
-
         }
-
     }
 
     private long NextStamp() => Interlocked.Increment(ref _transitionSequence);
@@ -948,41 +817,32 @@ internal sealed class PersistentWorkerHarness : IDisposable
         int activeWorkers,
         int workerIndex)
     {
-
         int quotient = totalUnits / activeWorkers;
 
         int remainder = totalUnits % activeWorkers;
 
         return quotient + (workerIndex < remainder ? 1 : 0);
-
     }
 
     private static void WaitForSignal(
         AutoResetEvent signal,
         CancellationToken cancellationToken)
     {
-
         while (!signal.WaitOne(TimeSpan.FromMilliseconds(100)))
         {
-
             cancellationToken.ThrowIfCancellationRequested();
-
         }
-
     }
 
     private static void Warm(AutoResetEvent signal)
     {
-
         signal.Set();
 
         _ = signal.WaitOne(0);
-
     }
 
     private sealed class WorkerResult
     {
-
         internal long Operations;
 
         internal long Successes;
@@ -1007,7 +867,6 @@ internal sealed class PersistentWorkerHarness : IDisposable
             int assignedUnits,
             int sampleCount)
         {
-
             Operations = 0;
 
             Successes = 0;
@@ -1028,13 +887,8 @@ internal sealed class PersistentWorkerHarness : IDisposable
 
             if (Samples.Length != sampleCount)
             {
-
                 Samples = new double[sampleCount];
-
             }
-
         }
-
     }
-
 }

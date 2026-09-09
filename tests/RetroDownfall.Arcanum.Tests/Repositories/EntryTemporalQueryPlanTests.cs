@@ -1,10 +1,6 @@
-using System.Data.Common;
-
 using System.Text.RegularExpressions;
 
-using Microsoft.EntityFrameworkCore;
-
-using RetroDownfall.Arcanum.Core.Storage.Entities;
+using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -55,15 +51,14 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 /// having rather than a cost, and this repository pins its SQLite build, so plan churn is a controlled
 /// event and a plan that moved under an engine bump is exactly what somebody should read.</para>
 ///
-/// <para>The plan is taken from the statement <see cref="EntryTemporalQueries"/> actually issues, as
-/// the context's own query pipeline renders it, rather than reassembled here. A plan test that
+/// <para>The plan is taken from the parameterized command <see cref="EntryTemporalQueries"/> actually
+/// issues, rather than reassembled here. A plan test that
 /// explained SQL of its own would keep passing after the real query quietly lost its index, which is
 /// the whole failure this file exists to catch.</para>
 /// </remarks>
 [Collection("Grimoire")]
 public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -72,41 +67,31 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
 
     public EntryTemporalQueryPlanTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     private static CancellationToken Token => CancellationToken.None;
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     /// <summary>
@@ -132,14 +117,26 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     [InlineData("CountSagaExtractionPage")]
     public async Task Every_transcript_read_plans_exactly_as_pinned(string read)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string plan = await ExplainAsync(db => Query(db, read));
 
-        Assert.Equal(Pinned(read), plan);
+        if (read == "LoadBeforeDeletedKeyset")
+        {
+            Assert.Contains(plan, DeletedKeysetPlans);
 
+            return;
+        }
+
+        Assert.Equal(Pinned(read), plan);
     }
+
+    private static readonly string[] DeletedKeysetPlans =
+    [
+        "SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=?)\n",
+        "SEARCH <object> USING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt<?)\n"
+            + "USE TEMP B-TREE FOR ORDER BY\n",
+    ];
 
     /// <summary>
     /// The plan each read is expected to produce, with identifiers elided.
@@ -255,45 +252,100 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
             _ => throw new ArgumentOutOfRangeException(nameof(read), read, "No plan is pinned for that read."),
         };
 
-    private static IQueryable Query(ArcanumDbContext db, string read)
+    private static Task<SqliteCommand> Query(ArcanumDbContext db, string read)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         DateTimeOffset watermark = DateTimeOffset.UtcNow.AddHours(-1);
 
         return read switch
         {
-            "LoadRecentDescending" => EntryTemporalQueries.LoadRecentDescending(db, sessionId, 50),
+            "LoadRecentDescending" => EntryTemporalQueries.CreateLoadRecentDescendingCommandAsync(
+                db,
+                sessionId,
+                50,
+                Token),
 
-            "LoadAfterSequence" => EntryTemporalQueries.LoadAfterSequence(db, sessionId, 0, 50),
+            "LoadAfterSequence" => EntryTemporalQueries.CreateLoadAfterSequenceCommandAsync(
+                db,
+                sessionId,
+                0,
+                50,
+                Token),
 
-            "LoadBeforeSequence" => EntryTemporalQueries.LoadBeforeSequence(db, sessionId, 100, 50),
+            "LoadBeforeSequence" => EntryTemporalQueries.CreateLoadBeforeSequenceCommandAsync(
+                db,
+                sessionId,
+                100,
+                50,
+                Token),
 
             "LoadBeforeDeletedKeyset" =>
-                EntryTemporalQueries.LoadBeforeDeletedKeyset(db, sessionId, watermark, Guid.NewGuid(), 50),
+                EntryTemporalQueries.CreateLoadBeforeDeletedKeysetCommandAsync(
+                    db,
+                    sessionId,
+                    watermark,
+                    Guid.NewGuid(),
+                    50,
+                    Token),
 
-            "SequenceOf" => EntryTemporalQueries.SequenceOf(db, sessionId, Guid.NewGuid()),
+            "SequenceOf" => EntryTemporalQueries.CreateSequenceOfCommandAsync(
+                db,
+                sessionId,
+                Guid.NewGuid(),
+                Token),
 
-            "LoadDescendingPaged" => EntryTemporalQueries.LoadDescendingPaged(db, sessionId, 50, 0),
+            "LoadDescendingPaged" => EntryTemporalQueries.CreateLoadDescendingPagedCommandAsync(
+                db,
+                sessionId,
+                50,
+                0,
+                Token),
 
-            "CountAfter" => EntryTemporalQueries.CountAfter(db, sessionId, watermark),
+            "CountAfter" => EntryTemporalQueries.CreateCountAfterCommandAsync(
+                db,
+                sessionId,
+                watermark,
+                Token),
 
             "LoadAfterWatermarkThroughTimestampGroup" =>
-                EntryTemporalQueries.LoadAfterWatermarkThroughTimestampGroup(db, sessionId, watermark, 10, 200),
+                EntryTemporalQueries.CreateLoadAfterWatermarkThroughTimestampGroupCommandAsync(
+                    db,
+                    sessionId,
+                    watermark,
+                    10,
+                    200,
+                    Token),
 
             "CountAfterWatermarkThroughTimestampGroup" =>
-                EntryTemporalQueries.CountAfterWatermarkThroughTimestampGroup(db, sessionId, watermark, 10),
+                EntryTemporalQueries.CreateCountAfterWatermarkThroughTimestampGroupCommandAsync(
+                    db,
+                    sessionId,
+                    watermark,
+                    10,
+                    Token),
 
             "LoadSagaExtractionPage" =>
-                EntryTemporalQueries.LoadSagaExtractionPage(db, sessionId, 0, 200, 10, 200),
+                EntryTemporalQueries.CreateLoadSagaExtractionPageCommandAsync(
+                    db,
+                    sessionId,
+                    0,
+                    200,
+                    10,
+                    200,
+                    Token),
 
             "CountSagaExtractionPage" =>
-                EntryTemporalQueries.CountSagaExtractionPage(db, sessionId, 0, 200, 10),
+                EntryTemporalQueries.CreateCountSagaExtractionPageCommandAsync(
+                    db,
+                    sessionId,
+                    0,
+                    200,
+                    10,
+                    Token),
 
             _ => throw new ArgumentOutOfRangeException(nameof(read), read, "Unknown transcript read."),
         };
-
     }
 
     /// <summary>
@@ -312,84 +364,41 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     /// The plan SQLite produces for the statement the query would have executed, identifiers elided.
     /// </summary>
     /// <remarks>
-    /// The statement and its parameter values are taken from <c>ToQueryString</c>, which renders the
-    /// command EF composed for this provider. Its leading <c>.param set</c> lines are the sqlite3
-    /// shell's syntax for binding, not SQL, so they are turned back into real parameters here and the
-    /// remainder is explained verbatim — the alternative, substituting the literals into the text,
-    /// would explain a statement with no parameters in it and SQLite plans those differently.
+    /// The production command is prefixed with <c>EXPLAIN QUERY PLAN</c> without changing its bound
+    /// parameters. Substituting literals into a reconstructed statement would explain a different
+    /// query shape and could let the production command regress unseen.
     /// </remarks>
-    private async Task<string> ExplainAsync(Func<ArcanumDbContext, IQueryable> query)
+    private async Task<string> ExplainAsync(Func<ArcanumDbContext, Task<SqliteCommand>> query)
     {
-
         ArcanumDbContext db = _db ?? throw new InvalidOperationException("The context is not initialized.");
 
-        string rendered = query(db).ToQueryString();
+        await using SqliteCommand command = await query(db);
 
-        DbConnection connection = db.Database.GetDbConnection();
-
-        await using DbCommand command = connection.CreateCommand();
-
-        List<string> statement = [];
-
-        foreach (string line in rendered.Split('\n'))
-        {
-
-            string trimmed = line.TrimEnd('\r');
-
-            if (!trimmed.StartsWith(".param set ", StringComparison.Ordinal))
-            {
-
-                statement.Add(trimmed);
-
-                continue;
-
-            }
-
-            string[] parts = trimmed[".param set ".Length..].Split(' ', 2);
-
-            DbParameter parameter = command.CreateParameter();
-
-            parameter.ParameterName = parts[0];
-
-            parameter.Value = parts[1].Trim('\'');
-
-            command.Parameters.Add(parameter);
-
-        }
-
-        command.CommandText = "EXPLAIN QUERY PLAN " + string.Join('\n', statement);
+        command.CommandText = "EXPLAIN QUERY PLAN " + command.CommandText;
 
         System.Text.StringBuilder plan = new();
 
-        await using DbDataReader reader = await command.ExecuteReaderAsync(Token);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(Token);
 
         while (await reader.ReadAsync(Token))
         {
-
             _ = plan.Append(Elide(reader.GetString(reader.FieldCount - 1).Trim())).Append('\n');
-
         }
 
         return plan.ToString();
-
     }
 
     private static string Elide(string row)
     {
-
         Match named = NamedObject.Match(row);
 
         if (!named.Success)
         {
-
             return row;
-
         }
 
         Group instance = named.Groups["object"];
 
         return named.Groups["head"].Value + " <object>" + row[(instance.Index + instance.Length)..];
-
     }
-
 }

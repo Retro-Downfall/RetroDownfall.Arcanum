@@ -27,7 +27,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </summary>
 public static class GrimoireDatabaseBootstrapper
 {
-
     public static Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
@@ -83,21 +82,17 @@ public static class GrimoireDatabaseBootstrapper
         string dbPath,
         CancellationToken cancellationToken)
     {
-
         // W3.4 Group D #9: check the file exists BEFORE accessing the passphrase — the
         // passphrase source throws if uninitialized, and on a cold shutdown where the DB was
         // never created there is nothing to checkpoint. The passphrase access is inside the
         // try below so an uninitialized passphrase on a stray file is also handled best-effort.
         if (!File.Exists(dbPath))
         {
-
             return;
-
         }
 
         try
         {
-
             // This connection is opened on its own path: a host that shut down without ever opening
             // the Grimoire has installed no provider, and the checkpoint would fail on the raw
             // SQLitePCLRaw error rather than the typed unavailability. Inside the try on purpose —
@@ -135,15 +130,11 @@ public static class GrimoireDatabaseBootstrapper
             _ = await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             await connection.CloseAsync().ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             Log.Warning(ex, "Grimoire WAL checkpoint on shutdown failed for {DbPath}; continuing shutdown.", dbPath);
-
         }
-
     }
 
     internal static Task EnsureInitializedAsync(
@@ -191,7 +182,8 @@ public static class GrimoireDatabaseBootstrapper
         string grimoireDirectory,
         ArcanumMaintenanceLock? heldInstallationLock,
         Guid? expectedInstallationId,
-        Func<CancellationToken, Task>? postRestoreTopology,
+        Func<CancellationToken, Task<MasterApiKeyBootstrapResult?>>?
+            postRestoreTopology,
         CancellationToken cancellationToken)
     {
         SqliteNativeRuntime.Instance.Initialize();
@@ -205,24 +197,28 @@ public static class GrimoireDatabaseBootstrapper
             grimoireDirectory,
             cancellationToken).ConfigureAwait(false);
 
+        MasterApiKeyBootstrapResult? bootstrappedKey = null;
+
         if (postRestoreTopology is not null)
         {
-
-            await postRestoreTopology(cancellationToken).ConfigureAwait(false);
-
+            bootstrappedKey = await postRestoreTopology(cancellationToken)
+                .ConfigureAwait(false);
         }
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(grimoireDirectory);
 
-        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        string? apiKey = bootstrappedKey?.ApiKey;
+
+        if (apiKey is null)
+        {
+            apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        }
 
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-
             Log.Fatal("Grimoire startup aborted: master API key is not present. Persist a key before enabling the database.");
 
             throw new MissingMasterApiKeyException();
-
         }
 
         string passphrase = await ResolveGrimoirePassphraseAsync(secretStore, apiKey, dbPath, cancellationToken).ConfigureAwait(false);
@@ -319,9 +315,7 @@ public static class GrimoireDatabaseBootstrapper
 
         if (File.Exists(dbPath))
         {
-
             SecureFilePermissions.ApplyOwnerOnlyFile(dbPath);
-
         }
 
         await using (AsyncServiceScope scope = scopeFactory.CreateAsyncScope())
@@ -357,23 +351,18 @@ public static class GrimoireDatabaseBootstrapper
         string grimoireDirectory,
         CancellationToken cancellationToken)
     {
-
         if (heldInstallationLock is null)
         {
-
             return;
-
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         if (TryCreateRestoreRecovery(scope, grimoireDirectory, withAuthority: false) is not { } recovery)
         {
-
             ResolveInterruptedRestores(grimoireDirectory);
 
             return;
-
         }
 
         Result<BackupRestorePhysicalRecoveryOutcome> topology = await recovery
@@ -382,7 +371,6 @@ public static class GrimoireDatabaseBootstrapper
 
         if (topology.IsFailure || topology.Value is BackupRestorePhysicalRecoveryOutcome.KeptClosed)
         {
-
             Log.Fatal(
                 "An interrupted Arcanum restore could not be converged to a single installation root. "
                 + "Arcanum will not start against a tree it cannot identify. Resolve the restore, or "
@@ -390,16 +378,12 @@ public static class GrimoireDatabaseBootstrapper
 
             throw new GrimoireDatabaseUnavailableException(
                 "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
-
         }
 
         if (topology.Value is BackupRestorePhysicalRecoveryOutcome.NoActiveJournal)
         {
-
             ResolveInterruptedRestores(grimoireDirectory);
-
         }
-
     }
 
     /// <summary>
@@ -417,21 +401,16 @@ public static class GrimoireDatabaseBootstrapper
         string grimoireDirectory,
         CancellationToken cancellationToken)
     {
-
         if (heldInstallationLock is null)
         {
-
             return;
-
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         if (TryCreateRestoreRecovery(scope, grimoireDirectory, withAuthority: true) is not { } recovery)
         {
-
             return;
-
         }
 
         Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
@@ -440,16 +419,13 @@ public static class GrimoireDatabaseBootstrapper
 
         if (recovered.IsFailure || recovered.Value is BackupRestoreStartupRecoveryOutcome.KeptClosed)
         {
-
             Log.Fatal(
                 "An interrupted Arcanum restore's authority could not be revalidated, so Covenant "
                 + "admission stays closed and its journal remains active for the next start.");
 
             throw new GrimoireDatabaseUnavailableException(
                 "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
-
         }
-
     }
 
     /// <summary>
@@ -466,16 +442,13 @@ public static class GrimoireDatabaseBootstrapper
         string grimoireDirectory,
         bool withAuthority)
     {
-
         if (scope.ServiceProvider.GetService<IOsCredentialStore>() is not { } credentials)
         {
-
             Log.Warning(
                 "No OS credential boundary is composed in this container, so the authenticated restore "
                 + "journal cannot be read.");
 
             return null;
-
         }
 
         return new BackupRestoreRecovery(
@@ -486,7 +459,6 @@ public static class GrimoireDatabaseBootstrapper
                 new BackupRestoreJournalInstallationIdentityProvider(credentials)),
             withAuthority ? scope.ServiceProvider.GetService<CovenantOperationGate>() : null,
             withAuthority ? scope.ServiceProvider.GetService<ICampaignPathMarkerLifecycle>() : null);
-
     }
 
     /// <summary>
@@ -499,16 +471,13 @@ public static class GrimoireDatabaseBootstrapper
     /// </remarks>
     private static void ResolveInterruptedRestores(string grimoireDirectory)
     {
-
         try
         {
-
             bool reconciliationRequired = false;
 
             foreach (BackupRestoreRecoveryReport report in
                      BackupRestoreRecovery.Resolve(grimoireDirectory))
             {
-
                 Log.Warning(
                     "Interrupted Arcanum restore resolved as {Outcome} at phase {Phase}: {Detail}",
                     report.Outcome,
@@ -517,31 +486,24 @@ public static class GrimoireDatabaseBootstrapper
 
                 reconciliationRequired |= report.Outcome
                     is BackupRestoreRecoveryOutcome.ReconciliationRequired;
-
             }
 
             if (reconciliationRequired)
             {
-
                 Log.Fatal(
                     "Legacy interrupted-restore evidence could not be converged safely. "
                     + "Arcanum will not create or open the installation root until it is reconciled.");
 
                 throw new GrimoireDatabaseUnavailableException(
                     "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
-
             }
-
         }
         catch (GrimoireDatabaseUnavailableException)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             Log.Fatal(
                 ex,
                 "Legacy interrupted-restore recovery could not classify the installation topology. "
@@ -550,9 +512,7 @@ public static class GrimoireDatabaseBootstrapper
             throw new GrimoireDatabaseUnavailableException(
                 "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.",
                 ex);
-
         }
-
     }
 
     /// <summary>
@@ -575,7 +535,6 @@ public static class GrimoireDatabaseBootstrapper
         IServiceScopeFactory scopeFactory,
         CancellationToken cancellationToken)
     {
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IHostProcessToolsMarkerStore? markers =
@@ -589,9 +548,7 @@ public static class GrimoireDatabaseBootstrapper
 
         if (markers is null || policy is null || environment is null)
         {
-
             return null;
-
         }
 
         HostProcessToolsRuntimePolicy provisionalPolicy = new();
@@ -609,9 +566,7 @@ public static class GrimoireDatabaseBootstrapper
 
         if (decision.IsSuccess)
         {
-
             return new DeferredHostProcessToolsDecision(policy, decision.Value);
-
         }
 
         HostProcessToolsStartupDecision blocked = new(
@@ -632,18 +587,15 @@ public static class GrimoireDatabaseBootstrapper
         // attempted, and those still stop startup (§10.15).
         if (blocked.Blocker is HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition)
         {
-
             Log.Warning(
                 "Arcanum started with the host-process-tools escape hatch armed and no completed "
                 + "transition. Covenant stays closed. {Remediation}",
                 HostProcessToolsStartupGate.EscapeHatchRemediation);
 
             return new DeferredHostProcessToolsDecision(policy, blocked);
-
         }
 
         throw new GrimoireDatabaseUnavailableException(decision.Error.Message);
-
     }
 
     /// <summary>
@@ -673,7 +625,6 @@ public static class GrimoireDatabaseBootstrapper
         DeferredHostProcessToolsDecision? hostProcessToolsDecision,
         CancellationToken cancellationToken)
     {
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         // Settings resolution runs first and owns its own failure. It used to share a try block with
@@ -697,17 +648,14 @@ public static class GrimoireDatabaseBootstrapper
 
         try
         {
-
             result = await installer.InstallAsync(
                 installConnection,
                 dimensions,
                 context,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (GrimoireSchemaRefusedException refused)
         {
-
             // Normalized at the boundary for the same reason the KDF sidecar failure is: the refusal
             // carries the steps the operator has to take, and letting it escape raw puts it in
             // CliFailureMapper's default arm, which prints "An unexpected CLI error occurred." and
@@ -716,7 +664,6 @@ public static class GrimoireDatabaseBootstrapper
             Log.Fatal(refused, "The Grimoire schema tier was refused. {Message}", refused.Message);
 
             throw new GrimoireDatabaseUnavailableException(refused.Message, refused);
-
         }
 
         await VerifyExpectedInstallationIdentityAsync(
@@ -729,15 +676,12 @@ public static class GrimoireDatabaseBootstrapper
         // same installation. Keep this immediately before Covenant publication/reconciliation.
         if (hostProcessToolsDecision is not null)
         {
-
             Result publication = hostProcessToolsDecision.ProcessPolicy.Publish(
                 hostProcessToolsDecision.Decision);
 
             if (publication.IsFailure)
             {
-
                 throw new GrimoireDatabaseUnavailableException(publication.Error.Message);
-
             }
 
             // Advertise and invoke sites reach the policy through a static predicate, which has no
@@ -745,7 +689,6 @@ public static class GrimoireDatabaseBootstrapper
             // instead of re-deriving one from the edition and environment the gate has already
             // refused — the difference between a published decision and a log line (§10.12).
             HostProcessToolPolicy.BindStartupDecision(hostProcessToolsDecision.ProcessPolicy);
-
         }
 
         CovenantAvailability covenantAvailability = scope.ServiceProvider
@@ -788,7 +731,6 @@ public static class GrimoireDatabaseBootstrapper
 
         if (runtime is not null && keyProvider is not null && hostToolsPolicy is not null)
         {
-
             // The answer is deliberately discarded here. An ordinary start with no operator authority
             // is a degraded installation rather than a failed one, and every consumer already reads an
             // unpublished authority as "none". Pre-readiness transition recovery reads the same answer
@@ -801,11 +743,9 @@ public static class GrimoireDatabaseBootstrapper
                 hostToolsPolicy,
                 masterApiKey,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         availability?.SetAvailable(false);
-
     }
 
     private sealed record DeferredHostProcessToolsDecision(
@@ -821,21 +761,16 @@ public static class GrimoireDatabaseBootstrapper
         Guid? expectedInstallationId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(installConnection);
 
         if (expectedInstallationId is null)
         {
-
             return;
-
         }
 
         if (expectedInstallationId == Guid.Empty)
         {
-
             throw InstallationIdentityUnavailable();
-
         }
 
         long? stateKey = null;
@@ -846,7 +781,6 @@ public static class GrimoireDatabaseBootstrapper
 
         try
         {
-
             await using SqliteCommand command = installConnection.CreateCommand();
 
             command.CommandText =
@@ -858,20 +792,15 @@ public static class GrimoireDatabaseBootstrapper
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 rowCount++;
 
                 if (rowCount == 1)
                 {
-
                     stateKey = reader.IsDBNull(0) ? null : reader.GetInt64(0);
 
                     storedIdentity = reader.IsDBNull(1) ? null : reader.GetString(1);
-
                 }
-
             }
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -879,9 +808,7 @@ public static class GrimoireDatabaseBootstrapper
                 or InvalidOperationException
                 or OverflowException)
         {
-
             throw InstallationIdentityUnavailable(exception);
-
         }
 
         Guid parsed = Guid.Empty;
@@ -899,17 +826,13 @@ public static class GrimoireDatabaseBootstrapper
             || !canonical
             || parsed != expectedInstallationId.Value)
         {
-
             throw InstallationIdentityUnavailable();
-
         }
-
     }
 
     private static GrimoireDatabaseUnavailableException InstallationIdentityUnavailable(
         Exception? innerException = null)
     {
-
         const string message =
             "The authenticated installation-reset identity does not match the Grimoire authority row. "
                 + "See logs for recovery steps.";
@@ -917,7 +840,6 @@ public static class GrimoireDatabaseBootstrapper
         return innerException is null
             ? new GrimoireDatabaseUnavailableException(message)
             : new GrimoireDatabaseUnavailableException(message, innerException);
-
     }
 
     /// <summary>
@@ -957,12 +879,9 @@ public static class GrimoireDatabaseBootstrapper
         string masterApiKey,
         CancellationToken cancellationToken)
     {
-
         if (heldInstallationLock is null)
         {
-
             return new ProtectedMaintenanceRecovery(Gate: null, AdoptedErasureOwner: null);
-
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -981,7 +900,6 @@ public static class GrimoireDatabaseBootstrapper
 
         if (gate is not null)
         {
-
             Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> erasureOwner = await new
                 CovenantErasureStartupRecoveryOwnerAdopter(gate)
                 .AdoptBeforeReadinessAsync(installConnection, cancellationToken)
@@ -989,9 +907,7 @@ public static class GrimoireDatabaseBootstrapper
 
             if (erasureOwner.IsFailure)
             {
-
                 throw ProtectedRecoveryUnavailable();
-
             }
 
             adoptedErasureOwner = erasureOwner.Value;
@@ -1016,13 +932,10 @@ public static class GrimoireDatabaseBootstrapper
 
             if (prepared.IsFailure)
             {
-
                 throw ProtectedRecoveryUnavailable();
-
             }
 
             repairPreparation = prepared.Value;
-
         }
 
         CovenantLocalErasureStartupRecovery localErasure = new(
@@ -1042,24 +955,19 @@ public static class GrimoireDatabaseBootstrapper
 
         if (erasure.IsFailure || erasure.Value is CovenantLocalErasureStartupRecoveryOutcome.Blocked)
         {
-
             Log.Warning(
                 "Unfinished Covenant managed-file erasure work could not be resolved before readiness. "
                 + "The affected files, their producer rows, and their labels are untouched.");
-
         }
         else if (erasure.Value is CovenantLocalErasureStartupRecoveryOutcome.ManualEvidenceReady)
         {
-
             Log.Warning(
                 "A Covenant managed-file erasure ended as a manual blocker: the file did not match the "
                 + "ownership Arcanum recorded, so it was left in place with its label intact.");
-
         }
 
         if (repair is not null && repairPreparation is not null)
         {
-
             Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await repair
                 .RecoverPreparedAsync(
                     heldInstallationLock,
@@ -1071,24 +979,18 @@ public static class GrimoireDatabaseBootstrapper
 
             if (recovered.IsFailure)
             {
-
                 throw ProtectedRecoveryUnavailable();
-
             }
 
             if (recovered.Value is CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed)
             {
-
                 Log.Warning(
                     "An interrupted Covenant schema repair could not be completed, so Covenant admission "
                     + "stays closed and its journal remains active for the next start.");
-
             }
-
         }
 
         return new ProtectedMaintenanceRecovery(gate, adoptedErasureOwner);
-
     }
 
     /// <summary>
@@ -1108,12 +1010,9 @@ public static class GrimoireDatabaseBootstrapper
         CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner? adopted,
         CancellationToken cancellationToken)
     {
-
         if (heldInstallationLock is null || adopted is null)
         {
-
             return;
-
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -1135,11 +1034,8 @@ public static class GrimoireDatabaseBootstrapper
 
         if (resumed.IsFailure)
         {
-
             throw ProtectedRecoveryUnavailable();
-
         }
-
     }
 
     private static GrimoireDatabaseUnavailableException ProtectedRecoveryUnavailable() =>
@@ -1165,16 +1061,13 @@ public static class GrimoireDatabaseBootstrapper
         string grimoireDirectory,
         string masterApiKey)
     {
-
         DateTimeOffset installedAtUtc = DateTimeOffset.UtcNow;
 
         if (heldInstallationLock is null)
         {
-
             return CovenantAuthorityBootstrapper.PrepareWithoutInstallationLock(
                 masterApiKey,
                 installedAtUtc);
-
         }
 
         return new CovenantAuthorityBootstrapper().PrepareUnderInstallationLock(
@@ -1182,7 +1075,6 @@ public static class GrimoireDatabaseBootstrapper
             grimoireDirectory,
             masterApiKey,
             installedAtUtc);
-
     }
 
     private static async Task<string> ResolveGrimoirePassphraseAsync(
@@ -1191,21 +1083,17 @@ public static class GrimoireDatabaseBootstrapper
         string dbPath,
         CancellationToken cancellationToken)
     {
-
         if (GrimoireKdfSidecarFile.Exists(dbPath))
         {
-
             GrimoireKdfSidecar sidecar = ReadSidecarOrFailClosed(dbPath);
 
             string secret = await ResolveActiveSecretAsync(secretStore).ConfigureAwait(false);
 
             return DeriveWithSidecar(secret, sidecar);
-
         }
 
         if (File.Exists(dbPath))
         {
-
             // A pending salt means a previous KDF upgrade was interrupted. It is written durably
             // before PRAGMA rekey, so it is the only copy of the salt if the rekey committed and
             // the promotion did not land; if the rekey never committed the database is still
@@ -1214,17 +1102,13 @@ public static class GrimoireDatabaseBootstrapper
 
             if (recovered is not null)
             {
-
                 return recovered;
-
             }
 
             return await UpgradeLegacyDatabaseAsync(secretStore, apiKey, dbPath, cancellationToken).ConfigureAwait(false);
-
         }
 
         return await CreateNewDatabaseSecretAsync(secretStore, dbPath, cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1241,12 +1125,9 @@ public static class GrimoireDatabaseBootstrapper
     /// </remarks>
     private static GrimoireKdfSidecar ReadSidecarOrFailClosed(string dbPath)
     {
-
         try
         {
-
             return GrimoireKdfSidecarFile.Read(dbPath);
-
         }
         catch (Exception ex) when (
             ex is InvalidDataException
@@ -1255,7 +1136,6 @@ public static class GrimoireDatabaseBootstrapper
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             Log.Fatal(
                 ex,
                 "The Grimoire KDF sidecar at {SidecarPath} exists but cannot be read ({Message}). "
@@ -1269,9 +1149,7 @@ public static class GrimoireDatabaseBootstrapper
             throw new GrimoireDatabaseUnavailableException(
                 "The Grimoire KDF sidecar (arcanum.db.kdf) exists but cannot be read. See logs for recovery steps.",
                 ex);
-
         }
-
     }
 
     private static async Task<string?> TryRecoverPendingKdfUpgradeAsync(
@@ -1279,52 +1157,41 @@ public static class GrimoireDatabaseBootstrapper
         string dbPath,
         CancellationToken cancellationToken)
     {
-
         if (!GrimoireKdfSidecarFile.PendingExists(dbPath))
         {
-
             return null;
-
         }
 
         GrimoireKdfSidecar pending;
 
         try
         {
-
             pending = GrimoireKdfSidecarFile.ReadPending(dbPath);
-
         }
         catch (Exception ex)
         {
-
             Log.Warning(
                 ex,
                 "A pending Grimoire KDF salt exists at {PendingPath} but could not be read; falling back to the legacy upgrade path.",
                 GrimoireKdfSidecarFile.GetPendingSidecarPath(dbPath));
 
             return null;
-
         }
 
         string? secret = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
 
         if (string.IsNullOrEmpty(secret))
         {
-
             return null;
-
         }
 
         string candidate = DeriveWithSidecar(secret, pending);
 
         if (!await CanOpenDatabaseAsync(dbPath, candidate, cancellationToken).ConfigureAwait(false))
         {
-
             // The interrupted rekey never committed; the database is still legacy and the pending
             // salt is stale. UpgradeLegacyDatabaseAsync re-drives the upgrade with a fresh salt.
             return null;
-
         }
 
         GrimoireKdfSidecarFile.PromotePending(dbPath);
@@ -1334,7 +1201,6 @@ public static class GrimoireDatabaseBootstrapper
             dbPath);
 
         return candidate;
-
     }
 
     private static async Task<string> UpgradeLegacyDatabaseAsync(
@@ -1343,32 +1209,25 @@ public static class GrimoireDatabaseBootstrapper
         string dbPath,
         CancellationToken cancellationToken)
     {
-
         string? dedicatedSecret = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
 
         if (!string.IsNullOrEmpty(dedicatedSecret))
         {
-
             string legacyPassphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecretLegacy(dedicatedSecret);
 
             if (await CanOpenDatabaseAsync(dbPath, legacyPassphrase, cancellationToken).ConfigureAwait(false))
             {
-
                 return await RekeyToPbkdf2Async(secretStore, dedicatedSecret, legacyPassphrase, dbPath, cancellationToken).ConfigureAwait(false);
-
             }
-
         }
 
         string legacyApiPassphrase = GrimoireKeyDerivation.DerivePassphraseFromApiKeyLegacy(apiKey);
 
         if (await CanOpenDatabaseAsync(dbPath, legacyApiPassphrase, cancellationToken).ConfigureAwait(false))
         {
-
             string newDedicatedSecret = await GenerateAndSaveDedicatedSecretAsync(secretStore).ConfigureAwait(false);
 
             return await RekeyToPbkdf2Async(secretStore, newDedicatedSecret, legacyApiPassphrase, dbPath, cancellationToken).ConfigureAwait(false);
-
         }
 
         Log.Fatal(
@@ -1377,7 +1236,6 @@ public static class GrimoireDatabaseBootstrapper
 
         throw new GrimoireDatabaseUnavailableException(
             "Arcanum Grimoire database key verification failed. See logs for recovery steps.");
-
     }
 
     private static async Task<string> RekeyToPbkdf2Async(
@@ -1387,7 +1245,6 @@ public static class GrimoireDatabaseBootstrapper
         string dbPath,
         CancellationToken cancellationToken)
     {
-
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
 
         string newPassphrase = DeriveWithSidecar(secret, sidecar);
@@ -1405,17 +1262,15 @@ public static class GrimoireDatabaseBootstrapper
             Password = oldPassphrase,
         }.ToString()))
         {
-
             await rekeyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             await using SqliteCommand rekeyCommand = rekeyConnection.CreateCommand();
 
-            rekeyCommand.CommandText = $"PRAGMA rekey = '{EscapeSqlString(newPassphrase)}';";
+            rekeyCommand.CommandText = SqlitePragmaStatementFactory.Rekey(newPassphrase);
 
             await rekeyCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             await rekeyConnection.CloseAsync().ConfigureAwait(false);
-
         }
 
         GrimoireKdfSidecarFile.PromotePending(dbPath);
@@ -1423,7 +1278,6 @@ public static class GrimoireDatabaseBootstrapper
         Log.Information("Grimoire database upgraded to PBKDF2 KDF (version 2).");
 
         return newPassphrase;
-
     }
 
     private static async Task<string> CreateNewDatabaseSecretAsync(
@@ -1431,7 +1285,6 @@ public static class GrimoireDatabaseBootstrapper
         string dbPath,
         CancellationToken cancellationToken)
     {
-
         string newSecret = await GenerateAndSaveDedicatedSecretAsync(secretStore).ConfigureAwait(false);
 
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
@@ -1439,26 +1292,21 @@ public static class GrimoireDatabaseBootstrapper
         GrimoireKdfSidecarFile.Write(dbPath, sidecar);
 
         return DeriveWithSidecar(newSecret, sidecar);
-
     }
 
     private static async Task<string> ResolveActiveSecretAsync(
         ISecretStore secretStore)
     {
-
         SecretStoreReadResult dedicated = await ReadGrimoireSecretResultAsync(secretStore).ConfigureAwait(false);
 
         if (dedicated.Status == SecretStoreReadStatus.Ok
             && !string.IsNullOrEmpty(dedicated.Value))
         {
-
             return dedicated.Value;
-
         }
 
         if (dedicated.Status == SecretStoreReadStatus.Corrupted)
         {
-
             // Sidecar-backed databases are keyed from the dedicated secret. Falling back to the
             // API key here yields a wrong passphrase and a confusing "key verification failed"
             // FailFast — surface the real cause (missing/corrupt Data Protection key material).
@@ -1470,7 +1318,6 @@ public static class GrimoireDatabaseBootstrapper
 
             throw new GrimoireDatabaseUnavailableException(
                 "Arcanum Grimoire encryption secret cannot be decrypted (missing Data Protection key). See logs for recovery steps.");
-
         }
 
         // Same reasoning for an absent secret: every sidecar-backed database was keyed from the
@@ -1485,7 +1332,6 @@ public static class GrimoireDatabaseBootstrapper
 
         throw new GrimoireDatabaseUnavailableException(
             "Arcanum Grimoire encryption secret (grimoire-key.dat) is missing. See logs for recovery steps.");
-
     }
 
     private static Task<SecretStoreReadResult> ReadGrimoireSecretResultAsync(
@@ -1494,7 +1340,6 @@ public static class GrimoireDatabaseBootstrapper
 
     private static async Task<string> GenerateAndSaveDedicatedSecretAsync(ISecretStore secretStore)
     {
-
         byte[] secretBytes = new byte[32];
 
         RandomNumberGenerator.Fill(secretBytes);
@@ -1506,34 +1351,25 @@ public static class GrimoireDatabaseBootstrapper
         await secretStore.SaveGrimoireEncryptionSecretAsync(newSecret).ConfigureAwait(false);
 
         return newSecret;
-
     }
 
     private static string DeriveWithSidecar(string secret, GrimoireKdfSidecar sidecar)
     {
-
         byte[] salt = sidecar.GetSaltBytes();
 
         try
         {
-
             return sidecar.Version switch
             {
-
                 GrimoireKeyDerivation.KdfVersion2 => GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(secret, salt),
 
                 _ => throw new NotSupportedException($"Grimoire KDF version {sidecar.Version} is not supported."),
-
             };
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(salt);
-
         }
-
     }
 
     private static async Task<bool> CanOpenDatabaseAsync(
@@ -1541,17 +1377,13 @@ public static class GrimoireDatabaseBootstrapper
         string passphrase,
         CancellationToken cancellationToken)
     {
-
         if (!File.Exists(dbPath))
         {
-
             return false;
-
         }
 
         try
         {
-
             await using SqliteConnection probe = new(new SqliteConnectionStringBuilder
             {
                 DataSource = dbPath,
@@ -1569,22 +1401,10 @@ public static class GrimoireDatabaseBootstrapper
             await probe.CloseAsync().ConfigureAwait(false);
 
             return true;
-
         }
         catch (Exception)
         {
-
             return false;
-
         }
-
     }
-
-    private static string EscapeSqlString(string value)
-    {
-
-        return value.Replace("'", "''");
-
-    }
-
 }

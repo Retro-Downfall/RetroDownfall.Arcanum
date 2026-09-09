@@ -9,6 +9,8 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class SessionLogBufferHistoryTests
@@ -187,7 +189,6 @@ public sealed class SessionWorkspaceServiceTests
     [Fact]
     public async Task Resume_cancellation_during_last_session_persistence_propagates_and_retains_prior_state()
     {
-
         Guid prior = Guid.Parse(
             "41414141-4141-4141-4141-414141414141");
 
@@ -210,7 +211,6 @@ public sealed class SessionWorkspaceServiceTests
                 0),
             entries:
             [
-
                 new EntryDto(
                     Guid.NewGuid(),
                     requested,
@@ -219,7 +219,6 @@ public sealed class SessionWorkspaceServiceTests
                     null,
                     null,
                     now),
-
             ]);
 
         SessionWorkspaceService workspace = CreateWorkspace(
@@ -259,7 +258,6 @@ public sealed class SessionWorkspaceServiceTests
         Assert.Null(state.TransientStatus);
 
         Assert.Null(store.LastSaved);
-
     }
 
     [Theory]
@@ -268,7 +266,6 @@ public sealed class SessionWorkspaceServiceTests
     public async Task Resume_last_session_persistence_refusal_preserves_the_prior_active_state(
         byte dispositionValue)
     {
-
         Guid prior = Guid.Parse(
             "13131313-1313-1313-1313-131313131313");
 
@@ -291,7 +288,6 @@ public sealed class SessionWorkspaceServiceTests
                 0),
             entries:
             [
-
                 new EntryDto(
                     Guid.NewGuid(),
                     requested,
@@ -300,7 +296,6 @@ public sealed class SessionWorkspaceServiceTests
                     null,
                     null,
                     now),
-
             ]);
 
         SessionWorkspaceService workspace = CreateWorkspace(
@@ -338,7 +333,6 @@ public sealed class SessionWorkspaceServiceTests
             StringComparison.Ordinal);
 
         Assert.Null(store.LastSaved);
-
     }
 
     [Fact]
@@ -365,7 +359,6 @@ public sealed class SessionWorkspaceServiceTests
     [Fact]
     public async Task Transcript_pages_load_older_and_newer_without_growing_the_view_cache()
     {
-
         Guid id = Guid.Parse("dededede-dede-dede-dede-dededededede");
 
         DateTimeOffset now = DateTimeOffset.Parse("2026-08-03T12:00:00Z");
@@ -430,13 +423,11 @@ public sealed class SessionWorkspaceServiceTests
         Assert.Contains("newest", state.Log.RenderPlainText(), StringComparison.Ordinal);
 
         Assert.Equal([0, 200, 0], handler.EntryOffsets);
-
     }
 
     [Fact]
     public async Task Session_catalog_pages_load_older_and_newer_without_a_total_catalog_ceiling()
     {
-
         DateTimeOffset firstCursor = DateTimeOffset.Parse("2026-08-03T10:00:00Z");
 
         SessionSummaryDto newest = Summary("11111111-1111-1111-1111-111111111111", "newest", firstCursor);
@@ -471,20 +462,16 @@ public sealed class SessionWorkspaceServiceTests
         Assert.Equal([newest.Id], state.Sessions.Select(static session => session.Id));
 
         Assert.Equal([null, firstCursor, null], handler.SessionCursors);
-
     }
 
     [Fact]
     public async Task Refresh_cancellation_propagates_and_retains_prior_session_catalog_state()
     {
-
         using CancellationTokenSource cancellation = new();
 
         FakeSessionHttp handler = new()
         {
-
             BeforeSessionQuery = cancellation.Cancel,
-
         };
 
         SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
@@ -498,11 +485,9 @@ public sealed class SessionWorkspaceServiceTests
 
         CommandCenterState state = new(new SessionLogBuffer())
         {
-
             Sessions = [retained],
 
             LastError = "retained error",
-
         };
 
         state.ApplySessionMeta(
@@ -523,7 +508,6 @@ public sealed class SessionWorkspaceServiceTests
         Assert.Equal("retained error", state.LastError);
 
         Assert.Null(state.TransientStatus);
-
     }
 
     private static SessionSummaryDto Summary(
@@ -545,7 +529,9 @@ public sealed class SessionWorkspaceServiceTests
     {
         RecordingLastSessionStore store = new() { LastId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee") };
         FakeSessionHttp handler = new(failDetail: true);
-        ArcanumApiClient client = new(new FakeHttpClientFactory(handler), new FakeSecretStore());
+        ArcanumApiClient client = new(
+            new FakeHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
         SessionWorkspaceService workspace = new(client, store, NullLogger<SessionWorkspaceService>.Instance);
         CommandCenterState state = new(new SessionLogBuffer());
 
@@ -564,7 +550,6 @@ public sealed class SessionWorkspaceServiceTests
     public async Task Fork_last_session_persistence_refusal_preserves_the_source_active_state(
         byte dispositionValue)
     {
-
         Guid sourceId = Guid.Parse(
             "15151515-1515-1515-1515-151515151515");
 
@@ -588,7 +573,6 @@ public sealed class SessionWorkspaceServiceTests
                 sourceId),
             entries:
             [
-
                 new EntryDto(
                     Guid.NewGuid(),
                     forkId,
@@ -597,7 +581,6 @@ public sealed class SessionWorkspaceServiceTests
                     null,
                     null,
                     now),
-
             ],
             fork: new SessionDetailDto(
                 forkId,
@@ -646,13 +629,11 @@ public sealed class SessionWorkspaceServiceTests
             StringComparison.Ordinal);
 
         Assert.Null(store.LastSaved);
-
     }
 
     [Fact]
     public async Task Fork_cancellation_during_last_session_persistence_propagates_and_retains_source_state()
     {
-
         Guid sourceId = Guid.Parse(
             "44444444-4444-4444-4444-444444444444");
 
@@ -676,7 +657,6 @@ public sealed class SessionWorkspaceServiceTests
                 sourceId),
             entries:
             [
-
                 new EntryDto(
                     Guid.NewGuid(),
                     forkId,
@@ -685,7 +665,6 @@ public sealed class SessionWorkspaceServiceTests
                     null,
                     null,
                     now),
-
             ],
             fork: new SessionDetailDto(
                 forkId,
@@ -736,7 +715,6 @@ public sealed class SessionWorkspaceServiceTests
         Assert.Null(state.TransientStatus);
 
         Assert.Null(store.LastSaved);
-
     }
 
     [Theory]
@@ -745,7 +723,6 @@ public sealed class SessionWorkspaceServiceTests
     public async Task Bound_session_persistence_refusal_warns_and_retains_the_prior_state(
         byte dispositionValue)
     {
-
         Guid prior = Guid.Parse(
             "20202020-2020-2020-2020-202020202020");
 
@@ -780,7 +757,6 @@ public sealed class SessionWorkspaceServiceTests
             "Warning:",
             state.Log.RenderPlainText(),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
@@ -854,7 +830,9 @@ public sealed class SessionWorkspaceServiceTests
         out RecordingLastSessionStore store)
     {
         store = new RecordingLastSessionStore();
-        ArcanumApiClient client = new(new FakeHttpClientFactory(handler), new FakeSecretStore());
+        ArcanumApiClient client = new(
+            new FakeHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
         return new SessionWorkspaceService(client, store, NullLogger<SessionWorkspaceService>.Instance);
     }
 
@@ -880,7 +858,6 @@ public sealed class SessionWorkspaceServiceTests
                 Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
                 CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = revalidateAsync;
@@ -891,15 +868,12 @@ public sealed class SessionWorkspaceServiceTests
 
             if (ThrowOnSave)
             {
-
                 throw new IOException(
                     "The active session could not be persisted.");
-
             }
 
             if (RefusalDisposition is { } disposition)
             {
-
                 Error error = disposition is
                     ArcanumClientMutationDisposition.Blocked
                     ? new Error(
@@ -913,7 +887,6 @@ public sealed class SessionWorkspaceServiceTests
                     disposition is ArcanumClientMutationDisposition.Blocked
                         ? ArcanumClientMutationResult<CliContextDocument>.Blocked(error)
                         : ArcanumClientMutationResult<CliContextDocument>.Unsafe(error));
-
             }
 
             LastSaved = id;
@@ -922,14 +895,13 @@ public sealed class SessionWorkspaceServiceTests
             return Task.FromResult(
                 ArcanumClientMutationResult<CliContextDocument>.Completed(
                     CliContextDocument.Empty with { SessionId = id }));
-
         }
     }
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) =>
-            new(handler, disposeHandler: false) { BaseAddress = new Uri("http://127.0.0.1:9") };
+            new(handler, disposeHandler: false) { BaseAddress = new Uri("http://localhost:5001/") };
     }
 
     private sealed class FakeSecretStore : ISecretStore
@@ -1021,7 +993,6 @@ public sealed class SessionWorkspaceServiceTests
             if (path.EndsWith("/sessions", StringComparison.Ordinal)
                 || path.EndsWith("/sessions/", StringComparison.Ordinal))
             {
-
                 BeforeSessionQuery?.Invoke();
 
                 cancellationToken.ThrowIfCancellationRequested();

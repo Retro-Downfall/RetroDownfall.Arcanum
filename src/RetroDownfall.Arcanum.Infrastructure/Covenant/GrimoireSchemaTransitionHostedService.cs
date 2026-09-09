@@ -33,7 +33,6 @@ internal sealed class GrimoireSchemaTransitionHostedService(
     TimeProvider timeProvider,
     ILogger<GrimoireSchemaTransitionHostedService> logger) : BackgroundService
 {
-
     /// <summary>How long a pass waits before the next one while a run is still advancing.</summary>
     internal static readonly TimeSpan Interval = TimeSpan.FromSeconds(15);
 
@@ -42,47 +41,33 @@ internal sealed class GrimoireSchemaTransitionHostedService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-
         while (!stoppingToken.IsCancellationRequested)
         {
-
             bool advanced = false;
 
             try
             {
-
                 advanced = await RunOnceAsync(stoppingToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
             catch (Exception ex)
             {
-
                 logger.LogError(ex, "A Grimoire schema transition pass failed before it could report a result.");
-
             }
 
             try
             {
-
                 await Task.Delay(advanced ? Interval : IdleInterval, timeProvider, stoppingToken)
                     .ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -126,5 +111,4 @@ internal sealed class GrimoireSchemaTransitionHostedService(
 
         return outcome.Value.Advanced;
     }
-
 }

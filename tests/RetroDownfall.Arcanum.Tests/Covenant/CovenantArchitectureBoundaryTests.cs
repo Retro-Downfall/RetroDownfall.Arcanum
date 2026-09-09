@@ -37,7 +37,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantArchitectureBoundaryTests
 {
-
     private static readonly Assembly CoreAssembly = typeof(CovenantOperationScope).Assembly;
 
     private static readonly Assembly InfrastructureAssembly = typeof(CovenantOperationGate).Assembly;
@@ -163,8 +162,10 @@ public sealed class CovenantArchitectureBoundaryTests
     }
 
     [Fact]
-    public void EveryEffectfulHandlerIsClassifiedExternal()
+    public void Every_effectful_recovery_handler_has_an_exact_admission_classification()
     {
+        // Required callees are concrete external effects. Typed recovery handoffs are graph edges,
+        // not effects; HostedGrimoireProducerInventoryTests proves those closed graphs separately.
         RecoveryEffectContract[] contracts =
         [
             new(
@@ -172,7 +173,6 @@ public sealed class CovenantArchitectureBoundaryTests
                 LongRunningOperationKinds.Batch,
                 [0],
                 [
-                    "RetroDownfall.Arcanum.Api.Intelligence.IBatchRecoveryService.ReconcileStrandedAsync",
                     "System.IO.File.Delete"
                 ]),
             new(
@@ -203,7 +203,6 @@ public sealed class CovenantArchitectureBoundaryTests
                 LongRunningOperationKinds.DataRetentionPrune,
                 [0, 2],
                 [
-                    "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionService.RecoverPruneAsync",
                     "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryDeleteQuarantined"
                 ]),
             new(
@@ -211,17 +210,33 @@ public sealed class CovenantArchitectureBoundaryTests
                 LongRunningOperationKinds.DataRetentionMutation,
                 [2],
                 [
-                    "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionService.RecoverMutationAsync",
                     "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryDeleteQuarantined"
-                ]),
+                ],
+                [4]),
             new(
                 "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler",
                 LongRunningOperationKinds.DataRetentionFactoryReset,
                 [0],
                 [
-                    "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionService.RecoverFactoryResetAsync",
                     "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryQuarantine"
-                ]),
+                ],
+                [2]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapMutationRecoveryHandler",
+                LongRunningOperationKinds.DataRetentionMutation,
+                [],
+                [
+                    "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryDeleteQuarantined"
+                ],
+                [4]),
+            new(
+                "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler",
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                [],
+                [
+                    "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryQuarantine"
+                ],
+                [2]),
             new(
                 "RetroDownfall.Arcanum.Infrastructure.A2A.A2AOutboundSendingRecoveryHandler",
                 LongRunningOperationKinds.A2AOutboundSending,
@@ -305,6 +320,18 @@ public sealed class CovenantArchitectureBoundaryTests
                     decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
                     $"{contract.HandlerType} checkpoint V{checkpointVersion} reaches an external effect but was classified {decision.Kind}.");
             }
+
+            foreach (int checkpointVersion in contract.OwnerBoundCheckpointVersions ?? [])
+            {
+                LongRunningRecoveryAdmissionDecision decision =
+                    LongRunningOperationRecoveryAdmission.Classify(
+                        RecoveryOperation(contract.Kind, checkpointVersion),
+                        ownerEvidence: null);
+
+                Assert.Equal(
+                    LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner,
+                    decision.Kind);
+            }
         }
 
         Assert.True(
@@ -327,7 +354,6 @@ public sealed class CovenantArchitectureBoundaryTests
     [Fact]
     public void Core_covenant_types_reference_no_storage_provider_or_transport()
     {
-
         string[] forbidden =
         [
             "Microsoft.Data.Sqlite",
@@ -345,17 +371,13 @@ public sealed class CovenantArchitectureBoundaryTests
 
         foreach (string name in forbidden)
         {
-
             Assert.DoesNotContain(referenced, reference => reference.Name == name);
-
         }
-
     }
 
     [Fact]
     public void No_covenant_ef_entity_or_migration_exists()
     {
-
         Assert.DoesNotContain(
             InfrastructureAssembly.GetTypes(),
             static type => type.Namespace?.Contains(".Migrations", StringComparison.Ordinal) == true
@@ -366,13 +388,11 @@ public sealed class CovenantArchitectureBoundaryTests
             typeof(RetroDownfall.Arcanum.Infrastructure.Data.ArcanumDbContext)
                 .GetProperties(BindingFlags.Public | BindingFlags.Instance),
             static property => property.Name.Contains("Covenant", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public void One_operation_gate_owns_installation_read_coverage()
     {
-
         Type[] gates = [.. InfrastructureAssembly.GetTypes()
             .Where(static type => type.IsClass && !type.IsAbstract)
             .Where(static type => typeof(ICovenantOperationGate).IsAssignableFrom(type))];
@@ -380,13 +400,11 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.Same(typeof(CovenantOperationGate), Assert.Single(gates));
 
         Assert.NotNull(typeof(ICovenantOperationGate).GetMethod(nameof(ICovenantOperationGate.AcquireInstallationReadAsync)));
-
     }
 
     [Fact]
     public void Resume_or_acquire_is_a_required_gate_operation()
     {
-
         MethodInfo method = Assert.IsAssignableFrom<MethodInfo>(
             typeof(ICovenantOperationGate).GetMethod(
                 nameof(ICovenantOperationGate.ResumeOrAcquireExclusiveAsync)));
@@ -394,13 +412,11 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.True(method.IsAbstract);
 
         Assert.Null(method.GetMethodBody());
-
     }
 
     [Fact]
     public void The_installation_read_lease_is_the_sole_all_scopes_capability()
     {
-
         Type[] leases = [.. CoreAssembly.GetTypes()
             .Where(static type => type.IsClass && !type.IsAbstract)
             .Where(static type => typeof(ICovenantSnapshotReadLease).IsAssignableFrom(type))];
@@ -420,31 +436,26 @@ public sealed class CovenantArchitectureBoundaryTests
                     typeof(CovenantTurnLease),
                     typeof(CovenantProtectedTransferLease),
                 ]));
-
     }
 
     [Fact]
     public void One_search_index_owns_the_snapshot_read_search_signature()
     {
-
         Type[] indexes = [.. InfrastructureAssembly.GetTypes()
             .Where(static type => type.IsClass && !type.IsAbstract)
             .Where(static type => typeof(ICovenantSearchIndex).IsAssignableFrom(type))];
 
         Assert.Same(typeof(CovenantSearchIndex), Assert.Single(indexes));
-
     }
 
     [Fact]
     public void One_store_owns_the_canonical_read_port()
     {
-
         Type[] stores = [.. InfrastructureAssembly.GetTypes()
             .Where(static type => type.IsClass && !type.IsAbstract)
             .Where(static type => typeof(ICovenantStore).IsAssignableFrom(type))];
 
         Assert.Same(typeof(CovenantStore), Assert.Single(stores));
-
     }
 
     /// <summary>
@@ -458,7 +469,6 @@ public sealed class CovenantArchitectureBoundaryTests
     [Fact]
     public void Only_the_outbox_worker_and_rebuilder_write_accelerator_state()
     {
-
         string[] writers = [.. ProductionSourceInventory.Sources()
             .Where(static source => source.Names("covenant_search_documents"))
             .Select(static source => source.RelativePath)
@@ -490,13 +500,11 @@ public sealed class CovenantArchitectureBoundaryTests
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchSql.cs",
             ],
             writers);
-
     }
 
     [Fact]
     public void Every_persistence_component_is_registered_exactly_once()
     {
-
         ServiceCollection services = [];
 
         services.AddArcanumInfrastructure(new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build());
@@ -649,13 +657,11 @@ public sealed class CovenantArchitectureBoundaryTests
         AssertSingleRegistration<ICovenantErasureTransition>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<CovenantErasureCoordinator>(services, ServiceLifetime.Scoped);
-
     }
 
     [Fact]
     public async Task Cli_composition_validates_the_complete_covenant_graph()
     {
-
         ServiceCollection services = [];
 
         services.AddLogging();
@@ -675,13 +681,99 @@ public sealed class CovenantArchitectureBoundaryTests
             static descriptor => descriptor.ServiceType == typeof(DataRetentionService));
 
         await AssertCompleteCovenantGraphAsync(services, isHost: false);
+    }
 
+    [Fact]
+    public async Task Cli_composition_resolves_the_exact_launch_gap_recovery_graph_without_host_services()
+    {
+        ServiceCollection services = [];
+
+        services.AddLogging();
+
+        services.AddArcanumCliClientStack();
+
+        AssertSingleRegistration<IGrimoireOfflineTransitionHandlerDispatch>(
+            services,
+            ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ILongRunningOperationMaintenanceLeaseAdoption>(
+            services,
+            ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<LongRunningOperationReconciler>(
+            services,
+            ServiceLifetime.Scoped);
+
+        AssertSingleRecoveryHandler<CovenantLaunchGapMutationRecoveryHandler>(services);
+
+        AssertSingleRecoveryHandler<CovenantLaunchGapFactoryResetRecoveryHandler>(services);
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType
+                == typeof(ILongRunningOperationGenericRecoveryDiscovery));
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType
+                == typeof(ILongRunningOperationClassifiedRecoveryLeaseAcquisition));
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(DataRetentionService));
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(IDataRetentionService));
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(IDataRetentionHostedSweep));
+
+        await using ServiceProvider provider = services.BuildServiceProvider(
+            new ServiceProviderOptions
+            {
+                ValidateOnBuild = true,
+                ValidateScopes = true,
+            });
+
+        Assert.NotNull(
+            provider.GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>());
+
+        Assert.IsType<GrimoireDbPassphraseSource>(
+                provider.GetRequiredService<IGrimoireDbPassphraseSource>())
+            .SetPassphrase("launch-gap-composition-validation");
+
+        await using AsyncServiceScope scope = provider.CreateAsyncScope();
+
+        LongRunningOperationReconciler reconciler = scope.ServiceProvider
+            .GetRequiredService<LongRunningOperationReconciler>();
+
+        InvalidOperationException genericRecovery = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => reconciler.ReconcileNowAsync(
+                ownerId: "cli-must-not-run-a-generic-recovery-pass",
+                cancellationToken: CancellationToken.None));
+
+        Assert.Contains("generic-discovery", genericRecovery.Message, StringComparison.Ordinal);
+
+        Assert.Single(
+            scope.ServiceProvider.GetServices<ILongRunningOperationRecoveryHandler>(),
+            static handler => string.Equals(
+                handler.Kind,
+                LongRunningOperationKinds.DataRetentionMutation,
+                StringComparison.Ordinal));
+
+        Assert.Single(
+            scope.ServiceProvider.GetServices<ILongRunningOperationRecoveryHandler>(),
+            static handler => string.Equals(
+                handler.Kind,
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task Full_host_composition_validates_the_complete_covenant_graph()
     {
-
         HostApplicationBuilder builder = Host.CreateApplicationBuilder();
 
         builder.Services.AddSingleton<IWeaveService>(static _ => null!);
@@ -727,13 +819,11 @@ public sealed class CovenantArchitectureBoundaryTests
         AssertSingleRecoveryHandler<DataRetentionFactoryResetRecoveryHandler>(builder.Services);
 
         await AssertCompleteCovenantGraphAsync(builder.Services, isHost: true);
-
     }
 
     [Fact]
     public void Covenant_runtime_facades_expose_no_independent_live_state_mutator()
     {
-
         Type[] facades =
         [
             typeof(ICovenantEnvelopeMasterKeyProvider),
@@ -743,7 +833,6 @@ public sealed class CovenantArchitectureBoundaryTests
 
         foreach (Type facade in facades)
         {
-
             Assert.All(
                 facade.GetProperties(),
                 static property => Assert.Null(property.SetMethod));
@@ -756,15 +845,12 @@ public sealed class CovenantArchitectureBoundaryTests
                         || method.Name.StartsWith("Replace", StringComparison.Ordinal)
                         || method.Name.StartsWith("Retire", StringComparison.Ordinal)
                         || method.Name.StartsWith("Set", StringComparison.Ordinal)));
-
         }
-
     }
 
     [Fact]
     public void Every_covenant_connection_goes_through_the_central_initializer()
     {
-
         string[] offenders = [.. Directory
             .EnumerateFiles(Path.Combine(RepositoryRoot(), "tests"), "*.cs", SearchOption.AllDirectories)
             .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
@@ -779,39 +865,33 @@ public sealed class CovenantArchitectureBoundaryTests
         // A Covenant suite that opened a raw connection would find its trigger guards missing rather
         // than denying, and would pass for the wrong reason.
         Assert.Empty(offenders);
-
     }
 
     private static void AssertSingleRegistration<TService>(
         IServiceCollection services,
         ServiceLifetime expected)
     {
-
         ServiceDescriptor descriptor = Assert.Single(
             services,
             candidate => candidate.ServiceType == typeof(TService));
 
         Assert.Equal(expected, descriptor.Lifetime);
-
     }
 
     private static void AssertSingleRecoveryHandler<THandler>(IServiceCollection services)
     {
-
         ServiceDescriptor descriptor = Assert.Single(
             services,
             static candidate => candidate.ServiceType == typeof(ILongRunningOperationRecoveryHandler)
                 && candidate.ImplementationType == typeof(THandler));
 
         Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
-
     }
 
     private static async Task AssertCompleteCovenantGraphAsync(
         IServiceCollection services,
         bool isHost)
     {
-
         SqliteNativeRuntime.Instance.Initialize();
 
         await using ServiceProvider provider = services.BuildServiceProvider(
@@ -964,17 +1044,13 @@ public sealed class CovenantArchitectureBoundaryTests
             _ = firstScope.ServiceProvider.GetRequiredService<CovenantResetCheckpointInitiator>();
 
             _ = provider.GetRequiredService<ICovenantErasureEffectDigestCalculator>();
-
         }
         else
         {
-
             Assert.Null(firstScope.ServiceProvider.GetService<CovenantResetCheckpointInitiator>());
 
             Assert.Null(provider.GetService<ICovenantErasureEffectDigestCalculator>());
-
         }
-
     }
 
     private static INamedTypeSymbol RequiredSourceType(
@@ -1363,35 +1439,18 @@ public sealed class CovenantArchitectureBoundaryTests
         string HandlerType,
         string Kind,
         IReadOnlyList<int> ExternalCheckpointVersions,
-        IReadOnlyList<string> RequiredCallees);
+        IReadOnlyList<string> RequiredCallees,
+        IReadOnlyList<int>? OwnerBoundCheckpointVersions = null);
 
     private static CovenantRuntimeGenerationProvider RuntimeHolder(object facade)
     {
-
         FieldInfo field = Assert.Single(
             facade.GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic),
             static candidate => candidate.FieldType == typeof(CovenantRuntimeGenerationProvider));
 
         return Assert.IsType<CovenantRuntimeGenerationProvider>(field.GetValue(facade));
-
     }
 
-    private static string RepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null && !Directory.Exists(Path.Combine(directory.FullName, "src")))
-        {
-
-            directory = directory.Parent;
-
-        }
-
-        Assert.NotNull(directory);
-
-        return directory!.FullName;
-
-    }
-
+    private static string RepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

@@ -29,6 +29,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 public sealed class DoctorCommand(
     IOptions<ArcanumSettings> options,
     IHttpClientFactory httpClientFactory,
+    ArcanumApiCredentialLease credentialLease,
     ISecretStore secretStore,
     IProviderCredentialStore providerCredentialStore,
     IWebResearchCredentialStore webResearchCredentialStore,
@@ -40,7 +41,6 @@ public sealed class DoctorCommand(
     IConfirmationPrompt confirmationPrompt,
     IGrimoireCliInitialization initialization)
 {
-
     private const string OkGlyph = "\u2713";
 
     private const string WarnGlyph = "!";
@@ -59,7 +59,6 @@ public sealed class DoctorCommand(
         bool json,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         // --fix-permissions applies exactly one narrowing, idempotent repair and has never prompted,
@@ -69,19 +68,15 @@ public sealed class DoctorCommand(
         // force-apply an unrelated repair.
         if (request.Apply && request.Repairs.Count > 0)
         {
-
             bool confirmed = await ConfirmRepairsAsync(request, json, cancellationToken).ConfigureAwait(false);
 
             if (!confirmed)
             {
-
                 consoleDispatcher.WriteDiagnostic(
                     "Cancelled. Nothing was changed. Re-run without --apply to see the plan again.");
 
                 return (int)CliExitCode.Success;
-
             }
-
         }
 
         bool mutates = fixPermissions || request.Apply && request.Repairs.Count > 0;
@@ -93,7 +88,6 @@ public sealed class DoctorCommand(
 
         if (report.IsSuccess && mutates)
         {
-
             IReadOnlyList<DoctorRepairResult> applied = await initialization
                 .RunExclusiveAsync(
                     (_, token) => ApplyRequestedRepairsAsync(request, fixPermissions, token),
@@ -102,16 +96,13 @@ public sealed class DoctorCommand(
 
             report = Result<DoctorReport>.Success(
                 MergeAppliedRepairs(report.Value, applied, fixPermissions, request.Strict));
-
         }
 
         if (report.IsFailure)
         {
-
             consoleDispatcher.WriteDiagnostic(report.Error.Message);
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         // --fix-permissions kept its pre-#33 exit contract: it reports whether the repair succeeded,
@@ -124,17 +115,14 @@ public sealed class DoctorCommand(
 
         if (json)
         {
-
             consoleDispatcher.WriteJson(
                 report.Value,
                 ArcanumJsonContext.Default.DoctorReport);
 
             return healthy ? (int)CliExitCode.Success : (int)CliExitCode.GenericError;
-
         }
 
         return await RunHumanAsync(request, report.Value, healthy, cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -147,14 +135,12 @@ public sealed class DoctorCommand(
         bool fixPermissions,
         CancellationToken cancellationToken)
     {
-
         List<IDoctorRepair> selected = request.Apply
             ? [.. diagnosticRunner.SelectRepairs(request).Value]
             : [];
 
         if (fixPermissions)
         {
-
             IDoctorRepair? permissions = diagnosticRunner.Repairs.FirstOrDefault(
                 static repair => repair.Id == PermissionApplyOwnerOnlyRepair.RepairId);
 
@@ -164,18 +150,14 @@ public sealed class DoctorCommand(
                     permissions.Id,
                     StringComparison.Ordinal)))
             {
-
                 selected.Add(permissions);
-
             }
-
         }
 
         List<DoctorRepairResult> results = [];
 
         foreach (IDoctorRepair repair in selected)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             DoctorRepairResult revalidated = await RunRepairPhaseAsync(
@@ -188,11 +170,9 @@ public sealed class DoctorCommand(
                 ? await RunRepairPhaseAsync(repair, apply: true, cancellationToken)
                     .ConfigureAwait(false)
                 : revalidated);
-
         }
 
         return results;
-
     }
 
     private static async Task<DoctorRepairResult> RunRepairPhaseAsync(
@@ -200,33 +180,25 @@ public sealed class DoctorCommand(
         bool apply,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             return apply
                 ? await repair.ApplyAsync(cancellationToken).ConfigureAwait(false)
                 : await repair.PlanAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception exception)
         {
-
             return new DoctorRepairResult(
                 repair.Id,
                 DoctorRepairState.Failed,
                 apply ? "The repair could not be applied." : "The repair could not be planned.",
                 [],
                 exception.GetType().Name);
-
         }
-
     }
 
     private static DoctorReport MergeAppliedRepairs(
@@ -235,7 +207,6 @@ public sealed class DoctorCommand(
         bool fixPermissions,
         bool strict)
     {
-
         Dictionary<string, DoctorRepairResult> replacements = applied.ToDictionary(
             static result => result.RepairId,
             StringComparer.Ordinal);
@@ -244,22 +215,18 @@ public sealed class DoctorCommand(
 
         foreach (DoctorRepairResult planned in report.Repairs ?? [])
         {
-
             if (fixPermissions
                 && string.Equals(
                     planned.RepairId,
                     PermissionApplyOwnerOnlyRepair.RepairId,
                     StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             merged.Add(replacements.Remove(planned.RepairId, out DoctorRepairResult? replacement)
                 ? replacement
                 : planned);
-
         }
 
         if (fixPermissions
@@ -267,9 +234,7 @@ public sealed class DoctorCommand(
                 PermissionApplyOwnerOnlyRepair.RepairId,
                 out DoctorRepairResult? permissions))
         {
-
             merged.Add(permissions);
-
         }
 
         merged.AddRange(replacements.Values);
@@ -286,7 +251,6 @@ public sealed class DoctorCommand(
             Outcome = outcome,
             Repairs = merged,
         };
-
     }
 
     /// <summary>
@@ -295,16 +259,13 @@ public sealed class DoctorCommand(
     /// </summary>
     public Task<int> List(bool json, CancellationToken cancellationToken)
     {
-
         DoctorCatalog catalog = BuildCatalog();
 
         if (json)
         {
-
             consoleDispatcher.WriteJson(catalog, ArcanumJsonContext.Default.DoctorCatalog);
 
             return Task.FromResult((int)CliExitCode.Success);
-
         }
 
         Table checks = new();
@@ -321,13 +282,11 @@ public sealed class DoctorCommand(
 
         foreach (DoctorCatalogCheck check in catalog.Checks)
         {
-
             checks.AddRow(
                 themePalette.HighlightMarkup(Markup.Escape(check.Id)),
                 themePalette.MutedMarkup(Markup.Escape(check.Subsystem.ToString())),
                 themePalette.TextMarkup(Markup.Escape(
                     check.RequiresNetwork ? check.Name + " (needs --include-network)" : check.Name)));
-
         }
 
         WritePanel("Diagnostics", checks);
@@ -346,17 +305,14 @@ public sealed class DoctorCommand(
 
         foreach (DoctorCatalogRepair repair in catalog.Repairs)
         {
-
             repairs.AddRow(
                 themePalette.HighlightMarkup(Markup.Escape(repair.Id)),
                 themePalette.TextMarkup(Markup.Escape(repair.Description)));
-
         }
 
         WritePanel("Repairs", repairs);
 
         return Task.FromResult((int)CliExitCode.Success);
-
     }
 
     /// <summary>
@@ -365,7 +321,6 @@ public sealed class DoctorCommand(
     /// </summary>
     public Task<int> Explain(string id, bool json, CancellationToken cancellationToken)
     {
-
         DoctorCatalog catalog = BuildCatalog();
 
         DoctorCatalogCheck? check = catalog.Checks.FirstOrDefault(
@@ -376,17 +331,14 @@ public sealed class DoctorCommand(
 
         if (check is null && repair is null)
         {
-
             consoleDispatcher.WriteDiagnostic(
                 $"'{id}' is not a known diagnostic id, subsystem, or repair id. Run 'arcanum doctor list' to see every id.");
 
             return Task.FromResult((int)CliExitCode.ConfigurationError);
-
         }
 
         if (json)
         {
-
             consoleDispatcher.WriteJson(
                 new DoctorCatalog(
                     check is null ? [] : [check],
@@ -394,12 +346,10 @@ public sealed class DoctorCommand(
                 ArcanumJsonContext.Default.DoctorCatalog);
 
             return Task.FromResult((int)CliExitCode.Success);
-
         }
 
         if (check is not null)
         {
-
             WritePanel(
                 check.Id,
                 BuildLabelTable(
@@ -407,17 +357,13 @@ public sealed class DoctorCommand(
                     ("Reports", check.Name),
                     ("Network", check.RequiresNetwork ? "yes \u2014 requires --include-network" : "no"),
                     ("Run it", $"arcanum doctor --only {check.Id}")));
-
         }
 
         if (repair is not null)
         {
-
             if (check is not null)
             {
-
                 AnsiConsole.WriteLine();
-
             }
 
             WritePanel(
@@ -428,11 +374,9 @@ public sealed class DoctorCommand(
                     ("Detected by", string.Join(", ", repair.DetectorIds)),
                     ("Plan it", $"arcanum doctor --repair {repair.Id}"),
                     ("Apply it", $"arcanum doctor --repair {repair.Id} --apply")));
-
         }
 
         return Task.FromResult((int)CliExitCode.Success);
-
     }
 
     private DoctorCatalog BuildCatalog() =>
@@ -458,7 +402,6 @@ public sealed class DoctorCommand(
         bool json,
         CancellationToken cancellationToken)
     {
-
         // Show the plan before asking. A confirmation prompt that does not say what will change is
         // not consent, and the plan is free \u2014 it is the same side-effect-free call --repair makes.
         // The preview keeps --only/--skip: clearing them would run exactly the probes the operator
@@ -470,16 +413,12 @@ public sealed class DoctorCommand(
 
         if (plan.IsSuccess && !json)
         {
-
             foreach (DoctorRepairResult result in plan.Value.Repairs ?? [])
             {
-
                 WriteRepairPanel(result);
 
                 AnsiConsole.WriteLine();
-
             }
-
         }
 
         return await confirmationPrompt
@@ -487,7 +426,6 @@ public sealed class DoctorCommand(
                 $"Apply {request.Repairs.Count} repair(s) to this Arcanum installation?",
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -499,16 +437,13 @@ public sealed class DoctorCommand(
         DoctorRunRequest request,
         CancellationToken cancellationToken)
     {
-
         Result<DoctorReport> registered = await diagnosticRunner
             .RunAsync(request, cancellationToken, LegacyDoctorChecks.Catalog)
             .ConfigureAwait(false);
 
         if (registered.IsFailure)
         {
-
             return registered;
-
         }
 
         // The pre-#33 checks come first so the --json document keeps its historical head, and they
@@ -524,14 +459,12 @@ public sealed class DoctorCommand(
 
         if (checks.Count == 0)
         {
-
             // An empty report that says "healthy" is the worst possible answer: a CI gate would pass
             // on a diagnostic that inspected nothing at all.
             return Result<DoctorReport>.Failure(new Error(
                 DoctorErrors.UnknownSelectorCode,
                 "That combination of --only and --skip selects no diagnostics, so nothing would be "
                 + "checked. Run 'arcanum doctor list' to see every id."));
-
         }
 
         DoctorOutcome outcome = DoctorOutcomes.Aggregate(
@@ -543,7 +476,6 @@ public sealed class DoctorCommand(
             && !DoctorOutcomes.IsFailure(outcome, request.Strict);
 
         return Result<DoctorReport>.Success(new DoctorReport(healthy, checks, outcome, repairs));
-
     }
 
     /// <summary>
@@ -558,7 +490,6 @@ public sealed class DoctorCommand(
 
     private static bool IsSelected(string id, DoctorSubsystem subsystem, DoctorRunRequest request)
     {
-
         bool included = request.Only.Count == 0
             || request.Only.Any(selector =>
                 DoctorDiagnosticRunner.MatchesSelector(id, subsystem, selector));
@@ -567,7 +498,6 @@ public sealed class DoctorCommand(
             DoctorDiagnosticRunner.MatchesSelector(id, subsystem, selector));
 
         return included && !excluded;
-
     }
 
     private async Task<int> RunHumanAsync(
@@ -576,7 +506,6 @@ public sealed class DoctorCommand(
         bool healthy,
         CancellationToken cancellationToken)
     {
-
         // Every panel is rendered from the report that was already computed. The decorated legacy
         // panels used to be written by a second, independent pass over the same probes, which meant
         // a plain `arcanum doctor` issued three /api/health requests instead of one and could print
@@ -585,20 +514,16 @@ public sealed class DoctorCommand(
 
         foreach (DoctorCheck check in report.Checks.Where(static check => check.Id is not null))
         {
-
             AnsiConsole.WriteLine();
 
             WriteFindingPanel(check);
-
         }
 
         foreach (DoctorRepairResult repair in report.Repairs ?? [])
         {
-
             AnsiConsole.WriteLine();
 
             WriteRepairPanel(repair);
-
         }
 
         AnsiConsole.WriteLine();
@@ -608,12 +533,10 @@ public sealed class DoctorCommand(
         await Task.CompletedTask.ConfigureAwait(false);
 
         return healthy ? (int)CliExitCode.Success : (int)CliExitCode.GenericError;
-
     }
 
     private void WriteFindingPanel(DoctorCheck check)
     {
-
         Table table = new();
 
         table.Border(TableBorder.None);
@@ -632,22 +555,18 @@ public sealed class DoctorCommand(
 
         foreach (DoctorRemedy remedy in check.Remedies ?? [])
         {
-
             table.AddRow(
                 themePalette.MutedMarkup(Markup.Escape("\u2192")),
                 themePalette.HighlightLabelMarkup(
                     Markup.Escape(remedy.Command),
                     Markup.Escape(remedy.Explanation)));
-
         }
 
         WritePanel($"{check.Name} ({check.Id})", table);
-
     }
 
     private void WriteRepairPanel(DoctorRepairResult repair)
     {
-
         Table table = new();
 
         table.Border(TableBorder.None);
@@ -670,29 +589,23 @@ public sealed class DoctorCommand(
 
         foreach (DoctorRepairStep step in repair.Steps)
         {
-
             table.AddRow(
                 themePalette.MutedMarkup(Markup.Escape("\u00b7")),
                 themePalette.MutedMarkup(Markup.Escape($"{step.Target}: {step.Before} \u2192 {step.After}")));
-
         }
 
         if (!string.IsNullOrWhiteSpace(repair.Failure))
         {
-
             table.AddRow(
                 themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
                 themePalette.ErrorMarkup(Markup.Escape(repair.Failure)));
-
         }
 
         WritePanel($"Repair: {repair.RepairId} ({repair.State})", table);
-
     }
 
     private void WriteSummary(DoctorReport report, bool healthy, bool strict)
     {
-
         int unhealthy = report.Checks.Count(static check => check.Outcome == DoctorOutcome.Unhealthy);
 
         int degraded = report.Checks.Count(static check =>
@@ -708,7 +621,6 @@ public sealed class DoctorCommand(
             ("Discover ids", "arcanum doctor list"));
 
         WritePanel("Summary", table);
-
     }
 
     private string OutcomeGlyph(DoctorOutcome outcome) => outcome switch
@@ -732,19 +644,14 @@ public sealed class DoctorCommand(
         DoctorRunRequest request,
         CancellationToken cancellationToken)
     {
-
         List<DoctorCheck> checks = [];
 
         void AddIfSelected(string id, DoctorSubsystem subsystem, Func<DoctorCheck> build)
         {
-
             if (IsSelected(id, subsystem, request))
             {
-
                 checks.Add(build());
-
             }
-
         }
 
         AddIfSelected("system.version", DoctorSubsystem.System, BuildVersionCheck);
@@ -758,10 +665,8 @@ public sealed class DoctorCommand(
 
         if (IsSelected("credentials.providers", DoctorSubsystem.Credentials, request))
         {
-
             checks.Add(
                 await BuildProviderCredentialsCheckAsync(cancellationToken).ConfigureAwait(false));
-
         }
 
         AddIfSelected("mcp.global_config", DoctorSubsystem.Mcp, () => BuildMcpConfigCheck().Check);
@@ -777,9 +682,7 @@ public sealed class DoctorCommand(
 
         if (IsSelected("storage.file_encryption", DoctorSubsystem.Storage, request))
         {
-
             checks.Add((await BuildFileEncryptionCheckAsync(cancellationToken).ConfigureAwait(false)).Check);
-
         }
 
         AddIfSelected("weave.embeddings", DoctorSubsystem.Weave, BuildEmbeddingsCheck);
@@ -792,43 +695,33 @@ public sealed class DoctorCommand(
 
         if (wantsApi || wantsDurable)
         {
-
             (_, DoctorCheck apiCheck, DoctorProbeResult apiProbe) =
                 await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
 
             if (wantsApi)
             {
-
                 checks.Add(apiCheck);
-
             }
 
             if (wantsDurable)
             {
-
                 checks.Add(
                     BuildDurableOperationsCheck(apiProbe.Kind == DoctorProbeKind.Ok, apiProbe.Detail));
-
             }
-
         }
 
         return checks;
-
     }
 
     private void WriteVersionPanel()
     {
-
         (string version, Table table) = BuildVersionPanelCore();
 
         WritePanel("System", table);
-
     }
 
     private (string Version, Table Table) BuildVersionPanelCore()
     {
-
         string version = RetroDownfall.Arcanum.Core.ArcanumBuildInfo.InformationalVersion;
 
         int plus = version.IndexOf('+');
@@ -847,19 +740,16 @@ public sealed class DoctorCommand(
             ("Color enabled", cliEnvironment.ColorEnabled ? "yes" : "no"));
 
         return (version, table);
-
     }
 
     private DoctorCheck BuildVersionCheck()
     {
-
         (string version, _) = BuildVersionPanelCore();
 
         return new DoctorCheck(
             "Version",
             "ok",
             $"Arcanum {version}, OS {RuntimeInformation.OSDescription}, Runtime {RuntimeInformation.FrameworkDescription}");
-
     }
 
     /// <summary>
@@ -870,7 +760,6 @@ public sealed class DoctorCommand(
     /// </summary>
     private (bool Healthy, DoctorCheck Check) BuildPathsCheck()
     {
-
         List<string> missing = [];
 
         foreach ((string label, string path) in new[]
@@ -880,25 +769,19 @@ public sealed class DoctorCommand(
             ("API key store", ArcanumPaths.ApiKeyStoreFile),
         })
         {
-
             bool exists = path == ArcanumPaths.GrimoireDirectory
                 ? Directory.Exists(path)
                 : File.Exists(path);
 
             if (!exists)
             {
-
                 missing.Add(label);
-
             }
-
         }
 
         if (missing.Count == 0)
         {
-
             return (true, new DoctorCheck("Paths", "ok", "Every required path is present."));
-
         }
 
         return (
@@ -908,36 +791,27 @@ public sealed class DoctorCommand(
                 "fail",
                 $"{missing.Count} required path(s) missing: {string.Join(", ", missing)}. "
                 + "They are created the first time the host starts."));
-
     }
 
     private (bool Healthy, DoctorCheck Check) BuildArcanumConfigCheck()
     {
-
         string configFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
 
         if (!File.Exists(configFile))
         {
-
             return (true, new DoctorCheck("Configuration", "warn", $"{configFile} not found (optional)"));
-
         }
 
         try
         {
-
             ConfigurationBootstrapper.ValidateArcanumConfigurationFile(configFile);
 
             return (true, new DoctorCheck("Configuration", "ok", $"{configFile} valid JSON"));
-
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
-
             return (false, new DoctorCheck("Configuration", "fail", $"{configFile}: {ex.Message}"));
-
         }
-
     }
 
     private async Task<DoctorCheck> BuildProviderCredentialsCheckAsync(
@@ -1082,14 +956,11 @@ public sealed class DoctorCommand(
 
     private (bool Healthy, DoctorCheck Check) BuildMcpConfigCheck()
     {
-
         string globalMcpPath = ArcanumPaths.GlobalMcpConfigFile;
 
         if (!File.Exists(globalMcpPath))
         {
-
             return (true, new DoctorCheck("MCP", "warn", $"{globalMcpPath} not found (optional)"));
-
         }
 
         try
@@ -1116,12 +987,10 @@ public sealed class DoctorCommand(
         {
             return (false, new DoctorCheck("MCP", "fail", $"{globalMcpPath}: {ex.Message}"));
         }
-
     }
 
     private (bool Healthy, DoctorCheck Check) BuildTokenizerCheck()
     {
-
         string encoding = string.IsNullOrWhiteSpace(
             options.Value.ResolveIntelligence().TokenizerEncoding)
             ? "o200k_base"
@@ -1139,12 +1008,10 @@ public sealed class DoctorCommand(
         {
             return (false, new DoctorCheck("Tokenizer", "fail", $"{encoding} failed: {ex.Message}"));
         }
-
     }
 
     private DoctorCheck BuildToolChildSandboxCheck()
     {
-
         bool escapeHatch = options.Value.Security?.AllowUnsandboxedToolChildren ?? false;
 
         ToolChildSandboxStatus status = ToolChildSandboxCapabilityReporter.BuildForCurrentHost(escapeHatch);
@@ -1157,19 +1024,16 @@ public sealed class DoctorCommand(
             + status.OperatorGuidance;
 
         return new DoctorCheck("ToolChildSandbox", checkStatus, detail);
-
     }
 
     private DoctorCheck BuildMasterKeyCheck()
     {
-
         (bool present, string detail, string guidance) = ProbeMasterKeyPresence();
 
         return new DoctorCheck(
             "MasterApiKey",
             present ? "ok" : "warn",
             $"{detail} {guidance}");
-
     }
 
     private async Task<(bool Healthy, DoctorCheck Check)> BuildFileEncryptionCheckAsync(
@@ -1200,10 +1064,8 @@ public sealed class DoctorCommand(
 
     private (bool Present, string Detail, string Guidance) ProbeMasterKeyPresence()
     {
-
         try
         {
-
             // Synchronous probe via secret store — never print the key.
             SecretStoreReadResult keyRead = secretStore
                 .PeekApiKeyReadResultAsync()
@@ -1216,51 +1078,40 @@ public sealed class DoctorCommand(
 
             if (!string.IsNullOrWhiteSpace(key))
             {
-
                 return (
                     true,
                     "Master API key is readable from the Arcanum secret store.",
                     "Use `arcanum key show` only when you need to copy it; Prefer The Forge OS credential store for desktop.");
-
             }
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             return (
                 false,
                 $"Could not read master API key ({ex.GetType().Name}).",
                 BuildKeyRecoveryGuidance());
-
         }
 
         return (
             false,
             "Master API key is not present or not readable.",
             BuildKeyRecoveryGuidance());
-
     }
 
     private static string BuildKeyRecoveryGuidance()
     {
-
         if (OperatingSystem.IsLinux())
         {
-
             return "Run `arcanum key set`, install/start Secret Service (libsecret) for The Forge, "
                 + "or set THEFORGE_ARCANUM_KEY as a private-beta process-only workaround.";
-
         }
 
         return "Run `arcanum key set` or paste the key in The Forge when prompted. "
             + "Optional private-beta override: THEFORGE_ARCANUM_KEY (process-only, not persisted).";
-
     }
 
     private (bool InformationalOk, Table Table) BuildEmbeddingsPanelCore()
     {
-
         EmbeddingSettings embeddings = options.Value.ResolveEmbeddings();
 
         bool enabled = embeddings.Enabled;
@@ -1293,12 +1144,10 @@ public sealed class DoctorCommand(
             ("Guidance", guidance));
 
         return (true, table);
-
     }
 
     private DoctorCheck BuildEmbeddingsCheck()
     {
-
         EmbeddingSettings embeddings = options.Value.ResolveEmbeddings();
 
         string mode = !embeddings.Enabled
@@ -1311,7 +1160,6 @@ public sealed class DoctorCommand(
             "Embeddings",
             mode is "disabled" or "managed" ? "ok" : "warn",
             $"enabled={embeddings.Enabled}; mode={mode}; budget=none");
-
     }
 
     /// <summary>
@@ -1320,25 +1168,20 @@ public sealed class DoctorCommand(
     /// </summary>
     internal static DoctorCheck BuildDurableOperationsCheck(bool hostReachable, string? detail)
     {
-
         if (!hostReachable)
         {
-
             return new DoctorCheck(
                 "DurableOperations",
                 "warn",
                 "Host unreachable, so durable-operation state could not be read. Start 'arcanum serve', then re-run 'arcanum doctor' or 'arcanum operation list --state ReconciliationRequired'.");
-
         }
 
         if (string.IsNullOrWhiteSpace(detail))
         {
-
             return new DoctorCheck(
                 "DurableOperations",
                 "warn",
                 "The host did not report durable-operation state. Inspect it with 'arcanum operation list'.");
-
         }
 
         return new DoctorCheck(
@@ -1346,12 +1189,10 @@ public sealed class DoctorCommand(
             "ok",
             detail
                 + " Repair anything stale or requiring reconciliation with 'arcanum operation list --state ReconciliationRequired'.");
-
     }
 
     private async Task<(bool Healthy, DoctorCheck Check, DoctorProbeResult Probe)> BuildApiReachabilityCheckAsync(CancellationToken cancellationToken)
     {
-
         HostSettings host = options.Value.Host;
 
         bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny);
@@ -1363,18 +1204,9 @@ public sealed class DoctorCommand(
 
         HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
-        SecretStoreReadResult apiKeyRead = await secretStore
-            .PeekApiKeyReadResultAsync()
-            .ConfigureAwait(false);
-
-        string? apiKey = apiKeyRead.Status == SecretStoreReadStatus.Ok
-            ? apiKeyRead.Value
-            : null;
-
         DoctorProbeResult probe = await ProbeApiReachabilityAsync(
                 client,
                 new Uri(targetUrl),
-                apiKey,
                 timeoutSeconds,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1405,20 +1237,22 @@ public sealed class DoctorCommand(
         };
 
         return (mapped.Healthy, mapped.Check, probe);
-
     }
 
     private async Task<DoctorProbeResult> ProbeApiReachabilityAsync(
         HttpClient client,
         Uri healthUrl,
-        string? apiKey,
         int timeoutSeconds,
         CancellationToken cancellationToken)
     {
-
         Task<DoctorProbeResult> RunProbeAsync()
         {
-            return ProbeApiReachabilityInnerAsync(client, healthUrl, apiKey, timeoutSeconds, cancellationToken);
+            return ProbeApiReachabilityInnerAsync(
+                client,
+                healthUrl,
+                credentialLease,
+                timeoutSeconds,
+                cancellationToken);
         }
 
         if (!cliEnvironment.IsInteractive || !cliEnvironment.ColorEnabled)
@@ -1440,24 +1274,22 @@ public sealed class DoctorCommand(
             .ConfigureAwait(false);
 
         return result;
-
     }
 
     private static async Task<DoctorProbeResult> ProbeApiReachabilityInnerAsync(
         HttpClient client,
         Uri healthUrl,
-        string? apiKey,
+        ArcanumApiCredentialLease credentialLease,
         int timeoutSeconds,
         CancellationToken cancellationToken)
     {
-
         try
         {
             HealthProbeResult probe = await ArcanumHealthProbe
-                .ProbeAsync(
+                .ProbeAuthenticatedAsync(
                     client,
                     healthUrl,
-                    apiKey,
+                    credentialLease,
                     TimeSpan.FromSeconds(timeoutSeconds),
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -1468,7 +1300,6 @@ public sealed class DoctorCommand(
         {
             return new DoctorProbeResult(DoctorProbeKind.Cancelled, 0, null);
         }
-
     }
 
     private static DoctorProbeResult MapHealthProbe(HealthProbeResult probe) =>
@@ -1506,7 +1337,6 @@ public sealed class DoctorCommand(
 
     private Table BuildLabelTable(params (string Label, string Value)[] rows)
     {
-
         Table table = new();
 
         table.Border(TableBorder.None);
@@ -1525,12 +1355,10 @@ public sealed class DoctorCommand(
         }
 
         return table;
-
     }
 
     private void WritePanel(string title, IRenderable content)
     {
-
         Panel panel = new(content)
         {
             Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape(title))),
@@ -1541,7 +1369,6 @@ public sealed class DoctorCommand(
         };
 
         AnsiConsole.Write(panel);
-
     }
 
     private readonly record struct CredentialReferenceStatus(
@@ -1554,7 +1381,6 @@ public sealed class DoctorCommand(
 
     private enum DoctorProbeKind
     {
-
         Ok,
 
         Unauthorized,
@@ -1572,5 +1398,4 @@ public sealed class DoctorCommand(
     }
 
     private readonly record struct DoctorProbeResult(DoctorProbeKind Kind, int HttpStatus, string? Detail);
-
 }

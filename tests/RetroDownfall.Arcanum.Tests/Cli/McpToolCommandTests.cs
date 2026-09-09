@@ -30,12 +30,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class McpToolCommandTests
 {
-
     [Fact]
 
     public void Help_lists_complete_mcp_and_tool_command_families()
     {
-
         CliTestResult mcp = RunCommand(new RecordingHandler(), ["mcp", "--help"]);
 
         CliTestResult tool = RunCommand(new RecordingHandler(), ["tool", "--help"]);
@@ -67,17 +65,14 @@ public sealed class McpToolCommandTests
         Assert.Contains("show", tool.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("invoke", tool.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Mcp_list_shows_safe_scope_transport_trust_lifecycle_tool_count_and_error()
     {
-
         McpServerInfo server = WorkspaceServer() with
         {
-
             ErrorMessage = "connection refused",
 
             Command = "secret-command",
@@ -85,7 +80,6 @@ public sealed class McpToolCommandTests
             Arguments = ["--token", "secret-value"],
 
             Url = "https://secret.example.test/mcp",
-
         };
 
         RecordingHandler handler = new(_ => McpListResponse([server]));
@@ -121,7 +115,6 @@ public sealed class McpToolCommandTests
         Assert.DoesNotContain("secret-value", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("secret.example", result.Output, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -134,19 +127,14 @@ public sealed class McpToolCommandTests
 
     public void Mcp_lifecycle_commands_resolve_scope_then_call_the_server_api(string action)
     {
-
         RecordingHandler handler = new(request =>
         {
-
             if (request.Method == HttpMethod.Get)
             {
-
                 return McpListResponse([WorkspaceServer()]);
-
             }
 
             return BooleanResponse();
-
         });
 
         CliTestResult result = RunCommand(handler, ["mcp", action, "workspace-server"]);
@@ -165,14 +153,12 @@ public sealed class McpToolCommandTests
             "workingDirectory=%2Fsrv%2Fworkspace",
             request.RequestUri.Query,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Mcp_show_reads_the_scope_disambiguated_server_detail()
     {
-
         RecordingHandler handler = new(request =>
             request.RequestUri!.AbsolutePath == "/api/mcp"
                 ? McpListResponse([WorkspaceServer()])
@@ -191,14 +177,12 @@ public sealed class McpToolCommandTests
         Assert.Contains("trusted", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("workspace", result.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Mcp_reload_and_trust_send_explicit_workspace_scope()
     {
-
         RecordingHandler handler = new(request =>
             request.RequestUri!.AbsolutePath.EndsWith("/reload", StringComparison.Ordinal)
                 ? CreateResponse(
@@ -228,14 +212,12 @@ public sealed class McpToolCommandTests
                 "\"workingDirectory\":\"/srv/workspace\"",
                 ReadBody(request),
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
 
     public void Mcp_tools_lists_only_the_selected_servers_tools()
     {
-
         RecordingHandler handler = new(_ => McpListResponse([WorkspaceServer()]));
 
         CliTestResult result = RunCommand(handler, ["mcp", "tools", "workspace-server"]);
@@ -247,21 +229,17 @@ public sealed class McpToolCommandTests
         Assert.Contains("external_read", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("workspace-server", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Mcp_tools_preserves_server_owned_windows_workspace_paths()
     {
-
         const string serverPath = @"C:\srv\workspace";
 
         McpServerInfo server = WorkspaceServer() with
         {
-
             WorkingDirectory = serverPath,
-
         };
 
         RecordingHandler handler = new(_ => McpListResponse([server]));
@@ -273,27 +251,21 @@ public sealed class McpToolCommandTests
         Assert.Equal(0, result.ExitCode);
 
         Assert.Contains("external_search", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Mcp_invoke_posts_inline_json_to_external_diagnostic_route()
     {
-
         RecordingHandler handler = new(request =>
         {
-
             if (request.RequestUri!.AbsolutePath == "/api/intelligence/arsenal")
             {
-
                 return ArsenalResponse();
-
             }
 
             McpToolInvokeResponse response = new()
             {
-
                 Result = JsonSerializer.SerializeToElement(new { answer = 42 }),
 
                 ServerName = "workspace-server",
@@ -303,13 +275,11 @@ public sealed class McpToolCommandTests
                 DurationMs = 12,
 
                 Truncated = false,
-
             };
 
             return CreateResponse(
                 new ApiResponse<McpToolInvokeResponse>(response, true, null),
                 ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse);
-
         });
 
         CliTestResult result = RunCommand(
@@ -348,14 +318,12 @@ public sealed class McpToolCommandTests
         Assert.Contains("42", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("12", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Mcp_invoke_explains_master_pipeline_policy_without_invoking_it()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<McpToolInvokeResponse>(
                 null,
@@ -377,14 +345,12 @@ public sealed class McpToolCommandTests
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal("/api/mcp/tools/invoke", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
 
     public void Mcp_invoke_explains_that_the_internal_server_is_not_a_diagnostic_target()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(
@@ -407,14 +373,12 @@ public sealed class McpToolCommandTests
         Assert.Contains("tool invoke", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public void Tool_list_and_show_use_workspace_scoped_arsenal()
     {
-
         RecordingHandler handler = new(_ => ArsenalResponse());
 
         CliTestResult list = RunCommand(
@@ -441,42 +405,33 @@ public sealed class McpToolCommandTests
                 "\"workingDirectory\":\"/srv/workspace\"",
                 ReadBody(request),
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
 
     public void Tool_invoke_reads_json_from_at_file_and_posts_to_builtin_route()
     {
-
         string path = Path.GetTempFileName();
 
         try
         {
-
             File.WriteAllText(path, "{\"timezone\":\"UTC\"}");
 
             RecordingHandler handler = new(request =>
             {
-
                 if (request.RequestUri!.AbsolutePath == "/api/intelligence/arsenal")
                 {
-
                     return ArsenalResponse();
-
                 }
 
                 ToolInvokeResponse response = new()
                 {
-
                     Result = JsonSerializer.SerializeToElement("12:00"),
-
                 };
 
                 return CreateResponse(
                     new ApiResponse<ToolInvokeResponse>(response, true, null),
                     ArcanumJsonContext.Default.ApiResponseToolInvokeResponse);
-
             });
 
             CliTestResult result = RunCommand(
@@ -494,22 +449,17 @@ public sealed class McpToolCommandTests
             Assert.Contains("\"timezone\":\"UTC\"", ReadBody(request), StringComparison.Ordinal);
 
             Assert.Contains("12:00", result.Output, StringComparison.Ordinal);
-
         }
         finally
         {
-
             File.Delete(path);
-
         }
-
     }
 
     [Fact]
 
     public void Tool_invoke_rejects_invalid_json_before_any_api_call()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(
@@ -521,35 +471,27 @@ public sealed class McpToolCommandTests
         Assert.Contains("JSON object", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public async Task Tool_invoke_reads_json_from_redirected_stdin()
     {
-
         RecordingHandler handler = new(request =>
         {
-
             if (request.RequestUri!.AbsolutePath == "/api/intelligence/arsenal")
             {
-
                 return ArsenalResponse();
-
             }
 
             ToolInvokeResponse response = new()
             {
-
                 Result = JsonSerializer.SerializeToElement("ok"),
-
             };
 
             return CreateResponse(
                 new ApiResponse<ToolInvokeResponse>(response, true, null),
                 ArcanumJsonContext.Default.ApiResponseToolInvokeResponse);
-
         });
 
         CliTestResult result = await RunCommandAsync(
@@ -563,14 +505,12 @@ public sealed class McpToolCommandTests
             "\"timezone\":\"America/New_York\"",
             ReadBody(handler.Requests[1]),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Tool_arguments_reject_inline_input_over_the_owned_cap()
     {
-
         bool success = ToolArgumentReader.TryRead(
             "{\"value\":\"" + new string('x', ToolArgumentReader.MaxArgumentBytes) + "\"}",
             out _,
@@ -579,7 +519,6 @@ public sealed class McpToolCommandTests
         Assert.False(success);
 
         Assert.Contains("input limit", error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     private static McpServerInfo WorkspaceServer() =>
@@ -630,16 +569,12 @@ public sealed class McpToolCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
-
             Content = new ByteArrayContent(json),
-
         };
-
     }
 
     private static string ReadBody(HttpRequestMessage request) =>
@@ -650,7 +585,6 @@ public sealed class McpToolCommandTests
         RecordingHandler handler,
         string[] args)
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -667,8 +601,11 @@ public sealed class McpToolCommandTests
         services.AddSingleton<ISecretStore>(
             new FakeSecretStore("test-key"));
 
-        return CliTestHarness.Run(services, args);
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return CliTestHarness.Run(services, args);
     }
 
     private static async Task<CliTestResult> RunCommandAsync(
@@ -676,7 +613,6 @@ public sealed class McpToolCommandTests
         string[] args,
         string input)
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -693,16 +629,18 @@ public sealed class McpToolCommandTests
         services.AddSingleton<ISecretStore>(
             new FakeSecretStore("test-key"));
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         return await CliTestHarness.RunAsync(
             services,
             args,
             input).ConfigureAwait(false);
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>(apiKey);
 
@@ -717,46 +655,37 @@ public sealed class McpToolCommandTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(
         RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001/"),
-
             };
-
     }
 
     private sealed class RecordingHandler(
         Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content
                     .ReadAsByteArrayAsync(cancellationToken)
                     .GetAwaiter()
                     .GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
-
             }
 
             Requests.Add(snapshot);
@@ -766,9 +695,6 @@ public sealed class McpToolCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

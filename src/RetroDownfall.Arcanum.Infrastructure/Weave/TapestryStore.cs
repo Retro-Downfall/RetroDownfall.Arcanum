@@ -23,7 +23,6 @@ internal sealed class TapestryStore(
     ArcanumDbContext db,
     WeaveIndexAvailability availability) : ITapestryStore
 {
-
     /// <summary>
     /// The live-scope-id query for each corpus. Both <see cref="DiscoverScopesAsync"/> and
     /// <see cref="PruneRemovedScopesAsync"/> read from here, so "which scopes exist" has exactly one
@@ -55,7 +54,6 @@ internal sealed class TapestryStore(
         bool includeSessions,
         CancellationToken cancellationToken)
     {
-
         List<TapestryScope> scopes = [];
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -65,18 +63,15 @@ internal sealed class TapestryStore(
             includeSessionAttachments,
             includeSessions))
         {
-
             await CollectScopesAsync(
                 connection,
                 OrderedLiveScopeIdQuery(kind),
                 kind,
                 scopes,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         return scopes;
-
     }
 
     /// <summary>
@@ -89,7 +84,6 @@ internal sealed class TapestryStore(
         bool includeSessionAttachments,
         bool includeSessions)
     {
-
         if (includeWorkspace)
         {
             yield return TapestryScopeKind.Workspace;
@@ -104,7 +98,6 @@ internal sealed class TapestryStore(
         {
             yield return TapestryScopeKind.Session;
         }
-
     }
 
     public Task<int> PruneRemovedScopesAsync(
@@ -115,7 +108,6 @@ internal sealed class TapestryStore(
         SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection
@@ -129,7 +121,6 @@ internal sealed class TapestryStore(
                     includeSessionAttachments,
                     includeSessions))
                 {
-
                     // The diff runs set-wise in SQLite against the same source the sweep discovers from,
                     // rather than round-tripping the live scope list into a parameter per session. Only
                     // this kind is touched, so a disabled corpus keeps its trees untouched and needs no
@@ -145,13 +136,11 @@ internal sealed class TapestryStore(
                         """,
                         command => AddParameter(command, "@scopeKind", kindName),
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return removed;
-
             },
             cancellationToken);
 
@@ -162,7 +151,6 @@ internal sealed class TapestryStore(
         List<TapestryScope> scopes,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -171,25 +159,18 @@ internal sealed class TapestryStore(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (reader.IsDBNull(0))
             {
-
                 continue;
-
             }
 
             string id = reader.GetString(0);
 
             if (id.Length > 0)
             {
-
                 scopes.Add(new TapestryScope(kind, id));
-
             }
-
         }
-
     }
 
     public async Task<IReadOnlyList<TapestryLeafSource>> EnumerateLeafSourcesAsync(
@@ -198,7 +179,6 @@ internal sealed class TapestryStore(
         bool includeEmbeddings,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -274,14 +254,11 @@ internal sealed class TapestryStore(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string content = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
 
             if (content.Trim().Length == 0)
             {
-
                 continue;
-
             }
 
             float[]? embedding = null;
@@ -291,16 +268,12 @@ internal sealed class TapestryStore(
                 && !reader.IsDBNull(4)
                 && Convert.ToInt32(reader.GetValue(4), CultureInfo.InvariantCulture) == expectedDimensions)
             {
-
                 float[] decoded = EmbeddingBlobCodec.Decode((byte[])reader[3]);
 
                 if (decoded.Length == expectedDimensions)
                 {
-
                     embedding = decoded;
-
                 }
-
             }
 
             leaves.Add(new TapestryLeafSource(
@@ -309,18 +282,15 @@ internal sealed class TapestryStore(
                 content,
                 TapestryHash.OfContent(content),
                 embedding));
-
         }
 
         return leaves;
-
     }
 
     public async Task<TapestryGeneration?> GetCurrentGenerationAsync(
         TapestryScope scope,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -343,7 +313,6 @@ internal sealed class TapestryStore(
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? ReadGeneration(reader)
             : null;
-
     }
 
     public Task<string> BeginGenerationAsync(
@@ -357,13 +326,11 @@ internal sealed class TapestryStore(
         DateTimeOffset startedAt,
         CancellationToken cancellationToken)
     {
-
         string generationId = Guid.NewGuid().ToString("N");
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -403,30 +370,24 @@ internal sealed class TapestryStore(
                 _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 return generationId;
-
             },
             cancellationToken);
-
     }
 
     public Task AppendNodesAsync(
         IReadOnlyList<TapestryNodeWrite> nodes,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(nodes);
 
         if (nodes.Count == 0)
         {
-
             return Task.CompletedTask;
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // One transaction per checkpoint: a torn write can never leave a node without its
@@ -437,16 +398,12 @@ internal sealed class TapestryStore(
 
                 foreach (TapestryNodeWrite write in nodes)
                 {
-
                     await InsertNodeAsync(connection, transaction, write, cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     private async Task InsertNodeAsync(
@@ -455,7 +412,6 @@ internal sealed class TapestryStore(
         TapestryNodeWrite write,
         CancellationToken cancellationToken)
     {
-
         TapestryNode node = write.Node;
 
         await using DbCommand command = connection.CreateCommand();
@@ -537,9 +493,7 @@ internal sealed class TapestryStore(
 
         if (!availability.IsVecAvailable)
         {
-
             return;
-
         }
 
         await using DbCommand vecCommand = connection.CreateCommand();
@@ -557,7 +511,6 @@ internal sealed class TapestryStore(
         AddParameter(vecCommand, "@embedding", blob);
 
         _ = await vecCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task SetParentAsync(
@@ -566,20 +519,16 @@ internal sealed class TapestryStore(
         IReadOnlyList<string> childNodeIds,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(childNodeIds);
 
         if (childNodeIds.Count == 0)
         {
-
             return Task.CompletedTask;
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection
@@ -588,7 +537,6 @@ internal sealed class TapestryStore(
 
                 foreach (string childNodeId in childNodeIds)
                 {
-
                     await using DbCommand command = connection.CreateCommand();
 
                     command.Transaction = transaction;
@@ -608,14 +556,11 @@ internal sealed class TapestryStore(
                     AddParameter(command, "@childNodeId", childNodeId);
 
                     _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     public Task PublishGenerationAsync(
@@ -629,7 +574,6 @@ internal sealed class TapestryStore(
         SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // Supersede-then-complete inside one transaction is the atomic current-generation
@@ -641,7 +585,6 @@ internal sealed class TapestryStore(
 
                 await using (DbCommand supersede = connection.CreateCommand())
                 {
-
                     supersede.Transaction = transaction;
 
                     supersede.CommandText =
@@ -656,12 +599,10 @@ internal sealed class TapestryStore(
                     AddParameter(supersede, "@generationId", generationId);
 
                     _ = await supersede.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await using (DbCommand publish = connection.CreateCommand())
                 {
-
                     publish.Transaction = transaction;
 
                     publish.CommandText =
@@ -689,11 +630,9 @@ internal sealed class TapestryStore(
                     AddParameter(publish, "@generationId", generationId);
 
                     _ = await publish.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
 
@@ -701,7 +640,6 @@ internal sealed class TapestryStore(
         SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection
@@ -716,7 +654,6 @@ internal sealed class TapestryStore(
                     cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
 
@@ -724,7 +661,6 @@ internal sealed class TapestryStore(
         SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection
@@ -741,7 +677,6 @@ internal sealed class TapestryStore(
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return removed;
-
             },
             cancellationToken);
 
@@ -756,13 +691,10 @@ internal sealed class TapestryStore(
         Action<DbCommand> bind,
         CancellationToken cancellationToken)
     {
-
         if (availability.IsVecAvailable)
         {
-
             try
             {
-
                 await using DbCommand vecCommand = connection.CreateCommand();
 
                 vecCommand.Transaction = transaction;
@@ -779,16 +711,12 @@ internal sealed class TapestryStore(
                 bind(vecCommand);
 
                 _ = await vecCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             }
             catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
             {
-
                 // sqlite-vec became unavailable after schema creation: the BLOB tables below remain
                 // authoritative, so this is not a failure.
-
             }
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -800,7 +728,6 @@ internal sealed class TapestryStore(
         bind(command);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<TapestryNode>> GetLayerNodesAsync(
@@ -808,7 +735,6 @@ internal sealed class TapestryStore(
         int layer,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -831,29 +757,23 @@ internal sealed class TapestryStore(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             nodes.Add(ReadNode(reader));
-
         }
 
         return nodes;
-
     }
 
     public async Task<IReadOnlyDictionary<string, float[]>> GetNodeEmbeddingsAsync(
         IReadOnlyList<string> nodeIds,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(nodeIds);
 
         Dictionary<string, float[]> embeddings = new(StringComparer.Ordinal);
 
         if (nodeIds.Count == 0)
         {
-
             return embeddings;
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -870,13 +790,10 @@ internal sealed class TapestryStore(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             embeddings[reader.GetString(0)] = EmbeddingBlobCodec.Decode((byte[])reader[1]);
-
         }
 
         return embeddings;
-
     }
 
     public async Task<TapestrySummaryReuseCandidate?> TryGetReusableSummaryAsync(
@@ -884,7 +801,6 @@ internal sealed class TapestryStore(
         string childMembershipHash,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -919,7 +835,6 @@ internal sealed class TapestryStore(
                 reader.GetString(1),
                 EmbeddingBlobCodec.Decode((byte[])reader[2]))
             : null;
-
     }
 
     public async Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(
@@ -928,16 +843,13 @@ internal sealed class TapestryStore(
         TapestryRetrievalMode mode,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(generation);
 
         ArgumentNullException.ThrowIfNull(hits);
 
         if (hits.Count == 0)
         {
-
             return [];
-
         }
 
         string[] nodeIds = [.. hits.Select(static hit => hit.NodeId)];
@@ -948,7 +860,6 @@ internal sealed class TapestryStore(
 
         await using (DbCommand command = connection.CreateCommand())
         {
-
             // Leaf content is resolved from its corpus row rather than duplicated onto the node, so
             // the join target depends on the generation's scope kind. Summary content lives on the
             // node itself and needs no join.
@@ -988,7 +899,6 @@ internal sealed class TapestryStore(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 bool isSummary = string.Equals(reader.GetString(2), nameof(TapestryNodeKind.Summary), StringComparison.Ordinal);
 
                 string? content = isSummary
@@ -997,9 +907,7 @@ internal sealed class TapestryStore(
 
                 if (content is null)
                 {
-
                     continue;
-
                 }
 
                 string recordedHash = reader.GetString(4);
@@ -1011,9 +919,7 @@ internal sealed class TapestryStore(
                 if (!isSummary
                     && !string.Equals(TapestryHash.OfContent(content), recordedHash, StringComparison.Ordinal))
                 {
-
                     continue;
-
                 }
 
                 hydrated[reader.GetString(0)] = new HydratedNode(
@@ -1024,9 +930,7 @@ internal sealed class TapestryStore(
                     recordedHash,
                     reader.GetInt32(5),
                     reader.IsDBNull(6) ? null : reader.GetString(6));
-
             }
-
         }
 
         IReadOnlyDictionary<string, IReadOnlyList<string>> ancestors = await LoadAncestorsAsync(
@@ -1039,12 +943,9 @@ internal sealed class TapestryStore(
 
         foreach ((string nodeId, float similarity) in hits)
         {
-
             if (!hydrated.TryGetValue(nodeId, out HydratedNode? node))
             {
-
                 continue;
-
             }
 
             results.Add(new TapestryRetrievedNode(
@@ -1061,11 +962,9 @@ internal sealed class TapestryStore(
                 similarity,
                 mode,
                 ancestors.TryGetValue(nodeId, out IReadOnlyList<string>? chain) ? chain : []));
-
         }
 
         return results;
-
     }
 
     /// <summary>
@@ -1079,14 +978,11 @@ internal sealed class TapestryStore(
         IReadOnlyList<string> nodeIds,
         CancellationToken cancellationToken)
     {
-
         Dictionary<string, IReadOnlyList<string>> ancestors = new(StringComparer.Ordinal);
 
         if (nodeIds.Count == 0)
         {
-
             return ancestors;
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -1116,43 +1012,33 @@ internal sealed class TapestryStore(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (reader.IsDBNull(1))
             {
-
                 continue;
-
             }
 
             string origin = reader.GetString(0);
 
             if (!chains.TryGetValue(origin, out List<string>? chain))
             {
-
                 chain = [];
 
                 chains[origin] = chain;
-
             }
 
             chain.Add(reader.GetString(1));
-
         }
 
         foreach ((string origin, List<string> chain) in chains)
         {
-
             ancestors[origin] = chain;
-
         }
 
         return ancestors;
-
     }
 
     public async Task<int> GetTerminalLayerAsync(string generationId, CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -1165,14 +1051,12 @@ internal sealed class TapestryStore(
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return result is null or DBNull ? 0 : Convert.ToInt32(result, CultureInfo.InvariantCulture);
-
     }
 
     public async Task<IReadOnlyList<TapestryScopeStatus>> GetScopeStatusesAsync(
         Guid? sessionId,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -1199,7 +1083,6 @@ internal sealed class TapestryStore(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             statuses.Add(new TapestryScopeStatus(
                 ParseEnum(reader.GetString(0), TapestryScopeKind.Workspace),
                 reader.GetString(1),
@@ -1211,16 +1094,13 @@ internal sealed class TapestryStore(
                 reader.IsDBNull(5) ? null : ParseEnum(reader.GetString(5), TapestryTerminalReason.LeafOnly),
                 reader.GetString(6),
                 reader.IsDBNull(7) ? null : ParseTimestamp(reader.GetString(7))));
-
         }
 
         return statuses;
-
     }
 
     public async Task<int> CountPublishedNodesAsync(Guid? sessionId, CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -1239,7 +1119,6 @@ internal sealed class TapestryStore(
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return result is null or DBNull ? 0 : Convert.ToInt32(result, CultureInfo.InvariantCulture);
-
     }
 
     private static string ParentScopeKey(string generationId, string? parentNodeId) =>
@@ -1304,15 +1183,11 @@ internal sealed class TapestryStore(
         Enum.TryParse(value, ignoreCase: false, out TEnum parsed) ? parsed : fallback;
 
     private static DateTimeOffset ParseTimestamp(string value) =>
-        DateTimeOffset.TryParse(
-            value,
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.RoundtripKind,
-            out DateTimeOffset parsed)
+        UtcInstantText.TryParse(value, out DateTimeOffset parsed)
             ? parsed
             : DateTimeOffset.MinValue;
 
-    private static string Iso(DateTimeOffset value) => value.ToString("o", CultureInfo.InvariantCulture);
+    private static string Iso(DateTimeOffset value) => UtcInstantText.Format(value);
 
     /// <summary>
     /// Binds an id list as individual parameters rather than interpolating values, so caller-supplied
@@ -1320,27 +1195,22 @@ internal sealed class TapestryStore(
     /// </summary>
     private static string BindIdList(DbCommand command, IReadOnlyList<string> ids)
     {
-
         string[] placeholders = new string[ids.Count];
 
         for (int index = 0; index < ids.Count; index++)
         {
-
             string name = $"@id{index.ToString(CultureInfo.InvariantCulture)}";
 
             placeholders[index] = name;
 
             AddParameter(command, name, ids[index]);
-
         }
 
         return string.Join(", ", placeholders);
-
     }
 
     private static void AddParameter(DbCommand command, string name, object value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -1348,23 +1218,18 @@ internal sealed class TapestryStore(
         parameter.Value = value;
 
         command.Parameters.Add(parameter);
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
-
     }
 
     private sealed record HydratedNode(
@@ -1375,5 +1240,4 @@ internal sealed class TapestryStore(
         string ContentHash,
         int DescendantLeafCount,
         string? ParentNodeId);
-
 }

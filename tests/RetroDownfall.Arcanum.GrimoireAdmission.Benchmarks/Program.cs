@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 internal static class Program
 {
-
     private const int InvalidEvidence = 2;
 
     private const string BenchmarkPrefix = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/";
@@ -57,23 +56,18 @@ internal static class Program
 
     internal static async Task<int> Main(string[] args)
     {
-
         if (RuntimeFeature.IsDynamicCodeSupported)
         {
-
             Console.Error.WriteLine("The Grimoire admission benchmark must run as published Native AOT.");
 
             return InvalidEvidence;
-
         }
 
         if (global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME") is not null)
         {
-
             Console.Error.WriteLine("ARCANUM_TEST_HOME must be unset; the benchmark owns its isolated home.");
 
             return InvalidEvidence;
-
         }
 
         string sessionId = Option(args, "--session") ?? Guid.NewGuid().ToString("N");
@@ -86,11 +80,9 @@ internal static class Program
 
         ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
         {
-
             eventArgs.Cancel = true;
 
             processCancellation.Cancel();
-
         };
 
         Console.CancelKeyPress += cancelHandler;
@@ -99,16 +91,13 @@ internal static class Program
             PosixSignal.SIGTERM,
             context =>
             {
-
                 context.Cancel = true;
 
                 processCancellation.Cancel();
-
             });
 
         try
         {
-
             home = AdmissionBenchmarkHome.Create(sessionId);
 
             global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
@@ -125,33 +114,25 @@ internal static class Program
                 sessionId,
                 home,
                 processCancellation.Token).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (processCancellation.IsCancellationRequested)
         {
-
             exitCode = 130;
-
         }
         catch (OperationCanceledException)
         {
-
             Console.Error.WriteLine("The benchmark watchdog expired or a participant failed to reach a bounded terminal state.");
 
             exitCode = InvalidEvidence;
-
         }
         catch (Exception exception)
         {
-
             Console.Error.WriteLine(exception.Message);
 
             exitCode = InvalidEvidence;
-
         }
         finally
         {
-
             Console.CancelKeyPress -= cancelHandler;
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", null);
@@ -160,22 +141,16 @@ internal static class Program
 
             if (home is not null && !home.TryDelete())
             {
-
                 Console.Error.WriteLine($"Benchmark home safety validation failed; retained: {home.ChildPath}");
 
                 if (exitCode != 130)
                 {
-
                     exitCode = InvalidEvidence;
-
                 }
-
             }
-
         }
 
         return exitCode;
-
     }
 
     private static async Task<int> ExecuteModeAsync(
@@ -185,10 +160,8 @@ internal static class Program
         AdmissionBenchmarkHome home,
         CancellationToken processCancellation)
     {
-
         if (args.Length == 3 && args[0] == "--smoke")
         {
-
             string sourceRoot = RequiredOption(args, "--source-root");
 
             AdmissionBenchmarkRevisionRun run = await RunAsync(
@@ -206,17 +179,13 @@ internal static class Program
             Console.WriteLine($"Grimoire admission Native AOT smoke passed ({run.Cells.Length} cells).");
 
             return run.ExitCode;
-
         }
 
         if (args.Length >= 1 && args[0] == "--measure")
         {
-
             if (args.Length != 23)
             {
-
                 throw new InvalidDataException("The measure mode requires its exact closed argument set.");
-
             }
 
             string profile = RequiredOption(args, "--profile");
@@ -252,17 +221,13 @@ internal static class Program
                     AdmissionBenchmarkJsonContext.Default.AdmissionBenchmarkRevisionRun));
 
             return run.ExitCode;
-
         }
 
         if (args.Length >= 1 && args[0] == "--compare")
         {
-
             if (args.Length != 9)
             {
-
                 throw new InvalidDataException("The compare mode requires its exact closed argument set.");
-
             }
 
             string runsDirectory = RequiredOption(args, "--runs-dir");
@@ -275,7 +240,6 @@ internal static class Program
 
             for (int pair = 0; pair < pairs.Length; pair++)
             {
-
                 AdmissionBenchmarkRevisionRun baseline = ReadRun(
                     Path.Combine(runsDirectory, $"pair-{pair}-B.json"));
 
@@ -288,7 +252,6 @@ internal static class Program
                     pair % 2 == 0 ? "C" : "B",
                     baseline,
                     candidate);
-
             }
 
             AdmissionBenchmarkEvidenceBundle bundle = new(sessionId, pairs);
@@ -315,20 +278,17 @@ internal static class Program
                     AdmissionBenchmarkJsonContext.Default.AdmissionBenchmarkComparisonReport));
 
             return report.ExitCode;
-
         }
 
         Console.Error.WriteLine("Expected --smoke, --measure, or --compare with the closed benchmark arguments.");
 
         return InvalidEvidence;
-
     }
 
     internal static void RunSchemaSelfTest(
         AdmissionBenchmarkManifest manifest,
         AdmissionBenchmarkHome home)
     {
-
         string manifestJson = JsonSerializer.Serialize(
             manifest,
             AdmissionBenchmarkJsonContext.Default.AdmissionBenchmarkManifest);
@@ -339,9 +299,7 @@ internal static class Program
 
         if (parsedManifest.Operations.Length != 9 || parsedManifest.Concurrency.Length != 4)
         {
-
             throw new InvalidDataException("Manifest JSON self-test did not retain the closed schema.");
-
         }
 
         AdmissionBenchmarkRevisionRun run = CreateSchemaRun("B", 0, 0, "schema");
@@ -359,7 +317,6 @@ internal static class Program
 
         for (int index = 0; index < pairs.Length; index++)
         {
-
             string first = index % 2 == 0 ? "B" : "C";
 
             string second = first == "B" ? "C" : "B";
@@ -370,7 +327,6 @@ internal static class Program
                 second,
                 CreateSchemaRun("B", index, first == "B" ? 0 : 1, "schema"),
                 CreateSchemaRun("C", index, first == "C" ? 0 : 1, "schema"));
-
         }
 
         AdmissionBenchmarkEvidenceBundle bundle = new("schema", pairs);
@@ -405,13 +361,10 @@ internal static class Program
             || parsedAccepted is not { Accepted: true, ExitCode: 0 }
             || parsedRejected is not { Accepted: false, ExitCode: 1 })
         {
-
             throw new InvalidDataException("Qualification JSON roots failed the closed-schema self-test.");
-
         }
 
         home.RunSafetySelfTest();
-
     }
 
     private static async Task<AdmissionBenchmarkRevisionRun> RunAsync(
@@ -426,23 +379,18 @@ internal static class Program
         AdmissionBenchmarkHome home,
         CancellationToken processCancellation)
     {
-
         AdmissionBenchmarkProfile profile = manifest.Profiles.SingleOrDefault(
             item => item.Name == profileName)
             ?? throw new InvalidDataException("The requested benchmark profile is not declared in the manifest.");
 
         if (revision.Length != 40 || revision.Any(static value => !char.IsAsciiHexDigit(value) || char.IsUpper(value)))
         {
-
             throw new InvalidDataException("The revision must be exact lowercase 40-hex.");
-
         }
 
         if (role is not "H" and not "B" and not "C")
         {
-
             throw new InvalidDataException("The benchmark role must be H, B, or C.");
-
         }
 
         using CancellationTokenSource watchdog = new(
@@ -472,7 +420,6 @@ internal static class Program
 
         try
         {
-
             home.MarkRuntimeResourcesCreated();
 
             composition = BenchmarkComposition.Create();
@@ -489,7 +436,6 @@ internal static class Program
                 .DisposeThenSampleAsync(
                     () =>
                     {
-
                         bedDisposalAttempted = true;
 
                         bed.Dispose();
@@ -501,7 +447,6 @@ internal static class Program
                         home.RecordMeasuredResourceTeardown(witness);
 
                         return witness;
-
                     },
                     bed.ValidateFinalStateAsync,
                     cancellationToken)
@@ -512,9 +457,7 @@ internal static class Program
             if (!gcConfiguration.TryGetValue("ConcurrentGC", out object? concurrentGcValue)
                 || concurrentGcValue is not bool concurrentGc)
             {
-
                 throw new InvalidDataException("The runtime did not expose an exact Boolean ConcurrentGC configuration.");
-
             }
 
             AdmissionBenchmarkEnvironmentIdentity environment = new(
@@ -556,35 +499,27 @@ internal static class Program
 
             if (validationErrors.Length != 0)
             {
-
                 throw new InvalidDataException(
                     "The benchmark run failed exact invariant validation: "
                     + string.Join("; ", validationErrors));
-
             }
 
             return run;
-
         }
         catch (Exception exception)
         {
-
             primaryException = exception;
 
             throw;
-
         }
         finally
         {
-
             if (bed is not null && !bedDisposalAttempted)
             {
-
                 bedDisposalAttempted = true;
 
                 try
                 {
-
                     bed.Dispose();
 
                     AdmissionBenchmarkMeasuredResourceWitness witness = bed.MeasuredResourceWitness;
@@ -595,55 +530,39 @@ internal static class Program
 
                     if (!witness.HomeDeletionAuthorized)
                     {
-
                         throw new InvalidDataException(
                             "Benchmark workers or their measured connections did not complete teardown.");
-
                     }
-
                 }
                 catch (Exception exception)
                 {
-
                     Console.Error.WriteLine($"Benchmark measured-resource teardown failed: {exception.Message}");
-
                 }
-
             }
 
             if (composition is not null)
             {
-
                 AdmissionBenchmarkTeardownWitness witness = await composition.TeardownAsync().ConfigureAwait(false);
 
                 home.RecordTeardown(witness);
 
                 if (!witness.HomeDeletionAuthorized)
                 {
-
                     Console.Error.WriteLine(
                         "Benchmark runtime teardown was incomplete: " + string.Join("; ", witness.Errors));
 
                     if (primaryException is null)
                     {
-
                         throw new InvalidDataException("Benchmark runtime teardown was incomplete.");
-
                     }
-
                 }
-
             }
 
             if (!measuredResourcesDisposed && bed is not null)
             {
-
                 Console.Error.WriteLine("Benchmark measured resources did not produce a positive disposal witness.");
-
             }
-
         }
-
     }
 
     private static AdmissionBenchmarkRevisionRun CreateSchemaRun(
@@ -652,7 +571,6 @@ internal static class Program
         int orderPosition,
         string sessionId)
     {
-
         AdmissionBenchmarkManifest manifest = AdmissionBenchmarkManifest.CreateDefault();
 
         AdmissionBenchmarkConcurrency[] concurrency = manifest.Concurrency;
@@ -736,19 +654,16 @@ internal static class Program
                 new(640, 1, 1, 1, true),
             ],
         };
-
     }
 
     private static AdmissionBenchmarkRevisionRun ReadRun(string path)
     {
-
         using FileStream stream = File.OpenRead(path);
 
         return JsonSerializer.Deserialize(
             stream,
             AdmissionBenchmarkJsonContext.Default.AdmissionBenchmarkRevisionRun)
             ?? throw new InvalidDataException($"The revision run '{path}' was empty.");
-
     }
 
     private static AdmissionBenchmarkInputIdentity CreateInputIdentity(
@@ -756,7 +671,6 @@ internal static class Program
         AdmissionBenchmarkManifest manifest,
         string manifestDigest)
     {
-
         string root = ValidateSourceRoot(sourceRoot);
 
         string catalogContents = File.ReadAllText(Path.Combine(root, CatalogPath), Encoding.UTF8);
@@ -769,9 +683,7 @@ internal static class Program
 
         if (catalogReader.ReadToEnd() != catalogContents)
         {
-
             throw new InvalidDataException("The embedded and source-root input catalogs differ.");
-
         }
 
         AdmissionBenchmarkCatalogEntry[] catalog = ParseCatalog(catalogContents);
@@ -780,10 +692,8 @@ internal static class Program
 
         if (!catalog.SequenceEqual(independentlySelected))
         {
-
             throw new InvalidDataException(
                 "The input catalog does not match the host's independently enumerated runtime input set.");
-
         }
 
         ValidateEmbeddedSchema(independentlySelected);
@@ -792,31 +702,25 @@ internal static class Program
 
         if (shapeDigest != manifest.InputCatalogShapeDigest)
         {
-
             throw new InvalidDataException("The input catalog shape does not match the immutable manifest pin.");
-
         }
 
         AdmissionBenchmarkDigestEntry[] inputs = independentlySelected.Select(
                 entry =>
                 {
-
                     string fullPath = Path.Combine(root, entry.Path);
 
                     bool present = File.Exists(fullPath);
 
                     if (!present && !entry.Optional)
                     {
-
                         throw new InvalidDataException($"Required benchmark input '{entry.Path}' is missing.");
-
                     }
 
                     return new AdmissionBenchmarkDigestEntry(
                         entry.Path,
                         present ? Sha256Hex(File.ReadAllBytes(fullPath)) : string.Empty,
                         present);
-
                 })
             .ToArray();
 
@@ -834,9 +738,7 @@ internal static class Program
 
         if (!IsDigest(toolchainDigest))
         {
-
             throw new InvalidDataException("The toolchain digest must be nonempty lowercase 64-hex.");
-
         }
 
         return new(
@@ -852,12 +754,10 @@ internal static class Program
             inputs.Single(static entry => entry.Path.EndsWith("/native-source-manifest.json", StringComparison.Ordinal)).Digest,
             nativeBinary.Digest,
             inputs);
-
     }
 
     private static string ValidateSourceRoot(string sourceRoot)
     {
-
         string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(sourceRoot));
 
         DirectoryInfo rootInfo = new(root);
@@ -866,35 +766,25 @@ internal static class Program
             || rootInfo.LinkTarget is not null
             || rootInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
-
             throw new InvalidDataException("The source root must be an existing canonical non-link directory.");
-
         }
 
         return root;
-
     }
 
     private static AdmissionBenchmarkCatalogEntry[] EnumerateRuntimeInputs(string root)
     {
-
         List<AdmissionBenchmarkCatalogEntry> entries = [];
 
         foreach (string relativeRoot in RuntimeCSharpRoots)
         {
-
             foreach (string path in EnumerateSelectedFiles(root, relativeRoot, ".cs"))
             {
-
                 if (path != EpochPath)
                 {
-
                     entries.Add(new(path, false));
-
                 }
-
             }
-
         }
 
         foreach (string path in EnumerateSelectedFiles(
@@ -902,9 +792,7 @@ internal static class Program
                      "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema",
                      ".sql"))
         {
-
             entries.Add(new(path, false));
-
         }
 
         entries.AddRange(FixedRuntimeInputs.Select(static path => new AdmissionBenchmarkCatalogEntry(path, false)));
@@ -915,13 +803,10 @@ internal static class Program
 
         if (selected.Select(static entry => entry.Path).Distinct(StringComparer.Ordinal).Count() != selected.Length)
         {
-
             throw new InvalidDataException("The host's independently enumerated runtime input set contains a duplicate.");
-
         }
 
         return selected;
-
     }
 
     private static IEnumerable<string> EnumerateSelectedFiles(
@@ -929,7 +814,6 @@ internal static class Program
         string relativeRoot,
         string extension)
     {
-
         string selectionRoot = Path.Combine(root, relativeRoot);
 
         DirectoryInfo selectionRootInfo = new(selectionRoot);
@@ -938,9 +822,7 @@ internal static class Program
             || selectionRootInfo.LinkTarget is not null
             || selectionRootInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
-
             throw new InvalidDataException($"Runtime input root '{relativeRoot}' is missing or is a link.");
-
         }
 
         Stack<DirectoryInfo> pending = new();
@@ -949,59 +831,43 @@ internal static class Program
 
         while (pending.TryPop(out DirectoryInfo? directory))
         {
-
             foreach (FileSystemInfo child in directory.EnumerateFileSystemInfos())
             {
-
                 if (child.LinkTarget is not null || child.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 {
-
                     throw new InvalidDataException($"Runtime input path '{child.FullName}' is a link.");
-
                 }
 
                 if (child is DirectoryInfo childDirectory)
                 {
-
                     if (childDirectory.Name is not "bin" and not "obj")
                     {
-
                         pending.Push(childDirectory);
-
                     }
 
                     continue;
-
                 }
 
                 if (child is FileInfo file
                     && file.Extension.Equals(extension, StringComparison.Ordinal))
                 {
-
                     string relative = Path.GetRelativePath(root, file.FullName).Replace('\\', '/');
 
                     if (relative.StartsWith("../", StringComparison.Ordinal)
                         || relative == ".."
                         || Path.IsPathFullyQualified(relative))
                     {
-
                         throw new InvalidDataException("A runtime input escaped the canonical source root.");
-
                     }
 
                     yield return relative;
-
                 }
-
             }
-
         }
-
     }
 
     private static void ValidateEmbeddedSchema(IEnumerable<AdmissionBenchmarkCatalogEntry> inputs)
     {
-
         const string resourcePrefix = "RetroDownfall.Arcanum.Infrastructure.Data.Schema.";
 
         const string resourceSuffix = ".sql";
@@ -1024,7 +890,6 @@ internal static class Program
 
         if (!sourceSchema.SequenceEqual(embeddedSchema, StringComparer.Ordinal))
         {
-
             int mismatch = Enumerable.Range(0, Math.Min(sourceSchema.Length, embeddedSchema.Length))
                 .FirstOrDefault(index => sourceSchema[index] != embeddedSchema[index], -1);
 
@@ -1033,37 +898,29 @@ internal static class Program
                 + $"Source count {sourceSchema.Length}, embedded count {embeddedSchema.Length}, first mismatch "
                 + $"{mismatch}: '{(mismatch >= 0 ? sourceSchema[mismatch] : "<count>")}' versus "
                 + $"'{(mismatch >= 0 ? embeddedSchema[mismatch] : "<count>")}'.");
-
         }
-
     }
 
     private static AdmissionBenchmarkCatalogEntry[] ParseCatalog(string contents)
     {
-
         if (string.IsNullOrEmpty(contents)
             || !contents.EndsWith('\n')
             || contents.Contains('\r'))
         {
-
             throw new InvalidDataException("The input catalog must use exact nonempty LF-delimited framing.");
-
         }
 
         AdmissionBenchmarkCatalogEntry[] entries = contents[..^1].Split('\n')
             .Select(
                 static line =>
                 {
-
                     string[] parts = line.Split('\t');
 
                     if (parts.Length != 2
                         || parts[0] is not "R" and not "O"
                         || string.IsNullOrEmpty(parts[1]))
                     {
-
                         throw new InvalidDataException("The input catalog contains a malformed entry.");
-
                     }
 
                     string itemPath = parts[1];
@@ -1072,13 +929,10 @@ internal static class Program
                         || itemPath.Contains('\\')
                         || itemPath.Split('/').Any(static segment => segment is "" or "." or ".."))
                     {
-
                         throw new InvalidDataException("The input catalog contains a non-normalized path.");
-
                     }
 
                     return new AdmissionBenchmarkCatalogEntry(itemPath, parts[0] == "O");
-
                 })
             .ToArray();
 
@@ -1086,25 +940,20 @@ internal static class Program
             || !entries.SequenceEqual(entries.OrderBy(static entry => entry.Path, StringComparer.Ordinal))
             || entries.Select(static entry => entry.Path).Distinct(StringComparer.Ordinal).Count() != entries.Length)
         {
-
             throw new InvalidDataException("The input catalog must be nonempty, sorted, and unique.");
-
         }
 
         return entries;
-
     }
 
     private static string CatalogShapeDigest(IEnumerable<AdmissionBenchmarkCatalogEntry> entries)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         Span<byte> length = stackalloc byte[sizeof(int)];
 
         foreach (AdmissionBenchmarkCatalogEntry entry in entries)
         {
-
             byte[] path = Encoding.UTF8.GetBytes(entry.Path);
 
             BinaryPrimitives.WriteInt32LittleEndian(length, path.Length);
@@ -1114,18 +963,15 @@ internal static class Program
             hash.AppendData(path);
 
             hash.AppendData([entry.Optional ? (byte)1 : (byte)0]);
-
         }
 
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
-
     }
 
     private static string DigestContents(
         string root,
         IEnumerable<AdmissionBenchmarkDigestEntry> entries)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         Span<byte> pathLength = stackalloc byte[sizeof(int)];
@@ -1134,7 +980,6 @@ internal static class Program
 
         foreach (AdmissionBenchmarkDigestEntry entry in entries)
         {
-
             byte[] path = Encoding.UTF8.GetBytes(entry.Path);
 
             byte[] contents = entry.Present
@@ -1154,11 +999,9 @@ internal static class Program
             hash.AppendData(contentLength);
 
             hash.AppendData(contents);
-
         }
 
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
-
     }
 
     private static string RequiredOption(string[] args, string name) =>
@@ -1166,21 +1009,15 @@ internal static class Program
 
     private static string? Option(string[] args, string name)
     {
-
         for (int index = 0; index + 1 < args.Length; index++)
         {
-
             if (args[index] == name)
             {
-
                 return args[index + 1];
-
             }
-
         }
 
         return null;
-
     }
 
     private static int ParseNonnegativeInt(string value) =>
@@ -1190,7 +1027,6 @@ internal static class Program
 
     private static void WriteAtomic(string path, string contents)
     {
-
         string fullPath = Path.GetFullPath(path);
 
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
@@ -1200,7 +1036,6 @@ internal static class Program
         File.WriteAllText(temporary, contents, new UTF8Encoding(false));
 
         File.Move(temporary, fullPath, overwrite: false);
-
     }
 
     private static string Sha256Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -1208,12 +1043,10 @@ internal static class Program
     private static bool IsDigest(string value) =>
         value is { Length: 64 }
         && value.All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
-
 }
 
 internal sealed class AdmissionBenchmarkHome
 {
-
     private const string ParentPrefix = "arcanum-grimoire-admission-benchmark-";
 
     private const string ChildPrefix = "home-";
@@ -1232,7 +1065,6 @@ internal sealed class AdmissionBenchmarkHome
         string parentPath,
         string childPath)
     {
-
         Nonce = nonce;
 
         SessionId = sessionId;
@@ -1242,7 +1074,6 @@ internal sealed class AdmissionBenchmarkHome
         ChildPath = childPath;
 
         _markerContents = MarkerContents(nonce, sessionId, global::System.Environment.ProcessId, childPath);
-
     }
 
     internal string Nonce { get; }
@@ -1255,7 +1086,6 @@ internal sealed class AdmissionBenchmarkHome
 
     internal static AdmissionBenchmarkHome Create(string sessionId)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
 
         string nonce = Guid.NewGuid().ToString("N");
@@ -1268,7 +1098,6 @@ internal sealed class AdmissionBenchmarkHome
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(
                 parent,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -1276,7 +1105,6 @@ internal sealed class AdmissionBenchmarkHome
             File.SetUnixFileMode(
                 child,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
 
         AdmissionBenchmarkHome home = new(nonce, sessionId, Path.GetFullPath(parent), Path.GetFullPath(child));
@@ -1295,15 +1123,12 @@ internal sealed class AdmissionBenchmarkHome
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(
                 Path.Combine(home.ChildPath, MarkerName),
                 UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
         }
 
         return home;
-
     }
 
     internal void MarkRuntimeResourcesCreated() => _deletionAuthorized = false;
@@ -1316,22 +1141,16 @@ internal sealed class AdmissionBenchmarkHome
 
     internal bool TryDelete()
     {
-
         try
         {
-
             if (!_deletionAuthorized)
             {
-
                 return false;
-
             }
 
             if (!CanDelete(ParentPath, ChildPath, Nonce, SessionId, _markerContents))
             {
-
                 return false;
-
             }
 
             Directory.Delete(ChildPath, recursive: true);
@@ -1339,26 +1158,19 @@ internal sealed class AdmissionBenchmarkHome
             Directory.Delete(ParentPath, recursive: false);
 
             return true;
-
         }
         catch (IOException)
         {
-
             return false;
-
         }
         catch (UnauthorizedAccessException)
         {
-
             return false;
-
         }
-
     }
 
     internal void RunSafetySelfTest()
     {
-
         string fixture = Path.Combine(ChildPath, "safety-fixtures");
 
         Directory.CreateDirectory(fixture);
@@ -1369,9 +1181,7 @@ internal sealed class AdmissionBenchmarkHome
 
         if (CanDelete(fixture, preexisting, Nonce, SessionId, _markerContents))
         {
-
             throw new InvalidDataException("A pre-existing directory passed benchmark-home ownership validation.");
-
         }
 
         string userHome = global::System.Environment.GetFolderPath(
@@ -1379,39 +1189,30 @@ internal sealed class AdmissionBenchmarkHome
 
         if (CanDelete(userHome, userHome, Nonce, SessionId, _markerContents))
         {
-
             throw new InvalidDataException("The default user home passed benchmark-home validation.");
-
         }
 
         if (CanDelete(ParentPath, ChildPath, Nonce, SessionId, _markerContents + "changed"))
         {
-
             throw new InvalidDataException("A changed ownership marker passed benchmark-home validation.");
-
         }
 
         string wrongChild = Path.Combine(ParentPath, ChildPrefix + Guid.NewGuid().ToString("N"));
 
         if (CanDelete(ParentPath, wrongChild, Nonce, SessionId, _markerContents))
         {
-
             throw new InvalidDataException("A path mismatch passed benchmark-home validation.");
-
         }
 
         string missingMarker = Path.Combine(ParentPath, ChildPrefix + Nonce + "-missing");
 
         if (CanDelete(ParentPath, missingMarker, Nonce, SessionId, _markerContents))
         {
-
             throw new InvalidDataException("A missing marker passed benchmark-home validation.");
-
         }
 
         if (!OperatingSystem.IsWindows())
         {
-
             string attackNonce = Guid.NewGuid().ToString("N");
 
             string targetParent = Path.Combine(Path.GetTempPath(), "arcanum-grimoire-admission-sentinel-" + attackNonce);
@@ -1430,7 +1231,6 @@ internal sealed class AdmissionBenchmarkHome
 
             try
             {
-
                 string linkChild = Path.Combine(linkParent, ChildPrefix + attackNonce);
 
                 string marker = MarkerContents(
@@ -1444,23 +1244,16 @@ internal sealed class AdmissionBenchmarkHome
                 if (CanDelete(linkParent, linkChild, attackNonce, SessionId, marker)
                     || !File.Exists(sentinel))
                 {
-
                     throw new InvalidDataException("A real symlink replacement passed cleanup validation or changed its target.");
-
                 }
-
             }
             finally
             {
-
                 Directory.Delete(linkParent);
 
                 Directory.Delete(targetParent, recursive: true);
-
             }
-
         }
-
     }
 
     private static bool CanDelete(
@@ -1470,7 +1263,6 @@ internal sealed class AdmissionBenchmarkHome
         string sessionId,
         string expectedMarker)
     {
-
         string canonicalTemp = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()));
 
         string canonicalParent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent));
@@ -1492,9 +1284,7 @@ internal sealed class AdmissionBenchmarkHome
             || childInfo.Parent?.FullName != canonicalParent
             || childInfo.Name != ChildPrefix + nonce)
         {
-
             return false;
-
         }
 
         if (!OperatingSystem.IsWindows()
@@ -1503,9 +1293,7 @@ internal sealed class AdmissionBenchmarkHome
                 || File.GetUnixFileMode(canonicalChild)
                     != (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute)))
         {
-
             return false;
-
         }
 
         string markerPath = Path.Combine(canonicalChild, MarkerName);
@@ -1518,16 +1306,13 @@ internal sealed class AdmissionBenchmarkHome
             || !OperatingSystem.IsWindows()
                 && File.GetUnixFileMode(markerPath) != (UnixFileMode.UserRead | UnixFileMode.UserWrite))
         {
-
             return false;
-
         }
 
         string actual = File.ReadAllText(markerPath, Encoding.UTF8);
 
         return actual == expectedMarker
             && actual == MarkerContents(nonce, sessionId, global::System.Environment.ProcessId, canonicalChild);
-
     }
 
     private static string MarkerContents(
@@ -1536,5 +1321,4 @@ internal sealed class AdmissionBenchmarkHome
         int processId,
         string canonicalChild) =>
         $"nonce={nonce}\nsession={sessionId}\npid={processId}\npath={canonicalChild}\n";
-
 }

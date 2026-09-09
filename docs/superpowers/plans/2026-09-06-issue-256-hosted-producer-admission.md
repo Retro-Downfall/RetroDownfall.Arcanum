@@ -27,7 +27,7 @@
 - Every ordinary producer task pins the applicable closed-gate, frontier-lost, frontier-won, reopen, `KeepClosed`, host/operator cancellation, and genuine-effect-failure cases. For DB-only producers, frontier cases reduce to admission plus scope-disposal drain; for periodic producers with no retained identity, reopening is the next ordinary cadence rather than an extra task.
 - RED -> GREEN -> REFACTOR for every production increment. Run the new test and inspect its expected failure before editing production.
 - Add no HTTP/CLI/config/schema contract, migration, `ErrorCodes` member, public status, provider-selection change, prompt change, retention-policy change, Tapestry algorithm change, or Batch accounting-policy change.
-- Follow the repository C# style: one blank line after each line of code, file-scoped namespaces, primary constructors for DI, and zero build warnings.
+- Follow the repository C# style: one blank line between ordinary statement/member lines, none immediately inside parentheses/brackets/braces, file-scoped namespaces, primary constructors for DI, and zero build warnings.
 - `docs/Arcanum.DESIGN.md` owns architecture/testing, `docs/Arcanum.Engineering.md` owns the inventory obligation, and the root `README.md` changes only for the intentional hosted-maintenance statement. API, command-reference, and Compendium docs do not change.
 - Issue #256 closes after verified integration. Parent #239 remains open for #257.
 
@@ -323,9 +323,10 @@ internal static HostedProducerInventoryValidation Validate(
 internal static HostedProducerInventoryValidation ValidateProductionTree();
 ```
 
-`ValidateProductionTree` builds the Infrastructure, Api, and Cli source compilations; Batch's hosted
-registration lives in Api and the live Backup command root lives in Cli, so neither may disappear
-because only one project was scanned. `OperationId`
+`ValidateProductionTree` builds the Core, Secrets, Infrastructure, Api, and Cli source compilations;
+Batch's hosted registration lives in Api and the live Backup command root lives in Cli, while Core
+and Secrets close dependency-reachable first-party bodies, so none may disappear because only one
+project was scanned. `OperationId`
 is an exact branch/root call-site identity, not a descriptive label. It distinguishes mixed authority
 inside one member (for example MCP blocking versus nonblocking `StartAsync`, and LRO pre-readiness
 versus periodic reconciliation). Normalize a site as
@@ -433,7 +434,7 @@ Start semantic traversal at every discovered unwrapped service's authored `Start
 and `StopAsync` roots; every exact externally invoked hosted operation catalogued by a service entry,
 including workspace `QueueIndexNow`; and every exact `NonHostedProducerChainEntry` root, including
 `BackupCommands.Create`. Preserve the exact branch/root call-site `OperationId` and follow first-party
-calls across all three compilations through catalogued collaborators. Validation emits
+calls across all five compilations through catalogued collaborators. Validation emits
 `HOSTED_ROOT_UNRESOLVED` when any declared external or non-hosted root cannot be bound and
 `HOSTED_EXTERNAL_OPERATION_UNCATALOGUED` when an externally invoked operation reaches a sensitive
 site without its own catalogued root. Discover the latter independently by scanning every production

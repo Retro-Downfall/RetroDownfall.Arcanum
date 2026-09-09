@@ -33,7 +33,6 @@ internal sealed class TapestryWeavingService(
     ILogger<TapestryWeavingService> logger,
     TimeProvider? timeProvider = null) : BackgroundService
 {
-
     /// <summary>Cadence used while the feature is disabled, so enabling it is picked up promptly.</summary>
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMinutes(1);
 
@@ -42,61 +41,45 @@ internal sealed class TapestryWeavingService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-
         await Task.Yield();
 
         while (!stoppingToken.IsCancellationRequested)
         {
-
             TimeSpan delay = IdlePollInterval;
 
             try
             {
-
                 EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
                 if (embeddings.Enabled && embeddings.TapestryEnabled)
                 {
-
                     delay = TimeSpan.FromMinutes(
                         ArcanumSettingClamps.EmbeddingsTapestryRebuildIntervalMinutes(
                             embeddings.Tapestry.RebuildIntervalMinutes));
 
                     await RunSweepAsync(embeddings, stoppingToken).ConfigureAwait(false);
-
                 }
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 return;
-
             }
             catch (Exception ex)
             {
-
                 // A build failure on one corpus must never stop the host or the other corpora; the
                 // next tick simply tries again against the same last-complete generations.
                 logger.LogWarning(ex, "Tapestry weaving sweep failed; retrying on the next tick.");
-
             }
 
             try
             {
-
                 await Task.Delay(delay, timeProvider ?? TimeProvider.System, stoppingToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 return;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -107,14 +90,11 @@ internal sealed class TapestryWeavingService(
         EmbeddingSettings embeddings,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!admission.TryAcquireWorkLease(GrimoireWorkKind.TapestryWeaving, out IGrimoireWorkLease? admitted))
         {
-
             return new(TapestrySweepStatus.DeferredForMaintenance, []);
-
         }
 
         await using IGrimoireWorkLease lease = admitted!;
@@ -127,20 +107,16 @@ internal sealed class TapestryWeavingService(
 
         if (!_reconciled)
         {
-
             int removed = await store.ReconcileGenerationsAsync(cancellationToken).ConfigureAwait(false);
 
             _reconciled = true;
 
             if (removed > 0)
             {
-
                 logger.LogInformation(
                     "Tapestry reconciliation removed {Count} incomplete generation(s) left by a previous run.",
                     removed);
-
             }
-
         }
 
         TapestryEmbeddingSettings tapestry = embeddings.Tapestry ?? new TapestryEmbeddingSettings();
@@ -157,41 +133,31 @@ internal sealed class TapestryWeavingService(
 
         foreach (TapestryScope treeScope in scopes)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admittedGroup))
             {
-
                 return new(TapestrySweepStatus.DeferredForMaintenance, outcomes);
-
             }
 
             await using IGrimoireExternalEffectGroup group = admittedGroup!;
 
             try
             {
-
                 outcomes.Add(await weaver.WeaveAsync(treeScope, embeddings, cancellationToken).ConfigureAwait(false));
-
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (Exception ex)
             {
-
                 // Preflight and BeginGenerationAsync can fail before the weaver owns a generation.
                 // One unavailable corpus must not prevent the other scopes from being attempted.
                 logger.LogWarning(ex, "Tapestry scope {ScopeKind} {ScopeId} failed; continuing the sweep.", treeScope.Kind, treeScope.Id);
 
                 outcomes.Add(new TapestryWeaveOutcome(TapestryWeaveStatus.Failed));
-
             }
-
         }
 
         // Publishing a generation only marks its predecessor Superseded; reconciliation is what actually
@@ -204,11 +170,9 @@ internal sealed class TapestryWeavingService(
 
         if (superseded > 0)
         {
-
             logger.LogDebug(
                 "Tapestry reconciliation removed {Count} superseded generation(s) after the sweep.",
                 superseded);
-
         }
 
         // Reconciliation preserves each scope's current complete generation, so a scope that vanishes
@@ -226,26 +190,20 @@ internal sealed class TapestryWeavingService(
 
         if (orphaned > 0)
         {
-
             logger.LogInformation(
                 "Tapestry pruning removed {Count} generation(s) for scopes that no longer exist.",
                 orphaned);
-
         }
 
         return new(TapestrySweepStatus.Completed, outcomes);
-
     }
-
 }
 
 internal enum TapestrySweepStatus
 {
-
     Completed,
 
     DeferredForMaintenance,
-
 }
 
 internal sealed record TapestrySweepOutcome(

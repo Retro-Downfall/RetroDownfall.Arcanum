@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal static class CovenantOfflineTransitionLaunchGapResumption
 {
-
     /// <summary>
     /// Resumes the adopted owner, or reports that nothing was adopted.
     /// </summary>
@@ -47,7 +46,6 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
         CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner? adopted,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(dispatch);
 
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -56,9 +54,7 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
 
         if (adopted is not { } owner)
         {
-
             return Result.Success();
-
         }
 
         Result<LongRunningOperationSettlementOutcome> dispatched = await dispatch
@@ -71,9 +67,7 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
 
         if (dispatched.IsFailure)
         {
-
             return Result.Failure(dispatched.Error);
-
         }
 
         return dispatched.Value is LongRunningOperationSettlementOutcome.Completed
@@ -81,7 +75,6 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
             or LongRunningOperationSettlementOutcome.Abandoned
                 ? Result.Success()
                 : Refusal();
-
     }
 
     private static Result Refusal() =>
@@ -93,5 +86,4 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
         CovenantExclusiveRecoveryOwner owner,
         LongRunningOperationRecoveryFingerprint expectedOperation)
         : LongRunningRecoveryOwnerEvidence(owner, expectedOperation);
-
 }

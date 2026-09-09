@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -73,37 +74,62 @@ internal sealed class LongRunningOperationStartupHostedService(
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        _ = cancellationToken;
 
-        await _shutdown.CancelAsync().ConfigureAwait(false);
-
-        if (_backgroundTask is null)
-        {
-
-            return;
-
-        }
+        Exception? cancellationFailure = null;
 
         try
         {
+            await _shutdown.CancelAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            cancellationFailure = exception;
+        }
 
-            await _backgroundTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (_backgroundTask is null)
+        {
+            Rethrow(cancellationFailure);
 
+            return;
+        }
+
+        Exception? backgroundFailure = null;
+
+        try
+        {
+            await _backgroundTask.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
-            cancellationToken.IsCancellationRequested
-            || _shutdown.IsCancellationRequested)
+            _shutdown.IsCancellationRequested)
         {
-
+        }
+        catch (Exception exception)
+        {
+            backgroundFailure = exception;
         }
 
+        if (cancellationFailure is not null
+            && backgroundFailure is not null)
+        {
+            throw new AggregateException(cancellationFailure, backgroundFailure);
+        }
+
+        Rethrow(cancellationFailure ?? backgroundFailure);
+    }
+
+    private static void Rethrow(Exception? exception)
+    {
+        if (exception is not null)
+        {
+            ExceptionDispatchInfo.Capture(exception).Throw();
+        }
     }
 
     private async Task ContinueInBackgroundAsync(CancellationToken cancellationToken)
     {
-
         while (!cancellationToken.IsCancellationRequested)
         {
-
             try
             {
                 DateTimeOffset now = timeProvider.GetUtcNow();
@@ -117,37 +143,26 @@ internal sealed class LongRunningOperationStartupHostedService(
 
                 await Task.Delay(BackgroundInterval, timeProvider, cancellationToken)
                     .ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 return;
-
             }
             catch (Exception ex)
             {
-
                 logger.LogError(ex, "Background durable-operation reconciliation failed; it will retry.");
 
                 try
                 {
-
                     await Task.Delay(BackgroundInterval, timeProvider, cancellationToken)
                         .ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-
                     return;
-
                 }
-
             }
-
         }
-
     }
 
     internal async Task<LongRunningOperationReconciliationSummary> RunBackgroundPassAsync(
@@ -266,30 +281,27 @@ internal sealed class LongRunningOperationStartupHostedService(
             IGrimoireExternalEffectGroup? group = null;
             AsyncServiceScope scope = default;
             bool scopeCreated = false;
-
-            if (decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect
-                && !lease.TryBeginExternalEffectGroup(out group))
-            {
-                long observedGeneration = lease.Generation;
-                await lease.DisposeAsync().ConfigureAwait(false);
-                await admissionGate.WaitForOpenGenerationAfterRefusalAsync(
-                    observedGeneration,
-                    cancellationToken).ConfigureAwait(false);
-
-                continue;
-            }
+            long? refusedGeneration = null;
 
             try
             {
-                scope = scopeFactory.CreateAsyncScope();
-                scopeCreated = true;
-                LongRunningOperationReconciler reconciler = scope.ServiceProvider
-                    .GetRequiredService<LongRunningOperationReconciler>();
+                if (decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect
+                    && !lease.TryBeginExternalEffectGroup(out group))
+                {
+                    refusedGeneration = lease.Generation;
+                }
+                else
+                {
+                    scope = scopeFactory.CreateAsyncScope();
+                    scopeCreated = true;
+                    LongRunningOperationReconciler reconciler = scope.ServiceProvider
+                        .GetRequiredService<LongRunningOperationReconciler>();
 
-                return await reconciler.SettleDiscoveredRuntimeAsync(
-                    operation,
-                    ownerId,
-                    cancellationToken).ConfigureAwait(false);
+                    return await reconciler.SettleDiscoveredRuntimeAsync(
+                        operation,
+                        ownerId,
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -297,16 +309,16 @@ internal sealed class LongRunningOperationStartupHostedService(
                 {
                     try
                     {
-                        if (group is not null)
+                        if (scopeCreated)
                         {
-                            await group.DisposeAsync().ConfigureAwait(false);
+                            await scope.DisposeAsync().ConfigureAwait(false);
                         }
                     }
                     finally
                     {
-                        if (scopeCreated)
+                        if (group is not null)
                         {
-                            await scope.DisposeAsync().ConfigureAwait(false);
+                            await group.DisposeAsync().ConfigureAwait(false);
                         }
                     }
                 }
@@ -315,6 +327,10 @@ internal sealed class LongRunningOperationStartupHostedService(
                     await lease.DisposeAsync().ConfigureAwait(false);
                 }
             }
+
+            await admissionGate.WaitForOpenGenerationAfterRefusalAsync(
+                refusedGeneration!.Value,
+                cancellationToken).ConfigureAwait(false);
         }
     }
 

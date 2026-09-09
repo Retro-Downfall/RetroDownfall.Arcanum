@@ -1,7 +1,6 @@
 using System.Diagnostics;
 
 using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -15,7 +14,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal static class SqliteBusyRetry
 {
-
     private const int BaseDelayMilliseconds = 50;
 
     /// <summary>
@@ -88,9 +86,7 @@ internal static class SqliteBusyRetry
 
                 if (elapsed >= bound)
                 {
-
                     throw new GrimoireBusyTimeoutException(attempt, bound, elapsed, ex);
-
                 }
 
                 TimeSpan delay = ComputeDelay(attempt);
@@ -102,22 +98,16 @@ internal static class SqliteBusyRetry
 
                 if (delayAsync is null)
                 {
-
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-
                 }
                 else
                 {
-
                     await delayAsync(delay, cancellationToken).ConfigureAwait(false);
-
                 }
 
                 if (attempt < int.MaxValue)
                 {
-
                     attempt++;
-
                 }
             }
         }
@@ -130,17 +120,7 @@ internal static class SqliteBusyRetry
             return false;
         }
 
-        if (exception is SqliteException direct)
-        {
-            return direct.SqliteErrorCode is 5 or 6;
-        }
-
-        if (exception is not DbUpdateException)
-        {
-            return false;
-        }
-
-        for (Exception? current = exception.InnerException; current is not null; current = current.InnerException)
+        for (Exception? current = exception; current is not null; current = current.InnerException)
         {
             if (current is OperationCanceledException)
             {
@@ -164,7 +144,6 @@ internal static class SqliteBusyRetry
 
         return TimeSpan.FromMilliseconds(Math.Min(delayMs, 2_000));
     }
-
 }
 
 /// <summary>
@@ -182,20 +161,17 @@ internal static class SqliteBusyRetry
 /// </summary>
 internal sealed class GrimoireBusyTimeoutException : Exception
 {
-
     internal GrimoireBusyTimeoutException(int attempts, TimeSpan deadline, TimeSpan elapsed, Exception lastBusyException)
         : base(
             $"The Grimoire did not become available after {attempts} attempt(s) over {elapsed} "
             + $"(deadline {deadline}); another handle is likely holding an exclusive or reserved lock.",
             lastBusyException)
     {
-
         Attempts = attempts;
 
         Deadline = deadline;
 
         Elapsed = elapsed;
-
     }
 
     internal int Attempts { get; }
@@ -210,5 +186,4 @@ internal sealed class GrimoireBusyTimeoutException : Exception
     /// as much as that one attempt's own duration before this loop ever gets to check again.
     /// </summary>
     internal TimeSpan Elapsed { get; }
-
 }

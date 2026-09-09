@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class GrimoireConnectionAdmissionGateTests
 {
-
     [Theory]
     [InlineData(false, false, false)]
     [InlineData(false, false, true)]
@@ -24,7 +23,6 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         bool innerWork,
         bool nonLifo)
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using IAsyncDisposable outer = AcquireLifetime(gate, outerWork);
@@ -54,7 +52,6 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         AssertFinisherRefused(gate);
 
         Assert.True((await drain.WaitAsync(BoundedWait)).IsSuccess);
-
     }
 
     [Theory]
@@ -62,7 +59,6 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
     [InlineData(true)]
     public async Task Flowed_finisher_observes_shared_release_without_gaining_an_independent_lifetime(bool work)
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using IAsyncDisposable original = AcquireLifetime(gate, work);
@@ -77,7 +73,6 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
         Task child = StartDedicated(() =>
         {
-
             ready.TrySetResult();
 
             Assert.True(closingStarted.Wait(BoundedWait));
@@ -89,12 +84,10 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
             Assert.True(originalReleased.Wait(BoundedWait));
 
             AssertFinisherRefused(gate);
-
         });
 
         try
         {
-
             await ready.Task.WaitAsync(BoundedWait);
 
             await using IGrimoireClosingOwner closing = Begin(gate, Owner(64));
@@ -110,25 +103,20 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
             await child.WaitAsync(BoundedWait);
 
             Assert.True((await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None)).IsSuccess);
-
         }
         finally
         {
-
             closingStarted.Set();
 
             originalReleased.Set();
 
             await child.WaitAsync(BoundedWait);
-
         }
-
     }
 
     [Fact]
     public async Task Promoted_request_cannot_replay_after_abort_or_remove_a_new_request_from_the_next_census()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -172,13 +160,11 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         AssertFinisherRefused(gate);
 
         Assert.True((await drain.WaitAsync(BoundedWait)).IsSuccess);
-
     }
 
     [Fact]
     public async Task Unpromoted_old_request_cannot_be_promoted_out_of_the_next_generation_census()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -219,11 +205,9 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
         using (IGrimoireConnectionOpenTicket ordinaryOpen = gate.AcquireOrdinaryOpen(exact))
         {
-
             Assert.Equal(2, ordinaryOpen.Generation);
 
             ordinaryOpen.MarkFailed();
-
         }
 
         await ordinaryWork.DisposeAsync();
@@ -265,13 +249,11 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         Assert.True((await lease.CompleteAsync(CovenantExclusiveLeaseDisposition.CommitAndReopen, CancellationToken.None)).IsSuccess);
 
         Assert.Equal(3, await nextOpen.WaitAsync(BoundedWait));
-
     }
 
     [Fact]
     public async Task Revoked_old_work_remains_in_the_next_close_census_after_proven_abort()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -309,7 +291,6 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         await using IGrimoireExclusiveClosedLease lease = closed.Value;
 
         Assert.Equal(3, lease.Generation);
-
     }
 
     [Theory]
@@ -319,7 +300,6 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
     [InlineData(true, true)]
     public async Task Repeated_old_generation_disposal_cannot_release_a_new_generation_lifetime(bool oldWork, bool newWork)
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -351,7 +331,6 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         AssertFinisherRefused(gate);
 
         Assert.True((await drain.WaitAsync(BoundedWait)).IsSuccess);
-
     }
 
     private static async Task TimeoutAndAbort(
@@ -359,7 +338,6 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         ManualTimeProvider clock,
         IGrimoireClosingOwner closing)
     {
-
         Task<Result> drain = gate.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask();
 
         await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(BoundedWait);
@@ -371,12 +349,10 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         Assert.True((await gate.AbortClosingAsync(closing, static _ => ValueTask.FromResult(true), CancellationToken.None)).IsSuccess);
 
         Assert.Equal(2, gate.CurrentGeneration);
-
     }
 
     private static void AssertFinisherOpen(GrimoireConnectionAdmissionGate gate)
     {
-
         using SqliteConnection connection = new();
 
         using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(connection);
@@ -384,16 +360,12 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         Assert.True(ticket.RevalidateAfterNativeOpen().IsSuccess);
 
         Assert.True(ticket.MarkOpened().IsSuccess);
-
     }
 
     private static void AssertFinisherRefused(GrimoireConnectionAdmissionGate gate)
     {
-
         using SqliteConnection connection = new();
 
         Assert.Throws<GrimoireMaintenanceUnavailableException>(() => gate.AcquireOrdinaryOpen(connection));
-
     }
-
 }

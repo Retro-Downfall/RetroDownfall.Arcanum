@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Collections;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.A2A;
@@ -26,30 +27,12 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// Outbound Sending outcomes: cost attribution, in-flight progress, and continuation of a
 /// remote that stops to ask for something.
 /// </summary>
-[Collection("OutboundUrlGuardDns")]
-public sealed class A2ASendingOutcomeTests : IDisposable
+[Collection(ProcessEnvironmentCollectionName.Value)]
+public sealed class A2ASendingOutcomeTests
 {
-
     private const string FakeAgentHost = "cost-agent.example.test";
 
     private const string DiscoveryUrl = $"http://{FakeAgentHost}/";
-
-    private readonly IDnsResolver _originalResolver;
-
-    public A2ASendingOutcomeTests()
-    {
-
-        _originalResolver = OutboundUrlGuard.DnsResolver;
-
-        FakeDnsResolver fake = new();
-
-        fake.Add(FakeAgentHost, IPAddress.Parse("93.184.216.34"));
-
-        OutboundUrlGuard.DnsResolver = fake;
-
-    }
-
-    public void Dispose() => OutboundUrlGuard.DnsResolver = _originalResolver;
 
     private static ArcanumSettings EnabledSettings() => new()
     {
@@ -61,7 +44,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
     [Fact]
     public async Task PeerReportsUsage_CostIsKnownAndCarriesTheReportedFigures()
     {
-
         using TestServer server = await CreateAgentAsync(new UsageReportingAgentHandler(totalTokens: 4321, costUsd: 0.0125m));
 
         using HttpMessageHandler handler = server.CreateHandler();
@@ -77,13 +59,11 @@ public sealed class A2ASendingOutcomeTests : IDisposable
         Assert.Equal(4321, result.Value.RemoteCost.TotalTokens);
 
         Assert.Equal(0.0125m, result.Value.RemoteCost.CostUsd);
-
     }
 
     [Fact]
     public async Task PeerReportsNothing_CostIsExplicitlyUnknownRatherThanZero()
     {
-
         using TestServer server = await CreateAgentAsync(new SilentAgentHandler("done"));
 
         using HttpMessageHandler handler = server.CreateHandler();
@@ -102,13 +82,11 @@ public sealed class A2ASendingOutcomeTests : IDisposable
         Assert.Null(result.Value.RemoteCost.CostUsd);
 
         Assert.Contains("unknown", result.Value.RemoteCost.Describe(), StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task SettledSending_StampsDistinctDispatchAndSettleInstants()
     {
-
         using TestServer server = await CreateAgentAsync(new SilentAgentHandler("done"));
 
         using HttpMessageHandler handler = server.CreateHandler();
@@ -127,7 +105,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
         Assert.NotNull(result.Value.RemoteDuration);
 
         Assert.True(result.Value.RemoteDuration >= TimeSpan.Zero);
-
     }
 
     [Theory]
@@ -138,26 +115,22 @@ public sealed class A2ASendingOutcomeTests : IDisposable
     [InlineData("""{"totalTokens": -5}""")]
     public void MalformedRemoteUsage_ReadsAsUnknownRatherThanThrowing(string rawJson)
     {
-
         Dictionary<string, JsonElement> metadata = new()
         {
             [A2ASendingUsageMetadata.MetadataKey] = JsonDocument.Parse(rawJson).RootElement.Clone(),
         };
 
         Assert.False(A2ASendingUsageMetadata.Read(metadata).IsKnown);
-
     }
 
     [Fact]
     public void EmptyUsageBlock_IsUnknownRatherThanAFreeSending()
     {
-
         Dictionary<string, JsonElement> metadata = [];
 
         A2ASendingUsageMetadata.Write(metadata, totalTokens: null, costUsd: null);
 
         Assert.False(A2ASendingUsageMetadata.Read(metadata).IsKnown);
-
     }
 
     // ── #61 in-flight progress ─────────────────────────────────────────────────────────────────────
@@ -165,7 +138,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
     [Fact]
     public async Task LongRunningSending_ReportsProgressOnStateChangesAndNotOnUnchangedPolls()
     {
-
         using StagedAgentHandler agent = new();
 
         using TestServer server = await CreateAgentAsync(agent);
@@ -203,13 +175,11 @@ public sealed class A2ASendingOutcomeTests : IDisposable
         Assert.Contains("completed", states, StringComparer.Ordinal);
 
         Assert.All(frames, f => Assert.Equal(A2ASendingDirection.Outbound, f.Direction));
-
     }
 
     [Fact]
     public async Task ProgressFrames_CarryNoCredentialPromptBodyOrPrivateEndpointDetail()
     {
-
         const string envVar = "ARCANUM_TEST_A2A_PROGRESS_KEY";
 
         const string secret = "super-secret-peer-key";
@@ -220,7 +190,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
 
         try
         {
-
             using StagedAgentHandler agent = new();
 
             using TestServer server = await CreateAgentAsync(agent);
@@ -249,23 +218,17 @@ public sealed class A2ASendingOutcomeTests : IDisposable
 
             foreach (A2ASendingProgress frame in observed)
             {
-
                 string rendered = $"{frame.AgentUrl}|{frame.TaskId}|{frame.RemoteState}";
 
                 Assert.DoesNotContain(secret, rendered, StringComparison.Ordinal);
 
                 Assert.DoesNotContain("production database", rendered, StringComparison.OrdinalIgnoreCase);
-
             }
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(envVar, null);
-
         }
-
     }
 
     // ── #64 continuation ───────────────────────────────────────────────────────────────────────────
@@ -273,7 +236,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
     [Fact]
     public async Task ContinuableDispatch_ReturnsAContinuationInsteadOfEndingTheSending()
     {
-
         using ContinuableAgentHandler agent = new("which environment?", "staging it is");
 
         using TestServer server = await CreateAgentAsync(agent);
@@ -296,13 +258,11 @@ public sealed class A2ASendingOutcomeTests : IDisposable
 
         // The blocking mode cancels here; continuable mode must leave the remote task alive to answer.
         Assert.False(agent.WasCancelled);
-
     }
 
     [Fact]
     public async Task ContinuedSending_ReachesATerminalResultOnTheSameRemoteTask()
     {
-
         using ContinuableAgentHandler agent = new("which environment?", "deployed to staging");
 
         using TestServer server = await CreateAgentAsync(agent);
@@ -330,13 +290,11 @@ public sealed class A2ASendingOutcomeTests : IDisposable
         Assert.Contains("deployed to staging", finished.Value.ResponseText, StringComparison.Ordinal);
 
         Assert.Equal("staging", agent.ObservedFollowUp);
-
     }
 
     [Fact]
     public async Task BlockingDispatch_StillEndsAtInputRequiredAndCancelsTheRemoteTask()
     {
-
         using ContinuableAgentHandler agent = new("which environment?", "never reached");
 
         using TestServer server = await CreateAgentAsync(agent);
@@ -356,13 +314,11 @@ public sealed class A2ASendingOutcomeTests : IDisposable
         Assert.Equal(ErrorCodes.Sending.TaskRejected, result.Error.Code);
 
         Assert.True(await agent.WaitForCancelAsync(TimeSpan.FromSeconds(10)));
-
     }
 
     [Fact]
     public async Task ContinuedSending_KeepsTheOneDurableRecordTheDispatchOpened()
     {
-
         using ContinuableAgentHandler agent = new("which environment?", "deployed to staging");
 
         using TestServer server = await CreateAgentAsync(agent);
@@ -399,7 +355,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
         Assert.Single(ledger.Settled);
 
         Assert.Empty(ledger.OpenEntries);
-
     }
 
     // ── harness ────────────────────────────────────────────────────────────────────────────────────
@@ -412,17 +367,24 @@ public sealed class A2ASendingOutcomeTests : IDisposable
             new SingleHandlerHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(settings ?? EnabledSettings()),
             NullLogger<A2AClientService>.Instance,
+            DeterministicDns(),
             ledger is null ? null : ScopeFactoryFor(ledger));
+
+    private static IDnsResolver DeterministicDns()
+    {
+        FakeDnsResolver dns = new();
+        dns.Add(FakeAgentHost, IPAddress.Parse("93.184.216.34"));
+
+        return dns;
+    }
 
     private static IServiceScopeFactory ScopeFactoryFor(IA2ASendingLedger ledger)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton(ledger);
 
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-
     }
 
     /// <summary>
@@ -431,7 +393,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
     /// </summary>
     private sealed class OutboundSendingLedger : IA2ASendingLedger
     {
-
         private readonly Dictionary<Guid, string> _open = [];
 
         public List<string> Registered { get; } = [];
@@ -446,7 +407,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
             Guid? budgetReservationId = null,
             CancellationToken cancellationToken = default)
         {
-
             Registered.Add(remoteTaskId);
 
             A2ASendingLedgerEntry entry = new(Guid.NewGuid(), "test");
@@ -454,7 +414,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
             _open[entry.OperationId] = remoteTaskId;
 
             return Task.FromResult(entry);
-
         }
 
         public Task SettleOutboundAsync(
@@ -462,25 +421,19 @@ public sealed class A2ASendingOutcomeTests : IDisposable
             A2ARemoteCost cost,
             CancellationToken cancellationToken = default)
         {
-
             if (_open.Remove(entry.OperationId, out string? taskId))
             {
-
                 Settled.Add(taskId);
-
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
         {
-
             _open.Remove(entry.OperationId);
 
             return Task.CompletedTask;
-
         }
 
         public Task<A2ASendingLedgerEntry> RegisterInboundAsync(
@@ -516,28 +469,20 @@ public sealed class A2ASendingOutcomeTests : IDisposable
             string remoteTaskId,
             CancellationToken cancellationToken = default)
         {
-
             foreach ((Guid operationId, string taskId) in _open)
             {
-
                 if (string.Equals(taskId, remoteTaskId, StringComparison.Ordinal))
                 {
-
                     return Task.FromResult(new A2ASendingLedgerEntry(operationId, "test"));
-
                 }
-
             }
 
             return Task.FromResult<A2ASendingLedgerEntry>(default);
-
         }
-
     }
 
     private static async Task<TestServer> CreateAgentAsync(IAgentHandler agentHandler)
     {
-
         AgentCard advertised = new()
         {
             Name = "Fake Remote Agent",
@@ -555,19 +500,16 @@ public sealed class A2ASendingOutcomeTests : IDisposable
         IHostBuilder hostBuilder = new HostBuilder()
             .ConfigureWebHost(webHost =>
             {
-
                 webHost.UseTestServer();
 
                 webHost.ConfigureServices(static services => services.AddRouting());
 
                 webHost.Configure(app =>
                 {
-
                     app.UseRouting();
 
                     app.UseEndpoints(endpoints =>
                     {
-
                         A2AServer server = new(
                             agentHandler,
                             new InMemoryTaskStore(),
@@ -578,33 +520,25 @@ public sealed class A2ASendingOutcomeTests : IDisposable
                         endpoints.MapA2A(server, "/agent");
 
                         endpoints.MapWellKnownAgentCard(advertised);
-
                     });
-
                 });
-
             });
 
         IHost host = await hostBuilder.StartAsync().ConfigureAwait(false);
 
         return host.GetTestServer();
-
     }
 
     private sealed class SingleHandlerHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
-
     }
 
     /// <summary>Completes immediately and publishes a usage block the way Arcanum's own server does.</summary>
     private sealed class UsageReportingAgentHandler(long totalTokens, decimal costUsd) : IAgentHandler
     {
-
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
@@ -624,21 +558,17 @@ public sealed class A2ASendingOutcomeTests : IDisposable
             A2ASendingUsageMetadata.Write(completion.Metadata!, totalTokens, costUsd);
 
             await updater.CompleteAsync(completion, cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
             Task.CompletedTask;
-
     }
 
     /// <summary>Completes immediately with no usage block at all.</summary>
     private sealed class SilentAgentHandler(string responseText) : IAgentHandler
     {
-
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
@@ -648,23 +578,19 @@ public sealed class A2ASendingOutcomeTests : IDisposable
             await updater.AddArtifactAsync([Part.FromText(responseText)], cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
             Task.CompletedTask;
-
     }
 
     /// <summary>Sits in Working until released, so the client polls an unchanging state several times.</summary>
     private sealed class StagedAgentHandler : IAgentHandler, IDisposable
     {
-
         private readonly TaskCompletionSource<string> _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
@@ -676,22 +602,18 @@ public sealed class A2ASendingOutcomeTests : IDisposable
             await updater.AddArtifactAsync([Part.FromText(text)], cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             _release.TrySetCanceled();
 
             return Task.CompletedTask;
-
         }
 
         public void Release(string text) => _release.TrySetResult(text);
 
         public void Dispose() => _release.TrySetCanceled();
-
     }
 
     /// <summary>
@@ -699,7 +621,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
     /// </summary>
     private sealed class ContinuableAgentHandler(string question, string answerText) : IAgentHandler, IDisposable
     {
-
         private readonly TaskCompletionSource _cancelObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool WasCancelled { get; private set; }
@@ -708,12 +629,10 @@ public sealed class A2ASendingOutcomeTests : IDisposable
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             if (context.IsContinuation)
             {
-
                 ObservedFollowUp = context.UserText?.Trim();
 
                 // The SDK opens this request's response stream on the first Submit; a continuation that
@@ -727,7 +646,6 @@ public sealed class A2ASendingOutcomeTests : IDisposable
                 await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
                 return;
-
             }
 
             await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
@@ -742,31 +660,24 @@ public sealed class A2ASendingOutcomeTests : IDisposable
                     Parts = [Part.FromText(question)],
                 },
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             WasCancelled = true;
 
             _cancelObserved.TrySetResult();
 
             return Task.CompletedTask;
-
         }
 
         public async Task<bool> WaitForCancelAsync(TimeSpan timeout)
         {
-
             Task completed = await Task.WhenAny(_cancelObserved.Task, Task.Delay(timeout)).ConfigureAwait(false);
 
             return ReferenceEquals(completed, _cancelObserved.Task);
-
         }
 
         public void Dispose() => _cancelObserved.TrySetCanceled();
-
     }
-
 }

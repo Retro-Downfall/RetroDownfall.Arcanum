@@ -31,7 +31,6 @@ namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 [Collection("WorkspacePathPolicy")]
 public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifetime
 {
-
     private static readonly CancellationToken Token = CancellationToken.None;
 
     private readonly TempWorkspace _workspace = new();
@@ -51,7 +50,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
     [InlineData(3)]
     public async Task An_installation_with_no_active_journal_is_left_completely_alone(int arm)
     {
-
         InstallationResetNestedTransitionEvidenceOutcome? evidence = arm == 0
             ? null
             : (InstallationResetNestedTransitionEvidenceOutcome)arm;
@@ -68,7 +66,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             recovered.Value);
 
         Assert.Empty(harness.Steps);
-
     }
 
     [Theory]
@@ -80,7 +77,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
     [InlineData(6)]
     public async Task Every_journal_active_answer_resumes_in_the_one_order(int arm)
     {
-
         InstallationResetNestedTransitionEvidenceOutcome evidence =
             (InstallationResetNestedTransitionEvidenceOutcome)arm;
 
@@ -102,7 +98,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         Assert.Equal(
             ["unlock", "load", "consume", "close", "dispatch"],
             harness.Steps);
-
     }
 
     /// <summary>
@@ -116,7 +111,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
     [Fact]
     public async Task The_recovery_probe_is_closed_before_the_handler_is_dispatched()
     {
-
         using Harness harness = Create("closed-first");
 
         _ = await harness.Recovery.RecoverBeforeBootstrapAsync(
@@ -130,13 +124,11 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         Assert.True(harness.Steps.IndexOf("close") < harness.Steps.IndexOf("dispatch"));
 
         Assert.True(harness.Unlock.Disposed);
-
     }
 
     [Fact]
     public async Task A_journal_active_answer_with_no_journal_evidence_refuses()
     {
-
         using Harness harness = Create("no-journal");
 
         Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
@@ -151,13 +143,11 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         AssertRefused(recovered);
 
         Assert.Empty(harness.Steps);
-
     }
 
     [Fact]
     public async Task A_recovery_required_answer_refuses_without_touching_the_catalog()
     {
-
         using Harness harness = Create("recovery-required");
 
         Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
@@ -172,7 +162,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         AssertRefused(recovered);
 
         Assert.Empty(harness.Steps);
-
     }
 
     [Theory]
@@ -186,7 +175,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
     [InlineData("dispatch", new[] { "unlock", "load", "consume", "close", "dispatch" })]
     public async Task A_refusal_at_any_step_stops_the_pass_there(string failing, string[] expected)
     {
-
         using Harness harness = Create("short-circuit-" + failing, failAt: failing);
 
         Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
@@ -203,7 +191,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         // The probe is closed on every path that opened it, including the failing ones. A refusal that
         // leaked the handle would leave the sidecars a later attempt has to prove absent.
         Assert.Equal(expected, harness.Steps);
-
     }
 
     /// <summary>
@@ -226,7 +213,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
     public async Task A_settlement_short_of_a_durable_verdict_refuses(
         LongRunningOperationSettlementOutcome settlement)
     {
-
         using Harness harness = Create("settlement-" + settlement, settlement: settlement);
 
         Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
@@ -239,7 +225,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
                 Token);
 
         AssertRefused(recovered);
-
     }
 
     [Theory]
@@ -252,7 +237,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
     public async Task Every_durable_verdict_reads_as_resumed(
         LongRunningOperationSettlementOutcome settlement)
     {
-
         using Harness harness = Create("verdict-" + settlement, settlement: settlement);
 
         Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
@@ -267,7 +251,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         Assert.True(recovered.IsSuccess, recovered.IsFailure ? recovered.Error.Message : null);
 
         Assert.Equal(GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed, recovered.Value);
-
     }
 
     [Theory]
@@ -301,16 +284,13 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         Assert.Equal(
             LongRunningRecoveryAdmissionKind.OwnerBoundOffline,
             LongRunningOperationRecoveryAdmission.Classify(launch, evidence).Kind);
-
     }
 
     private static void AssertRefused(Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered)
     {
-
         Assert.True(recovered.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
-
     }
 
     private Harness Create(
@@ -320,7 +300,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             LongRunningOperationSettlementOutcome.Completed,
         CovenantExclusiveOperation exclusiveOperation = CovenantExclusiveOperation.CovenantReset)
     {
-
         string root = _workspace.CreateSubdir("transition-startup-" + name);
 
         ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
@@ -342,13 +321,11 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             seam,
             Journal(exclusiveOperation),
             new GrimoireOfflineTransitionStartupRecovery(seam, seam, seam));
-
     }
 
     private static GrimoireOfflineTransitionRecoveryEvidence Journal(
         CovenantExclusiveOperation exclusiveOperation = CovenantExclusiveOperation.CovenantReset)
     {
-
         CovenantDigest digest = new(Convert.FromHexString(new string('a', 64)));
 
         return new GrimoireOfflineTransitionRecoveryEvidence(
@@ -370,7 +347,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             SlotEpoch: 1,
             Revision: 3,
             digest);
-
     }
 
     private sealed record Harness(
@@ -382,9 +358,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         GrimoireOfflineTransitionRecoveryEvidence Journal,
         GrimoireOfflineTransitionStartupRecovery Recovery) : IDisposable
     {
-
         public void Dispose() => Lock.Dispose();
-
     }
-
 }

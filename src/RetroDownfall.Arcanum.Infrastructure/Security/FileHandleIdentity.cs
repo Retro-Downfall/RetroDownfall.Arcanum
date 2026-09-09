@@ -11,10 +11,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 internal readonly record struct FileHandleIdentity(ulong VolumeId, ulong FileId)
 {
-
     internal static bool IdentitiesMatch(FileHandleIdentity expected, FileHandleIdentity actual) =>
         expected == actual;
-
 }
 
 internal enum FileSystemObjectKind
@@ -50,7 +48,6 @@ internal readonly record struct WindowsFileInformationLayout(
 /// </summary>
 internal static partial class FileHandleIdentityInterop
 {
-
     /// <summary>
     /// Test seam for path identity resolution branches.
     /// </summary>
@@ -96,6 +93,13 @@ internal static partial class FileHandleIdentityInterop
             Marshal.OffsetOf<BY_HANDLE_FILE_INFORMATION>(
                 nameof(BY_HANDLE_FILE_INFORMATION.nFileIndexLow)).ToInt32());
 
+    internal static uint GetWindowsDirectoryDesiredAccessForTests(
+        bool requestReadControl,
+        bool requestEnumeration) =>
+        ResolveWindowsDirectoryDesiredAccess(
+            requestReadControl,
+            requestEnumeration);
+
     internal static bool TryParseUnixFileMetadataForTests(
         ReadOnlySpan<byte> buffer,
         bool isMacOS,
@@ -107,30 +111,24 @@ internal static partial class FileHandleIdentityInterop
         string path,
         out uint ownerUserId)
     {
-
         ownerUserId = default;
 
         if (OperatingSystem.IsWindows()
             || !BitConverter.IsLittleEndian)
         {
-
             return false;
         }
 
         unsafe
         {
-
             byte[] buffer = new byte[StatBufferSize];
 
             fixed (byte* bufferPtr = buffer)
             {
-
                 if (stat(path, bufferPtr) != 0)
                 {
-
                     return false;
                 }
-
             }
 
             int offset = OperatingSystem.IsMacOS()
@@ -143,7 +141,6 @@ internal static partial class FileHandleIdentityInterop
 
             if (offset < 0 || buffer.Length < offset + sizeof(uint))
             {
-
                 return false;
             }
 
@@ -155,124 +152,96 @@ internal static partial class FileHandleIdentityInterop
 
     internal static bool TryGetPathIdentity(string path, out FileHandleIdentity identity)
     {
-
         identity = default;
 
         if (TryGetPathIdentityForTests is not null)
         {
-
             FileHandleIdentity? testIdentity = TryGetPathIdentityForTests(path);
 
             if (testIdentity is null)
             {
-
                 return false;
-
             }
 
             identity = testIdentity.Value;
 
             return true;
-
         }
 
         if (!TryGetPathMetadata(path, out FileHandleMetadata metadata))
         {
-
             return false;
-
         }
 
         identity = metadata.Identity;
 
         return true;
-
     }
 
     internal static bool TryGetHandleIdentity(
         SafeFileHandle handle,
         out FileHandleIdentity identity)
     {
-
         identity = default;
 
         if (handle is null || handle.IsInvalid)
         {
-
             return false;
-
         }
 
         if (TryGetHandleIdentityForTests is not null)
         {
-
             FileHandleIdentity? testIdentity = TryGetHandleIdentityForTests(handle);
 
             if (testIdentity is null)
             {
-
                 return false;
-
             }
 
             identity = testIdentity.Value;
 
             return true;
-
         }
 
         if (!TryGetHandleMetadata(handle, out FileHandleMetadata metadata))
         {
-
             return false;
-
         }
 
         identity = metadata.Identity;
 
         return true;
-
     }
 
     internal static bool TryGetPathMetadata(string path, out FileHandleMetadata metadata)
     {
-
         metadata = default;
 
         if (TryGetPathMetadataForTests is not null)
         {
-
             FileHandleMetadata? testMetadata = TryGetPathMetadataForTests(path);
 
             if (testMetadata is null)
             {
-
                 return false;
-
             }
 
             metadata = testMetadata.Value;
 
             return true;
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return TryGetWindowsPathMetadata(path, out metadata);
-
         }
 
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
-
             return TryGetUnixPathMetadata(path, out metadata);
-
         }
 
         return false;
-
     }
 
     internal static bool TryGetPathMetadataNoFollow(
@@ -338,68 +307,52 @@ internal static partial class FileHandleIdentityInterop
         SafeFileHandle handle,
         out FileHandleMetadata metadata)
     {
-
         metadata = default;
 
         if (handle is null || handle.IsInvalid)
         {
-
             return false;
-
         }
 
         if (TryGetHandleMetadataForTests is not null)
         {
-
             FileHandleMetadata? testMetadata = TryGetHandleMetadataForTests(handle);
 
             if (testMetadata is null)
             {
-
                 return false;
-
             }
 
             metadata = testMetadata.Value;
 
             return true;
-
         }
 
         return TryGetHandleMetadataIgnoringTestSeam(handle, out metadata);
-
     }
 
     private static bool TryGetHandleMetadataIgnoringTestSeam(
         SafeFileHandle handle,
         out FileHandleMetadata metadata)
     {
-
         metadata = default;
 
         if (handle is null || handle.IsInvalid || handle.IsClosed)
         {
-
             return false;
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return TryGetWindowsHandleMetadata(handle, out metadata);
-
         }
 
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
-
             return TryGetUnixHandleMetadata(handle, out metadata);
-
         }
 
         return false;
-
     }
 
     internal static bool TryGetUnixHandleAccessMetadata(
@@ -407,7 +360,6 @@ internal static partial class FileHandleIdentityInterop
         out UnixFileMode mode,
         out uint ownerUserId)
     {
-
         mode = default;
 
         ownerUserId = default;
@@ -417,55 +369,42 @@ internal static partial class FileHandleIdentityInterop
             || handle is null
             || handle.IsInvalid)
         {
-
             return false;
-
         }
 
         int fd = handle.DangerousGetHandle().ToInt32();
 
         if (fd < 0)
         {
-
             return false;
-
         }
 
         unsafe
         {
-
             Span<byte> buffer = stackalloc byte[StatBufferSize];
 
             fixed (byte* bufferPtr = buffer)
             {
-
                 if (fstat(fd, bufferPtr) != 0)
                 {
-
                     return false;
-
                 }
 
                 uint rawMode;
 
                 if (OperatingSystem.IsMacOS())
                 {
-
                     if (buffer.Length < MacOsAccessMetadataMinimumSize)
                     {
-
                         return false;
-
                     }
 
                     rawMode = BinaryPrimitives.ReadUInt16LittleEndian(buffer[4..]);
 
                     ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[16..]);
-
                 }
                 else
                 {
-
                     switch (RuntimeInformation.ProcessArchitecture)
                     {
                         case Architecture.X64
@@ -490,21 +429,28 @@ internal static partial class FileHandleIdentityInterop
 
                             return false;
                     }
-
                 }
 
                 mode = (UnixFileMode)(rawMode & UnixPermissionBits);
 
                 return true;
-
             }
-
         }
-
     }
 
     internal static bool TryOpenDirectoryMetadata(
         string path,
+        out SafeFileHandle handle,
+        out FileHandleMetadata metadata) =>
+        TryOpenDirectoryMetadata(
+            path,
+            requestEnumeration: false,
+            out handle,
+            out metadata);
+
+    internal static bool TryOpenDirectoryMetadata(
+        string path,
+        bool requestEnumeration,
         out SafeFileHandle handle,
         out FileHandleMetadata metadata)
     {
@@ -517,7 +463,7 @@ internal static partial class FileHandleIdentityInterop
             {
                 handle = CreateFile(
                     path,
-                    FileReadAttributes,
+                    FileReadAttributes | (requestEnumeration ? FileReadData : 0),
                     FileShare.Read | FileShare.Write | FileShare.Delete,
                     IntPtr.Zero,
                     OpenExisting,
@@ -575,9 +521,23 @@ internal static partial class FileHandleIdentityInterop
         string leaf,
         bool requestReadControl,
         out SafeFileHandle handle,
+        out FileHandleMetadata metadata) =>
+        TryOpenDirectoryMetadataRelative(
+            parentDirectory,
+            leaf,
+            requestReadControl,
+            requestEnumeration: false,
+            out handle,
+            out metadata);
+
+    internal static bool TryOpenDirectoryMetadataRelative(
+        SafeFileHandle parentDirectory,
+        string leaf,
+        bool requestReadControl,
+        bool requestEnumeration,
+        out SafeFileHandle handle,
         out FileHandleMetadata metadata)
     {
-
         handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
 
         metadata = default;
@@ -589,43 +549,34 @@ internal static partial class FileHandleIdentityInterop
             || leaf is "." or ".."
             || leaf.IndexOfAny('/', '\\', '\0') >= 0)
         {
-
             return false;
-
         }
 
         bool parentReferenceAdded = false;
 
         try
         {
-
             parentDirectory.DangerousAddRef(ref parentReferenceAdded);
 
             if (OperatingSystem.IsWindows())
             {
-
                 if (!TryOpenWindowsDirectoryRelative(
                         parentDirectory,
                         leaf,
                         requestReadControl,
+                        requestEnumeration,
                         out handle))
                 {
-
                     return false;
-
                 }
-
             }
             else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             {
-
                 int parentDescriptor = parentDirectory.DangerousGetHandle().ToInt32();
 
                 if (parentDescriptor < 0)
                 {
-
                     return false;
-
                 }
 
                 int flags = OperatingSystem.IsMacOS()
@@ -640,9 +591,7 @@ internal static partial class FileHandleIdentityInterop
 
                 if (fileDescriptor < 0)
                 {
-
                     return false;
-
                 }
 
                 handle.Dispose();
@@ -650,20 +599,16 @@ internal static partial class FileHandleIdentityInterop
                 handle = new SafeFileHandle(
                     new IntPtr(fileDescriptor),
                     ownsHandle: true);
-
             }
             else
             {
-
                 return false;
-
             }
 
             if (handle.IsInvalid
                 || !TryGetHandleMetadata(handle, out metadata)
                 || metadata.Kind is not FileSystemObjectKind.Directory)
             {
-
                 handle.Dispose();
 
                 handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
@@ -671,11 +616,9 @@ internal static partial class FileHandleIdentityInterop
                 metadata = default;
 
                 return false;
-
             }
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -684,7 +627,6 @@ internal static partial class FileHandleIdentityInterop
                 or ObjectDisposedException
                 or NotSupportedException)
         {
-
             handle.Dispose();
 
             handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
@@ -692,34 +634,27 @@ internal static partial class FileHandleIdentityInterop
             metadata = default;
 
             return false;
-
         }
         finally
         {
-
             if (parentReferenceAdded)
             {
-
                 parentDirectory.DangerousRelease();
-
             }
-
         }
-
     }
 
     private static unsafe bool TryOpenWindowsDirectoryRelative(
         SafeFileHandle parentDirectory,
         string leaf,
         bool requestReadControl,
+        bool requestEnumeration,
         out SafeFileHandle handle)
     {
-
         handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
 
         fixed (char* leafBuffer = leaf)
         {
-
             UNICODE_STRING objectName = new()
             {
                 Length = checked((ushort)(leaf.Length * sizeof(char))),
@@ -737,14 +672,9 @@ internal static partial class FileHandleIdentityInterop
 
             IO_STATUS_BLOCK statusBlock = default;
 
-            uint desiredAccess = FileReadAttributes | FileTraverse;
-
-            if (requestReadControl)
-            {
-
-                desiredAccess |= ReadControl;
-
-            }
+            uint desiredAccess = ResolveWindowsDirectoryDesiredAccess(
+                requestReadControl,
+                requestEnumeration);
 
             int status = NtOpenFile(
                 out IntPtr opened,
@@ -752,20 +682,18 @@ internal static partial class FileHandleIdentityInterop
                 &objectAttributes,
                 &statusBlock,
                 (uint)(FileShare.Read | FileShare.Write | FileShare.Delete),
-                FileDirectoryFile | FileOpenReparsePoint);
+                FileDirectoryFile
+                    | FileOpenReparsePoint
+                    | (requestEnumeration ? FileSynchronousIoNonAlert : 0));
 
             if (status < 0 || opened == IntPtr.Zero || opened == new IntPtr(-1))
             {
-
                 if (opened != IntPtr.Zero && opened != new IntPtr(-1))
                 {
-
                     new SafeFileHandle(opened, ownsHandle: true).Dispose();
-
                 }
 
                 return false;
-
             }
 
             handle.Dispose();
@@ -773,10 +701,16 @@ internal static partial class FileHandleIdentityInterop
             handle = new SafeFileHandle(opened, ownsHandle: true);
 
             return true;
-
         }
-
     }
+
+    private static uint ResolveWindowsDirectoryDesiredAccess(
+        bool requestReadControl,
+        bool requestEnumeration) =>
+        FileReadAttributes
+        | FileTraverse
+        | (requestReadControl ? ReadControl : 0)
+        | (requestEnumeration ? FileReadData | Synchronize : 0);
 
     internal static SecureFileOpenStatus TryOpenReadOnlyNoFollow(
         string path,
@@ -879,7 +813,6 @@ internal static partial class FileHandleIdentityInterop
         string leaf,
         out SafeFileHandle? handle)
     {
-
         handle = null;
 
         if (parentDirectory is null
@@ -889,9 +822,7 @@ internal static partial class FileHandleIdentityInterop
             || leaf is "." or ".."
             || leaf.IndexOfAny('/', '\\', '\0') >= 0)
         {
-
             return SecureFileOpenStatus.Rejected;
-
         }
 
         bool parentReferenceAdded = false;
@@ -900,30 +831,24 @@ internal static partial class FileHandleIdentityInterop
 
         try
         {
-
             parentDirectory.DangerousAddRef(ref parentReferenceAdded);
 
             SecureFileOpenStatus status;
 
             if (OperatingSystem.IsWindows())
             {
-
                 status = TryOpenWindowsReadOnlyRelative(
                     parentDirectory,
                     leaf,
                     out opened);
-
             }
             else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             {
-
                 int parentDescriptor = parentDirectory.DangerousGetHandle().ToInt32();
 
                 if (parentDescriptor < 0)
                 {
-
                     return SecureFileOpenStatus.Rejected;
-
                 }
 
                 bool isMacOS = OperatingSystem.IsMacOS();
@@ -944,11 +869,9 @@ internal static partial class FileHandleIdentityInterop
 
                 if (fileDescriptor < 0)
                 {
-
                     int error = Marshal.GetLastPInvokeError();
 
                     return MapUnixOpenError(error, isMacOS);
-
                 }
 
                 opened = new SafeFileHandle(
@@ -956,22 +879,17 @@ internal static partial class FileHandleIdentityInterop
                     ownsHandle: true);
 
                 status = SecureFileOpenStatus.Success;
-
             }
             else
             {
-
                 return SecureFileOpenStatus.Rejected;
-
             }
 
             if (status is not SecureFileOpenStatus.Success || opened is null)
             {
-
                 opened?.Dispose();
 
                 return status;
-
             }
 
             if (opened.IsInvalid
@@ -979,20 +897,16 @@ internal static partial class FileHandleIdentityInterop
                     opened,
                     out FileHandleMetadata metadata))
             {
-
                 opened.Dispose();
 
                 return SecureFileOpenStatus.IoError;
-
             }
 
             if (metadata.Kind is not FileSystemObjectKind.RegularFile)
             {
-
                 opened.Dispose();
 
                 return SecureFileOpenStatus.Rejected;
-
             }
 
             handle = opened;
@@ -1000,7 +914,6 @@ internal static partial class FileHandleIdentityInterop
             opened = null;
 
             return SecureFileOpenStatus.Success;
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -1009,24 +922,17 @@ internal static partial class FileHandleIdentityInterop
                 or ObjectDisposedException
                 or NotSupportedException)
         {
-
             return SecureFileOpenStatus.IoError;
-
         }
         finally
         {
-
             opened?.Dispose();
 
             if (parentReferenceAdded)
             {
-
                 parentDirectory.DangerousRelease();
-
             }
-
         }
-
     }
 
     private static SecureFileOpenStatus MapUnixOpenError(
@@ -1053,12 +959,10 @@ internal static partial class FileHandleIdentityInterop
         string leaf,
         out SafeFileHandle? handle)
     {
-
         handle = null;
 
         fixed (char* leafBuffer = leaf)
         {
-
             UNICODE_STRING objectName = new()
             {
                 Length = checked((ushort)(leaf.Length * sizeof(char))),
@@ -1088,12 +992,9 @@ internal static partial class FileHandleIdentityInterop
 
             if (status < 0 || opened == IntPtr.Zero || opened == new IntPtr(-1))
             {
-
                 if (opened != IntPtr.Zero && opened != new IntPtr(-1))
                 {
-
                     new SafeFileHandle(opened, ownsHandle: true).Dispose();
-
                 }
 
                 uint error = RtlNtStatusToDosError(status);
@@ -1110,27 +1011,22 @@ internal static partial class FileHandleIdentityInterop
                         SecureFileOpenStatus.Rejected,
                     _ => SecureFileOpenStatus.IoError,
                 };
-
             }
 
             handle = new SafeFileHandle(opened, ownsHandle: true);
 
             return SecureFileOpenStatus.Success;
-
         }
-
     }
 
     private static bool TryGetWindowsPathMetadata(
         string path,
         out FileHandleMetadata metadata)
     {
-
         metadata = default;
 
         try
         {
-
             using SafeFileHandle handle = CreateFile(
                 path,
                 FileReadAttributes,
@@ -1142,7 +1038,6 @@ internal static partial class FileHandleIdentityInterop
 
             return !handle.IsInvalid
                 && TryGetWindowsHandleMetadata(handle, out metadata);
-
         }
         catch (Exception ex) when (
             ex is IOException
@@ -1150,11 +1045,8 @@ internal static partial class FileHandleIdentityInterop
                 or ArgumentException
                 or NotSupportedException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool TryGetWindowsPathMetadataNoFollow(
@@ -1193,14 +1085,11 @@ internal static partial class FileHandleIdentityInterop
         SafeFileHandle handle,
         out FileHandleMetadata metadata)
     {
-
         metadata = default;
 
         if (!GetFileInformationByHandle(handle, out BY_HANDLE_FILE_INFORMATION info))
         {
-
             return false;
-
         }
 
         ulong fileId = ((ulong)info.nFileIndexHigh << 32) | info.nFileIndexLow;
@@ -1211,29 +1100,23 @@ internal static partial class FileHandleIdentityInterop
             ClassifyWindowsAttributes(info.dwFileAttributes));
 
         return true;
-
     }
 
     private static bool TryGetUnixPathMetadata(
         string path,
         out FileHandleMetadata metadata)
     {
-
         metadata = default;
 
         unsafe
         {
-
             Span<byte> buffer = stackalloc byte[StatBufferSize];
 
             fixed (byte* bufferPtr = buffer)
             {
-
                 if (stat(path, bufferPtr) != 0)
                 {
-
                     return false;
-
                 }
 
                 return TryReadUnixFileMetadata(
@@ -1241,11 +1124,8 @@ internal static partial class FileHandleIdentityInterop
                     OperatingSystem.IsMacOS(),
                     RuntimeInformation.ProcessArchitecture,
                     out metadata);
-
             }
-
         }
-
     }
 
     private static bool TryGetUnixPathMetadataNoFollow(
@@ -1278,31 +1158,24 @@ internal static partial class FileHandleIdentityInterop
         SafeFileHandle handle,
         out FileHandleMetadata metadata)
     {
-
         metadata = default;
 
         int fd = handle.DangerousGetHandle().ToInt32();
 
         if (fd < 0)
         {
-
             return false;
-
         }
 
         unsafe
         {
-
             Span<byte> buffer = stackalloc byte[StatBufferSize];
 
             fixed (byte* bufferPtr = buffer)
             {
-
                 if (fstat(fd, bufferPtr) != 0)
                 {
-
                     return false;
-
                 }
 
                 return TryReadUnixFileMetadata(
@@ -1310,11 +1183,8 @@ internal static partial class FileHandleIdentityInterop
                     OperatingSystem.IsMacOS(),
                     RuntimeInformation.ProcessArchitecture,
                     out metadata);
-
             }
-
         }
-
     }
 
     private static bool TryReadUnixFileMetadata(
@@ -1323,25 +1193,19 @@ internal static partial class FileHandleIdentityInterop
         Architecture architecture,
         out FileHandleMetadata metadata)
     {
-
         metadata = default;
 
         if (!BitConverter.IsLittleEndian)
         {
-
             return false;
-
         }
 
         if (isMacOS)
         {
-
             if (architecture is not (Architecture.X64 or Architecture.Arm64)
                 || buffer.Length < MacOsStatMinimumSize)
             {
-
                 return false;
-
             }
 
             metadata = new FileHandleMetadata(
@@ -1353,7 +1217,6 @@ internal static partial class FileHandleIdentityInterop
                     BinaryPrimitives.ReadUInt16LittleEndian(buffer[4..])));
 
             return true;
-
         }
 
         switch (architecture)
@@ -1379,13 +1242,11 @@ internal static partial class FileHandleIdentityInterop
             default:
                 return false;
         }
-
     }
 
     private static FileSystemObjectKind ClassifyWindowsAttributes(
         uint attributes)
     {
-
         const uint directory = 0x10;
 
         const uint device = 0x40;
@@ -1399,15 +1260,12 @@ internal static partial class FileHandleIdentityInterop
 
         if ((attributes & directory) != 0)
         {
-
             return FileSystemObjectKind.Directory;
-
         }
 
         return (attributes & device) != 0
             ? FileSystemObjectKind.Other
             : FileSystemObjectKind.RegularFile;
-
     }
 
     private static FileSystemObjectKind ClassifyUnixMode(uint mode) =>
@@ -1460,6 +1318,8 @@ internal static partial class FileHandleIdentityInterop
 
     private const uint FileNonDirectoryFile = 0x00000040;
 
+    private const uint FileSynchronousIoNonAlert = 0x00000020;
+
     private const uint FileOpenReparsePoint = 0x00200000;
 
     private const uint ObjectAttributeCaseInsensitive = 0x00000040;
@@ -1507,17 +1367,14 @@ internal static partial class FileHandleIdentityInterop
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeFileTime
     {
-
         public uint dwLowDateTime;
 
         public uint dwHighDateTime;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct BY_HANDLE_FILE_INFORMATION
     {
-
         public uint dwFileAttributes;
 
         public NativeFileTime ftCreationTime;
@@ -1537,25 +1394,21 @@ internal static partial class FileHandleIdentityInterop
         public uint nFileIndexHigh;
 
         public uint nFileIndexLow;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private unsafe struct UNICODE_STRING
     {
-
         public ushort Length;
 
         public ushort MaximumLength;
 
         public char* Buffer;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private unsafe struct OBJECT_ATTRIBUTES
     {
-
         public uint Length;
 
         public IntPtr RootDirectory;
@@ -1567,17 +1420,14 @@ internal static partial class FileHandleIdentityInterop
         public IntPtr SecurityDescriptor;
 
         public IntPtr SecurityQualityOfService;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct IO_STATUS_BLOCK
     {
-
         public IntPtr Status;
 
         public nuint Information;
-
     }
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
@@ -1641,5 +1491,4 @@ internal static partial class FileHandleIdentityInterop
         string path,
         int flags,
         uint mode);
-
 }

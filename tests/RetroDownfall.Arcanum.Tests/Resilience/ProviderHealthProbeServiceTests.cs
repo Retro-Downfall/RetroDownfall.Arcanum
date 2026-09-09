@@ -480,7 +480,6 @@ public sealed class ProviderHealthProbeServiceTests
     [Fact]
     public async Task A_tick_that_throws_before_probing_still_backs_off_instead_of_spinning()
     {
-
         ThrowingOptionsMonitor options = new();
 
         ProviderHealthTracker tracker = new(NullLogger<ProviderHealthTracker>.Instance);
@@ -521,12 +520,10 @@ public sealed class ProviderHealthProbeServiceTests
         Assert.InRange(options.AccessCount, 1, 5);
 
         Assert.Equal(0, probe.CallCount);
-
     }
 
     private sealed class ThrowingOptionsMonitor : IOptionsMonitor<ArcanumSettings>
     {
-
         private readonly TaskCompletionSource _firstAccess =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -541,39 +538,32 @@ public sealed class ProviderHealthProbeServiceTests
         {
             get
             {
-
                 Interlocked.Increment(ref _accessCount);
 
                 _ = _firstAccess.TrySetResult();
 
                 throw new InvalidOperationException("Synthetic options failure for W8-7.");
-
             }
         }
 
         public ArcanumSettings Get(string? name) => CurrentValue;
 
         public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
-
     }
 
     /// <summary>Never reached: the throw happens on the first line of ProbeAllProvidersAsync.</summary>
     private sealed class NeverCalledProbe : IProviderHealthProbe
     {
-
         private int _callCount;
 
         public int CallCount => Volatile.Read(ref _callCount);
 
         public Task<bool> ProbeAsync(ProviderSettings provider, CancellationToken cancellationToken)
         {
-
             Interlocked.Increment(ref _callCount);
 
             return Task.FromResult(true);
-
         }
-
     }
 
     private const string ProviderName = "provider-health-test";
@@ -813,5 +803,4 @@ public sealed class ProviderHealthProbeServiceTests
 
         internal void Release() => _release.TrySetResult();
     }
-
 }

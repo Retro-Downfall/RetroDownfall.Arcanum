@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 {
-
     private static readonly string[] ExactSharedSources =
     [
         "AdmissionBenchmarkComparison.cs",
@@ -29,7 +28,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
     [Fact]
     public void Script_namespaces_every_function_owned_variable_for_posix_sh()
     {
-
         string script = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
             "scripts",
@@ -43,7 +41,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         foreach (Match function in functions)
         {
-
             string name = function.Groups["name"].Value;
 
             string prefix = name + "__";
@@ -82,21 +79,16 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
                     variable.StartsWith(prefix, StringComparison.Ordinal)
                         || allowedShared.Contains(variable, StringComparer.Ordinal),
                     $"Function '{name}' owns unnamespaced POSIX-global variable '{variable}'."));
-
         }
-
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Archived_host_publishes_through_symlinked_temp_parent_and_closes_the_runtime_source_set()
     {
-
-        if (!OperatingSystem.IsMacOS() || RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
-        {
-
-            return;
-
-        }
+        Skip.IfNot(
+            OperatingSystem.IsMacOS()
+                && RuntimeInformation.ProcessArchitecture == Architecture.Arm64,
+            "Requires the shipping macOS arm64 runtime.");
 
         string root = FindRepositoryRoot();
 
@@ -110,7 +102,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         try
         {
-
             string physicalParent = Path.Combine(fixture, "physical-parent");
 
             Directory.CreateDirectory(physicalParent);
@@ -237,21 +228,16 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
                 workingDirectory);
 
             Assert.Equal(2, missingSqlResult.ExitCode);
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
     [Fact]
     public void Host_is_outside_solution_and_tests_compile_the_exact_five_pure_sources()
     {
-
         string root = FindRepositoryRoot();
 
         string hostProjectPath = Path.Combine(
@@ -312,7 +298,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         foreach (string sourceName in ExactSharedSources)
         {
-
             string sourcePath = Path.Combine(Path.GetDirectoryName(hostProjectPath)!, sourceName);
 
             string source = File.ReadAllText(sourcePath);
@@ -338,7 +323,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
                 tree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>(),
                 static identifier => identifier.Identifier.ValueText is
                     "GrimoireConnectionAdmissionGate" or "ArcanumDbContext");
-
         }
 
         string program = File.ReadAllText(Path.Combine(Path.GetDirectoryName(hostProjectPath)!, "Program.cs"));
@@ -346,10 +330,9 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         Assert.Contains("AdmissionBenchmarkJsonContext", program, StringComparison.Ordinal);
 
         Assert.Contains("RunSchemaSelfTest", program, StringComparison.Ordinal);
-
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(0, false)]
     [InlineData(1, false)]
     [InlineData(2, false)]
@@ -359,12 +342,11 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         int hostExitCode,
         bool forceParentDeadline)
     {
+        Skip.If(OperatingSystem.IsWindows(), "Requires a POSIX shell.");
 
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string root = FindRepositoryRoot();
@@ -381,7 +363,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         try
         {
-
             string fakeBin = Path.Combine(fixture, "bin");
 
             Directory.CreateDirectory(fakeBin);
@@ -411,7 +392,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             if (forceParentDeadline)
             {
-
                 string hangingHost = Path.Combine(fixture, "hanging-host");
 
                 await WriteExecutableAsync(
@@ -432,7 +412,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
                     "cp \"$BENCHMARK_HANGING_HOST\" \"$output/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\"\n");
 
                 await WriteExecutableAsync(Path.Combine(fakeBin, "sleep"), "#!/bin/sh\nexit 0\n");
-
             }
 
             ProcessStartInfo start = new("/bin/sh", script + " --smoke")
@@ -470,35 +449,28 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             if (!forceParentDeadline)
             {
-
                 Assert.Contains(
                     "host:--smoke --source-root " + root + " home:unset",
                     calls,
                     StringComparison.Ordinal);
-
             }
 
             Assert.DoesNotContain("dotnet:run", calls, StringComparison.Ordinal);
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Script_rejects_unknown_mode_before_publishing()
     {
+        Skip.If(OperatingSystem.IsWindows(), "Requires a POSIX shell.");
 
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string root = FindRepositoryRoot();
@@ -511,7 +483,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         try
         {
-
             string fakeDotnet = Path.Combine(fixture, "dotnet");
 
             await File.WriteAllTextAsync(fakeDotnet, "#!/bin/sh\nexit 99\n");
@@ -535,18 +506,14 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             await process.WaitForExitAsync();
 
             Assert.Equal(2, process.ExitCode);
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(0, "none", 0)]
     [InlineData(130, "none", 130)]
     [InlineData(0, "ancestry", 2)]
@@ -560,12 +527,11 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         string breakName,
         int expectedExitCode)
     {
+        Skip.If(OperatingSystem.IsWindows(), "Requires a POSIX shell.");
 
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string root = FindRepositoryRoot();
@@ -578,7 +544,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         try
         {
-
             string fakeBin = Path.Combine(fixture, "bin");
 
             Directory.CreateDirectory(fakeBin);
@@ -722,9 +687,7 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             if (breakName != "none")
             {
-
                 return;
-
             }
 
             string calls = await File.ReadAllTextAsync(log);
@@ -737,9 +700,7 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             if (hostExitCode == 130)
             {
-
                 return;
-
             }
 
             int pairZeroBaseline = calls.IndexOf("--pair 0 --order 0 --role B", StringComparison.Ordinal);
@@ -757,30 +718,20 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             Assert.True(File.Exists(Path.Combine(output, "evidence.json")));
 
             Assert.True(File.Exists(Path.Combine(output, "comparison.json")));
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(0)]
     [InlineData(7)]
     public async Task Calibration_keeps_the_result_and_refuses_failed_toolchain_capture(
         int toolchainExitCode)
     {
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(OperatingSystem.IsWindows(), "Requires a POSIX shell.");
 
         string root = FindRepositoryRoot();
 
@@ -792,7 +743,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         try
         {
-
             string fakeBin = Path.Combine(fixture, "bin");
 
             Directory.CreateDirectory(fakeBin);
@@ -863,35 +813,26 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             if (toolchainExitCode != 0)
             {
-
                 Assert.False(File.Exists(result));
 
                 return;
-
             }
 
             Assert.True(File.Exists(result));
 
             Assert.Contains("--out " + result, await File.ReadAllTextAsync(log), StringComparison.Ordinal);
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
     private static async Task WriteExecutableAsync(string path, string contents)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             throw new PlatformNotSupportedException();
-
         }
 
         await File.WriteAllTextAsync(path, contents);
@@ -899,12 +840,10 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         File.SetUnixFileMode(
             path,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
     }
 
     private static async Task CopyCatalogInputsAsync(string root, string destination)
     {
-
         string catalogRelative = Path.Combine(
             "tests",
             "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
@@ -912,7 +851,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         foreach (string line in await File.ReadAllLinesAsync(Path.Combine(root, catalogRelative)))
         {
-
             string[] parts = line.Split('\t');
 
             string relative = parts[1].Replace('/', Path.DirectorySeparatorChar);
@@ -921,11 +859,9 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             if (!File.Exists(source))
             {
-
                 Assert.Equal("O", parts[0]);
 
                 continue;
-
             }
 
             string target = Path.Combine(destination, relative);
@@ -933,9 +869,7 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
 
             File.Copy(source, target);
-
         }
-
     }
 
     private static async Task<ProcessResult> RunProcessAsync(
@@ -944,7 +878,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         string workingDirectory,
         IReadOnlyDictionary<string, string?>? environment = null)
     {
-
         ProcessStartInfo start = new(executable)
         {
             WorkingDirectory = workingDirectory,
@@ -955,34 +888,24 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         foreach (string argument in arguments)
         {
-
             start.ArgumentList.Add(argument);
-
         }
 
         start.Environment.Remove("ARCANUM_TEST_HOME");
 
         if (environment is not null)
         {
-
             foreach ((string key, string? value) in environment)
             {
-
                 if (value is null)
                 {
-
                     start.Environment.Remove(key);
-
                 }
                 else
                 {
-
                     start.Environment[key] = value;
-
                 }
-
             }
-
         }
 
         using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
@@ -995,56 +918,28 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         try
         {
-
             await process.WaitForExitAsync(deadline.Token);
 
             return new(process.ExitCode, await standardOutput, await standardError);
-
         }
         catch (OperationCanceledException)
         {
-
             if (!process.HasExited)
             {
-
                 process.Kill(entireProcessTree: true);
 
                 await process.WaitForExitAsync();
-
             }
 
             throw;
-
         }
-
     }
 
     private static string Property(XDocument document, string name) =>
         document.Descendants(name).Single().Value;
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
-
 }

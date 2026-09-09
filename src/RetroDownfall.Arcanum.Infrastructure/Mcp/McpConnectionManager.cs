@@ -1417,6 +1417,10 @@ public sealed partial class McpConnectionManager :
     {
         Task lifecycleDrained = _lifecycleAdmission.CloseAndCancel();
 
+        // Closing admission is the only operation that can make this task complete.
+        // Observe it first so no later shutdown failure can abandon an admitted owner.
+        await lifecycleDrained.ConfigureAwait(false);
+
         AggregateException? cancellationFailure =
             _lifecycleAdmission.CancellationFailure;
 
@@ -1465,8 +1469,6 @@ public sealed partial class McpConnectionManager :
                     "Observed a failed MCP initializer during shutdown.");
             }
         }
-
-        await lifecycleDrained.ConfigureAwait(false);
 
         observedFailure ??= cancellationFailure;
 

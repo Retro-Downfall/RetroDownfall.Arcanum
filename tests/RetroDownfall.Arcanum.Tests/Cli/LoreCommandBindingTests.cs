@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class LoreCommandBindingTests
 {
-
     /// <summary>
     /// Every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
     /// server-down failure was indistinguishable from a real domain failure. Routed through
@@ -31,7 +30,6 @@ public sealed class LoreCommandBindingTests
     [Fact]
     public void Lore_list_reports_a_network_failure_and_names_the_configured_base_address()
     {
-
         const int ConfiguredPort = 19999;
 
         RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
@@ -46,13 +44,11 @@ public sealed class LoreCommandBindingTests
         string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
 
         Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Lore_set_binds_key_and_value_arguments()
     {
-
         RecordingHandler handler = CreateLoreHandler();
 
         CliTestResult result = RunCommand(handler, ["lore", "set", "ward.color", "cobalt"]);
@@ -70,13 +66,11 @@ public sealed class LoreCommandBindingTests
         Assert.Contains("\"key\":\"ward.color\"", body, StringComparison.Ordinal);
 
         Assert.Contains("\"value\":\"cobalt\"", body, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Lore_get_binds_key_argument()
     {
-
         RecordingHandler handler = CreateLoreHandler();
 
         CliTestResult result = RunCommand(handler, ["lore", "get", "ward.color"]);
@@ -88,7 +82,6 @@ public sealed class LoreCommandBindingTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal("/api/lore/ward.color", request.RequestUri!.AbsolutePath);
-
     }
 
     /// <summary>
@@ -100,7 +93,6 @@ public sealed class LoreCommandBindingTests
     [Fact]
     public void Lore_get_emits_the_stored_value_verbatim_without_panel_chrome()
     {
-
         string value = string.Join(
             "\n",
             new string('a', 120),
@@ -117,7 +109,6 @@ public sealed class LoreCommandBindingTests
         Assert.Equal(0, result.ExitCode);
 
         Assert.Equal(value, result.Output.TrimEnd('\r', '\n'));
-
     }
 
     /// <summary>
@@ -126,7 +117,6 @@ public sealed class LoreCommandBindingTests
     [Fact]
     public void Lore_get_json_reproduces_the_stored_value_byte_for_byte()
     {
-
         string value = "\u001b[31mred\u001b[0m literal escape\nplain line\n\n";
 
         RecordingHandler handler = new(_ => CreateLoreResponse(new ApiResponse<LoreDto>(
@@ -143,13 +133,11 @@ public sealed class LoreCommandBindingTests
         Assert.Equal("deploy.notes", document.RootElement.GetProperty("key").GetString());
 
         Assert.Equal(value, document.RootElement.GetProperty("value").GetString());
-
     }
 
     [Fact]
     public void Lore_delete_binds_key_argument()
     {
-
         RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
 
         CliTestResult result = RunCommand(handler, ["--yes", "lore", "delete", "ward.color"]);
@@ -161,14 +149,12 @@ public sealed class LoreCommandBindingTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/lore/ward.color", request.RequestUri!.AbsolutePath);
-
     }
 
     /// <summary>An irreversible delete must ask before it acts.</summary>
     [Fact]
     public void Lore_delete_requires_confirmation_before_sending_request()
     {
-
         RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
 
         CliTestResult result = RunCommand(handler, ["lore", "delete", "ward.color"]);
@@ -178,13 +164,11 @@ public sealed class LoreCommandBindingTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Daemon_initiative_binds_job_name_and_minutes()
     {
-
         RecordingHandler handler = new(_ => CreateDaemonResponse(
             new ApiResponse<UnseenServantJobStatusDto>(
                 new UnseenServantJobStatusDto("heartbeat", "spell", 5, 15, true),
@@ -202,13 +186,11 @@ public sealed class LoreCommandBindingTests
         Assert.Equal("/api/unseen-servant/jobs/heartbeat/initiative", request.RequestUri!.AbsolutePath);
 
         Assert.Contains("\"intervalMinutes\":15", ReadBody(request), StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Daemon_alert_binds_message_and_options()
     {
-
         RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
 
         CliTestResult result = RunCommand(
@@ -232,7 +214,6 @@ public sealed class LoreCommandBindingTests
         Assert.Contains("\"source\":\"test\"", body, StringComparison.Ordinal);
 
         Assert.Contains("\"body\":\"Disk full\"", body, StringComparison.Ordinal);
-
     }
 
     private static RecordingHandler CreateLoreHandler() =>
@@ -246,7 +227,6 @@ public sealed class LoreCommandBindingTests
         string[] args,
         Action<ServiceCollection>? configureServices = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -261,65 +241,57 @@ public sealed class LoreCommandBindingTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
-
     }
 
     private static HttpResponseMessage CreateLoreResponse(ApiResponse<LoreDto> envelope)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, ArcanumJsonContext.Default.ApiResponseLoreDto);
 
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private static HttpResponseMessage CreateDaemonResponse(ApiResponse<UnseenServantJobStatusDto> envelope)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDto);
 
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private static HttpResponseMessage CreateBooleanResponse(ApiResponse<bool> envelope)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, ArcanumJsonContext.Default.ApiResponseBoolean);
 
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private static string ReadBody(HttpRequestMessage request)
     {
-
         if (request.Content is null)
         {
-
             return string.Empty;
-
         }
 
         return request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -330,59 +302,45 @@ public sealed class LoreCommandBindingTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
 
                 foreach (KeyValuePair<string, IEnumerable<string>> contentHeader in request.Content.Headers)
                 {
-
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
-
                 }
-
             }
 
             foreach (KeyValuePair<string, IEnumerable<string>> header in request.Headers)
             {
-
                 snapshot.Headers.TryAddWithoutValidation(header.Key, header.Value);
-
             }
 
             Requests.Add(snapshot);
 
             return Task.FromResult(responder(request));
-
         }
-
     }
-
 }

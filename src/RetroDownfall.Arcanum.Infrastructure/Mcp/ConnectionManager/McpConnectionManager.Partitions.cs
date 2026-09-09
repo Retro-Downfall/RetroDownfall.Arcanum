@@ -92,7 +92,7 @@ public sealed partial class McpConnectionManager
     {
         try
         {
-            if (authority is McpGlobalInitializationAuthority.PreReadinessStartup)
+            if (authority == McpGlobalInitializationAuthority.PreReadinessStartup)
             {
                 await RunGlobalInitCoreAsync(cancellationToken).ConfigureAwait(false);
 

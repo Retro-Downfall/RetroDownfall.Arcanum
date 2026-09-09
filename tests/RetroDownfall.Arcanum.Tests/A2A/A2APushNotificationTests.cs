@@ -28,10 +28,8 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// slot and be settled by a callback — including one that arrives after the process which dispatched it
 /// has gone.
 /// </summary>
-[Collection("OutboundUrlGuardDns")]
-public sealed class A2APushNotificationTests : IDisposable
+public sealed class A2APushNotificationTests
 {
-
     private const string FakeAgentHost = "push-agent.example.test";
 
     private const string PeerCallbackHost = "peer-callback.example.test";
@@ -40,33 +38,11 @@ public sealed class A2APushNotificationTests : IDisposable
 
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
 
-    private readonly IDnsResolver _originalResolver;
-
-    public A2APushNotificationTests()
-    {
-
-        _originalResolver = OutboundUrlGuard.DnsResolver;
-
-        FakeDnsResolver fake = new();
-
-        fake.Add(FakeAgentHost, IPAddress.Parse("93.184.216.34"));
-
-        fake.Add(PeerCallbackHost, IPAddress.Parse("93.184.216.35"));
-
-        fake.Add("127.0.0.1", IPAddress.Parse("127.0.0.1"));
-
-        OutboundUrlGuard.DnsResolver = fake;
-
-    }
-
-    public void Dispose() => OutboundUrlGuard.DnsResolver = _originalResolver;
-
     // ── inbound: whose callbacks this instance will honour ─────────────────────────────────────────
 
     [Fact]
     public async Task PushRegistry_WhenTheSurfaceIsOff_RefusesRegistration()
     {
-
         A2APushNotificationRegistry registry = CreateRegistry(pushEnabled: false);
 
         Result<PushNotificationConfig> result = await registry.RegisterAsync(
@@ -78,13 +54,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Sending.PushNotificationsDisabled, result.Error.Code);
-
     }
 
     [Fact]
     public async Task PushRegistry_SsrfBlockedCallback_IsRefused()
     {
-
         A2APushNotificationRegistry registry = CreateRegistry(pushEnabled: true);
 
         Result<PushNotificationConfig> result = await registry.RegisterAsync(
@@ -96,13 +70,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Sending.PushNotificationRejected, result.Error.Code);
-
     }
 
     [Fact]
     public async Task PushRegistry_CallbackOutsideTheAllowlist_IsRefused()
     {
-
         A2APushNotificationRegistry registry = CreateRegistry(
             pushEnabled: true,
             allowedRemoteAgents: [$"https://{FakeAgentHost}"]);
@@ -114,13 +86,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Sending.AgentNotAllowed, result.Error.Code);
-
     }
 
     [Fact]
     public async Task PushRegistry_AllowedCallback_IsRememberedAndForgettable()
     {
-
         A2APushNotificationRegistry registry = CreateRegistry(
             pushEnabled: true,
             allowedRemoteAgents: [$"https://{PeerCallbackHost}"]);
@@ -138,13 +108,11 @@ public sealed class A2APushNotificationTests : IDisposable
         registry.Remove("task-1");
 
         Assert.Null(registry.Resolve("task-1"));
-
     }
 
     [Fact]
     public async Task PushRegistry_UrlWithoutAScheme_IsRefused()
     {
-
         A2APushNotificationRegistry registry = CreateRegistry(pushEnabled: true);
 
         Result<PushNotificationConfig> result = await registry.RegisterAsync(
@@ -154,18 +122,17 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Sending.PushNotificationRejected, result.Error.Code);
-
     }
 
     [Fact]
     public async Task Dispatcher_PostsTheTaskStateWithTheRegisteredToken()
     {
-
         RecordingCallbackHandler handler = new();
 
         A2APushNotificationDispatcher dispatcher = new(
             new FakeHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(Settings(pushEnabled: true)),
+            DeterministicDns(),
             NullLogger<A2APushNotificationDispatcher>.Instance);
 
         await dispatcher.NotifyAsync(
@@ -182,18 +149,17 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.Equal("task-1", payload.RootElement.GetProperty("taskId").GetString());
 
         Assert.Equal("completed", payload.RootElement.GetProperty("state").GetString());
-
     }
 
     [Fact]
     public async Task Dispatcher_DoesNotPostToACallbackTheGuardNowBlocks()
     {
-
         RecordingCallbackHandler handler = new();
 
         A2APushNotificationDispatcher dispatcher = new(
             new FakeHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(Settings(pushEnabled: true)),
+            DeterministicDns(),
             NullLogger<A2APushNotificationDispatcher>.Instance);
 
         // Re-checked at delivery, not only at registration: DNS and the allowlist can both change while a
@@ -204,17 +170,14 @@ public sealed class A2APushNotificationTests : IDisposable
             "completed");
 
         Assert.Empty(handler.Delivered);
-
     }
 
     [Fact]
     public void AgentCardCapability_TracksTheConfiguredSurface()
     {
-
         Assert.False(Settings(pushEnabled: false).ResolveA2A().PushNotificationsEnabled);
 
         Assert.True(Settings(pushEnabled: true).ResolveA2A().PushNotificationsEnabled);
-
     }
 
     // ── outbound: the callback that settles a slot-free Sending ────────────────────────────────────
@@ -222,7 +185,6 @@ public sealed class A2APushNotificationTests : IDisposable
     [Fact]
     public void CallbackToken_MatchesOnlyItsOwnSecret()
     {
-
         string token = A2ACallbackToken.Mint();
 
         string hash = A2ACallbackToken.Hash(token);
@@ -236,13 +198,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.False(A2ACallbackToken.Matches(null, hash));
 
         Assert.False(A2ACallbackToken.Matches(token, null));
-
     }
 
     [Fact]
     public void CallbackRegistry_WakesOnlyTheCorrectlyAuthenticatedCaller()
     {
-
         A2ASendingCallbackRegistry registry = new(NullLogger<A2ASendingCallbackRegistry>.Instance);
 
         string token = A2ACallbackToken.Mint();
@@ -259,13 +219,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.Equal(A2ACallbackOutcome.Delivered, registry.TrySignal("config-1", token));
 
         Assert.Equal(1, signal.CurrentCount);
-
     }
 
     [Fact]
     public void CallbackRegistry_ForAConfigNobodyIsWaitingOn_ReportsNoLiveWaiter()
     {
-
         A2ASendingCallbackRegistry registry = new(NullLogger<A2ASendingCallbackRegistry>.Instance);
 
         // Not an error: this is what a callback for a Sending registered by a previous process looks
@@ -278,20 +236,16 @@ public sealed class A2APushNotificationTests : IDisposable
 
         using (registry.Register("config-1", A2ACallbackToken.Hash(token), signal))
         {
-
             Assert.Equal(A2ACallbackOutcome.Delivered, registry.TrySignal("config-1", token));
-
         }
 
         // Disposing the registration is what stops a finished Sending leaving a live callback endpoint.
         Assert.Equal(A2ACallbackOutcome.NoLiveWaiter, registry.TrySignal("config-1", token));
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_CallbackMode_ReleasesTheSlotAndSettlesOnTheCallback()
     {
-
         using GateFirstAgentHandler agentHandler = new();
 
         using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler, advertisesPush: true);
@@ -343,7 +297,6 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Equal("callback answer", result.Value.ResponseText);
-
     }
 
     private static async Task<Result<A2ADispatchResult>> SignalUntilSettledAsync(
@@ -351,28 +304,23 @@ public sealed class A2APushNotificationTests : IDisposable
         CallbackRegistrationCapturingHandler handler,
         Task<Result<A2ADispatchResult>> dispatch)
     {
-
         DateTimeOffset deadline = DateTimeOffset.UtcNow + Patience;
 
         while (!dispatch.IsCompleted && DateTimeOffset.UtcNow < deadline)
         {
-
             Assert.Equal(
                 A2ACallbackOutcome.Delivered,
                 callbacks.TrySignal(handler.ConfigId ?? "?", handler.Token ?? "?"));
 
             await Task.WhenAny(dispatch, Task.Delay(50)).ConfigureAwait(false);
-
         }
 
         return await dispatch.WaitAsync(Patience).ConfigureAwait(false);
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_CallbackThatNeverArrives_KeepsWaitingWithoutHoldingCapacity()
     {
-
         using GateFirstAgentHandler agentHandler = new();
 
         using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler, advertisesPush: true);
@@ -417,13 +365,11 @@ public sealed class A2APushNotificationTests : IDisposable
             .WaitAsync(Patience);
 
         Assert.True(unaffected.IsSuccess);
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_CallbackModeWhenThePeerSettlesBeforeTheCallbackIsRegistered_StillSettles()
     {
-
         using SettleBeforeRegistrationAgentHandler agentHandler = new();
 
         using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler, advertisesPush: true);
@@ -452,13 +398,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Equal("instant answer", result.Value.ResponseText);
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_CallbackModeAgainstAPeerThatCannotAcceptOne_WaitsInlineInstead()
     {
-
         using GateAgentHandler agentHandler = new();
 
         agentHandler.Release("answered inline");
@@ -485,13 +429,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.Equal("answered inline", result.Value.ResponseText);
 
         Assert.Null(handler.ConfigId);
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_CallbackModeWithNoCallbackBaseUrl_WaitsInlineInstead()
     {
-
         using GateAgentHandler agentHandler = new();
 
         agentHandler.Release("answered inline");
@@ -516,13 +458,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Null(handler.ConfigId);
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_CallbackModeCancelled_StillCancelsTheRemoteTask()
     {
-
         using GateAgentHandler agentHandler = new();
 
         using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler, advertisesPush: true);
@@ -555,13 +495,11 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.True(
             await agentHandler.WaitForCancelAsync(TimeSpan.FromSeconds(10)),
             "callback mode did not cancel the remote task after local cancellation.");
-
     }
 
     [Fact]
     public void CallbackPath_IsDerivedFromTheConfiguredServerPath()
     {
-
         Assert.Equal(
             "/api/conclave/a2a/callbacks",
             A2AClientService.ResolveCallbackPath(new ConclaveA2ASettings()));
@@ -577,7 +515,6 @@ public sealed class A2APushNotificationTests : IDisposable
         Assert.Equal(
             "/api/apiary/a2a/callbacks",
             A2AClientService.ResolveCallbackPath(new ConclaveA2ASettings { ServerPath = "/apiary/a2a" }));
-
     }
 
     // ── harness ────────────────────────────────────────────────────────────────────────────────────
@@ -609,6 +546,7 @@ public sealed class A2APushNotificationTests : IDisposable
         string[]? allowedRemoteAgents = null) =>
         new(
             new TestOptionsMonitor<ArcanumSettings>(Settings(pushEnabled, allowedRemoteAgents: allowedRemoteAgents)),
+            DeterministicDns(),
             NullLogger<A2APushNotificationRegistry>.Instance);
 
     private static A2AClientService CreateClient(
@@ -619,14 +557,24 @@ public sealed class A2APushNotificationTests : IDisposable
             new FakeHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<A2AClientService>.Instance,
+            DeterministicDns(),
             scopeFactory: null,
             callbacks);
+
+    private static IDnsResolver DeterministicDns()
+    {
+        FakeDnsResolver dns = new();
+        dns.Add(FakeAgentHost, IPAddress.Parse("93.184.216.34"));
+        dns.Add(PeerCallbackHost, IPAddress.Parse("93.184.216.35"));
+        dns.Add("127.0.0.1", IPAddress.Loopback);
+
+        return dns;
+    }
 
     private static async Task<TestServer> CreateFakeRemoteAgentServerAsync(
         IAgentHandler agentHandler,
         bool advertisesPush)
     {
-
         AgentCard advertised = new()
         {
             Name = "Fake Remote Agent",
@@ -644,19 +592,16 @@ public sealed class A2APushNotificationTests : IDisposable
         IHostBuilder hostBuilder = new HostBuilder()
             .ConfigureWebHost(webHost =>
             {
-
                 webHost.UseTestServer();
 
                 webHost.ConfigureServices(static services => services.AddRouting());
 
                 webHost.Configure(app =>
                 {
-
                     app.UseRouting();
 
                     app.UseEndpoints(endpoints =>
                     {
-
                         // The peer is an Arcanum-shaped server so it can actually accept a push config —
                         // the SDK's own server refuses every push-notification method.
                         ArcanumA2AServer server = new(
@@ -666,6 +611,7 @@ public sealed class A2APushNotificationTests : IDisposable
                             new A2APushNotificationRegistry(
                                 new TestOptionsMonitor<ArcanumSettings>(
                                     Settings(pushEnabled: advertisesPush, allowedRemoteAgents: [$"https://{PeerCallbackHost}"])),
+                                DeterministicDns(),
                                 NullLogger<A2APushNotificationRegistry>.Instance),
                             NullLogger<A2AServer>.Instance,
                             new A2AServerOptions { AutoAppendHistory = true });
@@ -673,24 +619,18 @@ public sealed class A2APushNotificationTests : IDisposable
                         endpoints.MapA2A(server, "/agent");
 
                         endpoints.MapWellKnownAgentCard(advertised);
-
                     });
-
                 });
-
             });
 
         IHost host = await hostBuilder.StartAsync().ConfigureAwait(false);
 
         return host.GetTestServer();
-
     }
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
-
     }
 
     /// <summary>Records the config id and secret the client handed the peer.</summary>
@@ -707,7 +647,6 @@ public sealed class A2APushNotificationTests : IDisposable
         TaskCompletionSource? sendAnswered = null,
         Task? beforeRegistering = null) : DelegatingHandler(inner)
     {
-
         private readonly TaskCompletionSource _registered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private readonly TaskCompletionSource _initialTaskRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -718,34 +657,28 @@ public sealed class A2APushNotificationTests : IDisposable
 
         public async Task<bool> WaitForRegistrationAsync(TimeSpan timeout)
         {
-
             Task completed = await Task.WhenAny(_registered.Task, Task.Delay(timeout)).ConfigureAwait(false);
 
             return ReferenceEquals(completed, _registered.Task);
-
         }
 
         public async Task<bool> WaitForInitialTaskReadAsync(TimeSpan timeout)
         {
-
             Task completed = await Task.WhenAny(_initialTaskRead.Task, Task.Delay(timeout)).ConfigureAwait(false);
 
             return ReferenceEquals(completed, _initialTaskRead.Task);
-
         }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             string body = request.Content is null
                 ? string.Empty
                 : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
             if (body.Contains("\"CreateTaskPushNotificationConfig\"", StringComparison.Ordinal))
             {
-
                 using JsonDocument document = JsonDocument.Parse(body);
 
                 JsonElement config = document.RootElement
@@ -758,9 +691,7 @@ public sealed class A2APushNotificationTests : IDisposable
 
                 if (beforeRegistering is not null)
                 {
-
                     await beforeRegistering.ConfigureAwait(false);
-
                 }
 
                 // Signalled only after the peer has answered, so a test that acts on this knows the
@@ -770,7 +701,6 @@ public sealed class A2APushNotificationTests : IDisposable
                 _registered.TrySetResult();
 
                 return registration;
-
             }
 
             HttpResponseMessage response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -778,35 +708,27 @@ public sealed class A2APushNotificationTests : IDisposable
             if (_registered.Task.IsCompleted
                 && body.Contains("\"GetTask\"", StringComparison.Ordinal))
             {
-
                 _initialTaskRead.TrySetResult();
-
             }
 
             if (body.Contains("\"SendMessage\"", StringComparison.Ordinal))
             {
-
                 sendAnswered?.TrySetResult();
-
             }
 
             return response;
-
         }
-
     }
 
     /// <summary>Captures what an inbound push notification actually carried.</summary>
     private sealed class RecordingCallbackHandler : HttpMessageHandler
     {
-
         public ConcurrentBag<(string Body, string? Token)> Delivered { get; } = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             string body = request.Content is null
                 ? string.Empty
                 : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -818,9 +740,7 @@ public sealed class A2APushNotificationTests : IDisposable
             Delivered.Add((body, token));
 
             return new HttpResponseMessage(HttpStatusCode.Accepted);
-
         }
-
     }
 
     /// <summary>
@@ -829,14 +749,12 @@ public sealed class A2APushNotificationTests : IDisposable
     /// </summary>
     private sealed class GateFirstAgentHandler : IAgentHandler, IDisposable
     {
-
         private readonly TaskCompletionSource<string> _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private int _entered;
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
@@ -850,22 +768,18 @@ public sealed class A2APushNotificationTests : IDisposable
             await updater.AddArtifactAsync([Part.FromText(text)], cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             _release.TrySetCanceled();
 
             return Task.CompletedTask;
-
         }
 
         public void Release(string text) => _release.TrySetResult(text);
 
         public void Dispose() => _release.TrySetCanceled();
-
     }
 
     /// <summary>
@@ -875,7 +789,6 @@ public sealed class A2APushNotificationTests : IDisposable
     /// </summary>
     private sealed class SettleBeforeRegistrationAgentHandler : IAgentHandler, IDisposable
     {
-
         private readonly TaskCompletionSource _settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource SendMessageAnswered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -884,7 +797,6 @@ public sealed class A2APushNotificationTests : IDisposable
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
@@ -902,7 +814,6 @@ public sealed class A2APushNotificationTests : IDisposable
             await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
             _settled.TrySetResult();
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
@@ -910,26 +821,21 @@ public sealed class A2APushNotificationTests : IDisposable
 
         public void Dispose()
         {
-
             SendMessageAnswered.TrySetCanceled();
 
             _settled.TrySetCanceled();
-
         }
-
     }
 
     /// <summary>Holds the remote task open until released, and records a peer cancel.</summary>
     private sealed class GateAgentHandler : IAgentHandler, IDisposable
     {
-
         private readonly TaskCompletionSource<string> _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private readonly TaskCompletionSource _cancelObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
@@ -941,40 +847,31 @@ public sealed class A2APushNotificationTests : IDisposable
             await updater.AddArtifactAsync([Part.FromText(text)], cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             _cancelObserved.TrySetResult();
 
             _release.TrySetCanceled();
 
             return Task.CompletedTask;
-
         }
 
         public void Release(string text) => _release.TrySetResult(text);
 
         public async Task<bool> WaitForCancelAsync(TimeSpan timeout)
         {
-
             Task completed = await Task.WhenAny(_cancelObserved.Task, Task.Delay(timeout)).ConfigureAwait(false);
 
             return ReferenceEquals(completed, _cancelObserved.Task);
-
         }
 
         public void Dispose()
         {
-
             _release.TrySetCanceled();
 
             _cancelObserved.TrySetCanceled();
-
         }
-
     }
-
 }

@@ -31,7 +31,6 @@ internal sealed class TapestryWeaver(
     TimeProvider clock,
     ILogger<TapestryWeaver> logger)
 {
-
     /// <summary>Nodes persisted per transaction. Bounds one write, not the build's total work.</summary>
     private const int NodeCheckpointSize = 128;
 
@@ -52,7 +51,6 @@ internal sealed class TapestryWeaver(
         EmbeddingSettings embeddings,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(embeddings);
 
         Bounds bounds = Bounds.From(embeddings);
@@ -68,9 +66,7 @@ internal sealed class TapestryWeaver(
 
         if (fingerprintLeaves.Count == 0)
         {
-
             return new TapestryWeaveOutcome(TapestryWeaveStatus.NoCorpus);
-
         }
 
         string corpusFingerprint = TapestryHash.OfCorpus(fingerprintLeaves);
@@ -91,7 +87,6 @@ internal sealed class TapestryWeaver(
 
         if (IsUpToDate(current, corpusFingerprint, settingsFingerprint, summaryModel, bounds))
         {
-
             return new TapestryWeaveOutcome(
                 TapestryWeaveStatus.UpToDate,
                 current!.GenerationId,
@@ -99,7 +94,6 @@ internal sealed class TapestryWeaver(
                 current.NodeCount,
                 current.RootNodeCount,
                 current.TerminalReason);
-
         }
 
         // A corpus that needs any abstraction at all needs a summary model. Publishing a leaves-only
@@ -107,21 +101,17 @@ internal sealed class TapestryWeaver(
         // context budget, so the honest degradation is to contribute nothing.
         if (summaryModel is null && fingerprintLeaves.Count > 1)
         {
-
             logger.LogDebug(
                 "Tapestry weave skipped for {ScopeKind} {ScopeId}: no summary model is configured.",
                 scope.Kind,
                 scope.Id);
 
             return new TapestryWeaveOutcome(TapestryWeaveStatus.SummaryModelUnavailable);
-
         }
 
         if (!weave.IsAvailable)
         {
-
             return new TapestryWeaveOutcome(TapestryWeaveStatus.EmbeddingUnavailable);
-
         }
 
         // A rebuild is now certain, so pay for the full corpus — the same rows again, this time carrying
@@ -132,9 +122,7 @@ internal sealed class TapestryWeaver(
 
         if (leaves.Count == 0)
         {
-
             return new TapestryWeaveOutcome(TapestryWeaveStatus.NoCorpus);
-
         }
 
         // The corpus can move between the two passes, so the generation records the fingerprint of what
@@ -157,7 +145,6 @@ internal sealed class TapestryWeaver(
 
         try
         {
-
             TapestryWeaveOutcome outcome = await BuildAsync(
                 scope,
                 generationId,
@@ -169,27 +156,21 @@ internal sealed class TapestryWeaver(
 
             if (outcome.Status != TapestryWeaveStatus.Woven)
             {
-
                 await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
-
             }
 
             return outcome;
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             // Host shutdown or an explicit cancel: drop only Building state. Publication may already
             // have committed, in which case the new complete generation must remain current.
             await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
             throw;
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Tapestry weave failed for {ScopeKind} {ScopeId}; completed generations are preserved.",
@@ -199,29 +180,21 @@ internal sealed class TapestryWeaver(
             await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
             return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed);
-
         }
-
     }
 
     private async Task AbandonGenerationBestEffortAsync(string generationId)
     {
-
         try
         {
-
             await store.AbandonGenerationAsync(generationId, CancellationToken.None).ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             // Cleanup must not replace the primary cancellation/failure. A Building generation is
             // invisible and is retried by reconciliation; a committed Complete generation is retained.
             logger.LogWarning(ex, "Tapestry generation {GenerationId} abandonment failed; reconciliation will retry.", generationId);
-
         }
-
     }
 
     private static bool IsUpToDate(
@@ -245,7 +218,6 @@ internal sealed class TapestryWeaver(
         Bounds bounds,
         CancellationToken cancellationToken)
     {
-
         LeafLayer leafLayer = await BuildLeafLayerAsync(
             scope,
             generationId,
@@ -255,9 +227,7 @@ internal sealed class TapestryWeaver(
 
         if (leafLayer.Nodes.Count == 0)
         {
-
             return new TapestryWeaveOutcome(TapestryWeaveStatus.EmbeddingUnavailable);
-
         }
 
         List<WorkingNode> working = leafLayer.Nodes;
@@ -276,7 +246,6 @@ internal sealed class TapestryWeaver(
 
         while (working.Count > 1 && layer < bounds.MaxTreeDepth)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             layer++;
@@ -289,7 +258,6 @@ internal sealed class TapestryWeaver(
                 && summarizer.FitsOneRequest(
                     new TapestrySummaryRequest(scope.Kind, scope.Id, layer, [.. working.Select(static node => node.Content)])))
             {
-
                 SummaryOutcome root = await CreateSummaryAsync(
                     scope,
                     generationId,
@@ -302,9 +270,7 @@ internal sealed class TapestryWeaver(
 
                 if (root.Node is null)
                 {
-
                     return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed);
-
                 }
 
                 summaryCalls += root.CalledModel ? 1 : 0;
@@ -320,7 +286,6 @@ internal sealed class TapestryWeaver(
                 terminal = TapestryTerminalReason.SingleRoot;
 
                 break;
-
             }
 
             LayerPlan layerPlan = PlanLayer(scope, working, layer, bounds, cancellationToken);
@@ -329,7 +294,6 @@ internal sealed class TapestryWeaver(
 
             if (plans.Count + layerPlan.Carried.Count >= working.Count)
             {
-
                 // Every cluster is a singleton even after merging: another layer would reproduce this
                 // one exactly, so recursion cannot make progress. Terminate honestly with a multi-root
                 // layer rather than looping to the depth cap. No layer was written, so layerCount is
@@ -337,7 +301,6 @@ internal sealed class TapestryWeaver(
                 terminal = TapestryTerminalReason.MaxDepth;
 
                 break;
-
             }
 
             // Carried nodes keep their own layer and simply re-enter the next round. They still reach
@@ -347,7 +310,6 @@ internal sealed class TapestryWeaver(
 
             foreach (ClusterPlan plan in plans)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 SummaryOutcome summary = await CreateSummaryAsync(
@@ -362,9 +324,7 @@ internal sealed class TapestryWeaver(
 
                 if (summary.Node is null)
                 {
-
                     return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed);
-
                 }
 
                 summaryCalls += summary.CalledModel ? 1 : 0;
@@ -374,7 +334,6 @@ internal sealed class TapestryWeaver(
                 next.Add(summary.Node);
 
                 totalNodes++;
-
             }
 
             working = next;
@@ -384,20 +343,15 @@ internal sealed class TapestryWeaver(
             terminal = working.Count == 1
                 ? TapestryTerminalReason.SingleRoot
                 : TapestryTerminalReason.MaxDepth;
-
         }
 
         if (working.Count == 1 && layerCount > 1)
         {
-
             terminal = TapestryTerminalReason.SingleRoot;
-
         }
         else if (working.Count > 1)
         {
-
             terminal = TapestryTerminalReason.MaxDepth;
-
         }
 
         await store.PublishGenerationAsync(
@@ -431,7 +385,6 @@ internal sealed class TapestryWeaver(
             summariesReused,
             leafLayer.Embedded,
             leafLayer.Quarantined);
-
     }
 
     private async Task<LeafLayer> BuildLeafLayerAsync(
@@ -441,21 +394,18 @@ internal sealed class TapestryWeaver(
         Bounds bounds,
         CancellationToken cancellationToken)
     {
-
         List<TapestryLeafSource> needsEmbedding = [.. leaves.Where(static leaf => leaf.ExistingEmbedding is null)];
 
         Dictionary<string, float[]> minted = new(StringComparer.Ordinal);
 
         if (needsEmbedding.Count > 0)
         {
-
             Result<Embedding<float>[]> embedded = await weave
                 .EmbedBatchAsync([.. needsEmbedding.Select(static leaf => leaf.Content)], cancellationToken)
                 .ConfigureAwait(false);
 
             if (embedded.IsFailure)
             {
-
                 logger.LogDebug(
                     "Tapestry leaf embedding failed for {ScopeKind} {ScopeId} ({Code}); the previous complete generation remains current.",
                     scope.Kind,
@@ -463,7 +413,6 @@ internal sealed class TapestryWeaver(
                     embedded.Error.Code);
 
                 return new LeafLayer([], 0, 0);
-
             }
 
             // A response whose vector count does not match the request is a shape mismatch, not a
@@ -472,7 +421,6 @@ internal sealed class TapestryWeaver(
             // quarantine check below and get persisted as this generation's leaf embeddings.
             if (embedded.Value.Length != needsEmbedding.Count)
             {
-
                 logger.LogWarning(
                     "Tapestry leaf embedding for {ScopeKind} {ScopeId} returned {ActualCount} vector(s) for {ExpectedCount} input(s); the previous complete generation remains current.",
                     scope.Kind,
@@ -481,16 +429,12 @@ internal sealed class TapestryWeaver(
                     needsEmbedding.Count);
 
                 return new LeafLayer([], 0, 0);
-
             }
 
             for (int index = 0; index < needsEmbedding.Count; index++)
             {
-
                 minted[needsEmbedding[index].SourceId] = embedded.Value[index].Vector.ToArray();
-
             }
-
         }
 
         TapestryLeafSourceKind sourceKind = scope.Kind switch
@@ -510,7 +454,6 @@ internal sealed class TapestryWeaver(
 
         foreach (TapestryLeafSource leaf in leaves)
         {
-
             float[]? vector = leaf.ExistingEmbedding
                 ?? (minted.TryGetValue(leaf.SourceId, out float[]? fresh) ? fresh : null);
 
@@ -518,11 +461,9 @@ internal sealed class TapestryWeaver(
             // than truncated, padded, or allowed to poison the layer's clustering.
             if (vector is null || vector.Length != bounds.Dimensions || !IsUsable(vector))
             {
-
                 quarantined++;
 
                 continue;
-
             }
 
             string nodeId = NodeId(generationId, leaf.SourceId);
@@ -559,35 +500,27 @@ internal sealed class TapestryWeaver(
 
             if (pending.Count >= NodeCheckpointSize)
             {
-
                 await store.AppendNodesAsync(pending, cancellationToken).ConfigureAwait(false);
 
                 pending.Clear();
-
             }
-
         }
 
         if (pending.Count > 0)
         {
-
             await store.AppendNodesAsync(pending, cancellationToken).ConfigureAwait(false);
-
         }
 
         if (quarantined > 0)
         {
-
             logger.LogWarning(
                 "Tapestry quarantined {Count} unusable leaf vector(s) for {ScopeKind} {ScopeId}; the remaining leaves were woven normally.",
                 quarantined,
                 scope.Kind,
                 scope.Id);
-
         }
 
         return new LeafLayer(nodes, minted.Count, quarantined);
-
     }
 
     /// <summary>
@@ -603,7 +536,6 @@ internal sealed class TapestryWeaver(
         Bounds bounds,
         CancellationToken cancellationToken)
     {
-
         Dictionary<string, WorkingNode> byKey = working.ToDictionary(
             static node => node.StableKey,
             StringComparer.Ordinal);
@@ -623,7 +555,6 @@ internal sealed class TapestryWeaver(
 
         foreach (SphericalKMeansCluster cluster in result.Clusters)
         {
-
             List<WorkingNode> members = [.. cluster.MemberIds.Select(id => byKey[id])];
 
             candidates.AddRange(SplitUntilBounded(
@@ -634,7 +565,6 @@ internal sealed class TapestryWeaver(
                 TapestryPartitionReason.None,
                 0,
                 cancellationToken));
-
         }
 
         MergeUndersized(scope, candidates, layer, bounds, cancellationToken);
@@ -648,7 +578,6 @@ internal sealed class TapestryWeaver(
 
         foreach (PlanCandidate candidate in candidates)
         {
-
             // Every singleton below costs a whole-cluster concatenation and tokenization, so this loop is
             // part of the same uninterrupted stretch the token was threaded into clustering for.
             cancellationToken.ThrowIfCancellationRequested();
@@ -661,7 +590,6 @@ internal sealed class TapestryWeaver(
                 && !summarizer.FitsOneRequest(
                     new TapestrySummaryRequest(scope.Kind, scope.Id, layer, [candidate.Members[0].Content])))
             {
-
                 logger.LogDebug(
                     "Tapestry carried an unsummarizable node up from layer {Layer} for {ScopeKind} {ScopeId}: its own text exceeds one summary request.",
                     layer,
@@ -671,15 +599,12 @@ internal sealed class TapestryWeaver(
                 carried.Add(candidate.Members[0]);
 
                 continue;
-
             }
 
             plans.Add(new ClusterPlan(plans.Count, candidate.Members, candidate.Reason));
-
         }
 
         return new LayerPlan(plans, carried);
-
     }
 
     /// <summary>
@@ -697,7 +622,6 @@ internal sealed class TapestryWeaver(
         int depth,
         CancellationToken cancellationToken)
     {
-
         // Forwarding the token to SphericalKMeans below is not enough on its own: the fit estimate, the
         // stable-id fallback, and the depth-limit arm all return without ever reaching it, so a recursion
         // that keeps taking those arms would observe nothing at all.
@@ -717,16 +641,12 @@ internal sealed class TapestryWeaver(
                         layer,
                         [.. members.Select(static node => node.Content)]))))
         {
-
             return [new PlanCandidate(members, inheritedReason)];
-
         }
 
         if (depth >= MaxSplitDepth)
         {
-
             return PartitionByStableId(members, bounds);
-
         }
 
         int parts = Math.Max(2, (members.Count + bounds.MaxChildrenPerSummary - 1) / bounds.MaxChildrenPerSummary);
@@ -746,9 +666,7 @@ internal sealed class TapestryWeaver(
 
         if (split.Clusters.Count < 2)
         {
-
             return PartitionByStableId(members, bounds);
-
         }
 
         Dictionary<string, WorkingNode> byKey = members.ToDictionary(
@@ -759,7 +677,6 @@ internal sealed class TapestryWeaver(
 
         foreach (SphericalKMeansCluster cluster in split.Clusters)
         {
-
             candidates.AddRange(SplitUntilBounded(
                 scope,
                 [.. cluster.MemberIds.Select(id => byKey[id])],
@@ -768,11 +685,9 @@ internal sealed class TapestryWeaver(
                 TapestryPartitionReason.OversizedSplit,
                 depth + 1,
                 cancellationToken));
-
         }
 
         return candidates;
-
     }
 
     /// <summary>
@@ -781,22 +696,18 @@ internal sealed class TapestryWeaver(
     /// </summary>
     private static List<PlanCandidate> PartitionByStableId(List<WorkingNode> members, Bounds bounds)
     {
-
         List<WorkingNode> ordered = [.. members.OrderBy(static node => node.StableKey, StringComparer.Ordinal)];
 
         List<PlanCandidate> candidates = [];
 
         for (int index = 0; index < ordered.Count; index += bounds.MaxChildrenPerSummary)
         {
-
             candidates.Add(new PlanCandidate(
                 [.. ordered.Skip(index).Take(bounds.MaxChildrenPerSummary)],
                 TapestryPartitionReason.IdenticalVectorPartition));
-
         }
 
         return candidates;
-
     }
 
     /// <summary>
@@ -819,22 +730,16 @@ internal sealed class TapestryWeaver(
         Bounds bounds,
         CancellationToken cancellationToken)
     {
-
         if (candidates.Count < 2)
         {
-
             return;
-
         }
 
         for (int index = candidates.Count - 1; index >= 0; index--)
         {
-
             if (candidates[index].Members.Count > 1)
             {
-
                 continue;
-
             }
 
             WorkingNode orphan = candidates[index].Members[0];
@@ -845,7 +750,6 @@ internal sealed class TapestryWeaver(
 
             for (int other = 0; other < candidates.Count; other++)
             {
-
                 // Inside the inner loop, not the outer one: a single orphan's scan is itself the whole
                 // candidate list of cosine comparisons plus up to one fit estimate per improved best, so
                 // checking only per orphan would leave the expensive unit uninterruptible.
@@ -854,9 +758,7 @@ internal sealed class TapestryWeaver(
                 if (other == index
                     || candidates[other].Members.Count + 1 > bounds.MaxChildrenPerSummary)
                 {
-
                     continue;
-
                 }
 
                 double similarity = candidates[other].Members.Max(
@@ -873,9 +775,7 @@ internal sealed class TapestryWeaver(
 
                 if (!closer)
                 {
-
                     continue;
-
                 }
 
                 // The child count is only half of "has room". Nothing re-checks a merged candidate —
@@ -894,24 +794,19 @@ internal sealed class TapestryWeaver(
                             orphan.Content,
                         ])))
                 {
-
                     continue;
-
                 }
 
                 bestSimilarity = similarity;
 
                 best = other;
-
             }
 
             if (best < 0)
             {
-
                 candidates[index] = candidates[index] with { Reason = TapestryPartitionReason.SingletonCarry };
 
                 continue;
-
             }
 
             List<WorkingNode> merged = [.. candidates[best].Members, orphan];
@@ -924,9 +819,7 @@ internal sealed class TapestryWeaver(
             // Safe to remove while walking backwards: the merge target keeps at least two members,
             // so a later iteration skips it, and no earlier index shifts.
             candidates.RemoveAt(index);
-
         }
-
     }
 
     private async Task<SummaryOutcome> CreateSummaryAsync(
@@ -939,7 +832,6 @@ internal sealed class TapestryWeaver(
         Bounds bounds,
         CancellationToken cancellationToken)
     {
-
         string membershipHash = TapestryHash.OfChildMembership(
             members.Select(static member => member.ContentHash),
             TapestryHash.SummaryRecipeVersion,
@@ -982,7 +874,6 @@ internal sealed class TapestryWeaver(
         // not make model prose reproducible, so identity is the only safe basis for skipping a call.
         if (candidate is not null && candidate.Embedding.Length == bounds.Dimensions)
         {
-
             content = candidate.Content;
 
             contentHash = candidate.ContentHash;
@@ -990,11 +881,9 @@ internal sealed class TapestryWeaver(
             embedding = candidate.Embedding;
 
             calledModel = false;
-
         }
         else
         {
-
             Result<string> summary = await summarizer
                 .SummarizeAsync(
                     new TapestrySummaryRequest(
@@ -1007,9 +896,7 @@ internal sealed class TapestryWeaver(
 
             if (summary.IsFailure)
             {
-
                 return new SummaryOutcome(null, false);
-
             }
 
             Result<Embedding<float>> embedded = await weave
@@ -1018,9 +905,7 @@ internal sealed class TapestryWeaver(
 
             if (embedded.IsFailure)
             {
-
                 return new SummaryOutcome(null, false);
-
             }
 
             content = summary.Value;
@@ -1030,12 +915,10 @@ internal sealed class TapestryWeaver(
             embedding = embedded.Value.Vector.ToArray();
 
             calledModel = true;
-
         }
 
         if (embedding.Length != bounds.Dimensions || !IsUsable(embedding))
         {
-
             logger.LogWarning(
                 "Tapestry summary embedding for {ScopeKind} {ScopeId} layer {Layer} was unusable; abandoning this generation.",
                 scope.Kind,
@@ -1043,7 +926,6 @@ internal sealed class TapestryWeaver(
                 layer);
 
             return new SummaryOutcome(null, calledModel);
-
         }
 
         int descendants = members.Sum(static member => member.DescendantLeafCount);
@@ -1083,7 +965,6 @@ internal sealed class TapestryWeaver(
         return new SummaryOutcome(
             new WorkingNode(stableKey, nodeId, embedding, content, contentHash, descendants),
             calledModel);
-
     }
 
     private static string SummaryLabel(TapestryScope scope, int layer, int ordinal) =>
@@ -1099,25 +980,19 @@ internal sealed class TapestryWeaver(
 
     private static bool IsUsable(float[] vector)
     {
-
         double sumOfSquares = 0;
 
         foreach (float component in vector)
         {
-
             if (!float.IsFinite(component))
             {
-
                 return false;
-
             }
 
             sumOfSquares += (double)component * component;
-
         }
 
         return sumOfSquares > 0;
-
     }
 
     private sealed record WorkingNode(
@@ -1146,10 +1021,8 @@ internal sealed class TapestryWeaver(
         int MaxClustersPerLayer,
         int MaxSummaryTokens)
     {
-
         public static Bounds From(EmbeddingSettings embeddings)
         {
-
             TapestryEmbeddingSettings tapestry = embeddings.Tapestry ?? new TapestryEmbeddingSettings();
 
             int target = ArcanumSettingClamps.EmbeddingsTapestryTargetChildrenPerSummary(
@@ -1166,9 +1039,6 @@ internal sealed class TapestryWeaver(
                     ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary(tapestry.MaxChildrenPerSummary)),
                 ArcanumSettingClamps.EmbeddingsTapestryMaxClustersPerLayer(tapestry.MaxClustersPerLayer),
                 ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(tapestry.MaxSummaryTokens));
-
         }
-
     }
-
 }

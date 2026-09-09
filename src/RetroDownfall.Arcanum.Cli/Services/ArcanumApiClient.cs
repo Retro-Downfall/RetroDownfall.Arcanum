@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -28,9 +29,10 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
-public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecretStore secretStore)
+public sealed partial class ArcanumApiClient(
+    IHttpClientFactory httpClientFactory,
+    ArcanumApiCredentialLease credentialLease)
 {
-
     public const string StreamingHttpClientName = "ArcanumApi";
 
     public const string RequestHttpClientName = "ArcanumApiRequest";
@@ -57,7 +59,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
     private static string? TryMapStreamReadFailure(Exception exception, CancellationToken cancellationToken)
     {
-
         if (exception is OperationCanceledException && cancellationToken.IsCancellationRequested)
         {
             throw exception;
@@ -70,37 +71,24 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             HttpRequestException => StreamUnreachableMessage,
             _ => null,
         };
-
     }
 
     private static T? TryDeserialize<T>(byte[] bytes, JsonTypeInfo<T> typeInfo) where T : class
     {
-
         if (bytes.Length == 0)
         {
-
             return null;
-
         }
 
         try
         {
-
             return JsonSerializer.Deserialize(bytes, typeInfo);
-
         }
         catch (JsonException)
         {
-
             return null;
-
         }
-
     }
-
-    private static readonly Error MissingApiKeyError = new(
-        ErrorCodes.Security.MissingApiKey,
-        "No API key found. Run 'arcanum serve' once to generate and store a key.");
 
     private static readonly Error RequestTimeoutError = new(
         ErrorCodes.Connection.Timeout,
@@ -184,34 +172,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
     private static readonly MediaTypeHeaderValue JsonUtf8ContentType = new("application/json") { CharSet = "utf-8" };
 
-    private async Task<string?> TryGetApiKeyAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            SecretStoreReadResult read = await secretStore
-                .PeekApiKeyReadResultAsync()
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            return read.Status == SecretStoreReadStatus.Ok
-                && !string.IsNullOrWhiteSpace(read.Value)
-                    ? read.Value
-                    : null;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            return null;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
     private async Task<Result<T>> SendRequestAsync<T>(
         HttpMethod method,
         string relativePath,
@@ -224,48 +184,57 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string? idempotencyKey = null,
         bool retryResponseBodyIOExceptionOnce = false)
     {
-        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
-
-        if (apiKey is null)
-        {
-            return Result<T>.Failure(MissingApiKeyError);
-        }
-
         HttpClient client = httpClientFactory.CreateClient(httpClientName);
 
         try
         {
-            int maxAttempts = retryResponseBodyIOExceptionOnce ? 2 : 1;
+            bool retriedResponseBody = false;
 
-            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            while (true)
             {
-
-                using HttpRequestMessage request = new(method, relativePath);
-
-                if (body is not null)
+                HttpRequestMessage CreateRequest()
                 {
-                    ByteArrayContent content = new(body);
+                    HttpRequestMessage request = new(method, relativePath);
 
-                    if (contentType is not null)
+                    if (body is not null)
                     {
-                        content.Headers.ContentType = contentType;
+                        ByteArrayContent content = new(body);
+
+                        if (contentType is not null)
+                        {
+                            content.Headers.ContentType = contentType;
+                        }
+
+                        request.Content = content;
                     }
 
-                    request.Content = content;
+                    if (idempotencyKey is not null)
+                    {
+                        _ = request.Headers.TryAddWithoutValidation(
+                            ArcanumApiHeaders.IdempotencyKey,
+                            idempotencyKey);
+                    }
+
+                    return request;
                 }
 
-                _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-
-                if (idempotencyKey is not null)
-                {
-                    _ = request.Headers.TryAddWithoutValidation(
-                        ArcanumApiHeaders.IdempotencyKey,
-                        idempotencyKey);
-                }
-
-                using HttpResponseMessage response = await client
-                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                using ArcanumAuthenticatedHttpResponse sent =
+                    await ArcanumAuthenticatedHttpSender.SendAsync(
+                        client,
+                        credentialLease,
+                        CreateRequest,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        canReplayAfterUnauthorized: true,
+                        cancellationToken)
                     .ConfigureAwait(false);
+
+                if (!sent.IsAuthenticated)
+                {
+                    return Result<T>.Failure(
+                        ArcanumApiCredentialFailureMapper.ToError(sent.Credentials));
+                }
+
+                HttpResponseMessage response = sent.Response!;
 
                 byte[]? responseBytes;
 
@@ -277,8 +246,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                             cancellationToken)
                         .ConfigureAwait(false);
                 }
-                catch (IOException) when (retryResponseBodyIOExceptionOnce && attempt == 0)
+                catch (IOException) when (
+                    retryResponseBodyIOExceptionOnce
+                    && !retriedResponseBody)
                 {
+                    retriedResponseBody = true;
+
                     continue;
                 }
 
@@ -291,8 +264,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
                 return mapResponse(response, responseBytes, envelope);
             }
-
-            return Result<T>.Failure(RequestDisconnectedError);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -511,7 +482,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         bool callback = false,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             new DispatchSendingRequest(
                 agentUrl,
@@ -530,7 +500,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,
             cancellationToken);
-
     }
 
     public Task<Result<SendingDispatchDto>> ContinueSendingAsync(
@@ -542,7 +511,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string[]? acceptedOutputModes = null,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             new ContinueSendingRequest(agentUrl, message, continuable ? true : null, skillId, acceptedOutputModes),
             ArcanumJsonContext.Default.ContinueSendingRequest);
@@ -554,7 +522,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,
             cancellationToken);
-
     }
 
     #endregion
@@ -577,21 +544,17 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
     }
 
     public async Task<Result<ContextPreviewResult>> PreviewContextAsync(
-
         ContextPreviewRequest request,
 
         CancellationToken cancellationToken = default)
 
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-
             request,
 
             ArcanumJsonContext.Default.ContextPreviewRequest);
 
         return await SendRequestAsync(
-
             HttpMethod.Post,
 
             "api/intelligence/context/inspect",
@@ -603,7 +566,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
 
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<SemanticSearchResult>> DivineSessionsAsync(
@@ -788,7 +750,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string workspaceId,
         CancellationToken cancellationToken = default)
     {
-
         return await SendRequestAsync(
             HttpMethod.Get,
             $"api/workspaces/{Uri.EscapeDataString(workspaceId)}",
@@ -796,14 +757,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             null,
             ArcanumJsonContext.Default.ApiResponseWorkspaceInfo,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<WorkspaceInfo>> RegisterWorkspaceAsync(
         CreateWorkspaceRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.CreateWorkspaceRequest);
@@ -815,7 +774,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseWorkspaceInfo,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result> UnregisterWorkspaceAsync(
@@ -844,7 +802,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string? cursor,
         CancellationToken cancellationToken = default)
     {
-
         string path = BuildQueryString(
             $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files",
             ("relativePath", relativePath),
@@ -858,7 +815,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             null,
             ArcanumJsonContext.Default.ApiResponseFileListResult,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<FileEntry>> GetWorkspaceFileInfoAsync(
@@ -866,7 +822,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string relativePath,
         CancellationToken cancellationToken = default)
     {
-
         string path = BuildQueryString(
             $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/info",
             ("relativePath", relativePath));
@@ -878,7 +833,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             null,
             ArcanumJsonContext.Default.ApiResponseFileEntry,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<FileReadResult>> ReadWorkspaceFileAsync(
@@ -886,7 +840,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string relativePath,
         CancellationToken cancellationToken = default)
     {
-
         string path = BuildQueryString(
             $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/contents",
             ("relativePath", relativePath));
@@ -898,7 +851,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             null,
             ArcanumJsonContext.Default.ApiResponseFileReadResult,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<WorkspaceSearchResult[]>> SearchWorkspaceAsync(
@@ -906,7 +858,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         WorkspaceSemanticSearchRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.WorkspaceSemanticSearchRequest);
@@ -920,14 +871,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             static envelope => Result<WorkspaceSearchResult[]>.Success(
                 envelope.Data ?? []),
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<bool>> IndexWorkspaceAsync(
         string workspaceId,
         CancellationToken cancellationToken = default)
     {
-
         return await SendRequestAsync(
             HttpMethod.Post,
             $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/index",
@@ -935,14 +884,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             null,
             ArcanumJsonContext.Default.ApiResponseBoolean,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<WorkspaceIndexStatusDto>> GetWorkspaceIndexStatusAsync(
         string workspaceId,
         CancellationToken cancellationToken = default)
     {
-
         return await SendRequestAsync(
             HttpMethod.Get,
             $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/index/status",
@@ -950,7 +897,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             null,
             ArcanumJsonContext.Default.ApiResponseWorkspaceIndexStatusDto,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<WorkspaceFileChunkPage>> GetWorkspaceChunksAsync(
@@ -960,7 +906,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         int? offset,
         CancellationToken cancellationToken = default)
     {
-
         string path = BuildQueryString(
             $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/chunks",
             ("relativePath", relativePath),
@@ -974,7 +919,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             null,
             ArcanumJsonContext.Default.ApiResponseWorkspaceFileChunkPage,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<string>> ReloadMcpAsync(OptionalWorkspaceRequest request, CancellationToken cancellationToken)
@@ -1421,7 +1365,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
     }
 
     public async Task<Result<SessionAttachmentDto>> UploadSessionAttachmentAsync(
-
         Guid sessionId,
 
         Stream contentStream,
@@ -1433,73 +1376,69 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         CancellationToken cancellationToken = default)
 
     {
-
-        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
-
-        if (apiKey is null)
-
-        {
-
-            return Result<SessionAttachmentDto>.Failure(MissingApiKeyError);
-
-        }
-
         try
 
         {
-
             HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
-            using MultipartFormDataContent form = new();
+            long? initialPosition = contentStream.CanSeek
+                ? contentStream.Position
+                : null;
 
-            using StreamContent file = new(contentStream);
+            int requestCount = 0;
 
-            _ = file.Headers.TryAddWithoutValidation(
-
-                "Content-Type",
-
-                mimeType);
-
-            form.Add(
-
-                file,
-
-                "file",
-
-                SafeMultipartFilename(fileName));
-
-            using HttpRequestMessage request = new(
-
-                HttpMethod.Post,
-
-                $"api/sessions/{sessionId:D}/attachments")
-
+            HttpRequestMessage CreateRequest()
             {
+                if (requestCount++ > 0)
+                {
+                    contentStream.Position = initialPosition!.Value;
+                }
 
-                Content = form,
+                MultipartFormDataContent form = new();
 
-            };
+                StreamContent file = new(contentStream);
 
-            _ = request.Headers.TryAddWithoutValidation(
+                _ = file.Headers.TryAddWithoutValidation(
+                    "Content-Type",
 
-                ArcanumApiHeaders.ApiKey,
+                    mimeType);
 
-                apiKey);
+                form.Add(
+                    file,
 
-            using HttpResponseMessage response = await client
+                    "file",
 
-                .SendAsync(
+                    SafeMultipartFilename(fileName));
 
-                    request,
+                return new HttpRequestMessage(
+                    HttpMethod.Post,
 
+                    $"api/sessions/{sessionId:D}/attachments")
+
+                {
+                    Content = form,
+                };
+            }
+
+            using ArcanumAuthenticatedHttpResponse sent =
+                await ArcanumAuthenticatedHttpSender.SendAsync(
+                    client,
+                    credentialLease,
+                    CreateRequest,
                     HttpCompletionOption.ResponseHeadersRead,
-
+                    canReplayAfterUnauthorized: initialPosition is not null,
                     cancellationToken)
-
                 .ConfigureAwait(false);
 
-            byte[]? responseBytes = await TryReadCappedContentAsync(
+            if (!sent.IsAuthenticated)
+            {
+                return Result<SessionAttachmentDto>.Failure(
+                    ArcanumApiCredentialFailureMapper.ToError(sent.Credentials));
+            }
 
+            HttpResponseMessage response = sent.Response!;
+
+            byte[]? responseBytes = await TryReadCappedContentAsync(
                     response.Content,
 
                     MaxResponseBytes,
@@ -1511,13 +1450,10 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             if (responseBytes is null)
 
             {
-
                 return Result<SessionAttachmentDto>.Failure(ResponseTooLargeError);
-
             }
 
             ApiResponse<SessionAttachmentDto>? envelope = TryDeserialize(
-
                 responseBytes,
 
                 ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto);
@@ -1527,61 +1463,44 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                 && envelope is { IsSuccess: true, Data: not null })
 
             {
-
                 return Result<SessionAttachmentDto>.Success(envelope.Data);
-
             }
 
             if (envelope?.Error is { } error)
 
             {
-
                 return Result<SessionAttachmentDto>.Failure(error);
-
             }
 
             return Result<SessionAttachmentDto>.Failure(
-
                 new Error(
-
                     "Api.HttpError",
 
                     $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 
         {
-
             throw;
-
         }
         catch (OperationCanceledException)
 
         {
-
             return Result<SessionAttachmentDto>.Failure(RequestTimeoutError);
-
         }
         catch (HttpRequestException)
 
         {
-
             return Result<SessionAttachmentDto>.Failure(RequestUnreachableError);
-
         }
         catch (IOException)
 
         {
-
             return Result<SessionAttachmentDto>.Failure(RequestDisconnectedError);
-
         }
-
     }
 
     public Task<Result<SessionAttachmentDto>> CreateSessionAttachmentReferenceAsync(
-
         Guid sessionId,
 
         CreateSessionAttachmentReferenceRequest request,
@@ -1589,15 +1508,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         CancellationToken cancellationToken = default)
 
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-
             request,
 
             ArcanumJsonContext.Default.CreateSessionAttachmentReferenceRequest);
 
         return SendRequestAsync(
-
             HttpMethod.Post,
 
             $"api/sessions/{sessionId:D}/attachments/reference",
@@ -1609,11 +1525,9 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto,
 
             cancellationToken);
-
     }
 
     public async Task<Result<long>> DownloadSessionAttachmentAsync(
-
         Guid sessionId,
 
         Guid attachmentId,
@@ -1625,13 +1539,11 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         CancellationToken cancellationToken = default)
 
     {
-
         string temporaryPath = string.Empty;
 
         try
 
         {
-
             string fullDestination = Path.GetFullPath(destinationPath);
 
             string directory = Path.GetDirectoryName(fullDestination)
@@ -1641,53 +1553,36 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             Directory.CreateDirectory(directory);
 
             temporaryPath = Path.Combine(
-
                 directory,
 
                 $".{Path.GetFileName(fullDestination)}.{Guid.NewGuid():N}.download");
 
-            string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
-
-            if (apiKey is null)
-
-            {
-
-                return Result<long>.Failure(MissingApiKeyError);
-
-            }
-
             HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
 
-            using HttpRequestMessage request = new(
-
-                HttpMethod.Get,
-
-                $"api/sessions/{sessionId:D}/attachments/{attachmentId:D}/content");
-
-            _ = request.Headers.TryAddWithoutValidation(
-
-                ArcanumApiHeaders.ApiKey,
-
-                apiKey);
-
-            using HttpResponseMessage response = await client
-
-                .SendAsync(
-
-                    request,
-
+            using ArcanumAuthenticatedHttpResponse sent =
+                await ArcanumAuthenticatedHttpSender.SendAsync(
+                    client,
+                    credentialLease,
+                    () => new HttpRequestMessage(
+                        HttpMethod.Get,
+                        $"api/sessions/{sessionId:D}/attachments/{attachmentId:D}/content"),
                     HttpCompletionOption.ResponseHeadersRead,
-
+                    canReplayAfterUnauthorized: true,
                     cancellationToken)
-
                 .ConfigureAwait(false);
+
+            if (!sent.IsAuthenticated)
+            {
+                return Result<long>.Failure(
+                    ArcanumApiCredentialFailureMapper.ToError(sent.Credentials));
+            }
+
+            HttpResponseMessage response = sent.Response!;
 
             if (!response.IsSuccessStatusCode)
 
             {
-
                 byte[]? errorBytes = await TryReadCappedContentAsync(
-
                         response.Content,
 
                         MaxResponseBytes,
@@ -1701,21 +1596,17 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                     ? null
 
                     : TryDeserialize(
-
                         errorBytes,
 
                         ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto);
 
                 return Result<long>.Failure(
-
                     envelope?.Error
 
                     ?? new Error(
-
                         "Api.HttpError",
 
                         $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
-
             }
 
             await using Stream network = await response.Content
@@ -1727,7 +1618,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             long byteCount = 0;
 
             await using (FileStream destination = new(
-
                              temporaryPath,
 
                              FileMode.CreateNew,
@@ -1741,7 +1631,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                              options: FileOptions.Asynchronous | FileOptions.SequentialScan))
 
             {
-
                 byte[] buffer = new byte[81_920];
 
                 int read;
@@ -1753,11 +1642,9 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                            .ConfigureAwait(false)) > 0)
 
                 {
-
                     await destination
 
                         .WriteAsync(
-
                             buffer.AsMemory(0, read),
 
                             cancellationToken)
@@ -1765,11 +1652,9 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                         .ConfigureAwait(false);
 
                     byteCount += read;
-
                 }
 
                 await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             File.Move(temporaryPath, fullDestination, overwrite);
@@ -1777,77 +1662,55 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             temporaryPath = string.Empty;
 
             return Result<long>.Success(byteCount);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 
         {
-
             throw;
-
         }
         catch (OperationCanceledException)
 
         {
-
             return Result<long>.Failure(RequestTimeoutError);
-
         }
         catch (HttpRequestException)
 
         {
-
             return Result<long>.Failure(RequestUnreachableError);
-
         }
         catch (Exception exception) when (
-
             exception is IOException or UnauthorizedAccessException)
 
         {
-
             return Result<long>.Failure(
-
                 new Error(
-
                     "Attachment.ExportFailed",
 
                     "The attachment export could not be written safely."));
-
         }
         finally
 
         {
-
             if (!string.IsNullOrEmpty(temporaryPath))
 
             {
-
                 try
 
                 {
-
                     File.Delete(temporaryPath);
-
                 }
                 catch (Exception exception) when (
-
                     exception is IOException or UnauthorizedAccessException)
 
                 {
-
                 }
-
             }
-
         }
-
     }
 
     private static string SafeMultipartFilename(string fileName)
 
     {
-
         string leaf = Path.GetFileName(fileName.Replace('\\', '/'));
 
         if (string.IsNullOrWhiteSpace(leaf)
@@ -1855,9 +1718,7 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             || leaf is "." or "..")
 
         {
-
             return "attachment.bin";
-
         }
 
         return new string(leaf
@@ -1869,11 +1730,9 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                 : character)
 
             .ToArray());
-
     }
 
     public Task<Result<AttachmentRefreshEvent>> RefreshSessionAttachmentAsync(
-
         Guid sessionId,
 
         Guid attachmentId,
@@ -1881,7 +1740,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         CancellationToken cancellationToken = default) =>
 
         SendRequestAsync(
-
             HttpMethod.Post,
 
             $"api/sessions/{sessionId:D}/attachments/{attachmentId:D}/refresh",
@@ -2125,37 +1983,40 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         PingRequest body,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
-
-        if (apiKey is null)
-        {
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                "No API key found. Run 'arcanum serve' once to generate and store a key.");
-
-            yield break;
-        }
-
         HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.PingRequest);
 
-        using ByteArrayContent content = new(json);
-
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
-
-        using HttpRequestMessage request = new(HttpMethod.Post, "api/intelligence/ping-stream");
-        request.Content = content;
-
-        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-
         HttpResponseMessage? response = null;
+
+        ArcanumAuthenticatedHttpResponse? sent = null;
 
         string? sendErrorMessage = null;
 
         try
         {
-            response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            sent = await ArcanumAuthenticatedHttpSender.SendAsync(
+                    client,
+                    credentialLease,
+                    () =>
+                    {
+                        HttpRequestMessage request = new(
+                            HttpMethod.Post,
+                            "api/intelligence/ping-stream")
+                        {
+                            Content = new ByteArrayContent(json),
+                        };
+
+                        request.Content.Headers.ContentType = JsonUtf8ContentType;
+
+                        return request;
+                    },
+                    HttpCompletionOption.ResponseHeadersRead,
+                    canReplayAfterUnauthorized: true,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            response = sent.Response;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -2172,14 +2033,22 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
         if (sendErrorMessage is not null || response is null)
         {
+            string? credentialError = sent is { IsAuthenticated: false }
+                ? ArcanumApiCredentialFailureMapper.ToError(sent.Credentials).Message
+                : null;
+
+            sent?.Dispose();
+
             yield return new IntelligenceEvent(
                 IntelligenceEventType.Error,
-                sendErrorMessage ?? StreamUnreachableMessage);
+                sendErrorMessage
+                    ?? credentialError
+                    ?? StreamUnreachableMessage);
 
             yield break;
         }
 
-        using (response)
+        using (sent)
         {
             if (!response.IsSuccessStatusCode)
             {
@@ -2355,36 +2224,28 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
             if (hasMore)
             {
-
                 int nextOffset;
 
                 try
                 {
-
                     nextOffset = page.NextOffset
                         ?? checked(offset + page.Items.Length);
-
                 }
                 catch (OverflowException)
                 {
-
                     return Result<List<LoreDto>>.Failure(new Error(
                         "Api.PaginationInvalidCursor",
                         "The lore service returned a continuation offset outside the protocol range. No results were discarded; retry after repairing or upgrading the service."));
-
                 }
 
                 if (nextOffset <= offset)
                 {
-
                     return Result<List<LoreDto>>.Failure(new Error(
                         "Api.PaginationNoProgress",
                         $"The lore service returned non-advancing offset {nextOffset} after {offset}. {all.Count} results remain available in this response state; retry after repairing or upgrading the service."));
-
                 }
 
                 offset = nextOffset;
-
             }
         }
 
@@ -2888,7 +2749,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         ArcanumSettings settings,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             settings,
             ArcanumJsonContext.Default.ArcanumSettings);
@@ -2900,14 +2760,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
-
     }
 
     public Task<Result<bool>> UpdateConfigurationAsync(
         ArcanumSettings settings,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             settings,
             ArcanumJsonContext.Default.ArcanumSettings);
@@ -2919,7 +2777,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
-
     }
 
     public async Task<Result<ModelInfoDto[]>> GetModelsAsync(CancellationToken cancellationToken = default)
@@ -2990,7 +2847,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         SpellSource? source = null,
         CancellationToken cancellationToken = default)
     {
-
         string path = BuildQueryString(
             "api/spells",
             ("paged", "true"),
@@ -3008,7 +2864,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             null,
             ArcanumJsonContext.Default.ApiResponseSpellCatalogPage,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<SpellDetail>> GetSpellAsync(
@@ -3674,31 +3529,28 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         Guid id,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
-
-        if (apiKey is null)
-        {
-            yield return new ChronicleFrame(
-                "error",
-                null,
-                "No API key found. Run 'arcanum serve' once to generate and store a key.");
-
-            yield break;
-        }
-
         HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
 
-        using HttpRequestMessage request = new(HttpMethod.Get, $"api/apprentices/{id:D}/chronicle");
-
-        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-
         HttpResponseMessage? response = null;
+
+        ArcanumAuthenticatedHttpResponse? sent = null;
 
         string? sendErrorMessage = null;
 
         try
         {
-            response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            sent = await ArcanumAuthenticatedHttpSender.SendAsync(
+                    client,
+                    credentialLease,
+                    () => new HttpRequestMessage(
+                        HttpMethod.Get,
+                        $"api/apprentices/{id:D}/chronicle"),
+                    HttpCompletionOption.ResponseHeadersRead,
+                    canReplayAfterUnauthorized: true,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            response = sent.Response;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -3715,15 +3567,23 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
         if (sendErrorMessage is not null || response is null)
         {
+            string? credentialError = sent is { IsAuthenticated: false }
+                ? ArcanumApiCredentialFailureMapper.ToError(sent.Credentials).Message
+                : null;
+
+            sent?.Dispose();
+
             yield return new ChronicleFrame(
                 "error",
                 null,
-                sendErrorMessage ?? StreamUnreachableMessage);
+                sendErrorMessage
+                    ?? credentialError
+                    ?? StreamUnreachableMessage);
 
             yield break;
         }
 
-        using (response)
+        using (sent)
         {
             if (!response.IsSuccessStatusCode)
             {
@@ -3972,7 +3832,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         MemorySearchRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.MemorySearchRequest);
@@ -3984,7 +3843,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
             cancellationToken);
-
     }
 
     public Task<Result<LexiconListDto>> ListLexiconAsync(
@@ -4018,7 +3876,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         WebSearchWorkflowRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.WebSearchWorkflowRequest);
@@ -4030,14 +3887,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseWebSearchWorkflowResult,
             cancellationToken);
-
     }
 
     public Task<Result<WebBrowseWorkflowResult>> BrowseWebAsync(
         WebBrowseWorkflowRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.WebBrowseWorkflowRequest);
@@ -4049,7 +3904,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseWebBrowseWorkflowResult,
             cancellationToken);
-
     }
 
     /// <summary>
@@ -4062,19 +3916,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         WebResearchWorkflowRequest body,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-
-        string? apiKey = await TryGetApiKeyAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (apiKey is null)
-        {
-
-            yield return ResearchError(MissingApiKeyError);
-
-            yield break;
-
-        }
-
         HttpClient client = httpClientFactory.CreateClient(
             StreamingHttpClientName);
 
@@ -4082,81 +3923,79 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             body,
             ArcanumJsonContext.Default.WebResearchWorkflowRequest);
 
-        using HttpRequestMessage request = new(
-            HttpMethod.Post,
-            "api/web/research");
-
-        request.Content = new ByteArrayContent(json);
-
-        request.Content.Headers.ContentType = JsonUtf8ContentType;
-
-        _ = request.Headers.TryAddWithoutValidation(
-            ArcanumApiHeaders.ApiKey,
-            apiKey);
-
         HttpResponseMessage? response = null;
+
+        ArcanumAuthenticatedHttpResponse? sent = null;
 
         Error? sendError = null;
 
         try
         {
+            sent = await ArcanumAuthenticatedHttpSender.SendAsync(
+                    client,
+                    credentialLease,
+                    () =>
+                    {
+                        HttpRequestMessage request = new(
+                            HttpMethod.Post,
+                            "api/web/research")
+                        {
+                            Content = new ByteArrayContent(json),
+                        };
 
-            response = await client
-                .SendAsync(
-                    request,
+                        request.Content.Headers.ContentType = JsonUtf8ContentType;
+
+                        return request;
+                    },
                     HttpCompletionOption.ResponseHeadersRead,
+                    canReplayAfterUnauthorized: true,
                     cancellationToken)
                 .ConfigureAwait(false);
 
+            response = sent.Response;
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (OperationCanceledException)
         {
-
             sendError = RequestTimeoutError;
-
         }
         catch (HttpRequestException)
         {
-
             sendError = RequestUnreachableError;
-
         }
         catch (IOException)
         {
-
             sendError = RequestDisconnectedError;
-
         }
 
         if (sendError is Error error)
         {
-
             yield return ResearchError(error);
 
             yield break;
-
         }
 
         if (response is null)
         {
+            Error credentialError = sent is { IsAuthenticated: false }
+                ? ArcanumApiCredentialFailureMapper.ToError(sent.Credentials)
+                : RequestUnreachableError;
+
+            sent?.Dispose();
+
+            yield return ResearchError(credentialError);
 
             yield break;
-
         }
 
-        using (response)
+        using (sent)
         {
-
             if (!response.IsSuccessStatusCode)
             {
-
                 byte[]? responseBytes = await TryReadCappedContentAsync(
                         response.Content,
                         MaxResponseBytes,
@@ -4177,7 +4016,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                             $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
 
                 yield break;
-
             }
 
             await using Stream stream = await response.Content
@@ -4193,35 +4031,27 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
             while (true)
             {
-
                 string? line = null;
 
                 string? readError = null;
 
                 try
                 {
-
                     line = await reader.ReadLineAsync(cancellationToken)
                         .ConfigureAwait(false);
-
                 }
                 catch (Exception exception)
                 {
-
                     readError = TryMapStreamReadFailure(exception, cancellationToken);
 
                     if (readError is null)
                     {
-
                         throw;
-
                     }
-
                 }
 
                 if (readError is not null)
                 {
-
                     yield return ResearchError(
                         new Error(
                             readError == StreamTimeoutMessage
@@ -4230,38 +4060,29 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                             readError));
 
                     yield break;
-
                 }
 
                 if (line is null)
                 {
-
                     break;
-
                 }
 
                 if (string.IsNullOrWhiteSpace(line))
                 {
-
                     continue;
-
                 }
 
                 WebResearchStreamFrame? frame;
 
                 try
                 {
-
                     frame = JsonSerializer.Deserialize(
                         line,
                         ArcanumJsonContext.Default.WebResearchStreamFrame);
-
                 }
                 catch (JsonException)
                 {
-
                     frame = null;
-
                 }
 
                 yield return frame
@@ -4269,23 +4090,18 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                         new Error(
                             "Api.InvalidResponse",
                             "Malformed research progress received from the API."));
-
             }
-
         }
-
     }
 
     private static WebResearchStreamFrame ResearchError(Error error) =>
         new()
         {
-
             Type = WebResearchStreamFrameType.Error,
 
             Code = error.Code,
 
             Message = error.Message,
-
         };
 
     public async Task<Result<ToolInvokeResponse>> InvokeToolAsync(
@@ -4318,7 +4134,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
     }
 
     #endregion
-
 }
 
 public sealed record ChronicleFrame(string Type, DateTimeOffset? Timestamp, string Message);

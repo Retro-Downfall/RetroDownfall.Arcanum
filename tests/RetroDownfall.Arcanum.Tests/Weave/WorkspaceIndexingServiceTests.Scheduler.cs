@@ -206,7 +206,9 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         try
         {
-            Assert.Equal(2, gate.RequestedWorkKinds.Count);
+            // Three watcher constructions and the two active indexing slots own work leases.
+            // The queued third workspace must not acquire a sixth execution lease yet.
+            Assert.Equal(5, gate.RequestedWorkKinds.Count);
 
             Assert.Equal(new WorkspaceIndexingService.WorkspaceSchedulerSnapshot(2, 1, true), service.GetSchedulerSnapshot());
         }

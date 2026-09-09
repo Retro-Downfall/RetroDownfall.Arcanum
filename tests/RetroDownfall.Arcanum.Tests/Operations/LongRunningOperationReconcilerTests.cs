@@ -64,13 +64,11 @@ public sealed class LongRunningOperationReconcilerTests
             store.LeaseAcquisitions,
             acquisition =>
             {
-
                 Assert.Equal(acquisition.ObservedNow, acquisition.SuppliedUtcNow);
 
                 Assert.True(
                     acquisition.SuppliedExpiresAt > acquisition.ObservedNow,
                     $"Lease stamped {acquisition.SuppliedExpiresAt:O} was already expired at {acquisition.ObservedNow:O}.");
-
             });
     }
 
@@ -271,6 +269,39 @@ public sealed class LongRunningOperationReconcilerTests
         Assert.Contains("classified compare-exchange", refusal.Message, StringComparison.Ordinal);
 
         Assert.Empty(inner.LeaseAcquisitions);
+    }
+
+    [Fact]
+    public async Task Generic_recovery_keeps_privileged_ports_separate_from_a_decorated_ordinary_store()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore inner = new(time);
+        CountingOperationStore ordinaryDecorator = new(inner);
+        RecordingRecoveryHandler handler = new(
+            LongRunningOperationKinds.WorkspaceIndex,
+            supportedCheckpointVersion: 0);
+        LongRunningOperation operation = inner.Seed(
+            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+
+        LongRunningOperationReconciler reconciler = new(
+            ordinaryDecorator,
+            [handler],
+            time,
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership(),
+            inner,
+            inner,
+            scopeFactory: null);
+
+        LongRunningOperationReconciliationSummary summary = await reconciler
+            .ReconcileNowAsync("test-owner");
+
+        Assert.Equal(1, summary.Completed);
+        Assert.Equal(operation.Id, Assert.Single(handler.Invocations));
+        Assert.Equal(
+            LongRunningOperationState.Completed,
+            Assert.Single(inner.Operations).State);
     }
 
     /// <summary>

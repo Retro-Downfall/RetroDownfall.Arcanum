@@ -21,12 +21,13 @@ internal sealed record BatchReservationLine(
 /// </summary>
 internal sealed class TurnAccountingHandle
 {
-
     private readonly object _costGate = new();
 
     private readonly SemaphoreSlim _writerGate = new(1, 1);
 
     private readonly SemaphoreSlim _reservationGate = new(1, 1);
+
+    private readonly SemaphoreSlim _completionGate = new(1, 1);
 
     private readonly TurnAccountingHandle? _accountingOwner;
 
@@ -91,7 +92,19 @@ internal sealed class TurnAccountingHandle
 
     private bool _hasRecordedOperations;
 
-    private bool _finished;
+    private bool _completionSnapshotFrozen;
+
+    private InferenceRunStatus _completionStatus;
+
+    private decimal _completionCostUsd;
+
+    private bool _completionHasRecordedOperations;
+
+    private bool _completionAccountingFailed;
+
+    private bool _reservationDispositionCompleted;
+
+    private bool _runDispositionCompleted;
 
     private decimal _reservationHighWaterUsd;
 
@@ -182,48 +195,71 @@ internal sealed class TurnAccountingHandle
         InferenceRunStatus status,
         CancellationToken cancellationToken)
     {
-        if (!OwnsLifecycle || _finished)
+        if (!OwnsLifecycle)
         {
             return;
         }
 
-        _finished = true;
-
-        decimal accumulated;
-        bool hasRecordedOperations;
-
-        TurnAccountingHandle root = AccountingRoot;
-
-        lock (root._costGate)
+        await _completionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            accumulated = root._accumulatedCostUsd;
-            hasRecordedOperations = root._hasRecordedOperations;
-
-            if (root._accountingFailed)
+            if (!_completionSnapshotFrozen)
             {
-                status = InferenceRunStatus.Failed;
+                TurnAccountingHandle root = AccountingRoot;
+
+                lock (root._costGate)
+                {
+                    _completionCostUsd = root._accumulatedCostUsd;
+                    _completionHasRecordedOperations = root._hasRecordedOperations;
+                    _completionAccountingFailed = root._accountingFailed;
+                    _completionStatus = _completionAccountingFailed
+                        ? InferenceRunStatus.Failed
+                        : status;
+                    _completionSnapshotFrozen = true;
+                }
+            }
+
+            if (!_reservationDispositionCompleted)
+            {
+                if (!_completionAccountingFailed
+                    && ReservationActive
+                    && ReservationId is Guid reservationId
+                    && budgetReservations is not null)
+                {
+                    if (_completionStatus == InferenceRunStatus.Completed
+                        || _completionCostUsd > 0m
+                        || _completionHasRecordedOperations)
+                    {
+                        await budgetReservations
+                            .ReconcileAsync(reservationId, _completionCostUsd, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await budgetReservations
+                            .ReleaseAsync(reservationId, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                }
+
+                _reservationDispositionCompleted = true;
+            }
+
+            if (!_runDispositionCompleted)
+            {
+                if (RunId is Guid runId && turnRunWriter is not null)
+                {
+                    await turnRunWriter
+                        .CompleteRunAsync(runId, _completionStatus, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                _runDispositionCompleted = true;
             }
         }
-
-        if (!AccountingFailed
-            && ReservationActive
-            && ReservationId is Guid reservationId
-            && budgetReservations is not null)
+        finally
         {
-            if (status == InferenceRunStatus.Completed || accumulated > 0m || hasRecordedOperations)
-            {
-                await budgetReservations.ReconcileAsync(reservationId, accumulated, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                await budgetReservations.ReleaseAsync(reservationId, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        if (RunId is Guid runId && turnRunWriter is not null)
-        {
-            await turnRunWriter.CompleteRunAsync(runId, status, cancellationToken).ConfigureAwait(false);
+            _completionGate.Release();
         }
     }
 
@@ -469,5 +505,4 @@ internal sealed class TurnAccountingHandle
 
     private static decimal SaturatingCostAdd(decimal left, decimal right) =>
         right >= decimal.MaxValue - left ? decimal.MaxValue : left + right;
-
 }

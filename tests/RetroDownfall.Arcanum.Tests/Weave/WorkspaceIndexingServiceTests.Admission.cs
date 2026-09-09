@@ -55,6 +55,63 @@ public sealed partial class WorkspaceIndexingServiceTests
         Assert.Equal(2, gate.EffectGroupAttempts);
     }
 
+    [SkippableFact]
+    public void Watcher_factory_creation_occurs_while_a_workspace_work_lease_is_owned()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
+        FakeWorkspaceFileWatcherFactory watchers = new();
+        bool leaseDisposalStarted = false;
+        bool factoryObservedOwnedLease = false;
+
+        gate.BeforeWorkLeaseDisposalAsync = () =>
+        {
+            leaseDisposalStarted = true;
+
+            return ValueTask.CompletedTask;
+        };
+        watchers.BeforeReturn = () =>
+        {
+            factoryObservedOwnedLease =
+                gate.RequestedWorkKinds.SequenceEqual([GrimoireWorkKind.WorkspaceIndexing])
+                && !leaseDisposalStarted;
+        };
+
+        WorkspaceIndexingService service = CreateService(
+            new FakeWeaveService(),
+            out _,
+            watcherFactory: watchers,
+            workAdmission: gate);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        Assert.True(factoryObservedOwnedLease);
+        Assert.True(leaseDisposalStarted);
+        Assert.Equal(1, service.ActiveWatcherCount);
+    }
+
+    [SkippableFact]
+    public async Task Maintenance_denial_creates_no_watcher_resource()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+        await using IGrimoireClosingOwner closing = BeginWorkspaceClosing(gate);
+        FakeWorkspaceFileWatcherFactory watchers = new();
+        WorkspaceIndexingService service = CreateService(
+            new FakeWeaveService(),
+            out _,
+            watcherFactory: watchers,
+            workAdmission: gate);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        Assert.Empty(watchers.Created);
+        Assert.Equal(0, service.ActiveWatcherCount);
+    }
+
     private static IGrimoireClosingOwner BeginWorkspaceClosing(GrimoireConnectionAdmissionGate gate) =>
         gate.BeginOrResumeExclusive(new CovenantExclusiveRecoveryOwner(
             Guid.NewGuid(),

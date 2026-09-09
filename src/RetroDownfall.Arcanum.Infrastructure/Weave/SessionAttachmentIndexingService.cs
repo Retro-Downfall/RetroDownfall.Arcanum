@@ -26,7 +26,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 [ExcludeFromCodeCoverage] // Reason: IHostedService queue scheduler; covered via SessionAttachmentIndexingAdmissionTests and SessionAttachmentIndexingQueueTests exercising the dequeue, reconciliation and wait logic directly.
 internal sealed class SessionAttachmentIndexingService : BackgroundService, ISessionAttachmentIndexQueue
 {
-
     private static readonly TimeSpan AutomaticRetryDelay = TimeSpan.FromSeconds(5);
 
     private static readonly TimeSpan ReconciliationPeriod = TimeSpan.FromSeconds(30);
@@ -77,7 +76,6 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         TimeProvider timeProvider,
         ILogger<SessionAttachmentIndexingService> logger)
     {
-
         _scopeFactory = scopeFactory;
 
         _options = options;
@@ -94,15 +92,12 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         _channel = Channel.CreateBounded<SessionAttachmentIndexRequest>(
             new BoundedChannelOptions(capacity)
             {
-
                 FullMode = BoundedChannelFullMode.Wait,
 
                 SingleReader = true,
 
                 SingleWriter = false,
-
             });
-
     }
 
     /// <summary>The queue's reader, so a test can observe what a re-signal actually wrote.</summary>
@@ -114,38 +109,28 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
     public bool TryEnqueue(SessionAttachmentIndexRequest request)
     {
-
         try
         {
-
             EmbeddingSettings embeddings = _options.CurrentValue.ResolveEmbeddings();
 
             if (!embeddings.Enabled || !embeddings.AttachmentRetrievalEnabled)
             {
-
                 return false;
-
             }
 
             if (!_pending.TryAdd(request.AttachmentId, 0))
             {
-
                 return true;
-
             }
 
             lock (_channelWriteSync)
             {
-
                 FlushResignalSuffixWhileLocked();
 
                 if (_resignalSuffix.Count == 0 && _channel.Writer.TryWrite(request))
                 {
-
                     return true;
-
                 }
-
             }
 
             _pending.TryRemove(request.AttachmentId, out _);
@@ -155,49 +140,45 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
                 request.AttachmentId);
 
             return false;
-
         }
         catch (Exception ex)
         {
-
             _pending.TryRemove(request.AttachmentId, out _);
 
             _logger.LogDebug(ex, "Session attachment indexing enqueue failed for {AttachmentId}.", request.AttachmentId);
 
             return false;
-
         }
-
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-
         await Task.Yield();
 
         bool wasEnabled = false;
 
         QueueWait wait = new();
 
+        using CancellationTokenSource waitLifetime =
+            CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
+        try
+        {
         while (!stoppingToken.IsCancellationRequested)
         {
-
             try
             {
-
                 EmbeddingSettings embeddings = _options.CurrentValue.ResolveEmbeddings();
 
                 bool enabled = embeddings.Enabled && embeddings.AttachmentRetrievalEnabled;
 
                 if (!enabled)
                 {
-
                     wasEnabled = false;
 
                     await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
 
                     continue;
-
                 }
 
                 // A held identity is older than every request still in the channel. Wait here for
@@ -208,33 +189,27 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
                 if (!wasEnabled)
                 {
-
                     wasEnabled = true;
 
                     _ = await ReconcileAndEnqueueAsync(embeddings, stoppingToken).ConfigureAwait(false);
-
                 }
 
                 QueueSignal signal = await WaitForWorkAsync(
                     _channel.Reader,
                     wait,
                     ReconciliationPeriod,
-                    stoppingToken).ConfigureAwait(false);
+                    waitLifetime.Token).ConfigureAwait(false);
 
                 if (signal == QueueSignal.ReconciliationDue)
                 {
-
                     _ = await ReconcileAndEnqueueAsync(embeddings, stoppingToken).ConfigureAwait(false);
 
                     continue;
-
                 }
 
                 if (signal == QueueSignal.QueueCompleted)
                 {
-
                     return;
-
                 }
 
                 int batchSize = ArcanumSettingClamps.EmbeddingsAttachmentMaxAttachmentsPerBatch(
@@ -244,13 +219,10 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
                 for (int processed = 0; processed < batchSize; processed++)
                 {
-
                     if (!_channel.Reader.TryRead(out SessionAttachmentIndexRequest? request)
                         || request is null)
                     {
-
                         break;
-
                     }
 
                     SessionAttachmentIndexOutcome outcome = await ProcessOneAsync(request, stoppingToken)
@@ -258,57 +230,50 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
                     if (outcome.Disposition == SessionAttachmentIndexDisposition.DeferredForMaintenance)
                     {
-
                         // Once maintenance owns admission every remaining request is refused too, so
                         // draining the rest would only convert the queue into the deferred list one
                         // refused lease at a time. They keep their place instead.
                         deferred = true;
 
                         break;
-
                     }
-
                 }
 
                 if (deferred)
                 {
-
                     continue;
-
                 }
 
                 _ = await ReconcileAndEnqueueAsync(embeddings, stoppingToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 return;
-
             }
             catch (Exception ex)
             {
-
                 _logger.LogWarning(ex, "Session attachment indexing loop failed; retrying.");
 
                 await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
-
             }
-
         }
+        }
+        finally
+        {
+            await waitLifetime.CancelAsync().ConfigureAwait(false);
 
+            await ObserveQueueWaitCompletionAsync(wait).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Why <see cref="WaitForWorkAsync"/> returned.</summary>
     internal enum QueueSignal
     {
-
         Work,
 
         ReconciliationDue,
 
         QueueCompleted,
-
     }
 
     /// <summary>
@@ -316,11 +281,9 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
     /// </summary>
     internal sealed class QueueWait
     {
-
         public Task<bool>? PendingRead { get; set; }
 
         public Task? PendingPeriod { get; set; }
-
     }
 
     /// <summary>
@@ -339,7 +302,6 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         TimeSpan reconciliationPeriod,
         CancellationToken cancellationToken)
     {
-
         wait.PendingRead ??= reader.WaitToReadAsync(cancellationToken).AsTask();
 
         wait.PendingPeriod ??= Task.Delay(reconciliationPeriod, cancellationToken);
@@ -348,11 +310,9 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
         if (completed == wait.PendingPeriod)
         {
-
             wait.PendingPeriod = null;
 
             return QueueSignal.ReconciliationDue;
-
         }
 
         bool hasWork = await wait.PendingRead.ConfigureAwait(false);
@@ -360,7 +320,32 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         wait.PendingRead = null;
 
         return hasWork ? QueueSignal.Work : QueueSignal.QueueCompleted;
+    }
 
+    internal static async Task ObserveQueueWaitCompletionAsync(QueueWait wait)
+    {
+        Task[] pending = new Task?[]
+            {
+                wait.PendingRead,
+                wait.PendingPeriod,
+            }
+            .OfType<Task>()
+            .Distinct()
+            .ToArray();
+
+        try
+        {
+            await Task.WhenAll(pending).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            wait.PendingRead = null;
+
+            wait.PendingPeriod = null;
+        }
     }
 
     /// <summary>Runs one dequeued request, reporting whether maintenance stood it down.</summary>
@@ -376,18 +361,15 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         SessionAttachmentIndexRequest request,
         CancellationToken stoppingToken)
     {
-
         long observedGeneration = _admissionGate.CurrentGeneration;
 
         if (!_admissionGate.TryAcquireWorkLease(
                 GrimoireWorkKind.SessionAttachmentIndexing,
                 out IGrimoireWorkLease? workLease))
         {
-
             Defer(request, observedGeneration);
 
             return SessionAttachmentIndexOutcome.DeferredForMaintenance;
-
         }
 
         SessionAttachmentIndexOutcome outcome;
@@ -396,47 +378,37 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         // scope, durable disposition and pending-identity decision, but not the later backoff before
         // a new dequeue attempt.
         {
-
             await using IGrimoireWorkLease lease = workLease!;
 
             bool retainedForMaintenance = false;
 
             try
             {
-
                 // A maintenance outcome becomes retained queue state only after this scope returns
                 // cleanly. If disposal itself fails, this request concluded as a genuine failure and
                 // must release its identity so the incremented retry can enter the channel.
                 {
-
                     await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
                     SessionAttachmentIndexProcessor processor = scope.ServiceProvider
                         .GetRequiredService<SessionAttachmentIndexProcessor>();
 
                     outcome = await processor.ProcessAsync(request, lease, stoppingToken).ConfigureAwait(false);
-
                 }
 
                 if (outcome.Disposition == SessionAttachmentIndexDisposition.DeferredForMaintenance)
                 {
-
                     Defer(request, observedGeneration);
 
                     retainedForMaintenance = true;
-
                 }
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (OperationCanceledException ex)
             {
-
                 _logger.LogWarning(
                     ex,
                     "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
@@ -450,11 +422,9 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
                 await MarkFailedAsync(
                     request,
                     "Attachment indexing was interrupted and will be retried.").ConfigureAwait(false);
-
             }
             catch (Exception ex)
             {
-
                 _logger.LogWarning(ex, "Session attachment {AttachmentId} indexing failed.", request.AttachmentId);
 
                 outcome = new SessionAttachmentIndexOutcome(
@@ -465,42 +435,32 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
                 await MarkFailedAsync(
                     request,
                     "Attachment indexing failed unexpectedly.").ConfigureAwait(false);
-
             }
             finally
             {
-
                 // The pending identity is released only by a request that actually concluded. A
                 // deferral keeps it, because it is what a resumed run resumes and what keeps a
                 // producer's enqueue for the same attachment deduplicated while it waits.
                 if (!retainedForMaintenance)
                 {
-
                     _pending.TryRemove(request.AttachmentId, out _);
-
                 }
-
             }
-
         }
 
         if (ShouldAutomaticallyRetry(outcome, stoppingToken))
         {
-
             await Task.Delay(AutomaticRetryDelay, _timeProvider, stoppingToken).ConfigureAwait(false);
 
             _ = TryEnqueue(request with { Attempt = NextAttempt(request.Attempt) });
-
         }
 
         return outcome;
-
     }
 
     /// <summary>Stands one request down without spending anything it was carrying.</summary>
     private void Defer(SessionAttachmentIndexRequest request, long observedGeneration)
     {
-
         long waitAfterGeneration = observedGeneration > 0
             ? observedGeneration - 1
             : 0;
@@ -510,7 +470,6 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         _logger.LogDebug(
             "Session attachment {AttachmentId} indexing deferred: maintenance owns Grimoire admission.",
             request.AttachmentId);
-
     }
 
     /// <summary>Waits for ordinary admission, then puts eligible stood-down requests back.</summary>
@@ -529,19 +488,14 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
     internal async Task<int> WaitForReopenAndResignalDeferredRequestsAsync(
         CancellationToken cancellationToken)
     {
-
         if (_deferred.Count == 0)
         {
-
             lock (_channelWriteSync)
             {
-
                 FlushResignalSuffixWhileLocked();
-
             }
 
             return 0;
-
         }
 
         long openGeneration = await _admissionGate.WaitForNextOpenGenerationAsync(
@@ -550,7 +504,6 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
         lock (_channelWriteSync)
         {
-
             Queue<SessionAttachmentIndexRequest> ready = new();
 
             int eligibleCount = 0;
@@ -558,32 +511,24 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
             while (eligibleCount < _deferred.Count
                 && _deferred[eligibleCount].WaitAfterGeneration < openGeneration)
             {
-
                 ready.Enqueue(_deferred[eligibleCount].Request);
 
                 eligibleCount++;
-
             }
 
             if (eligibleCount == 0)
             {
-
                 return 0;
-
             }
 
             while (_channel.Reader.TryRead(out SessionAttachmentIndexRequest? later))
             {
-
                 ready.Enqueue(later);
-
             }
 
             while (_resignalSuffix.TryDequeue(out SessionAttachmentIndexRequest? later))
             {
-
                 ready.Enqueue(later);
-
             }
 
             _deferred.RemoveRange(0, eligibleCount);
@@ -594,54 +539,40 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
             while (ready.TryDequeue(out SessionAttachmentIndexRequest? request))
             {
-
                 if (_channel.Writer.TryWrite(request))
                 {
-
                     if (readyIndex < eligibleCount)
                     {
-
                         resignalled++;
-
                     }
 
                     readyIndex++;
 
                     continue;
-
                 }
 
                 _resignalSuffix.Enqueue(request);
 
                 while (ready.TryDequeue(out SessionAttachmentIndexRequest? unwritten))
                 {
-
                     _resignalSuffix.Enqueue(unwritten);
-
                 }
 
                 break;
-
             }
 
             return resignalled;
-
         }
-
     }
 
     /// <summary>Fills newly available channel space from the oldest retained suffix.</summary>
     private void FlushResignalSuffixWhileLocked()
     {
-
         while (_resignalSuffix.TryPeek(out SessionAttachmentIndexRequest? request)
             && _channel.Writer.TryWrite(request))
         {
-
             _ = _resignalSuffix.Dequeue();
-
         }
-
     }
 
     /// <summary>One stood-down request and the predecessor-generation floor its reopen must pass.</summary>
@@ -661,10 +592,8 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         SessionAttachmentIndexRequest request,
         string failureReason)
     {
-
         try
         {
-
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             SessionAttachmentIndexProcessor processor = scope.ServiceProvider
@@ -674,18 +603,14 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
                 request,
                 failureReason,
                 CancellationToken.None).ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             _logger.LogDebug(
                 ex,
                 "Session attachment {AttachmentId} failure status could not be persisted.",
                 request.AttachmentId);
-
         }
-
     }
 
     /// <summary>Reconciles durable index state, reporting whether maintenance stood it down.</summary>
@@ -704,17 +629,14 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         EmbeddingSettings embeddings,
         CancellationToken cancellationToken)
     {
-
         if (!_admissionGate.TryAcquireWorkLease(
                 GrimoireWorkKind.SessionAttachmentIndexing,
                 out IGrimoireWorkLease? workLease))
         {
-
             _logger.LogDebug(
                 "Session attachment index reconciliation deferred: maintenance owns Grimoire admission.");
 
             return SessionAttachmentIndexDisposition.DeferredForMaintenance;
-
         }
 
         await using IGrimoireWorkLease lease = workLease!;
@@ -736,13 +658,9 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
         foreach (SessionAttachmentIndexRequest request in pending)
         {
-
             _ = TryEnqueue(request);
-
         }
 
         return SessionAttachmentIndexDisposition.Concluded;
-
     }
-
 }

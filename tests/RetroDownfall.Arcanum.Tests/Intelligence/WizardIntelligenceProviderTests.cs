@@ -78,6 +78,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("buffered answer", result.Value!.Text);
     }
+
     [Fact]
     public async Task Scenario01b_CatalogPromptCaching_AppliesProviderBoundOptionsForEligiblePrefix()
     {
@@ -121,6 +122,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(2, chat.LastBufferedMessages.Count);
     }
+
     [Fact]
     public async Task Scenario02_SingleTurnStreaming_EmitsTokensAndResult()
     {
@@ -145,6 +147,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task StreamingWizardThroughNativeProjection_GivesApprenticeFinalAnswer()
     {
@@ -175,24 +178,21 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             WorkspacePath = _workspace.Root,
             Status = ApprenticeStatus.Running.ToString(),
         };
-        System.Reflection.MethodInfo executeStep = typeof(ApprenticeService).GetMethod(
-            "ExecuteStepStreamAsync",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-
         using CancellationTokenSource linkedCts = new();
 
-        Task task = Assert.IsAssignableFrom<Task>(executeStep.Invoke(
-            apprenticeService,
-            [wizard, apprentice, "Complete this step.", linkedCts, apprentice.Id, false]));
+        Task<ApprenticeService.StepExecutionOutcome> task = apprenticeService.ExecuteStepStreamAsync(
+            wizard,
+            apprentice,
+            "Complete this step.",
+            linkedCts,
+            apprentice.Id,
+            false);
 
-        await task.WaitAsync(TimeSpan.FromSeconds(15));
+        ApprenticeService.StepExecutionOutcome outcome = await task.WaitAsync(TimeSpan.FromSeconds(15));
 
-        object outcome = task.GetType().GetProperty("Result")!.GetValue(task)!;
-
-        string? resultText = (string?)outcome.GetType().GetProperty("ResultText")!.GetValue(outcome);
-
-        Assert.Equal("real answer", resultText);
+        Assert.Equal("real answer", outcome.ResultText);
     }
+
     [Fact]
     public async Task StreamPromptAsync_BudgetExceeded_YieldsErrorEventAndSkipsInference()
     {
@@ -230,6 +230,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task StreamPromptAsync_StructuredOutputBestEffort_InvalidJson_WarningsOnResult()
     {
@@ -266,6 +267,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(result.Warnings, w => w.Contains("JSON schema validation", StringComparison.OrdinalIgnoreCase));
     }
+
     [Fact]
     public async Task StructuredOutput_ChangingInvalidEvidenceBeyondFormerRetryLimit_ReachesValidResponse()
     {
@@ -310,6 +312,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(validResponse, result.Value.Text);
     }
+
     [Fact]
     public async Task Guardrails_PiiInInput_BlocksBeforeInference()
     {
@@ -335,6 +338,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task Guardrails_ToxicityInOutput_BlocksAndDoesNotPersistAssistantReply()
     {
@@ -362,6 +366,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Guardrails.Blocked, result.Error.Code);
     }
+
     [Fact]
     public async Task Guardrails_Disabled_PassesThrough()
     {
@@ -385,6 +390,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("alice@example.com", result.Value!.Text);
     }
+
     [Fact]
     public async Task Guardrails_PiiInStatelessInput_BlocksBeforeInference()
     {
@@ -416,6 +422,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task Guardrails_Streaming_BufferedToxicity_DeliversNoTokenBeforeFilter()
     {
@@ -445,6 +452,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
     }
+
     [Fact]
     public async Task Guardrails_Streaming_BufferedToxicity_DiscardsAssistantEntry()
     {
@@ -490,6 +498,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, grimoire.FinalizeCallCount);
     }
+
     [Fact]
     public async Task Guardrails_Streaming_CodeOwnedBufferedPolicy_WithholdsTokensThenError()
     {
@@ -519,6 +528,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
     }
+
     [Fact]
     public async Task Guardrails_Streaming_BufferedMode_DisabledGuardrails_Passthrough()
     {
@@ -542,6 +552,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, e => e.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Scenario03_ToolLoop_OneRound_ThenAnswers()
     {
@@ -566,6 +577,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Single(result.Value.ToolCalls!);
     }
+
     [Fact]
     public async Task Scenario04_BufferedToolLoop_ChangingEvidenceBeyondFormerLimits_Completes()
     {
@@ -615,6 +627,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         StringComparison.Ordinal));
         }
     }
+
     [Fact]
     public async Task BufferedToolLoop_RepeatedIdenticalRound_ReturnsTypedNoProgressFailure()
     {
@@ -649,6 +662,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(2, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task Scenario05_ToolPatternRejected_RetriesWithoutTools()
     {
@@ -671,6 +685,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(2, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task Scenario10_ContextCompression_TriggersWhenOverThreshold()
     {
@@ -713,6 +728,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.True(compressedPrompt);
     }
+
     [Fact]
     public async Task Scenario11_ContextCompression_SkippedBelowThreshold()
     {
@@ -752,6 +768,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             chat.LastBufferedMessages,
             static m => m.Role == ChatRole.System && m.Text.Contains("### Campaign Summary (compressed context)", StringComparison.Ordinal));
     }
+
     [Fact]
     public async Task Scenario12_Attunement_FiltersMcpTools()
     {
@@ -790,6 +807,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(ArcanumLocalTimeTool.ToolName, toolNames);
     }
+
     [Fact]
     public async Task Scenario13_Attunement_EmptyDeclaredTools_KeepsFullMcpSet()
     {
@@ -825,6 +843,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("beta_tool", toolNames);
     }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -876,6 +895,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(!disableMcpTools, toolNames.Contains("allowed_tool"));
     }
+
     [Theory]
     [InlineData("browse-declared", true, false)]
     [InlineData("browse-open", false, true)]
@@ -923,6 +943,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             expectWebSearch,
             toolNames.Contains(ArcanumBuiltInToolNames.WebSearch));
     }
+
     [Fact]
     public async Task Scenario14_SpellDependencyResolution_PlumbsResonanceIntoPrompt()
     {
@@ -954,6 +975,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("dependency body", system.Text, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Scenario15_ModelNotFound_ReturnsHubModelError()
     {
@@ -991,6 +1013,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(nameof(InvalidOperationException), log.Message, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Scenario16_StreamInferenceFailure_EmitsError()
     {
@@ -1006,6 +1029,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
     }
+
     [Fact]
     public async Task Scenario16_CancellationDuringStream_CancelsCleanly()
     {
@@ -1029,6 +1053,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             }
         });
     }
+
     [Fact]
     public async Task Scenario17_EmptyPrompt_ReturnsValidationError()
     {
@@ -1043,6 +1068,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("Validation.InvalidPrompt", result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario18_BufferedInferenceFailure_ReturnsHubError()
     {
@@ -1061,6 +1087,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("Hub.Error", result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario19_StreamingToolLoop_ChangingEvidenceBeyondFormerLimits_Completes()
     {
@@ -1110,6 +1137,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     && e.Data?.Contains(expectedEvidence, StringComparison.Ordinal) == true);
         }
     }
+
     [Fact]
     public async Task Issue220_Multi_tool_stream_keeps_live_and_durable_tool_records()
     {
@@ -1312,6 +1340,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("evidence-2", toolResults[1].Data);
     }
+
     [Fact]
     public async Task StreamingToolLoop_RepeatedIdenticalRound_EmitsTypedNoProgressError()
     {
@@ -1351,6 +1380,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(2, chat.StreamingCallCount);
     }
+
     /// <summary>
     /// EnsureContextBudgetWithMaterializations' trim loop re-estimated the entire (shrinking)
     /// transcript on every removed pair, so an over-budget round paid one full-transcript
@@ -1422,6 +1452,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 + $"{wholeTranscriptCalls} of {counting.EstimateContextCalls} total calls: "
                 + $"[{string.Join(", ", counting.EstimateContextMessageCounts)}]");
     }
+
     /// <summary>
     /// V-2 (important): HumanPromptLiveEmitterAmbient.Current was set at the top of
     /// RunInferenceAttemptAsync -- an async iterator -- but the very next yield return (the
@@ -1477,6 +1508,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             Enumerable.Range(0, frameCount).Select(static i => $"human-frame-{i}").ToArray(),
             humanFrames);
     }
+
     /// <summary>
     /// MCP elicitation end to end. A server raises <c>elicitation/create</c> while one of its tools is
     /// running. The request arrives on the SDK client's receive loop, which started at connect time on
@@ -1551,6 +1583,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 && e.Message == "ask_human"
                 && e.Data == "42");
     }
+
     /// <summary>
     /// The live emitter is one instance per turn, not one per tool call: the MCP connection's
     /// elicitation sink tells turns apart by emitter identity, so every tool call of a turn has to
@@ -1602,6 +1635,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Same(captured[0], captured[1]);
     }
+
     [Fact]
     public async Task Scenario20_AttachedFilesBeyondFormerCountCeiling_AreAccepted()
     {
@@ -1632,6 +1666,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("accepted", result.Value!.Text);
     }
+
     [Fact]
     public async Task Scenario21_OverrideSpellNameNotFound_ReturnsValidationError()
     {
@@ -1655,6 +1690,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("Validation.SpellOverride", result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario22_OverrideSpellPathOutsideWorkspace_ReturnsPathNotAllowed()
     {
@@ -1678,6 +1714,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("Spell.PathNotAllowed", result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario23_OverrideSpellPathInvalidFileName_ReturnsPathNotAllowed()
     {
@@ -1705,6 +1742,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("Spell.PathNotAllowed", result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario24_OverrideSpellPathValid_LoadsSpell()
     {
@@ -1734,6 +1772,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("path routed body", system.Text, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Scenario25_AttachedFileNullEntry_ReturnsValidationError()
     {
@@ -1756,6 +1795,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("Validation.AttachedFiles", result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario26_AttachedFileEmptyPath_ReturnsValidationError()
     {
@@ -1776,6 +1816,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("Validation.AttachedFiles", result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario27_AttachedFileOversizedContent_ReturnsValidationError()
     {
@@ -1799,6 +1840,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("Validation.AttachedFiles", result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario28_StreamAttachedFilesBeyondFormerCountCeiling_Completes()
     {
@@ -1826,6 +1868,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Error);
     }
+
     [Fact]
     public async Task Scenario29_ContextCompressionWithoutSummary_SkipsCompression()
     {
@@ -1866,6 +1909,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static m => m.Role == ChatRole.System
                 && m.Text.Contains("### Campaign Summary (compressed context)", StringComparison.Ordinal));
     }
+
     [Fact]
     public async Task Scenario30_StreamContextCompression_EmitsStatusNotice()
     {
@@ -1903,6 +1947,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static e => e.Type == IntelligenceEventType.Status
                 && e.Message == IntelligenceStatusMessages.MemoryCompressionNotice);
     }
+
     [Fact]
     public async Task Scenario31_StreamModelResolutionFailure_EmitsError()
     {
@@ -1921,6 +1966,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static e => e.Type == IntelligenceEventType.Error
                 && e.Message.Contains("not configured", StringComparison.OrdinalIgnoreCase));
     }
+
     [Fact]
     public async Task Scenario32_StatelessMessages_AllowsEmptyPrompt()
     {
@@ -1948,6 +1994,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("stateless ok", result.Value!.Text);
     }
+
     [Fact]
     public async Task Scenario33_SessionBeginFailure_AbortsBeforeProviderDispatch()
     {
@@ -1983,6 +2030,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         // The provider was never dialled, so its scripted answer is still queued.
         Assert.Equal(0, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task Scenario34_SessionFinalizeFailure_ReturnsHubError()
     {
@@ -2010,6 +2058,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
     }
+
     [Fact]
     public async Task Scenario35_TokenTracking_IncrementsSessionTokens()
     {
@@ -2042,6 +2091,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(30, grimoire.LastIncrementedTokens);
     }
+
     [Fact]
     public async Task TokenTracking_DoesNotAddReasoningSubsetToSessionTotal()
     {
@@ -2086,6 +2136,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(15, result.Value.Usage?.ReasoningTokens);
     }
+
     [Fact]
     public async Task Scenario35b_TokenTracking_IncrementsCostUsingModelPricing()
     {
@@ -2135,6 +2186,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(expected, grimoire.LastIncrementedCostUsd);
     }
+
     [Fact]
     public async Task Scenario35c_CachedInputTokens_RecordsPromptCacheMetric()
     {
@@ -2204,6 +2256,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(12, Assert.Single(captured));
     }
+
     [Fact]
     public async Task ReasoningUsage_RecordsDedicatedLowCardinalityMetric()
     {
@@ -2238,6 +2291,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 return;
             }
+
             foreach (KeyValuePair<string, object?> tag in tags)
             {
                 if (tag.Key == "provider"
@@ -2265,6 +2319,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(7, Assert.Single(captured));
     }
+
     [Fact]
     public async Task Scenario36_StreamSessionBound_EmitsSessionEvents()
     {
@@ -2294,6 +2349,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Scenario37_StreamToolExecutionFailure_EmitsToolResultWithFailureMessage()
     {
@@ -2357,6 +2413,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("failing_tool", log.Message, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Scenario38_StreamToolUnsupported_RetriesWithoutTools()
     {
@@ -2381,6 +2438,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "retried");
     }
+
     /// <summary>
     /// The no-tools restart used to fire only on an English substring match against the
     /// provider's error text, so a provider wording the same condition differently (this test's
@@ -2417,6 +2475,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "retried");
     }
+
     [Fact]
     public async Task Scenario39_ReadOnlyToolPolicy_FiltersWriteTools()
     {
@@ -2466,6 +2525,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("use_commlink", toolNames);
     }
+
     /// <summary>
     /// <c>disableMcpTools</c> and a filtering <c>toolPolicy</c> are both narrowing instructions, so the
     /// answer to both is their intersection, not the policy alone. Dropping the flag for
@@ -2507,6 +2567,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("search_workspace", toolNames);
     }
+
     /// <summary>
     /// The wire converter refuses an undefined policy, so such a value can only arrive from in-process
     /// construction — but both consumers treated "unrecognized" as the permissive arm, which is the one
@@ -2541,6 +2602,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Empty(ToolNames(chat.LastChatOptions));
     }
+
     [Fact]
     public async Task Stateless_turn_does_not_advertise_apply_patch()
     {
@@ -2582,6 +2644,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain(ToolRiskClassifier.ApplyPatchToolName, toolNames);
     }
+
     [Fact]
     public async Task Unattended_write_file_executes_when_campaign_settings_are_missing()
     {
@@ -2643,6 +2706,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal([WardResolutionOrigin.Ungated], ward.AutomaticResolutionOrigins);
     }
+
     [Fact]
     public async Task Apply_patch_executes_when_listed_as_a_forbidden_art_in_an_unattended_turn()
     {
@@ -2708,6 +2772,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             replacement + "\n",
             await File.ReadAllTextAsync(Path.Combine(_workspace.Root, relativePath)));
     }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -2866,6 +2931,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Null(audit.ToolArgumentsJson);
     }
+
     [Fact]
     public async Task Apply_patch_multi_call_rounds_keep_stable_receipt_ordinals()
     {
@@ -2976,6 +3042,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 ["dryRun"] = false,
             };
     }
+
     [Fact]
     public async Task Apply_patch_streaming_recovered_receipt_reuses_exact_result_once()
     {
@@ -3089,6 +3156,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Null(audit.ToolArgumentsJson);
     }
+
     [Fact]
     public async Task Apply_patch_failed_receipt_rolls_back_and_continues_with_failure_result()
     {
@@ -3163,6 +3231,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             "receipt_failed",
             payload.RootElement.GetProperty("code").GetString());
     }
+
     [Fact]
     public async Task Apply_patch_ambiguous_receipt_is_never_tolerated_as_model_continuation()
     {
@@ -3227,6 +3296,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             await File.ReadAllTextAsync(
                 Path.Combine(_workspace.Root, relativePath)));
     }
+
     [Fact]
     public async Task Apply_patch_post_dispatch_transport_failure_is_never_tolerated_as_model_continuation()
     {
@@ -3287,6 +3357,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             0,
             grimoire.AppendToolInteractionCallCount);
     }
+
     [Fact]
     public async Task Apply_patch_observation_is_not_persisted_when_continuation_fails()
     {
@@ -3362,6 +3433,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             await File.ReadAllTextAsync(
                 Path.Combine(_workspace.Root, relativePath)));
     }
+
     [Fact]
     public async Task Apply_patch_cancellation_after_handoff_propagates_after_cleanup()
     {
@@ -3429,6 +3501,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             "*.arcanum-*",
             SearchOption.AllDirectories));
     }
+
     [Fact]
     public async Task Apply_patch_snapshot_security_denial_precedes_rebuilt_handler_mutation()
     {
@@ -3532,6 +3605,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return "{\"status\":\"ok\"}";
         }
     }
+
     [Fact]
     public async Task Scenario40_OverrideSpellByFolderName_ResolvesSpell()
     {
@@ -3559,6 +3633,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("folder matched", system.Text, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Scenario41_StreamSpellRoutingFailure_EmitsError()
     {
@@ -3581,6 +3656,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Scenario50_SanctumStrict_BlocksWriteFile()
     {
@@ -3641,6 +3717,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static m => m.Role == ChatRole.Tool
                 && GetMessageText(m).Contains("Sanctum Guard has blocked", StringComparison.Ordinal));
     }
+
     [Fact]
     public async Task Scenario51_SanctumStrict_BlocksForbiddenToolByName()
     {
@@ -3700,6 +3777,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static m => m.Role == ChatRole.Tool
                 && GetMessageText(m).Contains("Sanctum Guard has blocked", StringComparison.Ordinal));
     }
+
     [Fact]
     public async Task Scenario52_SanctumAuditOnly_AllowsDespitePathDenial()
     {
@@ -3755,6 +3833,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static m => m.Role == ChatRole.Tool
                 && GetMessageText(m).Contains("Sanctum Guard has blocked", StringComparison.Ordinal));
     }
+
     [Fact]
     public async Task Scenario53_NoForbiddenArtsPolicy_ExcludesOperatorConfiguredTools()
     {
@@ -3809,6 +3888,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("search_workspace", toolNames);
     }
+
     [Fact]
     public async Task Scenario54_UnattendedMode_FiltersAskHumanTool()
     {
@@ -3842,6 +3922,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("ask_human", toolNames);
     }
+
     [Fact]
     public async Task Scenario54b_BufferedAttended_FiltersAskHumanTool()
     {
@@ -3875,6 +3956,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("ask_human", toolNames);
     }
+
     [Fact]
     public async Task Scenario54c_StreamingAttended_AdvertisesAskHumanTool()
     {
@@ -3907,6 +3989,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("read_file_chunk", toolNames);
     }
+
     [Fact]
     public async Task Scenario54d_StreamingAskHuman_PreparesHostPromptIdBeforeToolCall()
     {
@@ -3957,6 +4040,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static e => e.Type == IntelligenceEventType.ToolError
                 && (e.Message?.Contains("Too many ask_human", StringComparison.Ordinal) ?? false));
     }
+
     [Fact]
     public async Task StreamingAskHuman_WithoutLiveChannel_KeepsDenialTextOutOfArgumentsJson()
     {
@@ -4031,6 +4115,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             toolResult.Data ?? string.Empty,
             StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Scenario55_StreamStatelessToolOnlyUpdate_CompletesWithResult()
     {
@@ -4061,6 +4146,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Scenario56_AttunementExecuteCommand_IsAdvertisedExecutesAndRecordsUngated()
     {
@@ -4178,6 +4264,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events.Skip(toolResultIndex + 1), static e => e.Type == IntelligenceEventType.Token);
     }
+
     /// <summary>
     /// ModelCallExecutor.ExecuteStreamingAsync had no try/finally around its provider
     /// enumeration, so a stream that faults after already reporting usage skipped reconciliation,
@@ -4220,6 +4307,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 return;
             }
+
             foreach (KeyValuePair<string, object?> tag in tags)
             {
                 if (tag.Key == "provider" && tag.Value is string s && s == marker)
@@ -4244,6 +4332,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(1, Assert.Single(captured));
     }
+
     [Fact]
     public async Task Streaming_tool_interaction_is_persisted_before_tool_result_can_be_disposed()
     {
@@ -4331,10 +4420,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     return source.Current;
                 }
             }
+
             throw new InvalidOperationException(
                 "The stream ended before a tool result.");
         }
     }
+
     /// <summary>
     /// A disconnected client must not orphan a tool call. The provider proposes a tool call
     /// that blocks on a test barrier (modeling a slow/uncancelled MCP tool); the client abandons
@@ -4431,6 +4522,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             }
         }
     }
+
     [Fact]
     public async Task LoopContract_BufferedToolInvocationFailure_DefaultTolerates_ReturnsSyntheticResultAndContinues()
     {
@@ -4467,6 +4559,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             "[Tool error: failing_tool failed with an internal error. The operator has been notified.]",
             GetMessageText(toolMessage));
     }
+
     [Fact]
     public async Task AuditLog_BufferedTurn_WithAuditContext_RecordsCompletedTurn()
     {
@@ -4506,6 +4599,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.True(record.LatencyMs >= 0);
     }
+
     [Fact]
     public async Task AuditLog_ReasoningUsage_RecordsCountWithoutReasoningText()
     {
@@ -4561,6 +4655,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain(sensitiveReasoning, persisted, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task AuditLog_BufferedTurn_WithoutAuditContext_DoesNotRecord()
     {
@@ -4581,6 +4676,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Empty(auditLogger.Records);
     }
+
     [Fact]
     public async Task AuditLog_StreamingTurn_WithAuditContext_RecordsCompletedTurn()
     {
@@ -4611,6 +4707,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(ArcanumLocalTimeTool.ToolName, record.ToolNames);
     }
+
     [Fact]
     public async Task LoopContract_FinishReasonParity_BufferedAndStreaming_DefaultStop()
     {
@@ -4643,6 +4740,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("stop", result.FinishReason);
     }
+
     [Fact]
     public async Task LoopContract_BufferedUsage_AccumulatesAcrossToolRounds()
     {
@@ -4676,6 +4774,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         // tool-call response (30) + final text response (30), summed by AccumulateUsage across rounds.
         Assert.Equal(60, grimoire.LastIncrementedTokens);
     }
+
     [Fact]
     public async Task UsageMapping_PreservesProviderTotalsAndInconsistentSubsetCounts()
     {
@@ -4720,6 +4819,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(11, usage.ReasoningTokens);
     }
+
     [Fact]
     public async Task UsageMapping_AccumulatesReasoningAndProviderTotalsAcrossToolRounds()
     {
@@ -4784,6 +4884,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(7, usage.ReasoningTokens);
     }
+
     [Fact]
     public async Task UsageMapping_MissingUsageIsSafe()
     {
@@ -4817,6 +4918,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, usage.ReasoningTokens);
     }
+
     [Fact]
     public async Task UsageMapping_MissingTotalFallsBackToNormalizedPromptAndCompletion()
     {
@@ -4853,6 +4955,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(20, result.Value.Usage?.TotalTokens);
     }
+
     [Fact]
     public async Task AccountingReservation_UsesTypedRequestOutputAndReasoningBudgets()
     {
@@ -4911,6 +5014,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 reasoningBudgetTokens: 600),
             request.ReservedUsd);
     }
+
     /// <summary>
     /// A client disconnect must not make a round that already streamed real provider usage
     /// look like it spent nothing. Usage arrives, the provider then goes quiet, and the caller
@@ -4965,6 +5069,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 {
                 }
             }
+
             Task drainTask = DrainAsync();
 
             // Fires only after the usage chunk has already been folded into the round's update
@@ -4984,6 +5089,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.False(reservations.WasReleased);
     }
+
     [Fact]
     public void EnsureContextBudget_ExactReasoningReservationBoundaryFits()
     {
@@ -5022,6 +5128,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
     }
+
     [Fact]
     public void EnsureContextBudget_RejectsOneTokenPastReasoningReservationBoundary()
     {
@@ -5062,6 +5169,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
     }
+
     [Fact]
     public async Task ExplicitAttachmentReferences_StopMaterializingAtResolvedProviderContextBoundary()
     {
@@ -5153,6 +5261,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task ExplicitAttachmentReferences_CancellationStopsLaterMaterializationAndProviderCall()
     {
@@ -5196,6 +5305,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                     cancellationToken.ThrowIfCancellationRequested();
                 }
+
                 return Task.FromResult<Stream>(new MemoryStream(payload, writable: false));
             });
 
@@ -5228,6 +5338,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task ExplicitAttachmentReferences_MaterializeInRequestOrderWithProvenance()
     {
@@ -5317,6 +5428,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("second attachment body", explicitContents[1].Text, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task AccountingReconciliation_UsesProviderCountsWhenReportedTotalIsZero()
     {
@@ -5383,6 +5495,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
+
     [Fact]
     public async Task AccountingReconciliation_PersistsExplicitAllZeroUsage()
     {
@@ -5429,6 +5542,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0m, operation.ActualCostUsd);
     }
+
     [Fact]
     public async Task Accounting_OutputGuardrailFailure_RetainsCompletedProviderUsage()
     {
@@ -5488,6 +5602,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(1, reservations.ReconcileCount);
     }
+
     [Fact]
     public async Task Accounting_ToolRounds_RecordEachProviderCallWithoutFinalAggregate()
     {
@@ -5523,6 +5638,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             first => Assert.Equal((10L, 2L), (first.InputTokens, first.OutputTokens)),
             second => Assert.Equal((15L, 3L), (second.InputTokens, second.OutputTokens)));
     }
+
     [Fact]
     public async Task Accounting_SessionFinalizeFailure_RetainsProviderUsageAndReconcilesOnce()
     {
@@ -5566,6 +5682,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
+
     [Fact]
     public async Task Accounting_DurableWriteFailure_PropagatesAndKeepsReservation()
     {
@@ -5596,6 +5713,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.False(reservations.WasReleased);
     }
+
     [Fact]
     public void AuxiliaryAccountingIdentity_WithoutSeparateLease_UsesActiveMainLease()
     {
@@ -5609,6 +5727,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("resolved-main-model", model);
     }
+
     [Theory]
     [InlineData("")]
     [InlineData("not json")]
@@ -5675,6 +5794,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
+
     [Fact]
     public async Task Accounting_RoutingUsage_IgnoresCancellationAfterProviderCompletion()
     {
@@ -5735,6 +5855,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.False(reservations.WasReleased);
     }
+
     [Fact]
     public async Task Accounting_ExtractionUsage_IgnoresCancellationAfterProviderCompletion()
     {
@@ -5797,6 +5918,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.False(reservations.WasReleased);
     }
+
     [Fact]
     public async Task LoopContract_StreamingFailureWithPartial_FinalizesPartial_NoOrphan()
     {
@@ -5911,6 +6033,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
     }
+
     [Fact]
     public async Task ScenarioRag02_EmbeddingFailure_DegradesGracefully_NoSemanticContext()
     {
@@ -5941,6 +6064,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("Semantic Context", systemPrompt, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task AttachmentRag_BufferedAndStreaming_UseSameSessionScopedMaterialization()
     {
@@ -6033,6 +6157,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(2, weave.EmbedCallCount);
     }
+
     [Fact]
     public async Task ScenarioRag03_Disabled_NeverRegistersWorkspace_NoSemanticContext()
     {
@@ -6058,6 +6183,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Empty(indexing.RegisteredPaths);
     }
+
     [Fact]
     public async Task ScenarioRag04_EmptyWorkingDirectory_NoSemanticContext_EvenWhenEnabled()
     {
@@ -6090,6 +6216,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Empty(indexing.RegisteredPaths);
     }
+
     [Fact]
     public async Task ScenarioSaga01_SagaEnabled_InjectsSagaMemoriesIntoSystemPrompt()
     {
@@ -6141,6 +6268,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("The operator prefers dark mode.", systemPrompt, StringComparison.Ordinal);
     }
+
     /// <summary>
     /// The gate's default is the guarantee: with it unset, a turn asks for the same unscoped candidate
     /// set it always has, and the same memory reaches the prompt.
@@ -6199,6 +6327,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             ExtractSystemPromptText(chat.LastBufferedMessages),
             StringComparison.Ordinal);
     }
+
     /// <summary>
     /// With the gate on, the scope is the Campaign the turn already resolved — never anything the
     /// request carried.
@@ -6257,6 +6386,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(SagaStorageKeys.MemoryTable, divination.LastCampaignScope.OwnerTableName);
     }
+
     /// <summary>
     /// A turn that resolved to no Campaign asks for the installation-scoped memories alone, rather than
     /// falling back to every memory on the installation.
@@ -6311,6 +6441,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Null(divination.LastCampaignScope!.CampaignId);
     }
+
     [Fact]
     public async Task ScenarioSaga02_EmbeddingFailure_DegradesGracefully_NoSagaMemories()
     {
@@ -6341,6 +6472,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("Saga (Associative Memory)", systemPrompt, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task ScenarioSaga03_Disabled_NoSagaMemories_NoEmbedCall()
     {
@@ -6366,6 +6498,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0, weave.EmbedCallCount);
     }
+
     [Fact]
     public async Task ScenarioSaga04_CodebaseAndSagaBothEnabled_EmbedsQueryOnceNotTwice()
     {
@@ -6416,6 +6549,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         // it exactly once and share it, never embedding the same prompt twice.
         Assert.Equal(1, weave.EmbedCallCount);
     }
+
     [Fact]
     public async Task ScenarioSpell01_PureEmbeddingRouting_SelectsSpellWithoutLlmRouterCall()
     {
@@ -6489,6 +6623,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Scrying.VisionNotSupported, result.Error.Code);
     }
+
     [Fact]
     public async Task CurrentTurnAttachedFileParts_WithIdenticalBytes_AllReachTheModel()
     {
@@ -6521,6 +6656,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("repeat.part-0002.txt", systemPrompt, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task ScenarioScrying02_VisionCapableModel_AcceptsImageAndSucceeds()
     {
@@ -6549,6 +6685,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("I see a red square", result.Value!.Text);
     }
+
     [Fact]
     public async Task ScenarioScrying03_FeatureDisabled_RejectsEvenForVisionCapableModel()
     {
@@ -6574,6 +6711,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Scrying.FeatureDisabled, result.Error.Code);
     }
+
     [Fact]
     public async Task ScenarioScrying04_TooManyImages_ReturnsValidationError()
     {
@@ -6606,6 +6744,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Scrying.TooManyImages, result.Error.Code);
     }
+
     [Fact]
     public async Task ScenarioScrying05_ImageTooLarge_ReturnsValidationError()
     {
@@ -6638,6 +6777,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Scrying.ImageTooLarge, result.Error.Code);
     }
+
     [Fact]
     public async Task ScenarioScrying06_UnsupportedMimeType_ReturnsValidationError()
     {
@@ -6662,6 +6802,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Scrying.UnsupportedMimeType, result.Error.Code);
     }
+
     [Fact]
     public async Task ScenarioScrying07_StreamNonVisionModel_EmitsErrorEvent()
     {
@@ -6681,6 +6822,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("vision", errorEvent.Message, StringComparison.OrdinalIgnoreCase);
     }
+
     [Fact]
     public async Task ScenarioScrying08_NoImages_SkipsGateEntirely()
     {
@@ -6697,6 +6839,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
     }
+
     private static readonly IReadOnlyDictionary<string, string> EmptyDivinationMetadata = new Dictionary<string, string>(0);
 
     private static string ExtractSystemPromptText(IReadOnlyList<MeAiChatMessage> messages)
@@ -6707,6 +6850,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         return systemMessage.Text;
     }
+
     private static ArcanumDbContext CreateWorkspaceChunksDbContext(string dbPath)
     {
         DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()
@@ -6716,6 +6860,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         return new ArcanumDbContext(options, new UnusedSecretStore(), new UnusedPassphraseSource());
     }
+
     private static async Task SeedWorkspaceFileChunkAsync(
         ArcanumDbContext db,
         string workspacePath,
@@ -6729,6 +6874,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             await connection.OpenAsync();
         }
+
         await using DbCommand createCmd = connection.CreateCommand();
 
         createCmd.CommandText =
@@ -6775,6 +6921,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         _ = await insertCmd.ExecuteNonQueryAsync();
     }
+
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
         DbParameter parameter = cmd.CreateParameter();
@@ -6785,6 +6932,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         cmd.Parameters.Add(parameter);
     }
+
     private sealed class FakeRagWeaveService : IWeaveService
     {
         public bool Available { get; set; } = true;
@@ -6806,8 +6954,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 return Task.FromResult(Result<Embedding<float>>.Failure(
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure.")));
             }
+
             return Task.FromResult(Result<Embedding<float>>.Success(new Embedding<float>(QueryVector)));
         }
+
         /// <summary>RAG Phase 5 — per-description vectors for <see cref="SpellWeaveCache"/> scenarios; falls back to <see cref="QueryVector"/> for any text not registered here.</summary>
         public Dictionary<string, float[]> BatchVectorsByText { get; } = new(StringComparer.Ordinal);
 
@@ -6832,11 +6982,14 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 result[i] = new Embedding<float>(vector);
             }
+
             return Task.FromResult(Result<Embedding<float>[]>.Success(result));
         }
+
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by WizardIntelligenceProvider's semantic context retrieval.");
     }
+
     private sealed class FakeSessionAttachmentRetrieval(
         SessionAttachmentRetrievedChunk[] chunks) : ISessionAttachmentRetrievalService
     {
@@ -6852,6 +7005,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return Task.FromResult(chunks);
         }
+
         public Task<IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus>> GetStatusesAsync(
             IReadOnlyList<Guid> attachmentIds,
             CancellationToken cancellationToken) =>
@@ -6860,6 +7014,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     static id => id,
                     static _ => SessionAttachmentIndexStatus.Indexed));
     }
+
     private sealed class FakeRagDivinationService : IDivinationService
     {
         public string? LastWorkspaceScope { get; private set; }
@@ -6881,8 +7036,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 return Task.FromResult(Result<DivinationResult[]>.Failure(
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated search failure.")));
             }
+
             return Task.FromResult(Result<DivinationResult[]>.Success(Results));
         }
+
         public Task<Result<DivinationResult[]>> SearchScopedAsync(
             string tableName,
             string primaryKeyColumn,
@@ -6919,6 +7076,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
         }
     }
+
     private sealed class FakeRagWorkspaceIndexingService : IWorkspaceIndexingService
     {
         public string? IndexedPath { get; set; }
@@ -6930,12 +7088,15 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             RegisteredPaths.Add(workspacePath);
         }
+
         public void UnregisterWorkspace(string workspacePath)
         {
         }
+
         public Result<WorkspaceIndexQueueDisposition> QueueIndexNow(string workspacePath) =>
             Result<WorkspaceIndexQueueDisposition>.Success(WorkspaceIndexQueueDisposition.Accepted);
     }
+
     /// <summary>RAG Phase 4 — in-memory <see cref="ISagaMemoryStore"/> fake; no raw SQL needed for hub-level scenario tests.</summary>
     private sealed class FakeSagaMemoryStore : ISagaMemoryStore
     {
@@ -6973,6 +7134,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return Task.FromResult(SagaMemoryWriteOutcome.Written);
         }
+
         public Task<int> CountAsync(CancellationToken cancellationToken) => Task.FromResult(Memories.Count);
 
         public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
@@ -6994,8 +7156,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     result[id] = memory;
                 }
             }
+
             return Task.FromResult((IReadOnlyDictionary<string, SagaMemoryDto>)result);
         }
+
         public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
             Task.FromResult(Memories.TryGetValue(id, out SagaMemoryDto? memory)
                 ? new SagaMemoryCurationRow(
@@ -7009,10 +7173,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null));
             }
+
             if (memory.RetiredAtUtc is not null)
             {
                 return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.AlreadyRetired, null));
             }
+
             byte[] currentDigest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(memory.Content));
 
             if (!currentDigest.AsSpan().SequenceEqual(expectedContentDigest))
@@ -7028,6 +7194,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.FromResult(
                 new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(retiredAt, memory.PinnedAtUtc)));
         }
+
         public Task<SagaCurationOutcome> ReinstateAsync(
             string id,
             byte[] expectedContentDigest,
@@ -7039,10 +7206,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null));
             }
+
             if (memory.RetiredAtUtc is null)
             {
                 return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotRetired, null));
             }
+
             byte[] currentDigest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(memory.Content));
 
             if (!currentDigest.AsSpan().SequenceEqual(expectedContentDigest))
@@ -7058,6 +7227,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.FromResult(
                 new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, memory.PinnedAtUtc)));
         }
+
         public Task<SagaCurationOutcome> CorrectAsync(
             string id,
             byte[] expectedContentDigest,
@@ -7070,16 +7240,19 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null));
             }
+
             if (memory.RetiredAtUtc is not null)
             {
                 return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.AlreadyRetired, null));
             }
+
             byte[] currentDigest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(memory.Content));
 
             if (!currentDigest.AsSpan().SequenceEqual(expectedContentDigest))
             {
                 return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.StaleContent, null));
             }
+
             byte[] newDigest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content));
 
             if (newDigest.AsSpan().SequenceEqual(currentDigest))
@@ -7091,6 +7264,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.FromResult(
                 new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, memory.PinnedAtUtc)));
         }
+
         public Task<SagaCurationOutcome> SetPinAsync(
             string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken)
         {
@@ -7105,12 +7279,14 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.FromResult(
                 new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(memory.RetiredAtUtc, pinnedAtUtc)));
         }
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken)
         {
             _embeddedIds.Remove(id);
 
             return Task.FromResult(Memories.Remove(id));
         }
+
         public Task DeleteAllAsync(CancellationToken cancellationToken)
         {
             Memories.Clear();
@@ -7119,6 +7295,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return Task.CompletedTask;
         }
+
         public Task<SagaStats> GetStatsAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new SagaStats(Memories.Count, Memories.Values.Select(static m => m.SessionId).Distinct().Count(), null, null));
 
@@ -7128,6 +7305,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken) =>
             Task.CompletedTask;
     }
+
     private sealed class UnusedSecretStore : ISecretStore
     {
         public Task<string?> GetApiKeyAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
@@ -7140,6 +7318,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
     }
+
     private sealed class UnusedPassphraseSource : IGrimoireDbPassphraseSource
     {
         public string Passphrase => throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
@@ -7147,6 +7326,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public void SetPassphrase(string passphrase) =>
             throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
     }
+
     [Theory]
     [InlineData(ReasoningOutputMode.None, ReasoningOutput.None)]
     [InlineData(ReasoningOutputMode.Summary, ReasoningOutput.Summary)]
@@ -7200,6 +7380,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(expectedOutput, chat.LastChatOptions?.Reasoning?.Output);
     }
+
     [Fact]
     public async Task ReasoningMapping_StreamingStandardDialect_MapsTypedOptions()
     {
@@ -7245,6 +7426,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ReasoningOutput.Summary, chat.LastChatOptions?.Reasoning?.Output);
     }
+
     [Fact]
     public async Task ReasoningMapping_DefaultRequest_DoesNotAddProviderOptions()
     {
@@ -7270,6 +7452,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Null(chat.LastChatOptions?.RawRepresentationFactory);
     }
+
     [Fact]
     public async Task Reasoning_BufferedProjection_ExposesClientSafeSummarySeparately()
     {
@@ -7326,6 +7509,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("opaque-provider-state", json, StringComparison.Ordinal);
     }
+
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
@@ -7376,6 +7560,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         }
         Assert.Equal("answer", result.Value.Text);
     }
+
     [Fact]
     public async Task Reasoning_UnspecifiedOutput_DefaultsToSummaryWhenReasoningSummariesEnabled()
     {
@@ -7410,6 +7595,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(ReasoningOutputMode.Summary, projected.Output);
     }
+
     [Fact]
     public async Task Reasoning_StreamingWithSummariesDisabled_SuppressesReasoningFrames()
     {
@@ -7465,6 +7651,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Reasoning_BufferedProviderIgnoringDisabledOutput_DoesNotContaminateAnswerOrGrimoire()
     {
@@ -7510,6 +7697,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("provider reasoning", grimoire.LastFinalizedContent, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Reasoning_StreamingInterleaving_DoesNotContaminateTokensOrGrimoire()
     {
@@ -7600,6 +7788,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Reasoning_GuardrailBufferedStreaming_BlocksUnsafeReasoningBeforeVisibility()
     {
@@ -7650,6 +7839,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.NotEqual("safe answer", grimoire.LastFinalizedContent);
     }
+
     [Fact]
     public async Task Reasoning_StrictStructuredStreaming_ReleasesMixedFramesAfterValidation()
     {
@@ -7711,6 +7901,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Error);
     }
+
     [Fact]
     public async Task Reasoning_StrictStructuredStreaming_CoalescesAdjacentBufferedOutputRuns()
     {
@@ -7763,6 +7954,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Reasoning_StrictStructuredStreamingRetry_RebuildsReleaseFromSafeReplacement()
     {
@@ -7852,6 +8044,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(replacementAnswer, grimoire.LastFinalizedContent);
     }
+
     [Fact]
     public async Task Reasoning_StrictStructuredStreamingRetry_SafetyInspectsReplacementInReleaseOrder()
     {
@@ -7917,6 +8110,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain(events, static frame => frame.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Reasoning_StrictStructuredStreaming_DropsReasoningWhenValidationFails()
     {
@@ -7967,6 +8161,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Result);
     }
+
     [Fact]
     public async Task Reasoning_StrictStructuredRetry_ExposesOnlyReplacementReasoningAndAnswer()
     {
@@ -8022,6 +8217,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("discarded initial", reasoning.Text, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task StructuredRetry_ReservationFailure_PreservesBudgetError()
     {
@@ -8088,6 +8284,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(1, chat.BufferedCallCount);
     }
+
     [Fact]
     public async Task Reasoning_StrictStructuredRetry_GuardrailsInspectReplacementReasoningBeforeVisibility()
     {
@@ -8147,6 +8344,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             result.Error.Message,
             StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Reasoning_ProtectedContent_PersistsOnlyForSameProviderToolContinuation()
     {
@@ -8195,6 +8393,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("opaque-provider-state", continued.ProtectedData);
     }
+
     [Fact]
     public async Task Reasoning_StreamingProtectedContent_PersistsForSameProviderToolContinuation()
     {
@@ -8240,6 +8439,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("opaque-stream-provider-state", continued.ProtectedData);
     }
+
     [Fact]
     public async Task Reasoning_ProtectedContent_PersistsAcrossMultipleToolContinuationRounds()
     {
@@ -8307,6 +8507,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal([firstReasoning, secondReasoning], finalContinuationReasoning);
     }
+
     [Fact]
     public async Task Reasoning_GuardrailBufferedStreaming_StillCommitsBeforeFailure()
     {
@@ -8368,6 +8569,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static evt => evt.Type == IntelligenceEventType.Status
                 && evt.Message.Contains("continuing without local tools", StringComparison.OrdinalIgnoreCase));
     }
+
     [Fact]
     public async Task Reasoning_StrictStructuredOutputValidation_NeverConsumesReasoningAsAnswer()
     {
@@ -8414,6 +8616,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.DoesNotContain("reasoning-only", result.Error.Message, StringComparison.Ordinal);
     }
+
     [Fact]
     public async Task Reasoning_CommitProhibitsNoToolsCompatibilityRestart()
     {
@@ -8451,6 +8654,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             static evt => evt.Type == IntelligenceEventType.Status
                 && evt.Message.Contains("continuing without local tools", StringComparison.OrdinalIgnoreCase));
     }
+
     [Fact]
     public void ResolveCallId_EmptyCallId_GeneratesStableFallbackId()
     {
@@ -8475,6 +8679,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(id1, id2);
     }
+
     [Fact]
     public void ResolveCallId_NonEmptyCallId_ReturnsOriginal()
     {
@@ -8493,6 +8698,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal("call_abc123", id);
     }
+
     private static int CountContextTokens(
         ArcanumSettings settings,
         IReadOnlyList<MeAiChatMessage> messages)
@@ -8516,6 +8722,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 ReservedReasoningTokens: 0))
             .InputTokens;
     }
+
     private static Result InvokeEnsureContextBudget(
         WizardIntelligenceProvider wizard,
         List<MeAiChatMessage> messages,
@@ -8530,6 +8737,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         return Assert.IsType<Result>(method.Invoke(wizard, arguments));
     }
+
     [Fact]
     public async Task ContextPreview_NoRetrieval_UsesProductionAssemblyWithoutModelCallOrContent()
     {
@@ -8565,6 +8773,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 && source.Reason.Contains("noRetrieval", StringComparison.Ordinal));
     }
+
     [Fact]
     public async Task ContextPreview_ExplicitSpellAndTransientAttachments_AreAssembledWithoutInferenceOrPersistence()
     {
@@ -8664,6 +8873,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             preview.Value.Tools,
             static tool => tool.Included);
     }
+
     [Fact]
     public async Task ContextPreview_ShowContent_ReturnsExactAssembledPromptOnlyWhenRequested()
     {
@@ -8692,6 +8902,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 && message.Content == "visible prompt");
     }
+
     [Fact]
     public async Task ContextPreview_AccountsAuxiliaryRoutingAndExplainsAttunementExclusions()
     {
@@ -8743,6 +8954,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 && tool.Reason.Contains("attunement", StringComparison.OrdinalIgnoreCase));
     }
+
     private WizardIntelligenceProvider CreateWizard(
         ScriptingChatClient chatClient,
         ArcanumSettings? settings = null,
@@ -8883,6 +9095,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             serviceProvider: ordinaryProvider,
             modelTokenEstimator: modelTokenEstimator);
     }
+
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
         new(
             new TestOptionsMonitor<ArcanumSettings>(settings),
@@ -8925,6 +9138,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         return new ArcanumDbContext(options, new UnusedSecretStore(), new UnusedPassphraseSource());
     }
+
     private static InferenceContextBuilder CreateInferenceContextBuilder(
         IGrimoireRepository grimoire,
         ArcanumSettings settings)
@@ -8943,6 +9157,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             NullLogger<InferenceContextBuilder>.Instance,
             compression);
     }
+
     private static BudgetMonitor CreateBudgetMonitor(ArcanumSettings? settings = null)
     {
         ArcanumSettings effective = settings ?? new ArcanumSettings();
@@ -8961,6 +9176,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             new TestOptionsMonitor<ArcanumSettings>(effective),
             NullLogger<BudgetMonitor>.Instance);
     }
+
     private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(
         IGrimoireRepository grimoire,
         IBudgetAlertRepository budgetAlerts)
@@ -8973,6 +9189,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
+
     private static PingRequest BaseRequest() =>
         new(Prompt: string.Empty, Model: ModelName, WorkingDirectory: string.Empty);
 
@@ -8987,6 +9204,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         return wrapper.RootElement.Clone();
     }
+
     private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
@@ -8997,10 +9215,13 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 return true;
             }
+
             await Task.Delay(20).ConfigureAwait(false);
         }
+
         return condition();
     }
+
     private static ArcanumSettings DefaultSettings() =>
         new()
         {
@@ -9049,6 +9270,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             },
         };
     }
+
     private static ProviderSettings DefaultProvider() =>
         new()
         {
@@ -9084,6 +9306,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             UpdatedAt = DateTimeOffset.UtcNow,
         };
     }
+
     private static Session BuildHeavySession(Guid sessionId)
     {
         DateTime watermark = DateTime.UtcNow.AddHours(-2);
@@ -9102,6 +9325,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 Sequence = i + 1,
             });
         }
+
         return new Session
         {
             Id = sessionId,
@@ -9112,6 +9336,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             Entries = entries,
         };
     }
+
     private static Session BuildHeavySessionWithoutSummary(Guid sessionId)
     {
         DateTime watermark = DateTime.UtcNow.AddHours(-2);
@@ -9130,6 +9355,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 Sequence = i + 1,
             });
         }
+
         return new Session
         {
             Id = sessionId,
@@ -9138,6 +9364,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             Entries = entries,
         };
     }
+
     private async Task CreateSpellAsync(
         string folderName,
         string spellName,
@@ -9169,6 +9396,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(Path.Combine(dir, "SKILL.json"), skillJson);
     }
+
     /// <summary>RAG Phase 5 — like <see cref="CreateSpellAsync"/> but with a caller-supplied description, needed for embedding-similarity-based spell routing scenarios (the shared helper hardcodes description "test" for every spell).</summary>
     private async Task CreateSpellWithDescriptionAsync(
         string folderName,
@@ -9197,6 +9425,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(Path.Combine(dir, "SKILL.json"), skillJson);
     }
+
     private async Task CreateSpellWithDeclaredToolsAsync(string folderName, string[] declaredTools)
     {
         string dir = Path.Combine(_workspace.Root, folderName);
@@ -9222,6 +9451,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(Path.Combine(dir, "SKILL.json"), skillJson);
     }
+
     private static AIFunction CreateMcpTool(string name) =>
         AIFunctionFactory.Create(() => "ok", name, "mcp tool");
 
@@ -9247,6 +9477,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 {
                     return "ambient-null";
                 }
+
                 for (int i = 0; i < frameCount; i++)
                 {
                     await emitter.EmitAsync(
@@ -9255,6 +9486,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                     await Task.Yield();
                 }
+
                 return "ambient-non-null";
             },
             name,
@@ -9288,6 +9520,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         return client;
     }
+
     private AIFunction CreateProductionApplyPatchTool(
         ArcanumSettings settings,
         Func<IApplyPatchPendingReceiptSink, IApplyPatchPendingReceiptSink>?
@@ -9336,13 +9569,16 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     ambient.RecordHandoffOutcome(outcome);
                 }
             }
+
             return response.SerializedResult;
         }
+
         return AIFunctionFactory.Create(
             ApplyPatchAsync,
             ToolRiskClassifier.ApplyPatchToolName,
             "production apply_patch executor");
     }
+
     private static AIFunction
         CreatePostDispatchFailingApplyPatchTool() =>
         AIFunctionFactory.Create(
@@ -9362,6 +9598,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             "channel completed after dispatch",
             McpRequestDispatchState.DispatchedOrUnknown);
     }
+
     private static AIFunction CreateThrowingMcpTool(
         string name,
         string message = "tool boom") =>
@@ -9386,6 +9623,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             return message.Text;
         }
+
         foreach (AIContent content in message.Contents)
         {
             if (content is FunctionResultContent result)
@@ -9393,8 +9631,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 return result.Result?.ToString() ?? string.Empty;
             }
         }
+
         return string.Empty;
     }
+
     private static async Task<List<IntelligenceEvent>> CollectStreamAsync(
         WizardIntelligenceProvider wizard,
         PingRequest request,
@@ -9406,8 +9646,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             events.Add(evt);
         }
+
         return events;
     }
+
     private sealed class ScriptingChatClient : IChatClient
     {
         private readonly Queue<Func<CancellationToken, Task<ChatResponse>>> _buffered = new();
@@ -9444,6 +9686,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             _buffered.Enqueue(_ => Task.FromResult(ResponseTool(toolName, callId, args)));
         }
+
         public void EnqueueToolCallWithMissingId(
             string toolName,
             Dictionary<string, object?>? arguments = null)
@@ -9455,6 +9698,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 _ => Task.FromResult(
                     ResponseTool(toolName, string.Empty, args)));
         }
+
         public void EnqueueException(Exception ex) =>
             _buffered.Enqueue(_ => throw ex);
 
@@ -9482,6 +9726,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             _streaming.Enqueue(_ => StreamToolCall(toolName, callId, args));
         }
+
         public void EnqueueStreamToolCallOnly(string toolName, string? callId = null, Dictionary<string, object?>? arguments = null)
         {
             callId ??= toolName;
@@ -9490,6 +9735,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             _streaming.Enqueue(_ => StreamToolCallOnly(toolName, callId, args));
         }
+
         public void EnqueueStreamFailure(Exception ex) =>
             _streaming.Enqueue(_ => FailingStream(ex));
 
@@ -9522,6 +9768,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public void Dispose()
         {
         }
+
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
 
         public Task<ChatResponse> GetResponseAsync(
@@ -9541,8 +9788,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 throw new InvalidOperationException("No scripted buffered response remaining.");
             }
+
             return _buffered.Dequeue()(cancellationToken);
         }
+
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<MeAiChatMessage> messages,
             ChatOptions? options = null,
@@ -9560,8 +9809,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 throw new InvalidOperationException("No scripted streaming response remaining.");
             }
+
             return _streaming.Dequeue()(cancellationToken);
         }
+
         private ChatResponse ResponseText(string text)
         {
             ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, text));
@@ -9574,14 +9825,17 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     OutputTokenCount = total - (total / 2),
                 };
             }
+
             if (UsageCachedInputTokens is { } cached)
             {
                 response.Usage ??= new UsageDetails();
 
                 response.Usage.CachedInputTokenCount = cached;
             }
+
             return response;
         }
+
         private ChatResponse ResponseTool(
             string toolName,
             string callId,
@@ -9600,8 +9854,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     OutputTokenCount = total - (total / 2),
                 };
             }
+
             return response;
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> StreamTokens(
             IEnumerable<string> tokens,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -9615,6 +9871,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 await Task.Yield();
             }
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> StreamUpdates(
             IEnumerable<ChatResponseUpdate> updates,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -9628,6 +9885,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 await Task.Yield();
             }
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> ReasoningThenFail(
             TextReasoningContent reasoning,
             Exception exception,
@@ -9641,6 +9899,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             throw exception;
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> UpdatesThenFail(
             IEnumerable<ChatResponseUpdate> updates,
             Exception exception,
@@ -9654,8 +9913,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 await Task.Yield();
             }
+
             throw exception;
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> StreamToolCall(
             string toolName,
             string callId,
@@ -9668,6 +9929,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             await Task.Yield();
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> StreamToolCallOnly(
             string toolName,
             string callId,
@@ -9680,6 +9942,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             await Task.Yield();
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> FailingStream(
             Exception ex,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -9690,6 +9953,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             throw ex;
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> ImmediateFailingStream(
             Exception ex,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -9703,6 +9967,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
 #pragma warning restore CS0162
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> SlowStream(
             TimeSpan delay,
             string token,
@@ -9712,6 +9977,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             yield return new ChatResponseUpdate(ChatRole.Assistant, token);
         }
+
         private static async IAsyncEnumerable<ChatResponseUpdate> UsageThenBlock(
             UsageDetails usage,
             TaskCompletionSource? aboutToBlock,
@@ -9724,6 +9990,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
         }
     }
+
     private sealed class FakeChatClientFactory(ScriptingChatClient client, ProviderSettings provider) : IChatClientFactory
     {
         public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
@@ -9736,9 +10003,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return Task.FromResult(lease);
         }
+
         public Task<ChatClientLease> ResolveClientAsync(ProviderSettings resolvedProvider, string resolvedModel, CancellationToken cancellationToken) =>
             ResolveClientAsync(resolvedModel, cancellationToken);
     }
+
     private sealed class ThrowingChatClientFactory : IChatClientFactory
     {
         public string FailureMessage { get; init; } =
@@ -9750,6 +10019,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken) =>
             throw new InvalidOperationException(FailureMessage);
     }
+
     private sealed class FakeGrimoireRepository : IGrimoireRepository, ISessionTurnBeginStore
     {
         public sealed record RecordedToolInteraction(
@@ -9828,6 +10098,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 FixedSessionId ?? sessionId ?? Guid.NewGuid(),
                 LastAssistantEntryId.Value));
         }
+
         public ValueTask<Result<Guid>> CreateBoundSessionAsync(
             CanonicalCampaignContext campaign,
             string title,
@@ -9864,6 +10135,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         PreRequestHistoryRevision,
                         0)));
         }
+
         public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default)
         {
             OnFinalize?.Invoke();
@@ -9876,8 +10148,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 throw new InvalidOperationException("finalize failed");
             }
+
             return Task.CompletedTask;
         }
+
         public async Task<long?> FinalizeAssistantEntryWithFrontierAsync(
             Guid assistantEntryId,
             string fullContent,
@@ -9892,12 +10166,14 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 + 2L
                 + (ToolInteractions.Count * 2L);
         }
+
         public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default)
         {
             DiscardCallCount++;
 
             return Task.CompletedTask;
         }
+
         public async Task AppendToolInteractionAsync(
             Guid sessionId,
             string toolName,
@@ -9921,6 +10197,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     cancellationToken);
             }
         }
+
         public Task<MandatoryToolInteractionProbeResult>
             ProbeMandatoryToolInteractionAsync(
                 MandatoryToolInteractionProbe probe,
@@ -9952,10 +10229,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     interaction,
                     cancellationToken).ConfigureAwait(false);
             }
+
             return new MandatoryToolInteractionAppendResult(
                 MandatoryAppendOutcome,
                 interaction.Receipt);
         }
+
         public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
@@ -9997,6 +10276,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return Task.CompletedTask;
         }
+
         public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default)
         {
             LastIncrementedSessionId = sessionId;
@@ -10007,6 +10287,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return Task.CompletedTask;
         }
+
         public decimal TodaySpend { get; set; }
 
         public Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default) =>
@@ -10042,6 +10323,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default) =>
             Task.FromResult<WorkspaceContext?>(null);
     }
+
     private sealed class CancelAfterHandoffSink(
         IApplyPatchPendingReceiptSink inner,
         CancellationTokenSource cancellation)
@@ -10080,6 +10362,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return result;
         }
     }
+
     private sealed class FakeWard : IWard
     {
         public WardResolution NextResolution { get; init; } =
@@ -10112,8 +10395,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 return WardHandler(wardId);
             }
+
             return Task.FromResult(NextResolution);
         }
+
         public ResolveStatus Resolve(string wardId, bool allow, string? reason) =>
             ResolveStatus.Success;
 
@@ -10127,8 +10412,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return new(allowed, reason, DateTimeOffset.UtcNow, origin);
         }
+
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
     }
+
     private sealed class FakeMcpConnectionManager : IMcpConnectionManager
     {
         public List<AITool> Tools { get; } = [];
@@ -10170,6 +10457,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
     }
+
     private sealed class FakeCampaignRepository : ICampaignRepository
     {
         private readonly Campaign? _campaign;
@@ -10178,6 +10466,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             _campaign = campaign;
         }
+
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(_campaign?.Id == id ? _campaign : null);
 
@@ -10210,6 +10499,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
     }
+
     private sealed class RecordingTurnRunWriter : ITurnRunWriter
     {
         private readonly Guid _runId = Guid.NewGuid();
@@ -10248,6 +10538,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 cancellationToken.ThrowIfCancellationRequested();
             }
+
             if (RecordException is not null)
             {
                 return Task.FromException<Guid>(RecordException);
@@ -10257,6 +10548,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.FromResult(Guid.NewGuid());
         }
     }
+
     private sealed class RecordingBudgetReservationService : IBudgetReservationService
     {
         public BudgetReservationRequest? LastRequest { get; private set; }
@@ -10287,6 +10579,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 request.ExpiresAt,
                 DateTimeOffset.UtcNow)));
         }
+
         public Task ReconcileAsync(
             Guid reservationId,
             decimal actualCostUsd,
@@ -10298,6 +10591,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return Task.CompletedTask;
         }
+
         public Task<Result> AdjustAsync(
             Guid reservationId,
             decimal reservedUsd,
@@ -10315,6 +10609,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             return Task.CompletedTask;
         }
+
         public Task<decimal> GetTodayCommittedSpendAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0m);
@@ -10328,6 +10623,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
     }
+
     /// <summary>
     /// Delegates every call to a real estimator while recording how many messages
     /// <see cref="EstimateContext"/> was asked to estimate each time it ran, distinguishing an
@@ -10367,6 +10663,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return inner.EstimateContext(request);
         }
     }
+
     private sealed class ConfigurableSanctumGuard : ISanctumGuard
     {
         public Func<string, string, string, string, CancellationToken, Task<SanctumResult>>? PathValidator { get; init; }

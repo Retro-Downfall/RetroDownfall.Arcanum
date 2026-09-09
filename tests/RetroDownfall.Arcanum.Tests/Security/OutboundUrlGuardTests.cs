@@ -9,37 +9,20 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
-[Collection("OutboundUrlGuardDns")]
-public sealed class OutboundUrlGuardTests : IDisposable
+public sealed class OutboundUrlGuardTests
 {
-
-    private readonly IDnsResolver _originalResolver;
+    private readonly FakeDnsResolver _dns = new();
 
     public OutboundUrlGuardTests()
     {
-
-        _originalResolver = OutboundUrlGuard.DnsResolver;
-
-        FakeDnsResolver fake = new();
-
-        fake.Add("localhost", IPAddress.Parse("127.0.0.1"));
-        fake.Add("example.com", IPAddress.Parse("93.184.216.34"));
-        fake.Add("8.8.8.8", IPAddress.Parse("8.8.8.8"));
-        fake.Add("93.184.216.34", IPAddress.Parse("93.184.216.34"));
-        fake.Add("127.0.0.1", IPAddress.Parse("127.0.0.1"));
-        fake.Add("10.1.2.3", IPAddress.Parse("10.1.2.3"));
-        fake.Add("127.0.0.1.nip.io", IPAddress.Parse("127.0.0.1"));
-        fake.Add("no-answer.example");
-
-        OutboundUrlGuard.DnsResolver = fake;
-
-    }
-
-    public void Dispose()
-    {
-
-        OutboundUrlGuard.DnsResolver = _originalResolver;
-
+        _dns.Add("localhost", IPAddress.Parse("127.0.0.1"));
+        _dns.Add("example.com", IPAddress.Parse("93.184.216.34"));
+        _dns.Add("8.8.8.8", IPAddress.Parse("8.8.8.8"));
+        _dns.Add("93.184.216.34", IPAddress.Parse("93.184.216.34"));
+        _dns.Add("127.0.0.1", IPAddress.Parse("127.0.0.1"));
+        _dns.Add("10.1.2.3", IPAddress.Parse("10.1.2.3"));
+        _dns.Add("127.0.0.1.nip.io", IPAddress.Parse("127.0.0.1"));
+        _dns.Add("no-answer.example");
     }
 
     [Theory]
@@ -48,15 +31,13 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("   ")]
     public async Task ValidateUntrustedUrlAsync_MissingUrl_Fails(string? url)
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url);
+        Result result = await ValidateUntrustedUrlAsync(url);
 
         Assert.True(result.IsFailure);
 
         Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
 
         Assert.Contains("URL is required", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -64,21 +45,17 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("http://100.127.255.254/")]
     public async Task ValidateUntrustedUrlAsync_CarrierGradeNat_Fails(string url)
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url);
+        Result result = await ValidateUntrustedUrlAsync(url);
 
         Assert.True(result.IsFailure);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_Ipv6Unspecified_Fails()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("http://[::]/");
+        Result result = await ValidateUntrustedUrlAsync("http://[::]/");
 
         Assert.True(result.IsFailure);
-
     }
 
     [Theory]
@@ -86,11 +63,9 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData(true)]
     public void IsBlockedAddress_CarrierGradeNat_Blocked(bool allowPrivateAndLoopback)
     {
-
         IPAddress cgnat = IPAddress.Parse("100.64.0.1");
 
         Assert.True(OutboundUrlGuard.IsBlockedAddress(cgnat, allowPrivateAndLoopback));
-
     }
 
     [Theory]
@@ -98,45 +73,37 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData(true)]
     public void IsBlockedAddress_Ipv6Unspecified_Blocked(bool allowPrivateAndLoopback)
     {
-
         Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.IPv6Any, allowPrivateAndLoopback));
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_RelativeUrl_Fails()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("not-a-valid-uri");
+        Result result = await ValidateUntrustedUrlAsync("not-a-valid-uri");
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("absolute http or https", result.Error.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_RelativePathWithFileScheme_Fails()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("file:///tmp/x");
+        Result result = await ValidateUntrustedUrlAsync("file:///tmp/x");
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("http or https scheme", result.Error.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_NonHttpScheme_Fails()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("ftp://example.com/file");
+        Result result = await ValidateUntrustedUrlAsync("ftp://example.com/file");
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("http or https scheme", result.Error.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Theory]
@@ -144,13 +111,11 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("https://api.localhost/path")]
     public async Task ValidateUntrustedUrlAsync_LocalhostHostnames_Fail(string url)
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url);
+        Result result = await ValidateUntrustedUrlAsync(url);
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("loopback, private, or link-local", result.Error.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Theory]
@@ -161,11 +126,9 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("http://0.0.0.0/")]
     public async Task ValidateUntrustedUrlAsync_PrivateLiteralIpv4_Fails(string url)
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url);
+        Result result = await ValidateUntrustedUrlAsync(url);
 
         Assert.True(result.IsFailure);
-
     }
 
     [Theory]
@@ -173,15 +136,13 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("http://[fe80::1]/")]
     public async Task ValidateUntrustedUrlAsync_LinkLocalAddresses_FailEvenForProvider(string url)
     {
+        Result untrusted = await ValidateUntrustedUrlAsync(url);
 
-        Result untrusted = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url);
-
-        Result provider = await OutboundUrlGuard.ValidateProviderEndpointAsync(url);
+        Result provider = await ValidateProviderEndpointAsync(url);
 
         Assert.True(untrusted.IsFailure);
 
         Assert.True(provider.IsFailure);
-
     }
 
     [Theory]
@@ -190,54 +151,44 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("http://localhost/")]
     public async Task ValidateProviderEndpointAsync_PrivateAndLoopback_Allowed(string url)
     {
-
-        Result result = await OutboundUrlGuard.ValidateProviderEndpointAsync(url);
+        Result result = await ValidateProviderEndpointAsync(url);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_PublicLiteralIpv4_Succeeds()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("http://8.8.8.8/");
+        Result result = await ValidateUntrustedUrlAsync("http://8.8.8.8/");
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_PublicHostname_Succeeds()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("https://example.com/resource");
+        Result result = await ValidateUntrustedUrlAsync("https://example.com/resource");
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_UnresolvableHost_Fails()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync(
+        Result result = await ValidateUntrustedUrlAsync(
             "https://this-host-definitely-does-not-exist-12345.invalid/");
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("Could not resolve host", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_Ipv4MappedIpv6Loopback_Fails()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("http://[::ffff:127.0.0.1]/");
+        Result result = await ValidateUntrustedUrlAsync("http://[::ffff:127.0.0.1]/");
 
         Assert.True(result.IsFailure);
-
     }
 
     [Theory]
@@ -245,31 +196,26 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData(true)]
     public void IsBlockedAddress_Ipv6Loopback_RespectsAllowPrivateFlag(bool allowPrivateAndLoopback)
     {
-
         IPAddress loopback = IPAddress.IPv6Loopback;
 
         bool blocked = OutboundUrlGuard.IsBlockedAddress(loopback, allowPrivateAndLoopback);
 
         Assert.Equal(!allowPrivateAndLoopback, blocked);
-
     }
 
     [Fact]
     public void IsBlockedAddress_Ipv6UniqueLocal_BlockedWhenUntrusted()
     {
-
         IPAddress uniqueLocal = IPAddress.Parse("fc00::1");
 
         Assert.True(OutboundUrlGuard.IsBlockedAddress(uniqueLocal, allowPrivateAndLoopback: false));
 
         Assert.False(OutboundUrlGuard.IsBlockedAddress(uniqueLocal, allowPrivateAndLoopback: true));
-
     }
 
     [Fact]
     public async Task ValidateArcanumSettingsAsync_CommLinkReferenceIsNotResolvedBeforeDispatch()
     {
-
         ArcanumSettings settings = new()
         {
             Integrations = new IntegrationSettings
@@ -281,16 +227,14 @@ public sealed class OutboundUrlGuardTests : IDisposable
             },
         };
 
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
+        Result result = await ValidateArcanumSettingsAsync(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public async Task ValidateArcanumSettingsAsync_BlockedProviderEndpoint_FailsWithProviderName()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -304,46 +248,39 @@ public sealed class OutboundUrlGuardTests : IDisposable
             ],
         };
 
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
+        Result result = await ValidateArcanumSettingsAsync(settings);
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("Provider 'ollama-local' endpoint", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_HostnameResolvingToPrivateIp_Fails()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("http://127.0.0.1.nip.io/");
+        Result result = await ValidateUntrustedUrlAsync("http://127.0.0.1.nip.io/");
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("loopback, private, or link-local", result.Error.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void IsBlockedAddress_Ipv6SiteLocal_BlockedWhenUntrusted()
     {
-
         IPAddress siteLocal = IPAddress.Parse("fec0::1");
 
         Assert.True(OutboundUrlGuard.IsBlockedAddress(siteLocal, allowPrivateAndLoopback: false));
 
         Assert.False(OutboundUrlGuard.IsBlockedAddress(siteLocal, allowPrivateAndLoopback: true));
-
     }
 
     [Fact]
     public void IsBlockedAddress_Ipv4MappedPublicAddress_NotBlocked()
     {
-
         IPAddress mapped = IPAddress.Parse("::ffff:8.8.8.8");
 
         Assert.False(OutboundUrlGuard.IsBlockedAddress(mapped, allowPrivateAndLoopback: false));
-
     }
 
     [Theory]
@@ -351,47 +288,40 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData(true)]
     public void IsBlockedAddress_PublicIpv6_NotBlocked(bool allowPrivateAndLoopback)
     {
-
         IPAddress publicAddress = IPAddress.Parse("2606:4700:4700::1111");
 
         Assert.False(OutboundUrlGuard.IsBlockedAddress(publicAddress, allowPrivateAndLoopback));
-
     }
 
     [Fact]
     public async Task ValidateArcanumSettingsAsync_DefaultCommLink_Succeeds()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [],
         };
 
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
+        Result result = await ValidateArcanumSettingsAsync(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public async Task ValidateArcanumSettingsAsync_EmptyProviders_Succeeds()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [],
         };
 
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
+        Result result = await ValidateArcanumSettingsAsync(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public async Task ValidateArcanumSettingsAsync_EmptyProviderEndpoint_SkipsValidation()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -405,16 +335,14 @@ public sealed class OutboundUrlGuardTests : IDisposable
             ],
         };
 
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
+        Result result = await ValidateArcanumSettingsAsync(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public async Task ValidateArcanumSettingsAsync_ValidSettings_Succeeds()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -428,24 +356,21 @@ public sealed class OutboundUrlGuardTests : IDisposable
             ],
         };
 
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
+        Result result = await ValidateArcanumSettingsAsync(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public async Task ResolveValidatedAddressesAsync_PublicLiteral_ReturnsAddress()
     {
-
-        Result<IReadOnlyList<IPAddress>> result = await OutboundUrlGuard.ResolveValidatedAddressesAsync(
+        Result<IReadOnlyList<IPAddress>> result = await ResolveValidatedAddressesAsync(
             "8.8.8.8",
             allowPrivateAndLoopback: false);
 
         Assert.True(result.IsSuccess);
 
         Assert.Contains(result.Value, static address => address.Equals(IPAddress.Parse("8.8.8.8")));
-
     }
 
     [Theory]
@@ -454,57 +379,49 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("10.0.0.1")]
     public async Task ResolveValidatedAddressesAsync_UntrustedBlockedHost_Fails(string host)
     {
-
-        Result<IReadOnlyList<IPAddress>> result = await OutboundUrlGuard.ResolveValidatedAddressesAsync(
+        Result<IReadOnlyList<IPAddress>> result = await ResolveValidatedAddressesAsync(
             host,
             allowPrivateAndLoopback: false);
 
         Assert.True(result.IsFailure);
 
         Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
-
     }
 
     [Fact]
     public async Task ResolveValidatedAddressesAsync_UnresolvableHost_Fails()
     {
-
-        Result<IReadOnlyList<IPAddress>> result = await OutboundUrlGuard.ResolveValidatedAddressesAsync(
+        Result<IReadOnlyList<IPAddress>> result = await ResolveValidatedAddressesAsync(
             "this-host-definitely-does-not-exist-12345.invalid",
             allowPrivateAndLoopback: false);
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("Could not resolve host", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void CreateUntrustedEgressHandler_DisablesRedirectsAndPinsConnect()
     {
-
-        using SocketsHttpHandler handler = OutboundUrlGuard.CreateUntrustedEgressHandler();
+        using SocketsHttpHandler handler = CreateUntrustedEgressHandler();
 
         Assert.False(handler.AllowAutoRedirect);
 
         Assert.False(handler.UseProxy);
 
         Assert.NotNull(handler.ConnectCallback);
-
     }
 
     [Fact]
     public void CreateProviderEgressHandler_DisablesRedirectsAndPinsConnect()
     {
-
-        using SocketsHttpHandler handler = OutboundUrlGuard.CreateProviderEgressHandler();
+        using SocketsHttpHandler handler = CreateProviderEgressHandler();
 
         Assert.False(handler.AllowAutoRedirect);
 
         Assert.False(handler.UseProxy);
 
         Assert.NotNull(handler.ConnectCallback);
-
     }
 
     [Theory]
@@ -515,23 +432,18 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData(HttpStatusCode.PermanentRedirect)]
     public void IsRedirectStatusCode_RecognizesRedirectResponses(HttpStatusCode statusCode)
     {
-
         Assert.True(OutboundUrlGuard.IsRedirectStatusCode(statusCode));
-
     }
 
     [Fact]
     public void IsRedirectStatusCode_RejectsSuccess()
     {
-
         Assert.False(OutboundUrlGuard.IsRedirectStatusCode(HttpStatusCode.OK));
-
     }
 
     [Fact]
     public void ResolveRedirectLocation_AbsoluteLocation_ReturnsAbsoluteUri()
     {
-
         Uri requestUri = new("https://huggingface.co/resolve/main/model.gguf");
 
         Result<string> result = OutboundUrlGuard.ResolveRedirectLocation(
@@ -541,13 +453,11 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Equal("https://cdn.example.com/model.gguf", result.Value);
-
     }
 
     [Fact]
     public void ResolveRedirectLocation_AbsoluteHttpLocation_ReturnsUri()
     {
-
         Uri requestUri = new("https://example.com/a");
 
         Result<string> result = OutboundUrlGuard.ResolveRedirectLocation(
@@ -557,13 +467,11 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Equal("http://cdn.example.com/model.gguf", result.Value);
-
     }
 
     [Fact]
     public void ResolveRedirectLocation_RelativeLocation_ResolvesAgainstRequestUri()
     {
-
         Uri requestUri = new("https://huggingface.co/foo/bar/model.gguf");
 
         Result<string> result = OutboundUrlGuard.ResolveRedirectLocation(requestUri, "/cdn/model.gguf");
@@ -571,13 +479,11 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Equal("https://huggingface.co/cdn/model.gguf", result.Value);
-
     }
 
     [Fact]
     public void ResolveRedirectLocation_MissingLocation_Fails()
     {
-
         Result<string> result = OutboundUrlGuard.ResolveRedirectLocation(
             new Uri("https://example.com/a"),
             null);
@@ -585,7 +491,6 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.True(result.IsFailure);
 
         Assert.Contains("Location header", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -593,7 +498,6 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("https://exa mple.com")]
     public void ResolveRedirectLocation_MalformedLocation_Fails(string location)
     {
-
         Result<string> result = OutboundUrlGuard.ResolveRedirectLocation(
             new Uri("https://example.com/a"),
             location);
@@ -603,7 +507,6 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
 
         Assert.Equal("Redirect Location is not a valid absolute http or https URI.", result.Error.Message);
-
     }
 
     [Theory]
@@ -611,17 +514,15 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData("https://　/resource")]
     public async Task ValidateUntrustedUrlAsync_UnicodeWhitespaceHost_IsRejectedBeforeResolution(string url)
     {
-
         // Uri accepts U+00A0 / U+3000 as an authority, so the guard must reject a blank host itself
         // rather than hand a whitespace authority to DNS.
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url);
+        Result result = await ValidateUntrustedUrlAsync(url);
 
         Assert.True(result.IsFailure);
 
         Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
 
         Assert.Equal("URL must include a host.", result.Error.Message);
-
     }
 
     [Theory]
@@ -631,8 +532,7 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData(" ")]
     public async Task ResolveValidatedAddressesAsync_BlankHost_FailsClosedWithoutResolving(string? host)
     {
-
-        Result<IReadOnlyList<IPAddress>> result = await OutboundUrlGuard.ResolveValidatedAddressesAsync(
+        Result<IReadOnlyList<IPAddress>> result = await ResolveValidatedAddressesAsync(
             host!,
             allowPrivateAndLoopback: false);
 
@@ -641,7 +541,6 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
 
         Assert.Equal("URL must include a host.", result.Error.Message);
-
     }
 
     [Theory]
@@ -649,10 +548,9 @@ public sealed class OutboundUrlGuardTests : IDisposable
     [InlineData(true)]
     public async Task ResolveValidatedAddressesAsync_ResolverReturnsNoAddresses_FailsClosed(bool allowPrivateAndLoopback)
     {
-
         // An empty DNS answer must not be treated as "nothing to validate"; there is no address to
         // pin, so the guard has to refuse rather than let the caller connect by hostname.
-        Result<IReadOnlyList<IPAddress>> result = await OutboundUrlGuard.ResolveValidatedAddressesAsync(
+        Result<IReadOnlyList<IPAddress>> result = await ResolveValidatedAddressesAsync(
             "no-answer.example",
             allowPrivateAndLoopback);
 
@@ -661,25 +559,21 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
 
         Assert.Equal("Could not resolve host 'no-answer.example'.", result.Error.Message);
-
     }
 
     [Fact]
     public async Task ValidateUntrustedUrlAsync_HostWithNoDnsAnswer_Fails()
     {
-
-        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("https://no-answer.example/hook");
+        Result result = await ValidateUntrustedUrlAsync("https://no-answer.example/hook");
 
         Assert.True(result.IsFailure);
 
         Assert.Contains("Could not resolve host", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ValidateArcanumSettingsAsync_NullProviders_SucceedsWithoutDereferencing()
     {
-
         // A settings document that omits "providers" binds the array as null; validation must treat
         // that as "nothing to validate" instead of throwing and leaving the caller unvalidated.
         ArcanumSettings settings = new()
@@ -687,10 +581,92 @@ public sealed class OutboundUrlGuardTests : IDisposable
             Providers = null!,
         };
 
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
+        Result result = await ValidateArcanumSettingsAsync(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
+    [Fact]
+    public async Task Concurrent_validations_use_only_their_explicit_resolver()
+    {
+        TaskCompletionSource bothStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int started = 0;
+        Action onStart = () =>
+        {
+            if (Interlocked.Increment(ref started) == 2)
+            {
+                bothStarted.TrySetResult();
+            }
+        };
+        IDnsResolver publicDns = new CoordinatedDnsResolver(
+            IPAddress.Parse("93.184.216.34"),
+            onStart,
+            bothStarted.Task);
+        IDnsResolver privateDns = new CoordinatedDnsResolver(
+            IPAddress.Loopback,
+            onStart,
+            bothStarted.Task);
+
+        Task<Result> allowed = OutboundUrlGuard.ValidateUntrustedUrlAsync(
+            "https://same.example/",
+            publicDns);
+        Task<Result> blocked = OutboundUrlGuard.ValidateUntrustedUrlAsync(
+            "https://same.example/",
+            privateDns);
+
+        Result[] results = await Task.WhenAll(allowed, blocked)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, Volatile.Read(ref started));
+        Assert.True(results[0].IsSuccess);
+        Assert.True(results[1].IsFailure);
+    }
+
+    private Task<Result> ValidateUntrustedUrlAsync(
+        string? url,
+        CancellationToken cancellationToken = default) =>
+        OutboundUrlGuard.ValidateUntrustedUrlAsync(url, _dns, cancellationToken);
+
+    private Task<Result> ValidateProviderEndpointAsync(
+        string? url,
+        CancellationToken cancellationToken = default) =>
+        OutboundUrlGuard.ValidateProviderEndpointAsync(url, _dns, cancellationToken);
+
+    private Task<Result> ValidateArcanumSettingsAsync(
+        ArcanumSettings settings,
+        CancellationToken cancellationToken = default) =>
+        OutboundUrlGuard.ValidateArcanumSettingsAsync(settings, _dns, cancellationToken);
+
+    private Task<Result<IReadOnlyList<IPAddress>>> ResolveValidatedAddressesAsync(
+        string host,
+        bool allowPrivateAndLoopback,
+        CancellationToken cancellationToken = default) =>
+        OutboundUrlGuard.ResolveValidatedAddressesAsync(
+            host,
+            allowPrivateAndLoopback,
+            _dns,
+            cancellationToken);
+
+    private SocketsHttpHandler CreateUntrustedEgressHandler(TimeSpan? connectTimeout = null) =>
+        OutboundUrlGuard.CreateUntrustedEgressHandler(_dns, connectTimeout);
+
+    private SocketsHttpHandler CreateProviderEgressHandler() =>
+        OutboundUrlGuard.CreateProviderEgressHandler(_dns);
+
+    private sealed class CoordinatedDnsResolver(
+        IPAddress address,
+        Action onStart,
+        Task release) : IDnsResolver
+    {
+        public async Task<IPAddress[]> GetHostAddressesAsync(
+            string host,
+            CancellationToken cancellationToken = default)
+        {
+            _ = host;
+            onStart();
+            await release.WaitAsync(cancellationToken);
+
+            return [address];
+        }
+    }
 }

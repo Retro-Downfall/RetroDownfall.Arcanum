@@ -104,7 +104,9 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         Assert.Equal(new WorkspaceIndexingService.WorkspaceSchedulerSnapshot(2, 30, true), service.GetSchedulerSnapshot());
 
-        Assert.Equal(2, gate.RequestedWorkKinds.Count);
+        // Each of the 32 watcher construction attempts is denied without creating a waiter;
+        // only the two scheduler slots own durable generation waiters.
+        Assert.Equal(34, gate.RequestedWorkKinds.Count);
 
         Assert.Equal(0, scopes.ScopeCount);
 
@@ -128,7 +130,7 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         Assert.Equal(0, scopes.ScopeCount);
 
-        Assert.Equal(4, gate.RequestedWorkKinds.Count);
+        Assert.Equal(36, gate.RequestedWorkKinds.Count);
 
         Assert.Equal(new WorkspaceIndexingService.WorkspaceSchedulerSnapshot(2, 30, true), service.GetSchedulerSnapshot());
 

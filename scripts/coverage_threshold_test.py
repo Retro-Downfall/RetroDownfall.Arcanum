@@ -7,6 +7,8 @@ Coverlet emits Cobertura XML with:
 These tests pin that format so parser regressions are caught by `python -m unittest`.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import shutil

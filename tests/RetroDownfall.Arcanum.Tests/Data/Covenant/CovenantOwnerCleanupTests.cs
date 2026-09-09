@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantOwnerCleanupTests
 {
-
     private static readonly Guid CampaignOne = CovenantOperationGateFixture.CampaignOne;
 
     private static readonly Guid CampaignTwo = CovenantOperationGateFixture.CampaignTwo;
@@ -25,7 +24,6 @@ public sealed class CovenantOwnerCleanupTests
     [Fact]
     public void No_production_sql_appends_a_second_owner_deletion_event()
     {
-
         string root = FindRepositoryRoot();
 
         string[] offenders =
@@ -44,13 +42,11 @@ public sealed class CovenantOwnerCleanupTests
         // deletion produce two events, and a capability would then clean the same owner twice while
         // believing it had caught up.
         Assert.Empty(offenders);
-
     }
 
     [Fact]
     public async Task Deleting_a_campaign_appends_exactly_one_trigger_event()
     {
-
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -60,13 +56,11 @@ public sealed class CovenantOwnerCleanupTests
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM owner_deletion_events;"));
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT OwnerKindCode FROM owner_deletion_events;"));
-
     }
 
     [Fact]
     public async Task Core_deletion_succeeds_when_the_covenant_family_is_wholly_absent()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         // Core objects only: no canonical tier at all, which is exactly the isolation the trigger-
@@ -85,13 +79,11 @@ public sealed class CovenantOwnerCleanupTests
         await database.ExecuteAsync($"DELETE FROM \"Campaigns\" WHERE \"Id\" = '{CampaignOne:D}';", Token);
 
         Assert.Equal(1, await database.ScalarLongAsync("SELECT COUNT(*) FROM owner_deletion_events;", Token));
-
     }
 
     [Fact]
     public async Task A_cleanup_batch_removes_only_the_deleted_campaign()
     {
-
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -153,13 +145,11 @@ public sealed class CovenantOwnerCleanupTests
         Assert.Equal(
             1,
             await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_search_outbox WHERE DesiredVersionId IS NULL;"));
-
     }
 
     [Fact]
     public async Task One_batch_over_two_head_bearing_campaigns_emits_one_contiguous_ordinal_space()
     {
-
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -228,13 +218,11 @@ public sealed class CovenantOwnerCleanupTests
         Assert.Equal(
             2,
             await ScalarAsync(fixture, "SELECT MAX(Ordinal) FROM covenant_search_outbox WHERE DesiredVersionId IS NULL;"));
-
     }
 
     [Fact]
     public async Task A_campaign_with_no_covenant_rows_advances_no_search_sequence()
     {
-
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -250,13 +238,11 @@ public sealed class CovenantOwnerCleanupTests
         Assert.False(outcome.SearchSequenceAdvanced);
 
         Assert.Equal(0, await ScalarAsync(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"));
-
     }
 
     [Fact]
     public async Task Session_deletion_removes_its_turn_evidence()
     {
-
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
         await CovenantCapacityFixture.AddSessionAsync(fixture, SessionId, Token);
@@ -276,13 +262,11 @@ public sealed class CovenantOwnerCleanupTests
         Assert.Equal(1, outcome.SessionsCleaned);
 
         Assert.Equal(0, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_turn_receipts;"));
-
     }
 
     [Fact]
     public async Task The_applied_cursor_advances_and_a_second_run_finds_nothing()
     {
-
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -306,13 +290,11 @@ public sealed class CovenantOwnerCleanupTests
         Assert.Equal(0, second.CampaignsCleaned);
 
         Assert.Equal(0, second.SessionsCleaned);
-
     }
 
     [Fact]
     public async Task A_stale_dataset_generation_refuses_the_batch()
     {
-
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -324,7 +306,6 @@ public sealed class CovenantOwnerCleanupTests
         availability.Mutate(current => current with { DatasetGeneration = Guid.NewGuid() });
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
-
 
         await using CovenantCleanupLease lease =
             (await gate.AcquireCleanupAsync(CovenantOperationScope.Global, Token)).Value;
@@ -342,13 +323,11 @@ public sealed class CovenantOwnerCleanupTests
             await ScalarAsync(
                 fixture,
                 "SELECT AppliedCampaignSequence FROM capability_cleanup_state WHERE CapabilityFamilyCode = 1;"));
-
     }
 
     [Fact]
     public async Task A_revoked_cleanup_lease_refuses_the_batch()
     {
-
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
@@ -365,12 +344,10 @@ public sealed class CovenantOwnerCleanupTests
             commit: false);
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
-
     }
 
     private static async Task<CovenantCanonicalFixture> CreateAsync()
     {
-
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
             Token,
             coreObjects:
@@ -401,12 +378,10 @@ public sealed class CovenantOwnerCleanupTests
             """);
 
         return fixture;
-
     }
 
     private static async Task<CovenantCleanupOutcome> RunAsync(CovenantCanonicalFixture fixture)
     {
-
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
             await LiveAvailabilityAsync(fixture));
 
@@ -421,7 +396,6 @@ public sealed class CovenantOwnerCleanupTests
         Assert.True(outcome.IsSuccess, outcome.IsFailure ? outcome.Error.Message : null);
 
         return outcome.Value;
-
     }
 
     /// <summary>
@@ -430,7 +404,6 @@ public sealed class CovenantOwnerCleanupTests
     /// </summary>
     private static async Task<FakeCovenantAvailability> LiveAvailabilityAsync(CovenantCanonicalFixture fixture)
     {
-
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
 
         FakeCovenantAvailability availability = new();
@@ -438,7 +411,6 @@ public sealed class CovenantOwnerCleanupTests
         availability.Mutate(current => current with { DatasetGeneration = generation });
 
         return availability;
-
     }
 
     /// <summary>
@@ -447,7 +419,6 @@ public sealed class CovenantOwnerCleanupTests
     /// </summary>
     private static async Task DeleteSessionAsync(CovenantCanonicalFixture fixture, Guid sessionId)
     {
-
         using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance
             .Authorize(fixture.Connection, CovenantSqliteAuthorizationKind.SessionRetention);
 
@@ -456,39 +427,20 @@ public sealed class CovenantOwnerCleanupTests
         await ExecuteAsync(
             fixture,
             $"DELETE FROM \"Sessions\" WHERE \"Id\" = '{sessionId.ToString("D").ToUpperInvariant()}';");
-
     }
 
     private static async Task ExecuteAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(Token);
-
     }
 
     private static Task<long> ScalarAsync(CovenantCanonicalFixture fixture, string sql) =>
         CovenantCapacityFixture.ScalarAsync(fixture, sql, Token);
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null && !Directory.Exists(Path.Combine(directory.FullName, "src")))
-        {
-
-            directory = directory.Parent;
-
-        }
-
-        Assert.NotNull(directory);
-
-        return directory!.FullName;
-
-    }
-
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

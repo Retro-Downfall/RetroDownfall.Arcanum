@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -12,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -71,6 +73,7 @@ internal sealed class ApprenticeService(
         {
         }
     }
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         ExecutionLease[] executions;
@@ -99,6 +102,7 @@ internal sealed class ApprenticeService(
                     .Select(static pair => pair.Value),
             ];
         }
+
         foreach (ExecutionLease execution in executions)
         {
             try
@@ -109,6 +113,7 @@ internal sealed class ApprenticeService(
             {
             }
         }
+
         if (tasks.Length > 0)
         {
             try
@@ -126,8 +131,10 @@ internal sealed class ApprenticeService(
                 logger.LogWarning(ex, "Apprentice shutdown drain failed.");
             }
         }
+
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
+
     public async Task<Result<string>> StartAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
     {
         ApprenticeSettings settings = GetApprenticeSettings();
@@ -136,6 +143,7 @@ internal sealed class ApprenticeService(
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.Disabled, "Apprentice orchestration is disabled."));
         }
+
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
@@ -146,14 +154,17 @@ internal sealed class ApprenticeService(
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
+
         if (!CanStart(apprentice.Status))
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.AlreadyRunning, "Apprentice is already running or not in a startable state."));
         }
+
         if (!TryReserveStartHandoff(apprenticeId, out Result<string>? handoffFailure))
         {
             return handoffFailure!;
         }
+
         bool acquiredExecutionSlot = false;
 
         bool queued = false;
@@ -201,6 +212,7 @@ internal sealed class ApprenticeService(
                         apprentice,
                         CancellationToken.None).ConfigureAwait(false);
                 }
+
                 return capacityFailure!;
             }
             acquiredExecutionSlot = !queued;
@@ -226,10 +238,12 @@ internal sealed class ApprenticeService(
             {
                 _ = RemovePendingStart(apprenticeId);
             }
+
             if (acquiredExecutionSlot)
             {
                 ReleaseAcquiredExecutionSlot(apprenticeId);
             }
+
             throw;
         }
         finally
@@ -237,6 +251,7 @@ internal sealed class ApprenticeService(
             CompleteStartHandoff(apprenticeId);
         }
     }
+
     public async Task<Result<string>> PauseAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
     {
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -249,10 +264,12 @@ internal sealed class ApprenticeService(
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
+
         if (!IsPausable(apprentice.Status))
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.Running, "Apprentice is not running or planning."));
         }
+
         long? pauseGeneration = null;
 
         if (_executionTokens.TryGetValue(apprenticeId, out ExecutionLease? lease))
@@ -283,8 +300,10 @@ internal sealed class ApprenticeService(
                 AtStep = apprentice.CurrentStep,
             });
         }
+
         return Result<string>.Success(apprenticeId.ToString());
     }
+
     public async Task<Result<string>> ResumeAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
     {
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -297,14 +316,17 @@ internal sealed class ApprenticeService(
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
+
         if (!string.Equals(apprentice.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal))
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotPaused, "Apprentice is not paused."));
         }
+
         if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out bool _, out Result<string>? capacityFailure))
         {
             return capacityFailure!;
         }
+
         try
         {
             apprentice.Status = ApprenticeStatus.Running.ToString();
@@ -330,6 +352,7 @@ internal sealed class ApprenticeService(
             throw;
         }
     }
+
     public async Task<Result<string>> CancelAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
     {
         // Fix 1: a queued (Idle) apprentice is not IsCancellable, but it can be
@@ -362,6 +385,7 @@ internal sealed class ApprenticeService(
 
             return Result<string>.Success(apprenticeId.ToString());
         }
+
         await using AsyncServiceScope outerScope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository outerRepo = outerScope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
@@ -372,10 +396,12 @@ internal sealed class ApprenticeService(
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
+
         if (!IsCancellable(loaded.Status))
         {
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotPaused, "Apprentice is not in a cancellable state."));
         }
+
         long? cancelGeneration = null;
 
         if (_executionTokens.TryGetValue(apprenticeId, out ExecutionLease? lease))
@@ -405,8 +431,10 @@ internal sealed class ApprenticeService(
                 Timestamp = DateTimeOffset.UtcNow,
             });
         }
+
         return Result<string>.Success(apprenticeId.ToString());
     }
+
     public async Task<Result<ApprenticeDetailDto>> ReweaveAsync(
         Guid apprenticeId,
         IReadOnlyList<PlanStep> steps,
@@ -418,6 +446,7 @@ internal sealed class ApprenticeService(
         {
             return Result<ApprenticeDetailDto>.Failure(validated.Error);
         }
+
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
@@ -429,11 +458,13 @@ internal sealed class ApprenticeService(
             return Result<ApprenticeDetailDto>.Failure(
                 new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
+
         if (!ApprenticeExecutionPolicy.IsReweavableStatus(apprentice.Status))
         {
             return Result<ApprenticeDetailDto>.Failure(
                 new Error(ErrorCodes.Apprentice.CannotReweave, "Apprentice is not in a state that allows re-weaving the plan."));
         }
+
         List<PlanStep> currentPlan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
         List<PlanStep> merged = ApprenticeExecutionPolicy.MergePlanTail(
@@ -456,6 +487,7 @@ internal sealed class ApprenticeService(
 
         return Result<ApprenticeDetailDto>.Success(ToDetailDto(apprentice));
     }
+
     public async Task<Result<string>> InterveneAsync(
         Guid apprenticeId,
         string guidance,
@@ -467,6 +499,7 @@ internal sealed class ApprenticeService(
             return Result<string>.Failure(
                 new Error(ErrorCodes.Apprentice.InvalidGuidance, "Dungeon Master guidance is required."));
         }
+
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
@@ -478,6 +511,7 @@ internal sealed class ApprenticeService(
             return Result<string>.Failure(
                 new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
+
         if (!ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
         {
             return Result<string>.Failure(
@@ -489,6 +523,7 @@ internal sealed class ApprenticeService(
         {
             return capacityFailure!;
         }
+
         try
         {
             ApplyDivineInterventionGuidance(apprentice, guidance.Trim());
@@ -497,6 +532,7 @@ internal sealed class ApprenticeService(
             {
                 apprentice.Status = ApprenticeStatus.Running.ToString();
             }
+
             await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
 
             Publish(apprenticeId, new ApprenticeEvent
@@ -512,6 +548,7 @@ internal sealed class ApprenticeService(
             {
                 BeginExecutionTask(apprenticeId);
             }
+
             return Result<string>.Success(apprenticeId.ToString());
         }
         catch
@@ -520,9 +557,11 @@ internal sealed class ApprenticeService(
             {
                 ReleaseAcquiredExecutionSlot(apprenticeId);
             }
+
             throw;
         }
     }
+
     private static void ApplyDivineInterventionGuidance(Apprentice apprentice, string guidance)
     {
         List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
@@ -554,6 +593,7 @@ internal sealed class ApprenticeService(
 
         apprentice.ErrorMessage = null;
     }
+
     /// <summary>
     /// The base every checkpoint rewrite must build on. Rewrites go through <c>with</c> on this value rather
     /// than a fresh initializer so that a member the rewriting path does not name is carried forward instead
@@ -586,6 +626,7 @@ internal sealed class ApprenticeService(
             {
                 break;
             }
+
             long waitAfterGeneration = observedGeneration > 0
                 ? observedGeneration - 1
                 : 0;
@@ -594,6 +635,7 @@ internal sealed class ApprenticeService(
                 waitAfterGeneration,
                 stoppingToken).ConfigureAwait(false);
         }
+
         await using IGrimoireWorkLease lease = admitted!;
 
         try
@@ -641,6 +683,7 @@ internal sealed class ApprenticeService(
                     Error = reason,
                 });
             }
+
             IReadOnlyList<Apprentice> resumable = await repo.GetResumableAsync(stoppingToken).ConfigureAwait(false);
 
             foreach (Apprentice apprentice in resumable)
@@ -649,6 +692,7 @@ internal sealed class ApprenticeService(
                 {
                     break;
                 }
+
                 if (!TryAcquireExecutionSlot(apprentice.Id, queueOnCapacity: true, out bool recoveryQueued, out Result<string>? recoveryFailure))
                 {
                     logger.LogWarning(
@@ -659,6 +703,7 @@ internal sealed class ApprenticeService(
 
                     continue;
                 }
+
                 if (recoveryQueued)
                 {
                     // Fix 2: successfully queued for the next slot; no execution
@@ -683,6 +728,7 @@ internal sealed class ApprenticeService(
             logger.LogError(ex, "Apprentice crash recovery failed.");
         }
     }
+
     private bool TryReserveStartHandoff(
         Guid apprenticeId,
         out Result<string>? failure)
@@ -700,6 +746,7 @@ internal sealed class ApprenticeService(
 
                 return false;
             }
+
             lock (_pendingStartsLock)
             {
                 if (_startHandoffReservations.ContainsKey(apprenticeId)
@@ -717,9 +764,11 @@ internal sealed class ApprenticeService(
                     apprenticeId,
                     new StartHandoffReservation());
             }
+
             return true;
         }
     }
+
     private void CompleteStartHandoff(Guid apprenticeId)
     {
         StartHandoffReservation? reservation = null;
@@ -735,6 +784,7 @@ internal sealed class ApprenticeService(
         }
         reservation?.Drained.TrySetResult();
     }
+
     private bool TryAcquireExecutionSlot(
         Guid apprenticeId,
         bool queueOnCapacity,
@@ -761,6 +811,7 @@ internal sealed class ApprenticeService(
 
                 return false;
             }
+
             if (!_activeTasks.TryAdd(apprenticeId, Task.CompletedTask))
             {
                 failure = Result<string>.Failure(
@@ -770,6 +821,7 @@ internal sealed class ApprenticeService(
 
                 return false;
             }
+
             if (_concurrencyGate.TryAcquire(maxConcurrent, out IDisposable? lease))
             {
                 long generation = _executionGenerations.AddOrUpdate(
@@ -806,6 +858,7 @@ internal sealed class ApprenticeService(
             return false;
         }
     }
+
     /// <summary>
     /// Releases a slot acquired via <see cref="TryAcquireExecutionSlot"/> before
     /// <see cref="BeginExecutionTask"/> runs (e.g. InterveneAsync persistence failure).
@@ -845,6 +898,7 @@ internal sealed class ApprenticeService(
             TryDequeuePendingStart();
         }
     }
+
     private void BeginExecutionTask(Guid apprenticeId)
     {
         Task? task = null;
@@ -873,31 +927,38 @@ internal sealed class ApprenticeService(
                 cancellation,
                 generation);
 
-            task = Task.Run(() => RunApprenticeAsync(
-                apprenticeId,
-                generation));
-
-            _activeTasks[apprenticeId] = task;
-        }
-        _ = task.ContinueWith(
-            antecedent =>
+            task = Task.Run(async () =>
             {
-                if (antecedent.IsFaulted && antecedent.Exception is not null)
+                // Task.Run may begin before its returned Task is published below. Taking the same
+                // lifecycle lock makes publication the first observable event, so even a
+                // synchronously finishing run cleans up the exact task stored in _activeTasks.
+                lock (_executionLifecycleLock)
                 {
+                }
+
+                try
+                {
+                    await RunApprenticeAsync(apprenticeId, generation).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    // This wrapper is the task's sole owner. Observe and log the terminal failure
+                    // here so no detached continuation or unobserved fault outlives the execution.
                     logger.LogError(
-                        antecedent.Exception,
+                        exception,
                         "Apprentice run task faulted for {ApprenticeId}.",
                         apprenticeId);
                 }
-                CleanupExecution(
-                    apprenticeId,
-                    generation,
-                    antecedent);
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+                finally
+                {
+                    CleanupExecution(apprenticeId, generation, task!);
+                }
+            });
+
+            _activeTasks[apprenticeId] = task;
+        }
     }
+
     private void CleanupExecution(
         Guid apprenticeId,
         long generation,
@@ -919,6 +980,7 @@ internal sealed class ApprenticeService(
                 _activeTasks.TryRemove(
                     KeyValuePair.Create(apprenticeId, active));
             }
+
             if (_executionTokens.TryGetValue(apprenticeId, out ExecutionLease? current)
                 && current.Generation == generation)
             {
@@ -927,12 +989,14 @@ internal sealed class ApprenticeService(
 
                 execution = current;
             }
+
             if (OwnsExecutionGeneration(apprenticeId, generation))
             {
                 _executionLeases.TryRemove(
                     apprenticeId,
                     out concurrencyLease);
             }
+
             if (_executionReservations.TryGetValue(
                     apprenticeId,
                     out ExecutionReservation? currentReservation)
@@ -955,6 +1019,7 @@ internal sealed class ApprenticeService(
             TryDequeuePendingStart();
         }
     }
+
     private bool OwnsExecutionGeneration(Guid apprenticeId, long generation) =>
         _executionGenerations.TryGetValue(apprenticeId, out long current) && current == generation;
 
@@ -969,11 +1034,13 @@ internal sealed class ApprenticeService(
 
         internal bool StopRequested { get; set; }
     }
+
     private sealed class StartHandoffReservation
     {
         internal TaskCompletionSource Drained { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
     private void TryDequeuePendingStart()
     {
         while (true)
@@ -989,6 +1056,7 @@ internal sealed class ApprenticeService(
                 // Committing to start (or drop) this id: it is no longer pending.
                 _pendingStartIds.TryRemove(nextId, out _);
             }
+
             if (!TryAcquireExecutionSlot(
                     nextId,
                     queueOnCapacity: false,
@@ -1004,6 +1072,7 @@ internal sealed class ApprenticeService(
 
                     return;
                 }
+
                 if (string.Equals(
                     failure?.Error.Code,
                     ErrorCodes.Apprentice.Disabled,
@@ -1020,6 +1089,7 @@ internal sealed class ApprenticeService(
             return;
         }
     }
+
     private void RequeuePendingStart(Guid apprenticeId)
     {
         lock (_pendingStartsLock)
@@ -1030,6 +1100,7 @@ internal sealed class ApprenticeService(
             }
         }
     }
+
     /// <summary>
     /// Removes a specific apprentice id from the pending start queue and its
     /// dedup set. Returns true if the id was pending (and is now removed),
@@ -1066,9 +1137,11 @@ internal sealed class ApprenticeService(
                     _pendingStarts.Enqueue(id);
                 }
             }
+
             return true;
         }
     }
+
     private async Task RunApprenticeAsync(Guid apprenticeId, long generation)
     {
         DateTimeOffset runStarted = DateTimeOffset.UtcNow;
@@ -1105,6 +1178,7 @@ internal sealed class ApprenticeService(
             {
                 return;
             }
+
             while (true)
             {
                 linkedCts.Token.ThrowIfCancellationRequested();
@@ -1165,6 +1239,7 @@ internal sealed class ApprenticeService(
                         return;
                     }
                 }
+
                 if (disposition == ApprenticeUnitDisposition.DeferredForMaintenance)
                 {
                     // Refusal keeps this same task, generation, retry memory, and concurrency slot.
@@ -1175,6 +1250,7 @@ internal sealed class ApprenticeService(
 
                     continue;
                 }
+
                 if (disposition == ApprenticeUnitDisposition.Stop)
                 {
                     return;
@@ -1209,6 +1285,7 @@ internal sealed class ApprenticeService(
             }
         }
     }
+
     private async Task<ApprenticeUnitDisposition> ExecuteNextApprenticeUnitAsync(
         IServiceProvider services,
         IApprenticeRepository repo,
@@ -1237,6 +1314,7 @@ internal sealed class ApprenticeService(
         {
             return ApprenticeUnitDisposition.Stop;
         }
+
         List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
         if (plan.Count == 0)
@@ -1250,6 +1328,7 @@ internal sealed class ApprenticeService(
                 generation,
                 linkedCts).ConfigureAwait(false);
         }
+
         if (!string.Equals(
                 apprentice.Status,
                 ApprenticeStatus.Running.ToString(),
@@ -1263,26 +1342,60 @@ internal sealed class ApprenticeService(
 
             return ApprenticeUnitDisposition.Continue;
         }
+
         if (apprentice.SessionId is null)
         {
-            IGrimoireRepository grimoire = services.GetRequiredService<IGrimoireRepository>();
+            ICanonicalCampaignContextResolver campaignResolver = services
+                .GetRequiredService<ICanonicalCampaignContextResolver>();
 
-            string? model = ResolveModel();
-
-            (Guid sessionId, _) = await grimoire
-                .BeginAssistantReplyAsync(
-                    null,
-                    $"Apprentice {apprentice.Name} begins their quest.",
-                    model ?? "apprentice",
+            Result<CanonicalCampaignContext> campaign = await campaignResolver
+                .ResolveAsync(
+                    new CanonicalCampaignResolutionRequest(
+                        SessionId: null,
+                        ExplicitCampaignId: apprentice.CampaignId,
+                        WorkingDirectory: apprentice.WorkspacePath),
                     linkedCts.Token)
                 .ConfigureAwait(false);
 
-            apprentice.SessionId = sessionId;
+            if (campaign.IsFailure)
+            {
+                await FailApprenticeAsync(
+                    repo,
+                    apprentice,
+                    campaign.Error.Message,
+                    apprenticeId,
+                    linkedCts.Token).ConfigureAwait(false);
+
+                return ApprenticeUnitDisposition.Stop;
+            }
+            ISessionTurnBeginStore turnBeginStore = services
+                .GetRequiredService<ISessionTurnBeginStore>();
+
+            Result<Guid> session = await turnBeginStore
+                .CreateBoundSessionAsync(
+                    campaign.Value,
+                    $"Apprentice {apprentice.Name} begins their quest.",
+                    linkedCts.Token)
+                .ConfigureAwait(false);
+
+            if (session.IsFailure)
+            {
+                await FailApprenticeAsync(
+                    repo,
+                    apprentice,
+                    session.Error.Message,
+                    apprenticeId,
+                    linkedCts.Token).ConfigureAwait(false);
+
+                return ApprenticeUnitDisposition.Stop;
+            }
+            apprentice.SessionId = session.Value;
 
             await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
 
             return ApprenticeUnitDisposition.Continue;
         }
+
         if (apprentice.CurrentStep >= plan.Count)
         {
             apprentice.Status = ApprenticeStatus.Completed.ToString();
@@ -1304,6 +1417,7 @@ internal sealed class ApprenticeService(
 
             return ApprenticeUnitDisposition.Stop;
         }
+
         int stepIndex = apprentice.CurrentStep;
 
         int simulacrumGroupEnd = ComputeParallelGroupEnd(plan, stepIndex);
@@ -1325,12 +1439,14 @@ internal sealed class ApprenticeService(
                 generation,
                 linkedCts).ConfigureAwait(false);
         }
+
         if (memory.SerialAttempt is null || memory.SerialAttempt.StepIndex != stepIndex)
         {
             int nextAttempt = Math.Max(1, plan[stepIndex].Attempts + 1);
 
             memory.SerialAttempt = new SerialAttemptMemory(stepIndex, nextAttempt);
         }
+
         return await ExecuteSerialAttemptUnitAsync(
             services,
             repo,
@@ -1343,6 +1459,7 @@ internal sealed class ApprenticeService(
             generation,
             linkedCts).ConfigureAwait(false);
     }
+
     private async Task<ApprenticeUnitDisposition> ExecutePlanGenerationUnitAsync(
         IServiceProvider services,
         IApprenticeRepository repo,
@@ -1357,6 +1474,7 @@ internal sealed class ApprenticeService(
         {
             return ApprenticeUnitDisposition.DeferredForMaintenance;
         }
+
         await using IGrimoireExternalEffectGroup effectGroup = admittedGroup!;
 
         // The group begins before any start event/provider call and remains through durable plan
@@ -1429,6 +1547,7 @@ internal sealed class ApprenticeService(
 
                 return ApprenticeUnitDisposition.Stop;
             }
+
             List<PlanStep> plan = ApprenticePlanParser.ParsePlan(planResult.Value.Text);
 
             apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
@@ -1467,6 +1586,7 @@ internal sealed class ApprenticeService(
             return ApprenticeUnitDisposition.Stop;
         }
     }
+
     private async Task InitializeKnownPlanAsync(
         IApprenticeRepository repo,
         Apprentice apprentice,
@@ -1497,6 +1617,7 @@ internal sealed class ApprenticeService(
             Goal = isResumeAfterRestart ? null : apprentice.Goal,
         });
     }
+
     private async Task<ApprenticeUnitDisposition> ExecuteSerialAttemptUnitAsync(
         IServiceProvider services,
         IApprenticeRepository repo,
@@ -1514,6 +1635,7 @@ internal sealed class ApprenticeService(
         {
             return ApprenticeUnitDisposition.DeferredForMaintenance;
         }
+
         await using IGrimoireExternalEffectGroup effectGroup = admittedGroup!;
 
         // One attempt is the atomic effect unit, including retry/failure evidence, child stamping,
@@ -1562,7 +1684,13 @@ internal sealed class ApprenticeService(
                 apprentice,
                 stepPrompt,
                 linkedCts,
-                apprenticeId).ConfigureAwait(false);
+                apprenticeId,
+                castSendings: attemptMemory.CastSendings).ConfigureAwait(false);
+
+            await SettleCastSendingsAsync(
+                repo,
+                apprenticeId,
+                attemptMemory.CastSendings).ConfigureAwait(false);
 
             StepFailureKind failureKind = ApprenticeExecutionPolicy.ClassifyStepFailure(
                 outcome.StepFailed,
@@ -1577,6 +1705,7 @@ internal sealed class ApprenticeService(
 
                 return ApprenticeUnitDisposition.Stop;
             }
+
             if (failureKind == StepFailureKind.EscalationRequested)
             {
                 await EscalateAsync(
@@ -1590,6 +1719,7 @@ internal sealed class ApprenticeService(
 
                 return ApprenticeUnitDisposition.Stop;
             }
+
             if (failureKind == StepFailureKind.Terminal)
             {
                 await FailStepAsync(
@@ -1604,6 +1734,7 @@ internal sealed class ApprenticeService(
 
                 return ApprenticeUnitDisposition.Stop;
             }
+
             if (failureKind == StepFailureKind.Retryable)
             {
                 StepRecoveryState recoveryState = BuildStepRecoveryState(outcome);
@@ -1636,8 +1767,10 @@ internal sealed class ApprenticeService(
                             apprenticeId,
                             linkedCts.Token).ConfigureAwait(false);
                     }
+
                     return ApprenticeUnitDisposition.Stop;
                 }
+
                 string retryMessage = ApprenticeExecutionPolicy
                     .SanitizeOperatorMessage(outcome.ErrorMessage);
 
@@ -1661,14 +1794,6 @@ internal sealed class ApprenticeService(
                 attemptMemory.Attempt++;
 
                 return ApprenticeUnitDisposition.Continue;
-            }
-            if (outcome.SpawnedChildIds.Count > 0)
-            {
-                await StampCastSendingsAsync(
-                    repo,
-                    apprenticeId,
-                    outcome.SpawnedChildIds,
-                    linkedCts.Token).ConfigureAwait(false);
             }
             DateTimeOffset stepStarted = outcome.StepStarted;
 
@@ -1699,6 +1824,24 @@ internal sealed class ApprenticeService(
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
         {
+            try
+            {
+                await SettleCastSendingsAsync(
+                    repo,
+                    apprenticeId,
+                    attemptMemory.CastSendings).ConfigureAwait(false);
+            }
+            catch (Exception settlementFailure)
+            {
+                await PersistFailureIfCurrentAsync(
+                    repo,
+                    apprenticeId,
+                    generation,
+                    settlementFailure).ConfigureAwait(false);
+
+                return ApprenticeUnitDisposition.Stop;
+            }
+
             await PersistPausedIfCurrentAsync(
                 repo,
                 apprenticeId,
@@ -1708,15 +1851,33 @@ internal sealed class ApprenticeService(
         }
         catch (Exception ex)
         {
+            Exception failure = ex;
+
+            try
+            {
+                await SettleCastSendingsAsync(
+                    repo,
+                    apprenticeId,
+                    attemptMemory.CastSendings).ConfigureAwait(false);
+            }
+            catch (Exception settlementFailure)
+            {
+                failure = new AggregateException(
+                    "Apprentice execution and Cast Sending settlement both failed.",
+                    ex,
+                    settlementFailure);
+            }
+
             await PersistFailureIfCurrentAsync(
                 repo,
                 apprenticeId,
                 generation,
-                ex).ConfigureAwait(false);
+                failure).ConfigureAwait(false);
 
             return ApprenticeUnitDisposition.Stop;
         }
     }
+
     private async Task<ApprenticeUnitDisposition> ExecuteSimulacrumUnitAsync(
         IServiceProvider services,
         IApprenticeRepository repo,
@@ -1735,6 +1896,7 @@ internal sealed class ApprenticeService(
         {
             return ApprenticeUnitDisposition.DeferredForMaintenance;
         }
+
         await using IGrimoireExternalEffectGroup effectGroup = admittedGroup!;
 
         // Simulacrum branches share this one frontier. Their fresh nested scopes are bounded by the
@@ -1761,6 +1923,7 @@ internal sealed class ApprenticeService(
 
                 return ApprenticeUnitDisposition.Stop;
             }
+
             return ApprenticeUnitDisposition.Continue;
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
@@ -1783,6 +1946,7 @@ internal sealed class ApprenticeService(
             return ApprenticeUnitDisposition.Stop;
         }
     }
+
     private async Task WaitForApprenticeAdmissionAsync(
         long observedGeneration,
         CancellationToken cancellationToken)
@@ -1795,6 +1959,7 @@ internal sealed class ApprenticeService(
             waitAfterGeneration,
             cancellationToken).ConfigureAwait(false);
     }
+
     private async Task TryPersistPausedAfterCancellationAsync(
         Guid apprenticeId,
         long generation)
@@ -1806,6 +1971,7 @@ internal sealed class ApprenticeService(
         {
             return;
         }
+
         await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -1818,6 +1984,7 @@ internal sealed class ApprenticeService(
             apprenticeId,
             generation).ConfigureAwait(false);
     }
+
     private async Task TryPersistFailureAfterExceptionAsync(
         Guid apprenticeId,
         long generation,
@@ -1830,6 +1997,7 @@ internal sealed class ApprenticeService(
         {
             return;
         }
+
         await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -1843,6 +2011,7 @@ internal sealed class ApprenticeService(
             generation,
             exception).ConfigureAwait(false);
     }
+
     private async Task PersistPausedIfCurrentAsync(
         IApprenticeRepository repo,
         Guid apprenticeId,
@@ -1852,6 +2021,7 @@ internal sealed class ApprenticeService(
         {
             return;
         }
+
         try
         {
             Apprentice? apprentice = await repo
@@ -1862,6 +2032,7 @@ internal sealed class ApprenticeService(
             {
                 return;
             }
+
             bool isRunning =
                 string.Equals(
                     apprentice.Status,
@@ -1895,6 +2066,7 @@ internal sealed class ApprenticeService(
                 "Failed to persist Paused status after Apprentice cancellation.");
         }
     }
+
     private async Task PersistFailureIfCurrentAsync(
         IApprenticeRepository repo,
         Guid apprenticeId,
@@ -1910,6 +2082,7 @@ internal sealed class ApprenticeService(
         {
             return;
         }
+
         try
         {
             Apprentice? apprentice = await repo
@@ -1920,6 +2093,7 @@ internal sealed class ApprenticeService(
             {
                 return;
             }
+
             await FailApprenticeAsync(
                 repo,
                 apprentice,
@@ -1934,16 +2108,19 @@ internal sealed class ApprenticeService(
                 "Failed to persist Apprentice failure state.");
         }
     }
+
     private enum ApprenticeUnitDisposition
     {
         Continue,
         DeferredForMaintenance,
         Stop,
     }
+
     private sealed class ApprenticeExecutionMemory
     {
         internal SerialAttemptMemory? SerialAttempt { get; set; }
     }
+
     private sealed class SerialAttemptMemory(
         int stepIndex,
         int attempt)
@@ -1953,7 +2130,10 @@ internal sealed class ApprenticeService(
         internal int Attempt { get; set; } = attempt;
 
         internal HashSet<StepRecoveryState> ObservedRecoveryStates { get; } = [];
+
+        internal CastSendingSettlement CastSendings { get; } = new();
     }
+
     private async Task FailApprenticeAsync(
         IApprenticeRepository repo,
         Apprentice apprentice,
@@ -1977,6 +2157,7 @@ internal sealed class ApprenticeService(
             Error = sanitized,
         });
     }
+
     private async Task FailStepAsync(
         IApprenticeRepository repo,
         Apprentice apprentice,
@@ -2020,6 +2201,7 @@ internal sealed class ApprenticeService(
             Error = sanitized,
         });
     }
+
     private async Task EscalateAsync(
         IApprenticeRepository repo,
         Apprentice apprentice,
@@ -2062,6 +2244,7 @@ internal sealed class ApprenticeService(
             await DispatchEscalationAlertAsync(apprentice, sanitized, cancellationToken).ConfigureAwait(false);
         }
     }
+
     private async Task DispatchEscalationAlertAsync(
         Apprentice apprentice,
         string reason,
@@ -2096,6 +2279,7 @@ internal sealed class ApprenticeService(
             logger.LogError(ex, "Comm Link dispatch threw for Apprentice {ApprenticeId}.", apprentice.Id);
         }
     }
+
     private async Task<List<PlanStep>> AttemptShiftingFateAsync(
         IApprenticeRepository repo,
         IArcanumIntelligenceProvider intelligence,
@@ -2132,6 +2316,7 @@ internal sealed class ApprenticeService(
 
                 return plan;
             }
+
             if (!ApprenticePlanParser.TryParseRevisedPlan(
                     weaveResult.Value.Text,
                     out List<PlanStep>? revisedTail)
@@ -2139,6 +2324,7 @@ internal sealed class ApprenticeService(
             {
                 return plan;
             }
+
             List<PlanStep> merged = ApprenticeExecutionPolicy.MergePlanTail(
                 plan,
                 completedStepIndex + 1,
@@ -2174,6 +2360,7 @@ internal sealed class ApprenticeService(
             return plan;
         }
     }
+
     private async Task<Apprentice> CompleteStepAsync(
         IApprenticeRepository repo,
         Apprentice apprentice,
@@ -2233,20 +2420,24 @@ internal sealed class ApprenticeService(
 
         return apprentice;
     }
+
     private static int ComputeParallelGroupEnd(IReadOnlyList<PlanStep> plan, int start)
     {
         if (start >= plan.Count || !plan[start].IsParallel)
         {
             return start + 1;
         }
+
         int end = start;
 
         while (end < plan.Count && plan[end].IsParallel)
         {
             end++;
         }
+
         return end;
     }
+
     private async Task<bool> ExecuteSimulacrumGroupAsync(
         IApprenticeRepository repo,
         IArcanumIntelligenceProvider intelligence,
@@ -2293,6 +2484,7 @@ internal sealed class ApprenticeService(
                 Description = plan[i].Description,
             });
         }
+
         int maxConcurrentBranches = ArcanumSettingClamps.MaxConcurrentApprenticeBranches(
             optionsMonitor.CurrentValue.Execution.MaxConcurrentApprenticeBranches);
 
@@ -2302,22 +2494,25 @@ internal sealed class ApprenticeService(
 
         List<PlanStep> planSnapshot = plan;
 
-        List<Task<SingleStepResult>> branchTasks = new(groupEnd - groupStart);
+        CastSendingSettlement castSendings = new();
 
-        for (int i = groupStart; i < groupEnd; i++)
-        {
-            int branchIndex = i;
-
-            branchTasks.Add(RunSimulacrumBranchAsync(
+        SingleStepResult[] results = await StartJoinAndConcludeSimulacrumBranchesAsync(
+            groupStart,
+            groupEnd,
+            branchIndex => RunSimulacrumBranchWithSettlementAsync(
                 gate,
                 snapshot,
                 planSnapshot,
                 branchIndex,
                 settings,
                 apprenticeId,
-                linkedCts));
-        }
-        SingleStepResult[] results = await Task.WhenAll(branchTasks).ConfigureAwait(false);
+                linkedCts,
+                castSendings),
+            () => new ValueTask(
+                SettleCastSendingsAsync(
+                    repo,
+                    apprenticeId,
+                    castSendings))).ConfigureAwait(false);
 
         bool anyPaused = false;
 
@@ -2325,14 +2520,8 @@ internal sealed class ApprenticeService(
 
         SingleStepResult? escalated = null;
 
-        List<Guid> spawned = [];
-
         foreach (SingleStepResult branch in results)
         {
-            foreach (Guid childId in branch.SpawnedChildIds)
-            {
-                spawned.Add(childId);
-            }
             if (branch.Kind == StepResultKind.PausedOrCancelled)
             {
                 anyPaused = true;
@@ -2346,6 +2535,7 @@ internal sealed class ApprenticeService(
                 escalated ??= branch;
             }
         }
+
         if (anyPaused)
         {
             return false;
@@ -2356,6 +2546,7 @@ internal sealed class ApprenticeService(
         {
             return false;
         }
+
         if (string.Equals(fresh.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
             || string.Equals(fresh.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal)
             || ApprenticeExecutionPolicy.IsEscalatedStatus(fresh.Status))
@@ -2389,8 +2580,10 @@ internal sealed class ApprenticeService(
                     apprenticeId,
                     linkedCts.Token).ConfigureAwait(false);
             }
+
             return false;
         }
+
         if (escalated is not null)
         {
             await EscalateAsync(
@@ -2404,6 +2597,7 @@ internal sealed class ApprenticeService(
 
             return false;
         }
+
         long groupDurationMs = (long)(DateTimeOffset.UtcNow - groupStarted).TotalMilliseconds;
 
         foreach (SingleStepResult branch in results)
@@ -2421,10 +2615,7 @@ internal sealed class ApprenticeService(
                 Result = branch.ResultText ?? string.Empty,
             };
         }
-        if (spawned.Count > 0)
-        {
-            await StampCastSendingsAsync(repo, apprenticeId, spawned, linkedCts.Token).ConfigureAwait(false);
-        }
+
         if (settings.EnableShiftingFate)
         {
             plan = await AttemptShiftingFateAsync(
@@ -2479,6 +2670,109 @@ internal sealed class ApprenticeService(
 
         return true;
     }
+
+    internal static async Task<T[]> StartAndJoinBranchesAsync<T>(
+        int groupStart,
+        int groupEnd,
+        Func<int, Task<T>> startBranch)
+    {
+        List<Task<T>> started = new(groupEnd - groupStart);
+        Exception? startupFailure = null;
+
+        try
+        {
+            for (int branchIndex = groupStart; branchIndex < groupEnd; branchIndex++)
+            {
+                Task<T> task = startBranch(branchIndex)
+                    ?? throw new InvalidOperationException("A Simulacrum branch starter returned no task.");
+
+                started.Add(task);
+            }
+        }
+        catch (Exception ex)
+        {
+            startupFailure = ex;
+        }
+
+        Task<T[]> join = Task.WhenAll(started);
+
+        if (startupFailure is null)
+        {
+            return await join.ConfigureAwait(false);
+        }
+
+        try
+        {
+            _ = await join.ConfigureAwait(false);
+        }
+        catch (Exception branchFailure)
+        {
+            List<Exception> failures = [startupFailure];
+
+            if (join.Exception is { } aggregate)
+            {
+                failures.AddRange(aggregate.Flatten().InnerExceptions);
+            }
+            else
+            {
+                failures.Add(branchFailure);
+            }
+
+            throw new AggregateException(
+                "Simulacrum branch startup and an already-started branch both failed.",
+                failures);
+        }
+
+        ExceptionDispatchInfo.Capture(startupFailure).Throw();
+
+        return [];
+    }
+
+    internal static async Task<T[]> StartJoinAndConcludeSimulacrumBranchesAsync<T>(
+        int groupStart,
+        int groupEnd,
+        Func<int, Task<T>> startBranch,
+        Func<ValueTask> concludeAsync)
+    {
+        T[]? results = null;
+
+        Exception? branchFailure = null;
+
+        try
+        {
+            results = await StartAndJoinBranchesAsync(
+                groupStart,
+                groupEnd,
+                startBranch).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            branchFailure = ex;
+        }
+
+        try
+        {
+            await concludeAsync().ConfigureAwait(false);
+        }
+        catch (Exception conclusionFailure) when (branchFailure is not null)
+        {
+            IReadOnlyList<Exception> branchFailures = branchFailure is AggregateException aggregate
+                ? aggregate.Flatten().InnerExceptions
+                : [branchFailure];
+
+            throw new AggregateException(
+                "Simulacrum execution and Cast Sending conclusion both failed.",
+                [.. branchFailures, conclusionFailure]);
+        }
+
+        if (branchFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(branchFailure).Throw();
+        }
+
+        return results!;
+    }
+
     private async Task<SingleStepResult> RunSimulacrumBranchAsync(
         SemaphoreSlim gate,
         Apprentice snapshot,
@@ -2488,6 +2782,27 @@ internal sealed class ApprenticeService(
         Guid apprenticeId,
         CancellationTokenSource linkedCts)
     {
+        return await RunSimulacrumBranchWithSettlementAsync(
+            gate,
+            snapshot,
+            planSnapshot,
+            stepIndex,
+            settings,
+            apprenticeId,
+            linkedCts,
+            new CastSendingSettlement()).ConfigureAwait(false);
+    }
+
+    private async Task<SingleStepResult> RunSimulacrumBranchWithSettlementAsync(
+        SemaphoreSlim gate,
+        Apprentice snapshot,
+        IReadOnlyList<PlanStep> planSnapshot,
+        int stepIndex,
+        ApprenticeSettings settings,
+        Guid apprenticeId,
+        CancellationTokenSource linkedCts,
+        CastSendingSettlement castSendings)
+    {
         try
         {
             await gate.WaitAsync(linkedCts.Token).ConfigureAwait(false);
@@ -2496,6 +2811,7 @@ internal sealed class ApprenticeService(
         {
             return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, 0, []);
         }
+
         try
         {
             await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -2511,11 +2827,19 @@ internal sealed class ApprenticeService(
                 stateless: true,
                 settings,
                 apprenticeId,
-                linkedCts).ConfigureAwait(false);
+                linkedCts,
+                castSendings).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
         {
-            return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, 0, []);
+            return new SingleStepResult(
+                stepIndex,
+                StepResultKind.PausedOrCancelled,
+                null,
+                null,
+                false,
+                0,
+                castSendings.SnapshotUnsettled());
         }
         catch (Exception ex)
         {
@@ -2532,13 +2856,14 @@ internal sealed class ApprenticeService(
                 ApprenticeExecutionPolicy.SanitizeOperatorMessage(ex.Message),
                 false,
                 0,
-                []);
+                castSendings.SnapshotUnsettled());
         }
         finally
         {
             gate.Release();
         }
     }
+
     private async Task<SingleStepResult> RunStepAttemptsAsync(
         IArcanumIntelligenceProvider intelligence,
         Apprentice snapshot,
@@ -2547,7 +2872,8 @@ internal sealed class ApprenticeService(
         bool stateless,
         ApprenticeSettings settings,
         Guid apprenticeId,
-        CancellationTokenSource linkedCts)
+        CancellationTokenSource linkedCts,
+        CastSendingSettlement castSendings)
     {
         ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(snapshot.CheckpointData);
 
@@ -2573,7 +2899,8 @@ internal sealed class ApprenticeService(
                 stepPrompt,
                 linkedCts,
                 apprenticeId,
-                stateless).ConfigureAwait(false);
+                stateless,
+                castSendings).ConfigureAwait(false);
 
             StepFailureKind failureKind = ApprenticeExecutionPolicy.ClassifyStepFailure(
                 outcome.StepFailed,
@@ -2584,12 +2911,14 @@ internal sealed class ApprenticeService(
 
             if (failureKind == StepFailureKind.PausedOrCancelled)
             {
-                return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, attempt - 1, outcome.SpawnedChildIds);
+                return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, attempt - 1, castSendings.SnapshotUnsettled());
             }
+
             if (failureKind == StepFailureKind.None)
             {
-                return new SingleStepResult(stepIndex, StepResultKind.Completed, outcome.ResultText, null, false, attempt - 1, outcome.SpawnedChildIds);
+                return new SingleStepResult(stepIndex, StepResultKind.Completed, outcome.ResultText, null, false, attempt - 1, castSendings.SnapshotUnsettled());
             }
+
             if (failureKind == StepFailureKind.EscalationRequested)
             {
                 return new SingleStepResult(
@@ -2599,8 +2928,9 @@ internal sealed class ApprenticeService(
                     outcome.ErrorMessage ?? "The Apprentice petitioned the Dungeon Master.",
                     outcome.AlreadyAlerted,
                     attempt - 1,
-                    outcome.SpawnedChildIds);
+                    castSendings.SnapshotUnsettled());
             }
+
             if (failureKind == StepFailureKind.Terminal)
             {
                 return new SingleStepResult(
@@ -2610,7 +2940,7 @@ internal sealed class ApprenticeService(
                     outcome.ErrorMessage ?? "Step execution failed.",
                     false,
                     attempt - 1,
-                    outcome.SpawnedChildIds);
+                    castSendings.SnapshotUnsettled());
             }
             StepRecoveryState recoveryState = BuildStepRecoveryState(outcome);
 
@@ -2627,7 +2957,7 @@ internal sealed class ApprenticeService(
                         noProgressMessage,
                         false,
                         attempt - 1,
-                        outcome.SpawnedChildIds)
+                        castSendings.SnapshotUnsettled())
                     : new SingleStepResult(
                         stepIndex,
                         StepResultKind.Terminal,
@@ -2635,7 +2965,7 @@ internal sealed class ApprenticeService(
                         noProgressMessage,
                         false,
                         attempt - 1,
-                        outcome.SpawnedChildIds);
+                        castSendings.SnapshotUnsettled());
             }
             Publish(apprenticeId, new ApprenticeEvent
             {
@@ -2651,6 +2981,7 @@ internal sealed class ApprenticeService(
             attempt++;
         }
     }
+
     private static StepRecoveryState BuildStepRecoveryState(StepExecutionOutcome outcome) =>
         new(
             outcome.ErrorMessage ?? string.Empty,
@@ -2673,6 +3004,7 @@ internal sealed class ApprenticeService(
         Escalated,
         PausedOrCancelled,
     }
+
     private sealed record SingleStepResult(
         int StepIndex,
         StepResultKind Kind,
@@ -2682,55 +3014,70 @@ internal sealed class ApprenticeService(
         int Attempts,
         IReadOnlyList<Guid> SpawnedChildIds);
 
-    private async Task StampCastSendingsAsync(
+    private async Task SettleCastSendingsAsync(
         IApprenticeRepository repo,
         Guid parentApprenticeId,
-        IReadOnlyList<Guid> childIds,
-        CancellationToken cancellationToken)
+        CastSendingSettlement settlement)
     {
-        // cast_sending builds its ConclaveCastRequest without a delegation chain, so this stamping pass is
-        // where a locally cast child inherits the caller's A2A lineage — exactly as it inherits the caller's
-        // id. Without it a grandchild of an inbound Sending dispatches with an empty chain and the peer that
-        // originated the work cannot recognise itself in it.
-        IReadOnlyList<string>? inheritedChain = await ReadDelegationChainAsync(
-            repo,
-            parentApprenticeId,
-            cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<Guid> unsettled = settlement.SnapshotUnsettled();
 
-        foreach (Guid childId in childIds)
+        if (unsettled.Count == 0)
         {
+            return;
+        }
+        Apprentice parent = await repo
+            .GetByIdAsync(parentApprenticeId, CancellationToken.None)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Cast Sending parent '{parentApprenticeId}' was not found during lineage settlement.");
+
+        IReadOnlyList<string>? expectedChain = ApprenticeRepository
+            .DeserializeCheckpoint(parent.CheckpointData)?
+            .DelegationChain;
+
+        using CancellationTokenSource startBudget = new(
+            TimeSpan.FromSeconds(ArcanumRuntimeDefaults.DaemonShutdownDrainTimeoutSeconds));
+
+        foreach (Guid childId in unsettled)
+        {
+            Apprentice child = await repo
+                .GetByIdAsync(childId, CancellationToken.None)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    $"Cast Sending child '{childId}' was not found during lineage settlement.");
+
+            ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(child.CheckpointData);
+
+            bool parentMatches = child.ParentApprenticeId == parentApprenticeId
+                && checkpoint?.ParentApprenticeId == parentApprenticeId;
+
+            bool campaignMatches = child.CampaignId == parent.CampaignId;
+
+            bool chainMatches = DelegationChainsMatch(checkpoint?.DelegationChain, expectedChain);
+
+            bool launchMatches = checkpoint?.LaunchRequested is true;
+
+            if (!parentMatches || !campaignMatches || !chainMatches || !launchMatches)
+            {
+                throw new InvalidOperationException(
+                    $"Cast Sending child '{childId}' does not match its creation-time parent, campaign, delegation, and launch authority.");
+            }
+
+            Publish(parentApprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.CastSent,
+                ApprenticeId = parentApprenticeId,
+                Timestamp = DateTimeOffset.UtcNow,
+                Summary = child.Id.ToString(),
+                Name = child.Name,
+                Goal = child.Goal,
+            });
+
             try
             {
-                Apprentice? child = await repo.GetByIdAsync(childId, cancellationToken).ConfigureAwait(false);
-
-                if (child is null)
-                {
-                    continue;
-                }
-                ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(child.CheckpointData);
-
-                child.ParentApprenticeId = parentApprenticeId;
-
-                child.CheckpointData = ApprenticeRepository.SerializeCheckpoint(RebaseCheckpoint(existing) with
-                {
-                    Timestamp = DateTimeOffset.UtcNow,
-                    ParentApprenticeId = parentApprenticeId,
-                    DelegationChain = existing?.DelegationChain is { Count: > 0 } own ? own : inheritedChain,
-                });
-
-                await repo.UpdateAsync(child, cancellationToken).ConfigureAwait(false);
-
-                Publish(parentApprenticeId, new ApprenticeEvent
-                {
-                    Type = ApprenticeEventType.CastSent,
-                    ApprenticeId = parentApprenticeId,
-                    Timestamp = DateTimeOffset.UtcNow,
-                    Summary = child.Id.ToString(),
-                    Name = child.Name,
-                    Goal = child.Goal,
-                });
-
-                Result<string> start = await StartAsync(childId, cancellationToken).ConfigureAwait(false);
+                Result<string> start = await StartAsync(childId, startBudget.Token)
+                    .WaitAsync(startBudget.Token)
+                    .ConfigureAwait(false);
 
                 if (start.IsFailure)
                 {
@@ -2740,45 +3087,37 @@ internal sealed class ApprenticeService(
                         start.Error.Message);
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (startBudget.IsCancellationRequested)
             {
-                throw;
+                logger.LogInformation(
+                    "Cast Sending child {ChildId} start exceeded the bounded start budget.",
+                    childId);
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to stamp Cast Sending lineage for child {ChildId}.", childId);
+                logger.LogWarning(
+                    ex,
+                    "Cast Sending child {ChildId} was linked but could not be started.",
+                    childId);
             }
+            settlement.MarkSettled(childId);
         }
     }
-    /// <summary>
-    /// Reads an Apprentice's persisted A2A delegation chain, normalising "absent" and "empty" to
-    /// <see langword="null"/> so purely local work never has a chain invented for it. Best-effort: a read
-    /// failure yields no chain rather than failing the step that is stamping lineage.
-    /// </summary>
-    private async Task<IReadOnlyList<string>?> ReadDelegationChainAsync(
-        IApprenticeRepository repo,
-        Guid apprenticeId,
-        CancellationToken cancellationToken)
+
+    private static bool DelegationChainsMatch(
+        IReadOnlyList<string>? actual,
+        IReadOnlyList<string>? expected)
     {
-        try
-        {
-            Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
+        bool actualIsEmpty = actual is not { Count: > 0 };
 
-            ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice?.CheckpointData);
+        bool expectedIsEmpty = expected is not { Count: > 0 };
 
-            return checkpoint?.DelegationChain is { Count: > 0 } chain ? chain : null;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to read the delegation chain for Apprentice {ApprenticeId}.", apprenticeId);
-
-            return null;
-        }
+        return actualIsEmpty && expectedIsEmpty
+            || !actualIsEmpty
+            && !expectedIsEmpty
+            && actual!.SequenceEqual(expected!, StringComparer.Ordinal);
     }
+
     /// <summary>
     /// Parses a <c>dispatch_sending</c> tool result and publishes <c>sendingDispatched</c> followed by
     /// <c>sendingCompleted</c>/<c>sendingFailed</c> on <paramref name="apprenticeId"/>'s Chronicle. Malformed
@@ -2791,6 +3130,7 @@ internal sealed class ApprenticeService(
             Publish(apprenticeId, @event);
         }
     }
+
     private static bool TryParseCastSendingChildId(string resultText, out Guid childId)
     {
         childId = Guid.Empty;
@@ -2811,8 +3151,10 @@ internal sealed class ApprenticeService(
         catch (System.Text.Json.JsonException)
         {
         }
+
         return false;
     }
+
     /// <summary>
     /// Fail-closed parse of <c>petition_dungeon_master</c> structured result.
     /// Only an explicit <c>notificationStatus: "delivered"</c> counts as already alerted.
@@ -2823,6 +3165,7 @@ internal sealed class ApprenticeService(
         {
             return false;
         }
+
         try
         {
             PetitionDungeonMasterResultWire? payload = System.Text.Json.JsonSerializer.Deserialize(
@@ -2837,13 +3180,15 @@ internal sealed class ApprenticeService(
             return false;
         }
     }
+
     internal async Task<StepExecutionOutcome> ExecuteStepStreamAsync(
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice,
         string stepPrompt,
         CancellationTokenSource linkedCts,
         Guid apprenticeId,
-        bool stateless = false)
+        bool stateless = false,
+        CastSendingSettlement? castSendings = null)
     {
         DateTimeOffset stepStarted = DateTimeOffset.UtcNow;
 
@@ -2874,7 +3219,8 @@ internal sealed class ApprenticeService(
         using IDisposable apprenticeToolScope = ApprenticeToolInvocationAmbient.Begin(
             new ApprenticeToolInvocationContext(
                 apprenticeId,
-                ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData)?.DelegationChain ?? []));
+                ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData)?.DelegationChain ?? [],
+                CampaignId: apprentice.CampaignId));
 
         try
         {
@@ -2907,6 +3253,7 @@ internal sealed class ApprenticeService(
                     // Apprentice result, Chronicle, checkpoint, or subsequent Master context.
                     continue;
                 }
+
                 if (IsPassThrough(frame.Type))
                 {
                     Publish(apprenticeId, new ApprenticeEvent
@@ -2917,6 +3264,7 @@ internal sealed class ApprenticeService(
                         WizardEvent = frame,
                     });
                 }
+
                 if (frame.Type == IntelligenceEventType.ToolCall
                     && string.Equals(
                         frame.ToolCall?.Name,
@@ -2932,6 +3280,7 @@ internal sealed class ApprenticeService(
                     }
                     escalationReason = TryExtractPetitionReason(frame.ToolCall?.ArgumentsJson);
                 }
+
                 if (frame.Type == IntelligenceEventType.ToolResult
                     && frame.ToolCall is { CallId: { Length: > 0 } resultCallId }
                     && pendingPetitionCallIds.Remove(resultCallId))
@@ -2942,16 +3291,19 @@ internal sealed class ApprenticeService(
                         alreadyAlerted = true;
                     }
                 }
+
                 if (frame.Type == IntelligenceEventType.ToolError
                     && frame.ToolCall is { CallId: { Length: > 0 } errorCallId }
                     && pendingPetitionCallIds.Remove(errorCallId))
                 {
                     // ToolError for a pending petition → not alerted (alreadyAlerted unchanged).
                 }
+
                 if (frame.Type == IntelligenceEventType.Result && !string.IsNullOrWhiteSpace(frame.Message))
                 {
                     stepResultText = frame.Message;
                 }
+
                 if (frame.Type == IntelligenceEventType.Error)
                 {
                     stepFailed = true;
@@ -2961,6 +3313,7 @@ internal sealed class ApprenticeService(
                     // Stream Error: any still-pending petitions are not alerted.
                     pendingPetitionCallIds.Clear();
                 }
+
                 if (ApprenticeStreamFramePolicy.IsTerminalToolDenial(frame))
                 {
                     stepFailed = true;
@@ -2969,12 +3322,15 @@ internal sealed class ApprenticeService(
 
                     stepError = frame.Data;
                 }
+
                 if (frame.Type == IntelligenceEventType.ToolResult
                     && string.Equals(frame.ToolCall?.Name, "cast_sending", StringComparison.Ordinal)
                     && !string.IsNullOrWhiteSpace(frame.Data)
                     && TryParseCastSendingChildId(frame.Data, out Guid spawnedChildId))
                 {
                     spawnedChildIds.Add(spawnedChildId);
+
+                    castSendings?.Record(spawnedChildId);
                 }
                 // dispatch_sending (Archmage Client) is blocking: by the time this ToolResult frame
                 // arrives, the exchange with the remote A2A agent has already fully completed or
@@ -2995,12 +3351,14 @@ internal sealed class ApprenticeService(
         {
             pauseOrCancel = true;
         }
+
         if (escalationRequested)
         {
             stepFailed = true;
 
             stepError = escalationReason ?? "The Apprentice petitioned the Dungeon Master for guidance.";
         }
+
         return new StepExecutionOutcome(
             StepFailed: stepFailed,
             EscalationRequested: escalationRequested,
@@ -3013,12 +3371,14 @@ internal sealed class ApprenticeService(
             StepStarted: stepStarted,
             SpawnedChildIds: spawnedChildIds);
     }
+
     private static string? TryExtractPetitionReason(string? argumentsJson)
     {
         if (string.IsNullOrWhiteSpace(argumentsJson))
         {
             return null;
         }
+
         try
         {
             using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(argumentsJson);
@@ -3032,8 +3392,10 @@ internal sealed class ApprenticeService(
         catch (System.Text.Json.JsonException)
         {
         }
+
         return null;
     }
+
     private static ApprenticeDetailDto ToDetailDto(Apprentice apprentice)
     {
         List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
@@ -3056,6 +3418,7 @@ internal sealed class ApprenticeService(
             apprentice.CreatedAt,
             apprentice.UpdatedAt);
     }
+
     internal sealed record StepExecutionOutcome(
         bool StepFailed,
         bool EscalationRequested,
@@ -3067,6 +3430,51 @@ internal sealed class ApprenticeService(
         bool AlreadyAlerted,
         DateTimeOffset StepStarted,
         IReadOnlyList<Guid> SpawnedChildIds);
+
+    internal sealed class CastSendingSettlement
+    {
+        private readonly Lock _gate = new();
+
+        private readonly List<Guid> _detectionOrder = [];
+
+        private readonly HashSet<Guid> _detected = [];
+
+        private readonly HashSet<Guid> _settled = [];
+
+        internal void Record(Guid childId)
+        {
+            if (childId == Guid.Empty)
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                if (_detected.Add(childId))
+                {
+                    _detectionOrder.Add(childId);
+                }
+            }
+        }
+
+        internal IReadOnlyList<Guid> SnapshotUnsettled()
+        {
+            lock (_gate)
+            {
+                return _detectionOrder
+                    .Where(childId => !_settled.Contains(childId))
+                    .ToArray();
+            }
+        }
+
+        internal void MarkSettled(Guid childId)
+        {
+            lock (_gate)
+            {
+                _settled.Add(childId);
+            }
+        }
+    }
 
     private void Publish(Guid apprenticeId, ApprenticeEvent @event) =>
         chronicleHub.Publish(apprenticeId, @event);
@@ -3082,8 +3490,10 @@ internal sealed class ApprenticeService(
         {
             return arc.DefaultModel.Trim();
         }
+
         return null;
     }
+
     private static bool CanStart(string status) =>
         string.Equals(status, ApprenticeStatus.Idle.ToString(), StringComparison.Ordinal)
         || string.Equals(status, ApprenticeStatus.Failed.ToString(), StringComparison.Ordinal)

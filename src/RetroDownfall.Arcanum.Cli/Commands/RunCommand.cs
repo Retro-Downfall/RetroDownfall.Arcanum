@@ -11,7 +11,6 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 public sealed record RunCommandRequest(
-
     string[] Prompt,
 
     bool Research,
@@ -67,7 +66,6 @@ public sealed record RunCommandRequest(
     decimal? CostBudget);
 
 internal sealed class RunCommand(
-
     IRunInputReader inputReader,
 
     IRunAttachmentStager attachmentStager,
@@ -88,7 +86,6 @@ internal sealed class RunCommand(
 
     ICliEnvironment environment)
 {
-
     private const string AttachmentOnlyPrompt =
         "Analyze the attached context.";
 
@@ -96,7 +93,6 @@ internal sealed class RunCommand(
         RunCommandRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -107,16 +103,13 @@ internal sealed class RunCommand(
 
         if (activeRead.IsFailure)
         {
-
             return Fail(
                 activeRead.Error.Message,
                 CliExitCode.GenericError);
-
         }
 
         if (activeRead.Value is { } active)
         {
-
             string scope = active.Scope switch
             {
                 InstallationResetScope.Workspace => "--workspace",
@@ -128,23 +121,19 @@ internal sealed class RunCommand(
                 "An installation factory reset is active. Resume it with "
                 + $"'arcanum data factory-reset {scope} --apply'.",
                 CliExitCode.GenericError);
-
         }
 
         Result<bool> fresh = startupProbe.IsFreshInstallation();
 
         if (fresh.IsFailure)
         {
-
             return Fail(
                 fresh.Error.Message,
                 CliExitCode.GenericError);
-
         }
 
         if (fresh.Value)
         {
-
             bool setupIsInteractive = environment.IsInteractive
                 && !request.Unattended
                 && !CliInvocationContext.Current.Json
@@ -152,34 +141,27 @@ internal sealed class RunCommand(
 
             if (!setupIsInteractive)
             {
-
                 return Fail(
                     "Arcanum setup is required. Run 'arcanum setup' interactively before using 'arcanum run'.",
                     CliExitCode.ConfigurationError);
-
             }
 
             return await setupCommand
                 .RunAsync(new SetupCommandOptions(), cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (request.Research
             && request.Spell is not null)
         {
-
             return Fail(
                 "--research and --spell select different routes and cannot be used together.");
-
         }
 
         if (request.Spell is not null
             && string.IsNullOrWhiteSpace(request.Spell))
         {
-
             return Fail("--spell requires a named Spell.");
-
         }
 
         // A malformed reference is invalid input, so it is rejected here rather than deep in the
@@ -189,9 +171,7 @@ internal sealed class RunCommand(
                 out _,
                 out string? attachmentError))
         {
-
             return Fail(attachmentError!);
-
         }
 
         if (!TryResolveSessionSelector(
@@ -200,9 +180,7 @@ internal sealed class RunCommand(
                 out bool sessionPicker,
                 out string? selectorError))
         {
-
             return Fail(selectorError!);
-
         }
 
         string positionalInstruction = AskCommand.BuildPrompt(request.Prompt);
@@ -218,25 +196,29 @@ internal sealed class RunCommand(
 
         if (!input.IsSuccess)
         {
-
             return Fail(
                 input.Error ?? "Standard input could not be read.");
-
         }
 
         if (string.IsNullOrWhiteSpace(input.Instruction)
             && input.PipedContent is null
             && request.With.Length == 0)
         {
-
             return Fail(
                 "Prompt, redirected standard input, or --with @path context is required.");
-
         }
 
-        _ = await serveLauncher
+        ServeLaunchResult launch = await serveLauncher
             .EnsureRunningAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        if (!ServeOwnershipPolicy.CanProceed(launch))
+        {
+            return Fail(
+                launch.Guidance
+                    ?? "Arcanum could not start or authenticate its local server.",
+                ServeOwnershipPolicy.FailureExitCode(launch));
+        }
 
         string invocationDirectory = Environment.CurrentDirectory;
 
@@ -258,17 +240,13 @@ internal sealed class RunCommand(
 
         if (!contextResult.IsSuccess)
         {
-
             if (contextResult.IsCancelled)
             {
-
                 return (int)CliExitCode.Success;
-
             }
 
             return Fail(
                 contextResult.Error ?? "CLI context could not be resolved.");
-
         }
 
         WriteDiagnostics(
@@ -283,11 +261,9 @@ internal sealed class RunCommand(
         CliEffectiveContext executionContext = context.Workspace.Value is null
             ? context with
             {
-
                 Workspace = new CliContextValue<string?>(
                     workingDirectory,
                     CliContextSource.CurrentDirectory),
-
             }
             : context;
 
@@ -303,10 +279,8 @@ internal sealed class RunCommand(
 
         if (!staged.IsSuccess)
         {
-
             return Fail(
                 staged.Error ?? "Turn-scoped context could not be staged.");
-
         }
 
         bool hasStagedContext = staged.AttachedFiles.Count > 0
@@ -317,17 +291,13 @@ internal sealed class RunCommand(
         if (instruction.Length == 0
             && hasStagedContext)
         {
-
             instruction = AttachmentOnlyPrompt;
-
         }
 
         if (instruction.Length == 0)
         {
-
             return Fail(
                 "Prompt or non-empty staged context is required.");
-
         }
 
         RunRoute route = request.Research
@@ -347,7 +317,6 @@ internal sealed class RunCommand(
                     staged.ScryingFoci),
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -361,7 +330,6 @@ internal sealed class RunCommand(
         out bool picker,
         out string? error)
     {
-
         selector = request.Session;
 
         picker = false;
@@ -374,11 +342,9 @@ internal sealed class RunCommand(
 
         if (selectorCount > 1)
         {
-
             error = "--session, --continue, and --resume each select a session; supply exactly one.";
 
             return false;
-
         }
 
         // --new wins over a selector rather than adding a second conflict, so nothing is resolved:
@@ -386,25 +352,20 @@ internal sealed class RunCommand(
         // session, and would announce a continuation the caller discards moments later.
         if (request.NewSession)
         {
-
             selector = null;
 
             return true;
-
         }
 
         if (request.Continue)
         {
-
             Guid? previous = sessionManager.GetLastSessionId(quiet: true);
 
             if (previous is null)
             {
-
                 error = "No previous session to continue. Start one with: arcanum run \"<prompt>\"";
 
                 return false;
-
             }
 
             selector = previous.Value.ToString("D");
@@ -412,70 +373,53 @@ internal sealed class RunCommand(
             dispatcher.WriteVerbose($"Continuing session {selector}.");
 
             return true;
-
         }
 
         if (request.Resume)
         {
-
             if (string.IsNullOrWhiteSpace(request.ResumeTarget))
             {
-
                 picker = true;
 
                 selector = null;
 
                 return true;
-
             }
 
             selector = request.ResumeTarget;
-
         }
 
         return true;
-
     }
 
     private int Fail(
         string message,
         CliExitCode exitCode = CliExitCode.ConfigurationError)
     {
-
         dispatcher.WriteDiagnostic(message);
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 new CliErrorPayload(
                     message,
                     (int)exitCode),
                 CliJsonContext.Default.CliErrorPayload);
-
         }
 
         return (int)exitCode;
-
     }
 
     private void WriteDiagnostics(
         IEnumerable<string> diagnostics,
         string prefix = "")
     {
-
         foreach (string diagnostic in diagnostics)
         {
-
             if (!string.IsNullOrWhiteSpace(diagnostic))
             {
-
                 dispatcher.WriteDiagnostic(prefix + diagnostic);
-
             }
-
         }
-
     }
-
 }

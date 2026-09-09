@@ -443,78 +443,57 @@ internal sealed partial class WorkspaceIndexingService(
 
         while (pendingDirectories.Count > 0)
         {
-
             string directory = pendingDirectories.Dequeue();
 
             foreach (string fullPath in EnumerateAccessibleEntries(directory))
             {
-
                 FileAttributes attributes;
 
                 try
                 {
-
                     attributes = File.GetAttributes(fullPath);
-
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-
                     continue;
-
                 }
 
                 if ((attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0)
                 {
-
                     continue;
-
                 }
 
                 if ((attributes & FileAttributes.Directory) != 0)
                 {
-
                     string name = Path.GetFileName(fullPath);
 
                     if (IgnoredDirectorySegments.Contains(name))
                     {
-
                         // Pruned before recursion — its contents are never visited at all, rather
                         // than being walked and discarded one entry at a time.
                         continue;
-
                     }
 
                     if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspacePath, fullPath, out _))
                     {
-
                         // Escaping symlinked directory — never descended into.
                         continue;
-
                     }
 
                     if (!visitedCanonicalDirs.Add(ResolveCanonicalDirectory(fullPath)))
                     {
-
                         // Symlink cycle — already visited this canonical directory.
                         continue;
-
                     }
 
                     pendingDirectories.Enqueue(fullPath);
-
                 }
                 else if (extensions.Contains(Path.GetExtension(fullPath)))
                 {
-
                     yield return fullPath;
-
                 }
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -525,92 +504,66 @@ internal sealed partial class WorkspaceIndexingService(
     /// </summary>
     private static string ResolveCanonicalDirectory(string directory)
     {
-
         try
         {
-
             return Directory.ResolveLinkTarget(directory, returnFinalTarget: true)?.FullName
                 ?? Path.GetFullPath(directory);
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
         {
-
             try
             {
-
                 return Path.GetFullPath(directory);
-
             }
             catch (Exception inner) when (inner is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
             {
-
                 return directory;
-
             }
-
         }
-
     }
 
     private static IEnumerable<string> EnumerateAccessibleEntries(
         string directory)
     {
-
         IEnumerator<string>? enumerator = null;
 
         try
         {
-
             enumerator = Directory
                 .EnumerateFileSystemEntries(
                     directory,
                     "*",
                     SearchOption.TopDirectoryOnly)
                 .GetEnumerator();
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             yield break;
-
         }
 
         using (enumerator)
         {
-
             while (true)
             {
-
                 string fullPath;
 
                 try
                 {
-
                     if (!enumerator.MoveNext())
                     {
-
                         yield break;
-
                     }
 
                     fullPath = enumerator.Current;
-
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-
                     yield break;
-
                 }
 
                 yield return fullPath;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -627,11 +580,9 @@ internal sealed partial class WorkspaceIndexingService(
         HashSet<string> seenRelativePaths,
         CancellationToken cancellationToken)
     {
-
         List<string> indexedRelativePaths = await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -651,53 +602,39 @@ internal sealed partial class WorkspaceIndexingService(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     paths.Add(reader.GetString(0));
-
                 }
 
                 return paths;
-
             },
             cancellationToken).ConfigureAwait(false);
 
         foreach (string relativePath in indexedRelativePaths)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (seenRelativePaths.Contains(relativePath))
             {
-
                 continue;
-
             }
 
             try
             {
-
                 await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (Exception ex)
             {
-
                 logger.LogWarning(
                     ex,
                     "Failed to delete orphaned chunks for removed file {RelativePath} in {WorkspacePath}; will retry next tick.",
                     relativePath,
                     workspacePath);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -715,7 +652,6 @@ internal sealed partial class WorkspaceIndexingService(
         long fileLength,
         CancellationToken cancellationToken)
     {
-
         int maxChunkChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
             optionsMonitor.CurrentValue.ResolveEmbeddings().ChunkSizeChars);
 
@@ -727,7 +663,6 @@ internal sealed partial class WorkspaceIndexingService(
 
         try
         {
-
             await using FileStream stream = new(
                 fullPath,
                 FileMode.Open,
@@ -744,13 +679,11 @@ internal sealed partial class WorkspaceIndexingService(
                 || !FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity)
                 || !WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspacePath, Path.GetFullPath(stream.Name), out _))
             {
-
                 logger.LogWarning(
                     "Workspace indexing rejected {FullPath}: file identity changed between the containment check and open (possible symlink swap); skipping.",
                     fullPath);
 
                 return false;
-
             }
 
             using StreamReader reader = new(stream);
@@ -782,7 +715,6 @@ internal sealed partial class WorkspaceIndexingService(
 
             while (true)
             {
-
                 int requested = readPageCharacters - carriedChars;
 
                 int read = await reader
@@ -795,9 +727,7 @@ internal sealed partial class WorkspaceIndexingService(
 
                 if (available == 0)
                 {
-
                     break;
-
                 }
 
                 // ReadBlockAsync fills to a character count and knows nothing about UTF-16 pairs, so a
@@ -823,12 +753,10 @@ internal sealed partial class WorkspaceIndexingService(
 
                 if (pageChunks.Length > 0)
                 {
-
                     IndexedChunk[] indexedChunks = new IndexedChunk[pageChunks.Length];
 
                     for (int index = 0; index < pageChunks.Length; index++)
                     {
-
                         WorkspaceCodeChunker.Chunk chunk = pageChunks[index];
 
                         int occurrence = occurrences.GetValueOrDefault(chunk.Content);
@@ -842,7 +770,6 @@ internal sealed partial class WorkspaceIndexingService(
                                 chunk.Content,
                                 occurrence),
                             chunk);
-
                     }
 
                     IndexedChunk[] missing = indexedChunks
@@ -853,7 +780,6 @@ internal sealed partial class WorkspaceIndexingService(
 
                     if (missing.Length > 0)
                     {
-
                         Result<Embedding<float>[]> embedResult = await weaveService
                             .EmbedBatchAsync(
                                 missing
@@ -865,7 +791,6 @@ internal sealed partial class WorkspaceIndexingService(
                         if (embedResult.IsFailure
                             || embedResult.Value.Length != missing.Length)
                         {
-
                             logger.LogWarning(
                                 "Workspace indexing embed page failed for {FullPath} ({Code}): {Message}",
                                 fullPath,
@@ -879,25 +804,20 @@ internal sealed partial class WorkspaceIndexingService(
                             await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
 
                             return false;
-
                         }
 
                         generated = embedResult.Value;
-
                     }
 
                     Dictionary<string, float[]> vectorsByChunkId = new(StringComparer.Ordinal);
 
                     for (int index = 0; index < missing.Length; index++)
                     {
-
                         vectorsByChunkId[missing[index].ChunkId] = generated[index].Vector.ToArray();
-
                     }
 
                     for (int index = 0; index < indexedChunks.Length; index++)
                     {
-
                         IndexedChunk indexedChunk = indexedChunks[index];
 
                         WorkspaceCodeChunker.Chunk chunk = indexedChunk.Chunk;
@@ -916,9 +836,7 @@ internal sealed partial class WorkspaceIndexingService(
 
                         if (existingIds.Contains(indexedChunk.ChunkId))
                         {
-
                             continue;
-
                         }
 
                         insertedIds.Add(indexedChunk.ChunkId);
@@ -940,9 +858,7 @@ internal sealed partial class WorkspaceIndexingService(
                                 vectorsByChunkId[indexedChunk.ChunkId],
                                 cancellationToken)
                             .ConfigureAwait(false);
-
                     }
-
                 }
 
                 globalCharacterOffset += pageLength;
@@ -953,23 +869,17 @@ internal sealed partial class WorkspaceIndexingService(
 
                 if (carriedChars == 1)
                 {
-
                     buffer[0] = buffer[available - 1];
-
                 }
-
             }
 
             foreach (string obsoleteId in existingIds.Where(id => !nextIds.Contains(id)))
             {
-
                 await DeleteChunkByIdAsync(db, obsoleteId, cancellationToken).ConfigureAwait(false);
-
             }
 
             foreach (IndexedChunkMetadata chunk in metadata)
             {
-
                 await UpdateChunkMetadataAsync(
                     db,
                     chunk.ChunkId,
@@ -981,76 +891,57 @@ internal sealed partial class WorkspaceIndexingService(
                     lastWriteUtc,
                     fileLength,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             return true;
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
 
             throw;
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
 
             logger.LogWarning(ex, "Workspace indexing could not read {FullPath}; skipping.", fullPath);
 
             return false;
-
         }
         catch
         {
-
             await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
 
             throw;
-
         }
         finally
         {
-
             ArrayPool<char>.Shared.Return(buffer);
-
         }
-
     }
 
     private async Task DeleteInsertedChunksAsync(
         ArcanumDbContext db,
         IEnumerable<string> insertedIds)
     {
-
         foreach (string chunkId in insertedIds)
         {
-
             try
             {
-
                 await DeleteChunkByIdAsync(
                     db,
                     chunkId,
                     CancellationToken.None).ConfigureAwait(false);
-
             }
             catch (Exception ex)
             {
-
                 logger.LogWarning(
                     ex,
                     "Workspace indexing could not clean up incomplete chunk {ChunkId}; reconciliation will retry it.",
                     chunkId);
-
             }
-
         }
-
     }
 
     private static string CreateStableChunkId(
@@ -1059,7 +950,6 @@ internal sealed partial class WorkspaceIndexingService(
         string content,
         int occurrence)
     {
-
         string identity = string.Concat(
             workspacePath,
             "\0",
@@ -1070,7 +960,6 @@ internal sealed partial class WorkspaceIndexingService(
             content);
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
-
     }
 
     private static Task<HashSet<string>> LoadExistingChunkIdsAsync(
@@ -1079,11 +968,9 @@ internal sealed partial class WorkspaceIndexingService(
         string relativePath,
         CancellationToken cancellationToken)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -1105,16 +992,12 @@ internal sealed partial class WorkspaceIndexingService(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     ids.Add(reader.GetString(0));
-
                 }
 
                 return ids;
-
             },
             cancellationToken);
-
     }
 
     private Task UpdateChunkMetadataAsync(
@@ -1129,11 +1012,9 @@ internal sealed partial class WorkspaceIndexingService(
         long fileLength,
         CancellationToken cancellationToken)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -1161,17 +1042,15 @@ internal sealed partial class WorkspaceIndexingService(
 
                 AddParameter(cmd, "@endLine", endLine);
 
-                AddParameter(cmd, "@fileLastWriteTime", fileLastWriteTimeUtc.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@fileLastWriteTime", UtcInstantText.Format(fileLastWriteTimeUtc));
 
                 AddParameter(cmd, "@fileLength", fileLength);
 
                 AddParameter(cmd, "@chunkId", chunkId);
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     private Task DeleteChunkByIdAsync(
@@ -1179,16 +1058,13 @@ internal sealed partial class WorkspaceIndexingService(
         string chunkId,
         CancellationToken cancellationToken)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
                 if (weaveIndexAvailability.IsVecAvailable)
                 {
-
                     await using DbCommand vecCmd = connection.CreateCommand();
 
                     vecCmd.CommandText = """DELETE FROM "workspace_file_embeddings_vec" WHERE "ChunkId" = @chunkId""";
@@ -1196,7 +1072,6 @@ internal sealed partial class WorkspaceIndexingService(
                     AddParameter(vecCmd, "@chunkId", chunkId);
 
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await using DbCommand embeddingCmd = connection.CreateCommand();
@@ -1214,10 +1089,8 @@ internal sealed partial class WorkspaceIndexingService(
                 AddParameter(chunkCmd, "@chunkId", chunkId);
 
                 _ = await chunkCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     /// <summary>
@@ -1230,11 +1103,9 @@ internal sealed partial class WorkspaceIndexingService(
         string workspacePath,
         CancellationToken cancellationToken)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -1259,25 +1130,18 @@ internal sealed partial class WorkspaceIndexingService(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     string relativePath = reader.GetString(0);
 
-                    DateTime lastWrite = DateTime.Parse(
-                        reader.GetString(1),
-                        CultureInfo.InvariantCulture,
-                        DateTimeStyles.RoundtripKind);
+                    DateTime lastWrite = UtcInstantText.ParseDateTime(reader.GetString(1));
 
                     map[relativePath] = new WorkspaceFileSignature(
                         lastWrite,
                         reader.IsDBNull(2) ? UnrecordedFileLength : reader.GetInt64(2));
-
                 }
 
                 return map;
-
             },
             cancellationToken);
-
     }
 
     private Task DeleteExistingChunksAsync(
@@ -1286,16 +1150,13 @@ internal sealed partial class WorkspaceIndexingService(
         string relativePath,
         CancellationToken cancellationToken)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
                 if (weaveIndexAvailability.IsVecAvailable)
                 {
-
                     await using DbCommand deleteVecCmd = connection.CreateCommand();
 
                     deleteVecCmd.CommandText =
@@ -1312,7 +1173,6 @@ internal sealed partial class WorkspaceIndexingService(
                     AddParameter(deleteVecCmd, "@relativePath", relativePath);
 
                     _ = await deleteVecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await using DbCommand deleteBlobCmd = connection.CreateCommand();
@@ -1345,10 +1205,8 @@ internal sealed partial class WorkspaceIndexingService(
                 AddParameter(deleteChunksCmd, "@relativePath", relativePath);
 
                 _ = await deleteChunksCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     private Task InsertChunkAsync(
@@ -1368,11 +1226,9 @@ internal sealed partial class WorkspaceIndexingService(
         float[] vector,
         CancellationToken cancellationToken)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
                 // One transaction over the chunk row, its embedding, and the optional vec0 mirror — the
@@ -1417,11 +1273,11 @@ internal sealed partial class WorkspaceIndexingService(
 
                 AddParameter(chunkCmd, "@endLine", endLine);
 
-                AddParameter(chunkCmd, "@fileLastWriteTime", fileLastWriteTimeUtc.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(chunkCmd, "@fileLastWriteTime", UtcInstantText.Format(fileLastWriteTimeUtc));
 
                 AddParameter(chunkCmd, "@fileLength", fileLength);
 
-                AddParameter(chunkCmd, "@indexedAt", indexedAt.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(chunkCmd, "@indexedAt", UtcInstantText.Format(indexedAt));
 
                 _ = await chunkCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1447,7 +1303,6 @@ internal sealed partial class WorkspaceIndexingService(
 
                 if (weaveIndexAvailability.IsVecAvailable)
                 {
-
                     await using DbCommand vecCmd = connection.CreateCommand();
 
                     vecCmd.Transaction = transaction;
@@ -1463,35 +1318,27 @@ internal sealed partial class WorkspaceIndexingService(
                     AddParameter(vecCmd, "@embedding", encoded);
 
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     private static async Task<DbConnection> OpenConnectionAsync(ArcanumDbContext db, CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -1499,41 +1346,31 @@ internal sealed partial class WorkspaceIndexingService(
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static bool ContainsIgnoredDirectorySegment(string relativePath)
     {
-
         foreach (string segment in relativePath.Split(
                      [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
                      StringSplitOptions.RemoveEmptyEntries))
         {
-
             if (IgnoredDirectorySegments.Contains(segment))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     private enum PendingPathAction
     {
-
         Upsert,
         Delete,
-
     }
 
     private sealed class RuntimeStatusState
     {
-
         private readonly object _gate = new();
 
         private bool _watching;
@@ -1550,10 +1387,8 @@ internal sealed partial class WorkspaceIndexingService(
 
         public WorkspaceIndexRuntimeStatus Snapshot()
         {
-
             lock (_gate)
             {
-
                 return new WorkspaceIndexRuntimeStatus(
                     _watching,
                     _degraded,
@@ -1561,89 +1396,62 @@ internal sealed partial class WorkspaceIndexingService(
                     _reconciling,
                     _lastEventAt,
                     _lastSuccessfulIndexAt);
-
             }
-
         }
 
         public void SetWatching(bool watching)
         {
-
             lock (_gate)
             {
-
                 _watching = watching;
-
             }
-
         }
 
         public void MarkEvent()
         {
-
             lock (_gate)
             {
-
                 _lastEventAt = DateTimeOffset.UtcNow;
-
             }
-
         }
 
         public void MarkDegraded(bool overflowed)
         {
-
             lock (_gate)
             {
-
                 _degraded = true;
 
                 _overflowed |= overflowed;
-
             }
-
         }
 
         public void SetReconciling(bool reconciling)
         {
-
             lock (_gate)
             {
-
                 _reconciling = reconciling;
-
             }
-
         }
 
         public void MarkSuccessfulIndex()
         {
-
             lock (_gate)
             {
-
                 _lastSuccessfulIndexAt = DateTimeOffset.UtcNow;
-
             }
-
         }
 
         public void MarkReconciled()
         {
-
             lock (_gate)
             {
-
                 _degraded = false;
 
                 _overflowed = false;
 
                 _lastSuccessfulIndexAt = DateTimeOffset.UtcNow;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -1667,5 +1475,4 @@ internal sealed partial class WorkspaceIndexingService(
         int CharLength,
         int StartLine,
         int EndLine);
-
 }

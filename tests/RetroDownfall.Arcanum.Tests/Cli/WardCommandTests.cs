@@ -15,11 +15,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class WardCommandTests
 {
-
     [Fact]
     public void Ward_list_calls_get_wards()
     {
-
         WardDto ward = new("ward-1", "execute_command", null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(5));
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -35,13 +33,11 @@ public sealed class WardCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal("/api/wards", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Ward_get_binds_id_argument()
     {
-
         WardDto ward = new("ward-1", "execute_command", null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(5));
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -55,13 +51,11 @@ public sealed class WardCommandTests
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal("/api/wards/ward-1", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Ward_resolve_allow_posts_allow_true()
     {
-
         WardResolutionDto resolution = new("ward-1", true, "looks safe", DateTimeOffset.UtcNow);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -81,13 +75,11 @@ public sealed class WardCommandTests
         string body = ReadBody(request);
 
         Assert.Contains("\"allow\":true", body, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Ward_resolve_deny_posts_allow_false()
     {
-
         WardResolutionDto resolution = new("ward-1", false, null, DateTimeOffset.UtcNow);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -103,13 +95,11 @@ public sealed class WardCommandTests
         string body = ReadBody(request);
 
         Assert.Contains("\"allow\":false", body, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Ward_resolve_requires_exactly_one_of_allow_or_deny()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1"]);
@@ -117,13 +107,11 @@ public sealed class WardCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
     public void Ward_resolve_rejects_both_allow_and_deny()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--allow", "--deny"]);
@@ -131,12 +119,10 @@ public sealed class WardCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
-
     }
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -151,8 +137,11 @@ public sealed class WardCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        return CliTestHarness.Run(services, args);
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return CliTestHarness.Run(services, args);
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -160,31 +149,26 @@ public sealed class WardCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private static string ReadBody(HttpRequestMessage request)
     {
-
         if (request.Content is null)
         {
             return string.Empty;
         }
 
         return request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -195,33 +179,27 @@ public sealed class WardCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
@@ -230,7 +208,6 @@ public sealed class WardCommandTests
                 {
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
                 }
-
             }
 
             Requests.Add(snapshot);
@@ -240,9 +217,6 @@ public sealed class WardCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

@@ -9,24 +9,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class AttachmentMemoryProvenanceStore(
     ArcanumDbContext db) : IAttachmentMemoryProvenanceStore
 {
-
     public Task RecordConsultationsAsync(
         Guid sourceEntryId,
         IReadOnlyList<AttachmentMemoryProvenance> provenance,
         CancellationToken cancellationToken)
     {
-
         if (provenance.Count == 0)
         {
-
             return Task.CompletedTask;
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection
@@ -35,7 +30,6 @@ internal sealed class AttachmentMemoryProvenanceStore(
 
                 foreach (AttachmentMemoryProvenance source in provenance)
                 {
-
                     await using DbCommand command = connection.CreateCommand();
 
                     command.Transaction = transaction;
@@ -71,19 +65,16 @@ internal sealed class AttachmentMemoryProvenanceStore(
                     AddParameter(
                         command,
                         "@materializedAt",
-                        source.MaterializedAt.ToString("o", CultureInfo.InvariantCulture));
+                        UtcInstantText.Format(source.MaterializedAt));
 
                     AddParameter(command, "@sourceType", source.SourceType);
 
                     _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     public async Task<IReadOnlyList<AttachmentMemoryProvenance>> ListConsultationsAsync(
@@ -92,11 +83,9 @@ internal sealed class AttachmentMemoryProvenanceStore(
         DateTimeOffset throughInclusive,
         CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync<IReadOnlyList<AttachmentMemoryProvenance>>(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -124,15 +113,15 @@ internal sealed class AttachmentMemoryProvenanceStore(
                     "@sessionId",
                     sessionId.ToString().ToUpperInvariant());
 
-                AddParameter(
-                    command,
-                    "@afterExclusive",
-                    afterExclusive.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(
+                        command,
+                        "@afterExclusive",
+                        UtcInstantText.Format(afterExclusive));
 
-                AddParameter(
-                    command,
-                    "@throughInclusive",
-                    throughInclusive.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(
+                        command,
+                        "@throughInclusive",
+                        UtcInstantText.Format(throughInclusive));
 
                 List<AttachmentMemoryProvenance> results = [];
 
@@ -142,7 +131,6 @@ internal sealed class AttachmentMemoryProvenanceStore(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     results.Add(
                         new AttachmentMemoryProvenance(
                             Guid.Parse(reader.GetString(0)),
@@ -150,40 +138,32 @@ internal sealed class AttachmentMemoryProvenanceStore(
                             reader.GetString(2),
                             reader.GetInt32(3),
                             reader.GetString(4),
-                            DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture),
+                            UtcInstantText.Parse(reader.GetString(5)),
                             reader.GetString(6),
                             reader.GetInt32(7) == 1
                                 ? AttachmentSourceAvailability.Available
                                 : AttachmentSourceAvailability.Unavailable));
-
                 }
 
                 return results;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
-
     }
 
     private static void AddParameter(DbCommand command, string name, object value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -191,7 +171,5 @@ internal sealed class AttachmentMemoryProvenanceStore(
         parameter.Value = value;
 
         command.Parameters.Add(parameter);
-
     }
-
 }

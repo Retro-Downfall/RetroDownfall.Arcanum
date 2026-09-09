@@ -16,11 +16,9 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
 public sealed class TapestryWeavingAdmissionTests
 {
-
     [Fact]
     public async Task KeepClosedAndImmediateRecloseReturnToCadenceWithoutWaiters()
     {
-
         CadenceClock clock = new();
 
         await using TapestryAdmissionHarness harness = new(clock);
@@ -39,7 +37,6 @@ public sealed class TapestryWeavingAdmissionTests
 
         try
         {
-
             CadenceClock.Tick first = await clock.NextAsync();
 
             Assert.Equal(TimeSpan.FromHours(1), first.DueTime);
@@ -95,21 +92,16 @@ public sealed class TapestryWeavingAdmissionTests
             Assert.Equal(1, harness.Gate.EffectGroupAttempts);
 
             Assert.Equal(TapestryGenerationStatus.Complete, Assert.Single(harness.Persistence.Generations.Values).Status);
-
         }
         finally
         {
-
             await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
-
         }
-
     }
 
     [Fact]
     public async Task HostedShutdownJoinsAbandonmentAndEveryAsyncDisposal()
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         harness.Configuration.Features.Tapestry = true;
@@ -134,20 +126,17 @@ public sealed class TapestryWeavingAdmissionTests
 
         try
         {
-
             await provider.WaitAsync();
 
             stopping = harness.Service.StopAsync(CancellationToken.None);
 
             foreach (string phase in phases)
             {
-
                 await checkpoints[phase].WaitAsync();
 
                 Assert.False(stopping.IsCompleted, "Shutdown completed before " + phase);
 
                 checkpoints[phase].Release.TrySetResult();
-
             }
 
             await stopping.WaitAsync(TimeSpan.FromSeconds(10));
@@ -157,46 +146,35 @@ public sealed class TapestryWeavingAdmissionTests
             Assert.Empty(harness.Persistence.Generations);
 
             Assert.Equal(GrimoireWorkKind.TapestryWeaving, Assert.Single(harness.Gate.RequestedWorkKinds));
-
         }
         finally
         {
-
             provider.Release.TrySetResult();
 
             foreach (TapestryAdmissionHarness.Checkpoint checkpoint in checkpoints.Values)
             {
-
                 checkpoint.Release.TrySetResult();
-
             }
 
             await (stopping ?? harness.Service.StopAsync(CancellationToken.None)).WaitAsync(TimeSpan.FromSeconds(10));
-
         }
-
     }
 
     [Fact]
     public async Task HostCancellationAfterPublicationDoesNotEraseTheCommittedGeneration()
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         using CancellationTokenSource cancellation = new();
 
         harness.OnStep = (step, _) =>
         {
-
             if (step == "published")
             {
-
                 cancellation.Cancel();
-
             }
 
             return Task.CompletedTask;
-
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => harness.SweepAsync(cancellation.Token));
@@ -204,7 +182,6 @@ public sealed class TapestryWeavingAdmissionTests
         Assert.Equal(TapestryGenerationStatus.Complete, Assert.Single(harness.Persistence.Generations.Values).Status);
 
         Assert.Equal(["published", "abandon", "group-dispose", "scope-dispose", "lease-dispose"], harness.Events.Where(static step => step is "published" or "abandon" || step.EndsWith("-dispose", StringComparison.Ordinal)));
-
     }
 
     [Theory]
@@ -212,32 +189,25 @@ public sealed class TapestryWeavingAdmissionTests
     [InlineData(true)]
     public async Task FailedStartupCleanupIsRetriedBeforeDiscoveringAnyScope(bool cancel)
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         using CancellationTokenSource cancellation = new();
 
         harness.OnStep = (step, _) =>
         {
-
             if (step == "cleanup" && harness.Persistence.Cleanups == 1)
             {
-
                 if (cancel)
                 {
-
                     cancellation.Cancel();
 
                     return Task.FromException(new OperationCanceledException(cancellation.Token));
-
                 }
 
                 return Task.FromException(new IOException("Cleanup unavailable."));
-
             }
 
             return Task.CompletedTask;
-
         };
 
         Exception? failure = await Record.ExceptionAsync(() => harness.SweepAsync(cancellation.Token));
@@ -253,7 +223,6 @@ public sealed class TapestryWeavingAdmissionTests
         Assert.Equal(["scope-create", "cleanup", "discover"], harness.Events.Take(3));
 
         Assert.Equal(3, harness.Persistence.Cleanups);
-
     }
 
     [Theory]
@@ -265,7 +234,6 @@ public sealed class TapestryWeavingAdmissionTests
     [InlineData("summarize", true)]
     public async Task PerScopeFailuresDoNotPreventLaterScopes(string stage, bool nonHostCancellation)
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         harness.Persistence.Scopes = [TapestryAdmissionHarness.First, TapestryAdmissionHarness.Second];
@@ -274,20 +242,16 @@ public sealed class TapestryWeavingAdmissionTests
 
         harness.OnStep = (step, _) =>
         {
-
             if (step == stage && !failed)
             {
-
                 failed = true;
 
                 return Task.FromException(nonHostCancellation
                     ? new OperationCanceledException("Provider deadline.")
                     : new IOException("Scope unavailable."));
-
             }
 
             return Task.CompletedTask;
-
         };
 
         IReadOnlyList<TapestryWeaveOutcome> outcomes = await harness.SweepAsync();
@@ -297,7 +261,6 @@ public sealed class TapestryWeavingAdmissionTests
         Assert.Equal("/second", Assert.Single(harness.Persistence.Generations.Values).ScopeId);
 
         Assert.Equal(2, harness.Gate.EffectGroupAttempts);
-
     }
 
     [Theory]
@@ -305,7 +268,6 @@ public sealed class TapestryWeavingAdmissionTests
     [InlineData(true)]
     public async Task HostCancellationSurvivesFailedAbandonment(bool cleanupCancellation)
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         using CancellationTokenSource cancellation = new();
@@ -316,20 +278,16 @@ public sealed class TapestryWeavingAdmissionTests
 
         harness.OnStep = (step, _) =>
         {
-
             if (step == "summarize")
             {
-
                 cancellation.Cancel();
 
                 return Task.FromException(primary);
-
             }
 
             return step == "abandon"
                 ? Task.FromException(cleanupCancellation ? new OperationCanceledException("Cleanup cancelled.") : new IOException("Cleanup failed."))
                 : Task.CompletedTask;
-
         };
 
         Exception? actual = await Record.ExceptionAsync(() => harness.SweepAsync(cancellation.Token));
@@ -341,27 +299,21 @@ public sealed class TapestryWeavingAdmissionTests
         Assert.DoesNotContain("begin:/second", harness.Events);
 
         Assert.Equal(["group-dispose", "scope-dispose", "lease-dispose"], harness.Events.Where(static step => step.EndsWith("-dispose", StringComparison.Ordinal)));
-
     }
 
     [Fact]
     public async Task RevocationBeforeGenerationCreatesNoStagedGeneration()
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         harness.OnStep = (step, _) =>
         {
-
             if (step == "discover")
             {
-
                 Assert.True(harness.Inner.BeginOrResumeExclusive(Owner()).IsSuccess);
-
             }
 
             return Task.CompletedTask;
-
         };
 
         TapestrySweepOutcome outcome = await harness.Service.RunSweepAsync(TapestryAdmissionHarness.Settings(), CancellationToken.None);
@@ -381,13 +333,11 @@ public sealed class TapestryWeavingAdmissionTests
         Assert.DoesNotContain("prune", harness.Events);
 
         Assert.Equal(1, harness.Persistence.Cleanups);
-
     }
 
     [Fact]
     public async Task DeferralKeepsPreviousGenerationCurrentAndRediscoversAfterReopen()
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         _ = await harness.SweepAsync();
@@ -421,7 +371,6 @@ public sealed class TapestryWeavingAdmissionTests
         Assert.NotEqual(prior.GenerationId, Assert.Single(harness.Persistence.Generations.Values).GenerationId);
 
         Assert.Equal(2, harness.Gate.EffectGroupAttempts);
-
     }
 
     [Theory]
@@ -435,7 +384,6 @@ public sealed class TapestryWeavingAdmissionTests
     [InlineData("publish")]
     public async Task OneWinningGroupCoversTheWholeGenerationAndRefusesTheNextScope(string frontier)
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         harness.Persistence.Scopes = [TapestryAdmissionHarness.First, TapestryAdmissionHarness.Second];
@@ -444,23 +392,18 @@ public sealed class TapestryWeavingAdmissionTests
 
         harness.OnStep = async (step, token) =>
         {
-
             if (step == frontier)
             {
-
                 await checkpoint.PauseAsync(token);
-
             }
 
             token.ThrowIfCancellationRequested();
-
         };
 
         Task<IReadOnlyList<TapestryWeaveOutcome>> sweep = harness.SweepAsync();
 
         try
         {
-
             await checkpoint.WaitAsync();
 
             Assert.Equal(1, harness.Gate.EffectGroupAttempts);
@@ -490,23 +433,18 @@ public sealed class TapestryWeavingAdmissionTests
             Assert.DoesNotContain("begin:/second", events);
 
             Assert.DoesNotContain("prune", events);
-
         }
         finally
         {
-
             checkpoint.Release.TrySetResult();
 
             await sweep;
-
         }
-
     }
 
     [Fact]
     public async Task WinningGenerationDrainsThroughPublicationGroupScopeAndLeaseDisposal()
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         string[] phases = ["publish", "group-dispose", "scope-dispose", "lease-dispose"];
@@ -521,7 +459,6 @@ public sealed class TapestryWeavingAdmissionTests
 
         try
         {
-
             await checkpoints["publish"].WaitAsync();
 
             Assert.Equal(1, harness.Gate.EffectGroupAttempts);
@@ -532,13 +469,11 @@ public sealed class TapestryWeavingAdmissionTests
 
             foreach (string phase in phases)
             {
-
                 await checkpoints[phase].WaitAsync();
 
                 Assert.False(drain.IsCompleted, "Drain completed before " + phase);
 
                 checkpoints[phase].Release.TrySetResult();
-
             }
 
             Assert.Equal(TapestryWeaveStatus.Woven, Assert.Single(await sweep).Status);
@@ -552,22 +487,16 @@ public sealed class TapestryWeavingAdmissionTests
             Assert.True(Array.IndexOf(events, "group-dispose") < Array.LastIndexOf(events, "cleanup"));
 
             Assert.True(Array.IndexOf(events, "prune") < Array.IndexOf(events, "scope-dispose"));
-
         }
         finally
         {
-
             foreach (TapestryAdmissionHarness.Checkpoint checkpoint in checkpoints.Values)
             {
-
                 checkpoint.Release.TrySetResult();
-
             }
 
             await sweep;
-
         }
-
     }
 
     [Theory]
@@ -575,7 +504,6 @@ public sealed class TapestryWeavingAdmissionTests
     [InlineData(true)]
     public async Task FailedOrCancelledGenerationAwaitsAbandonmentBeforeReleasingGroup(bool cancel)
     {
-
         await using TapestryAdmissionHarness harness = new();
 
         using CancellationTokenSource cancellation = new();
@@ -584,39 +512,30 @@ public sealed class TapestryWeavingAdmissionTests
 
         harness.OnStep = async (step, token) =>
         {
-
             if (step == "summarize")
             {
-
                 if (cancel)
                 {
-
                     cancellation.Cancel();
 
                     token.ThrowIfCancellationRequested();
-
                 }
 
                 throw new InvalidOperationException("Provider unavailable.");
-
             }
 
             if (step == "abandon")
             {
-
                 Assert.False(token.CanBeCanceled);
 
                 await abandonment.PauseAsync();
-
             }
-
         };
 
         Task<IReadOnlyList<TapestryWeaveOutcome>> sweep = harness.SweepAsync(cancellation.Token);
 
         try
         {
-
             await abandonment.WaitAsync();
 
             Assert.Equal(1, harness.Gate.EffectGroupAttempts);
@@ -633,37 +552,28 @@ public sealed class TapestryWeavingAdmissionTests
 
             if (cancel)
             {
-
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sweep);
-
             }
             else
             {
-
                 Assert.Equal(TapestryWeaveStatus.Failed, Assert.Single(await sweep).Status);
-
             }
 
             Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
 
             Assert.Empty(harness.Persistence.Generations);
-
         }
         finally
         {
-
             abandonment.Release.TrySetResult();
 
             _ = await Record.ExceptionAsync(() => sweep);
-
         }
-
     }
 
     [Fact]
     public async Task ClosedGateCreatesNoTapestrySweepScope()
     {
-
         GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
 
         RecordingGrimoireWorkAdmissionGate gate = new(inner);
@@ -699,7 +609,6 @@ public sealed class TapestryWeavingAdmissionTests
         Assert.Empty(outcome.Outcomes);
 
         Assert.Equal([GrimoireWorkKind.TapestryWeaving], gate.RequestedWorkKinds);
-
     }
 
     private static CovenantExclusiveRecoveryOwner Owner() =>
@@ -707,23 +616,18 @@ public sealed class TapestryWeavingAdmissionTests
 
     private sealed class RefusingScopeFactory : IServiceScopeFactory
     {
-
         internal int Created { get; private set; }
 
         public IServiceScope CreateScope()
         {
-
             Created++;
 
             throw new InvalidOperationException("Admission must precede scope creation.");
-
         }
-
     }
 
     private sealed class CadenceClock : TimeProvider
     {
-
         private readonly Channel<Tick> _ticks = Channel.CreateUnbounded<Tick>();
 
         internal async Task<Tick> NextAsync() =>
@@ -731,32 +635,25 @@ public sealed class TapestryWeavingAdmissionTests
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
-
             Tick tick = new(callback, state, dueTime);
 
             _ticks.Writer.TryWrite(tick);
 
             return tick;
-
         }
 
         internal sealed class Tick(TimerCallback callback, object? state, TimeSpan dueTime) : ITimer
         {
-
             private int _disposed;
 
             internal TimeSpan DueTime { get; } = dueTime;
 
             internal void Fire()
             {
-
                 if (Volatile.Read(ref _disposed) == 0)
                 {
-
                     callback(state);
-
                 }
-
             }
 
             public bool Change(TimeSpan dueTime, TimeSpan period) => false;
@@ -765,15 +662,10 @@ public sealed class TapestryWeavingAdmissionTests
 
             public ValueTask DisposeAsync()
             {
-
                 Dispose();
 
                 return ValueTask.CompletedTask;
-
             }
-
         }
-
     }
-
 }

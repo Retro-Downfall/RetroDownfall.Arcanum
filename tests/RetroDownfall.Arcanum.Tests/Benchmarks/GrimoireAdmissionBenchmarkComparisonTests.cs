@@ -6,11 +6,9 @@ namespace RetroDownfall.Arcanum.Tests.Benchmarks;
 
 public sealed class GrimoireAdmissionBenchmarkComparisonTests
 {
-
     [Fact]
     public void Six_counterbalanced_pairs_accept_only_the_predeclared_mixed_cell()
     {
-
         AdmissionBenchmarkEvidenceBundle evidence = Evidence();
 
         AdmissionBenchmarkComparisonReport report = AdmissionBenchmarkComparison.Compare(
@@ -26,7 +24,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
         Assert.Equal(1.25, report.MixedThroughputLowerBound, 10);
 
         Assert.Equal(1, report.EfP99UpperBound, 10);
-
     }
 
     [Theory]
@@ -41,7 +38,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
     [InlineData("mixed-lower")]
     public void Every_acceptance_requirement_rejects_independently(string breakName)
     {
-
         AdmissionBenchmarkEvidenceBundle evidence = Evidence(breakName);
 
         AdmissionBenchmarkComparisonReport report = AdmissionBenchmarkComparison.Compare(
@@ -60,13 +56,11 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
         };
 
         Assert.Contains(report.Reasons, reason => reason.StartsWith(expectedReasonPrefix, StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Zero_allocations_are_compared_exactly_and_contention_is_diagnostic_only()
     {
-
         AdmissionBenchmarkEvidenceBundle evidence = Evidence(
             baseAllocation: 0,
             candidateAllocation: 0,
@@ -80,13 +74,11 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
         Assert.True(report.Valid);
 
         Assert.True(report.Accepted, string.Join(global::System.Environment.NewLine, report.Reasons));
-
     }
 
     [Fact]
     public void Finite_extreme_mixed_ratios_produce_a_finite_overflow_safe_average()
     {
-
         AdmissionBenchmarkComparisonReport report = AdmissionBenchmarkComparison.Compare(
             AdmissionBenchmarkManifest.CreateDefault(),
             Evidence("overflowed-average"));
@@ -96,7 +88,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
         Assert.True(double.IsFinite(report.MixedThroughputPointRatio));
 
         Assert.Equal(double.MaxValue, report.MixedThroughputPointRatio);
-
     }
 
     [Theory]
@@ -126,7 +117,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
     [InlineData("failed-churn-drain")]
     public void Malformed_or_incomplete_evidence_is_invalid_not_a_measured_rejection(string breakName)
     {
-
         AdmissionBenchmarkEvidenceBundle evidence = Evidence(breakName);
 
         AdmissionBenchmarkComparisonReport report = AdmissionBenchmarkComparison.Compare(
@@ -138,7 +128,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
         Assert.False(report.Accepted);
 
         Assert.Equal(2, report.ExitCode);
-
     }
 
     private static AdmissionBenchmarkEvidenceBundle Evidence(
@@ -148,12 +137,10 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
         long baseContention = 0,
         long candidateContention = 0)
     {
-
         List<AdmissionBenchmarkPair> pairs = [];
 
         for (int pair = 0; pair < 6; pair++)
         {
-
             string firstRole = pair % 2 == 0 ? "B" : "C";
 
             string secondRole = pair % 2 == 0 ? "C" : "B";
@@ -175,7 +162,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                 candidateContention);
 
             pairs.Add(new(pair, firstRole, secondRole, baseline, candidate));
-
         }
 
         AdmissionBenchmarkEvidenceBundle evidence = new("session", pairs.ToArray());
@@ -290,7 +276,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
             },
             _ => evidence,
         };
-
     }
 
     private static AdmissionBenchmarkRevisionRun Run(
@@ -301,14 +286,12 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
         long allocation,
         long contention)
     {
-
         List<AdmissionBenchmarkCellResult> cells = [];
 
         AdmissionBenchmarkProfile profile = AdmissionBenchmarkManifest.CreateDefault().Profiles[0];
 
         foreach (string operation in AdmissionBenchmarkOperations.All)
         {
-
             foreach ((string concurrency, int workers) in new[]
             {
                 ("one", 1),
@@ -317,7 +300,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                 ("logical", 4),
             })
             {
-
                 cells.Add(
                     new(
                         operation,
@@ -342,9 +324,7 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                         0,
                         AdmissionBenchmarkExpected.Checksum(profile, operation, workers),
                         0));
-
             }
-
         }
 
         return new(
@@ -368,7 +348,6 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                 new(640, 0, 0, 1, true),
             ],
         };
-
     }
 
     private static AdmissionBenchmarkInputIdentity InputIdentity() =>
@@ -456,5 +435,4 @@ public sealed class GrimoireAdmissionBenchmarkComparisonTests
                     },
                 }).ToArray(),
         };
-
 }

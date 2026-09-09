@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </remarks>
 internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDataInitializer
 {
-
     public GrimoireSchemaTransactionTier TransactionTier =>
         GrimoireSchemaTransactionTier.CovenantCanonical;
 
@@ -33,7 +32,6 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -42,7 +40,6 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
 
         if (await StateRowExistsAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
         {
-
             await VerifyExistingStateAsync(connection, transaction, context, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -58,7 +55,6 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
                 cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         long campaignSequence = await ReadOwnerSequenceAsync(
@@ -135,18 +131,16 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
         _ = command.Parameters.AddWithValue("$updatedAtUtc", FormatTimestamp(context.InstalledAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     internal static string FormatTimestamp(DateTimeOffset value) =>
-        value.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private static async Task<bool> StateRowExistsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -156,7 +150,6 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture) > 0;
-
     }
 
     private static async Task VerifyExistingStateAsync(
@@ -165,7 +158,6 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -182,12 +174,9 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
 
         if (Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture) != 1)
         {
-
             throw new InvalidOperationException(
                 "Covenant canonical state is present but malformed; the capability fails closed rather than reseeding it.");
-
         }
-
     }
 
     private static async Task<long> ReadOwnerSequenceAsync(
@@ -196,7 +185,6 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
         long ownerKindCode,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -212,7 +200,5 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
-
     }
-
 }

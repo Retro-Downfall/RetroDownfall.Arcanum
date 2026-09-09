@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private async Task<McpToolsCallResultWire> ExecuteAskHumanAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         AskHumanParams? args;
@@ -116,22 +115,17 @@ internal sealed partial class ArcanumInternalToolServer
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         SendCommLinkAlertParams? args;
 
         try
         {
-
             args = JsonSerializer.Deserialize(arguments, _json.SendCommLinkAlertParams);
-
         }
         catch (JsonException ex)
         {
-
             _logger?.LogError(ex, "send_commlink_alert argument deserialization failed.");
 
             return ToolError("Invalid arguments for send_commlink_alert.");
-
         }
 
         if (args is null
@@ -139,16 +133,12 @@ internal sealed partial class ArcanumInternalToolServer
             || string.IsNullOrWhiteSpace(args.Body)
             || string.IsNullOrWhiteSpace(args.Severity))
         {
-
             return ToolError("send_commlink_alert requires non-empty 'title', 'body', and 'severity'.");
-
         }
 
         if (!Enum.TryParse(args.Severity.Trim(), ignoreCase: true, out CommLinkSeverity severity))
         {
-
             severity = CommLinkSeverity.Info;
-
         }
 
         string source = string.IsNullOrWhiteSpace(args.Source) ? "send_commlink_alert" : args.Source.Trim();
@@ -157,7 +147,6 @@ internal sealed partial class ArcanumInternalToolServer
 
         try
         {
-
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             ICommLinkDispatcher dispatcher = scope.ServiceProvider.GetRequiredService<ICommLinkDispatcher>();
@@ -168,7 +157,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (r.IsFailure)
             {
-
                 return new McpToolsCallResultWire
                 {
                     Content =
@@ -177,7 +165,6 @@ internal sealed partial class ArcanumInternalToolServer
                     ],
                     IsError = true,
                 };
-
             }
 
             string status = r.Value.Status == CommLinkDeliveryStatus.Delivered
@@ -192,52 +179,39 @@ internal sealed partial class ArcanumInternalToolServer
                 ],
                 IsError = false,
             };
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             _logger?.LogError(ex, "send_commlink_alert dispatch failed.");
 
             return ToolError("An internal error occurred during send_commlink_alert.");
-
         }
-
     }
 
     private async Task<McpToolsCallResultWire> ExecutePetitionDungeonMasterAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         PetitionDungeonMasterParams? args;
 
         try
         {
-
             args = JsonSerializer.Deserialize(arguments, _json.PetitionDungeonMasterParams);
-
         }
         catch (JsonException ex)
         {
-
             _logger?.LogError(ex, "petition_dungeon_master argument deserialization failed.");
 
             return ToolError("Invalid arguments for petition_dungeon_master.");
-
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Reason))
         {
-
             return ToolError("petition_dungeon_master requires a non-empty 'reason'.");
-
         }
 
         string reason = args.Reason.Trim();
@@ -252,7 +226,6 @@ internal sealed partial class ArcanumInternalToolServer
 
         try
         {
-
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             ICommLinkDispatcher dispatcher = scope.ServiceProvider.GetRequiredService<ICommLinkDispatcher>();
@@ -269,28 +242,21 @@ internal sealed partial class ArcanumInternalToolServer
                     : "suppressed";
 
             return PetitionResult(notificationStatus);
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             _logger?.LogError(ex, "petition_dungeon_master dispatch failed.");
 
             return PetitionResult("failed");
-
         }
-
     }
 
     private McpToolsCallResultWire PetitionResult(string notificationStatus)
     {
-
         PetitionDungeonMasterResultWire payload = new()
         {
             EscalationRequested = true,
@@ -307,14 +273,12 @@ internal sealed partial class ArcanumInternalToolServer
             ],
             IsError = false,
         };
-
     }
 
     private async Task<McpToolsCallResultWire> ExecuteCastSendingAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         if (!_conclaveEnabled)
         {
             return ToolError("The Conclave is disabled; cross-Apprentice delegation is not available.");
@@ -349,9 +313,18 @@ internal sealed partial class ArcanumInternalToolServer
 
             IConclaveArchmage archmage = scope.ServiceProvider.GetRequiredService<IConclaveArchmage>();
 
+            ApprenticeToolInvocationContext? caller = ApprenticeToolInvocationAmbient.Current;
+
             Result<Apprentice> result = await archmage
                 .CastAsync(
-                    new ConclaveCastRequest(args.Goal.Trim(), args.Name, _workspaceRoot!),
+                    new ConclaveCastRequest(
+                        args.Goal.Trim(),
+                        args.Name,
+                        _workspaceRoot!,
+                        CampaignId: caller is { IsValid: true } ? caller.CampaignId : null,
+                        ParentApprenticeId: caller is { IsValid: true } ? caller.ApprenticeId : null,
+                        DelegationChain: caller is { IsValid: true } ? caller.DelegationChain : null,
+                        LaunchRequested: caller is { IsValid: true }),
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -389,7 +362,6 @@ internal sealed partial class ArcanumInternalToolServer
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         if (!_a2aClientEnabled)
         {
             return ToolError("A2A is disabled; dispatch_sending is not available.");
@@ -481,7 +453,6 @@ internal sealed partial class ArcanumInternalToolServer
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         if (!_a2aClientEnabled)
         {
             return ToolError("A2A is disabled; continue_sending is not available.");
@@ -557,7 +528,6 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     private McpToolsCallResultWire BuildSendingToolResult(string agentUrl, Result<A2ADispatchResult> result)
     {
-
         DispatchSendingResultWire payload = result.IsSuccess
             ? new DispatchSendingResultWire
             {
@@ -594,7 +564,6 @@ internal sealed partial class ArcanumInternalToolServer
             ],
             IsError = false,
         };
-
     }
 
     private static DateTimeOffset? Stamp(DateTimeOffset value) => value == default ? null : value;
@@ -620,27 +589,21 @@ internal sealed partial class ArcanumInternalToolServer
         AsyncServiceScope scope,
         ApprenticeToolInvocationContext? caller)
     {
-
         if (caller is not { IsValid: true })
         {
-
             return null;
-
         }
 
         ChronicleHub? hub = scope.ServiceProvider.GetService<ChronicleHub>();
 
         if (hub is null)
         {
-
             return null;
-
         }
 
         Guid apprenticeId = caller.ApprenticeId;
 
         return new OrderedSendingProgress(hub, apprenticeId);
-
     }
 
     /// <summary>
@@ -658,7 +621,6 @@ internal sealed partial class ArcanumInternalToolServer
         ChronicleHub hub,
         Guid apprenticeId) : IProgress<A2ASendingProgress>
     {
-
         public void Report(A2ASendingProgress update) =>
             hub.Publish(apprenticeId, new ApprenticeEvent
             {
@@ -670,7 +632,6 @@ internal sealed partial class ArcanumInternalToolServer
                 SendingState = update.RemoteState,
                 SendingDirection = update.Direction == A2ASendingDirection.Inbound ? "inbound" : "outbound",
             });
-
     }
 
     /// <summary>
@@ -712,5 +673,4 @@ internal sealed partial class ArcanumInternalToolServer
         or ErrorCodes.Sending.ModalityMismatch
         or ErrorCodes.Sending.SkillNotAdvertised
         or ErrorCodes.Apprentice.InvalidGoal;
-
 }

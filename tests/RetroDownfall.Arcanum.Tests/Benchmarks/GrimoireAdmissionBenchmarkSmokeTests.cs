@@ -29,11 +29,9 @@ namespace RetroDownfall.Arcanum.Tests.Benchmarks;
 [Collection("ProcessEnvironment")]
 public sealed class GrimoireAdmissionBenchmarkSmokeTests
 {
-
     [Fact]
     public async Task Direct_gate_operations_finish_with_zero_live_state_and_clean_reopen()
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         Assert.True(
@@ -57,7 +55,6 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
 
         using (PersistentWorkerHarness harness = new(2))
         {
-
             AdmissionBenchmarkPhaseResult result = harness.Run(
                 new(
                     AdmissionBenchmarkPhaseKind.Throughput,
@@ -71,7 +68,6 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
             Assert.Equal(28, result.SuccessCount);
 
             Assert.Equal(0, result.FailureCount);
-
         }
 
         Assert.Equal(callbackBaseline, gate.MaterializedTerminalCallbacks);
@@ -119,13 +115,11 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
         Assert.True(open.RevalidateAfterNativeOpen().IsSuccess);
 
         Assert.True(open.MarkOpened().IsSuccess);
-
     }
 
     [Fact]
     public async Task Pooled_EF_cell_uses_isolated_SQLCipher_serving_composition_and_drains()
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         Assert.True(
@@ -148,7 +142,6 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
 
         try
         {
-
             SqliteNativeRuntime.Instance.Initialize();
 
             Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
@@ -197,7 +190,6 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
 
             await using (AsyncServiceScope scope = provider.CreateAsyncScope())
             {
-
                 ArcanumDbContext context = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
                 context.Database.OpenConnection();
@@ -215,17 +207,14 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
                 Assert.False(string.IsNullOrWhiteSpace(Convert.ToString(cipher.ExecuteScalar())));
 
                 context.Database.CloseConnection();
-
             }
 
             Result drained = await drain.DrainAsync(CancellationToken.None);
 
             Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
         }
         finally
         {
-
             SqliteConnection.ClearAllPools();
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", oldHome);
@@ -234,13 +223,9 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
 
             if (Directory.Exists(home))
             {
-
                 Directory.Delete(home, recursive: true);
-
             }
-
         }
-
     }
 
     private static CovenantExclusiveRecoveryOwner Owner() =>
@@ -249,34 +234,13 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
             CovenantExclusiveOperation.CovenantReset,
             new CovenantDigest(Enumerable.Repeat((byte)1, 32).ToArray()));
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 
     private sealed class DirectState(
         GrimoireConnectionAdmissionGate gate,
         int workerCount) : IDisposable
     {
-
         private readonly SqliteConnection[] _connections = Enumerable.Range(0, workerCount)
             .Select(static _ => new SqliteConnection("Data Source=:memory:;Pooling=False"))
             .ToArray();
@@ -299,14 +263,10 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
 
         public void Dispose()
         {
-
             foreach (SqliteConnection connection in _connections)
             {
-
                 connection.Dispose();
-
             }
-
         }
 
         internal bool Execute(
@@ -315,7 +275,6 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
             CancellationToken cancellationToken,
             ref long checksum)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             switch ((worker + iteration) % 7)
@@ -344,7 +303,6 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
             }
 
             return true;
-
         }
 
         private void Request(
@@ -352,140 +310,103 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
             bool readRevocation,
             ref long checksum)
         {
-
             if (!gate.TryAcquireRequestLease(kind, out IGrimoireRequestLease? lease))
             {
-
                 throw new InvalidOperationException("Ordinary request admission was refused.");
-
             }
 
             Interlocked.Increment(ref _liveRequests);
 
             try
             {
-
                 checksum = checked(checksum + lease!.Generation);
 
                 if (readRevocation)
                 {
-
                     checksum = checked(checksum + (lease.MaintenanceRevocation.CanBeCanceled ? 1 : 0));
-
                 }
 
                 lease.DisposeAsync().AsTask().GetAwaiter().GetResult();
-
             }
             finally
             {
-
                 Interlocked.Decrement(ref _liveRequests);
-
             }
-
         }
 
         private void Work(bool withEffect, ref long checksum)
         {
-
             if (!gate.TryAcquireWorkLease(GrimoireWorkKind.BatchProcessing, out IGrimoireWorkLease? lease))
             {
-
                 throw new InvalidOperationException("Ordinary work admission was refused.");
-
             }
 
             Interlocked.Increment(ref _liveWork);
 
             try
             {
-
                 checksum = checked(checksum + lease!.Generation);
 
                 if (withEffect)
                 {
-
                     if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effect))
                     {
-
                         throw new InvalidOperationException("External effect admission was refused.");
-
                     }
 
                     Interlocked.Increment(ref _liveEffects);
 
                     try
                     {
-
                         effect!.DisposeAsync().AsTask().GetAwaiter().GetResult();
-
                     }
                     finally
                     {
-
                         Interlocked.Decrement(ref _liveEffects);
-
                     }
-
                 }
 
                 lease.DisposeAsync().AsTask().GetAwaiter().GetResult();
-
             }
             finally
             {
-
                 Interlocked.Decrement(ref _liveWork);
-
             }
-
         }
 
         private void FailedOpen(int worker, ref long checksum)
         {
-
             Interlocked.Increment(ref _liveOpens);
 
             try
             {
-
                 using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(_connections[worker]);
 
                 checksum = checked(checksum + ticket.Generation);
 
                 ticket.MarkFailed();
-
             }
             finally
             {
-
                 Interlocked.Decrement(ref _liveOpens);
-
             }
-
         }
 
         private void RequestOpen(int worker, ref long checksum)
         {
-
             if (!gate.TryAcquireRequestLease(GrimoireRequestKind.Finite, out IGrimoireRequestLease? request))
             {
-
                 throw new InvalidOperationException("Nested request admission was refused.");
-
             }
 
             Interlocked.Increment(ref _liveRequests);
 
             try
             {
-
                 Interlocked.Increment(ref _liveOpens);
 
                 try
                 {
-
                     using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(_connections[worker]);
 
                     Result revalidated = ticket.RevalidateAfterNativeOpen();
@@ -494,47 +415,34 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
 
                     if (opened.IsFailure)
                     {
-
                         throw new InvalidOperationException(opened.Error.Message);
-
                     }
 
                     checksum = checked(checksum + request!.Generation + ticket.Generation);
-
                 }
                 finally
                 {
-
                     Interlocked.Decrement(ref _liveOpens);
-
                 }
 
                 request!.DisposeAsync().AsTask().GetAwaiter().GetResult();
-
             }
             finally
             {
-
                 Interlocked.Decrement(ref _liveRequests);
-
             }
-
         }
-
     }
 
     private sealed class Paths(string canonicalPath) : IGrimoireMaintenancePathAuthority
     {
-
         public string CanonicalDatabasePath => canonicalPath;
 
         public string ExportStagingDatabasePath(Guid operationId) => canonicalPath + "." + operationId.ToString("N") + ".candidate";
-
     }
 
     private sealed class NoIoSecretStore : ISecretStore
     {
-
         internal static NoIoSecretStore Instance { get; } = new();
 
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
@@ -546,7 +454,5 @@ public sealed class GrimoireAdmissionBenchmarkSmokeTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => throw new NotSupportedException();
-
     }
-
 }

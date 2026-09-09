@@ -33,6 +33,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -40,12 +41,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class DataRetentionCommandTests
 {
-
     [Fact]
 
     public void Data_help_exposes_retention_and_explicit_deletion_commands()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult data = RunCommand(handler, ["data", "--help"]);
@@ -87,7 +86,6 @@ public sealed class DataRetentionCommandTests
         Assert.Contains("--dry-run", prune.Output, StringComparison.Ordinal);
 
         Assert.Contains("--apply", prune.Output, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -103,7 +101,6 @@ public sealed class DataRetentionCommandTests
         string path,
         string commandLine)
     {
-
         RecordingHandler handler = new(_ => ErrorResponse());
 
         _ = RunCommand(handler, Split(commandLine));
@@ -113,14 +110,12 @@ public sealed class DataRetentionCommandTests
         Assert.Equal(new HttpMethod(method), request.Method);
 
         Assert.Equal(path, request.Path);
-
     }
 
     [Fact]
 
     public void Prune_apply_previews_the_exact_plan_then_binds_its_id_to_apply()
     {
-
         DataRetentionPlan plan = CreatePlan();
 
         DataRetentionApplyResult applied = CreateApplyResult(plan.PlanId);
@@ -129,7 +124,6 @@ public sealed class DataRetentionCommandTests
 
         RecordingHandler handler = new(request => request.Path switch
         {
-
             "/api/data/prune/plan" => SuccessResponse(
                 plan,
                 ArcanumJsonContext.Default.ApiResponseDataRetentionPlan),
@@ -139,7 +133,6 @@ public sealed class DataRetentionCommandTests
                 ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult),
 
             _ => ErrorResponse(),
-
         });
 
         CliTestResult result = RunCommand(
@@ -154,7 +147,6 @@ public sealed class DataRetentionCommandTests
             request => Assert.Equal("/api/data/prune/plan", request.Path),
             request =>
             {
-
                 Assert.Equal("/api/data/prune", request.Path);
 
                 DataRetentionApplyRequest? body = JsonSerializer.Deserialize(
@@ -162,7 +154,6 @@ public sealed class DataRetentionCommandTests
                     ArcanumJsonContext.Default.DataRetentionApplyRequest);
 
                 Assert.Equal(plan.PlanId, body?.ExpectedPlanId);
-
             });
 
         Assert.Contains(plan.PlanId, prompt.Question, StringComparison.Ordinal);
@@ -176,21 +167,18 @@ public sealed class DataRetentionCommandTests
         Assert.Contains("Prune plan", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("Apply complete", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Json_prune_apply_emits_only_the_exact_apply_result()
     {
-
         DataRetentionPlan plan = CreatePlan();
 
         DataRetentionApplyResult applied = CreateApplyResult(plan.PlanId);
 
         RecordingHandler handler = new(request => request.Path switch
         {
-
             "/api/data/prune/plan" => SuccessResponse(
                 plan,
                 ArcanumJsonContext.Default.ApiResponseDataRetentionPlan),
@@ -200,7 +188,6 @@ public sealed class DataRetentionCommandTests
                 ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult),
 
             _ => ErrorResponse(),
-
         });
 
         CliTestResult result = RunCommand(
@@ -222,14 +209,12 @@ public sealed class DataRetentionCommandTests
                 applied,
                 ArcanumJsonContext.Default.DataRetentionApplyResult),
             result.Output.Trim());
-
     }
 
     [Fact]
 
     public void Human_read_commands_render_operator_summaries_instead_of_raw_json()
     {
-
         DataRetentionStatus status = CreateStatus();
 
         RetentionSettings settings = CreateSettings();
@@ -238,7 +223,6 @@ public sealed class DataRetentionCommandTests
 
         RecordingHandler handler = new(request => request.Path switch
         {
-
             "/api/data/status" => SuccessResponse(
                 status,
                 ArcanumJsonContext.Default.ApiResponseDataRetentionStatus),
@@ -252,7 +236,6 @@ public sealed class DataRetentionCommandTests
                 ArcanumJsonContext.Default.ApiResponseDataRetentionPlan),
 
             _ => ErrorResponse(),
-
         });
 
         CliTestResult statusResult = RunCommand(
@@ -301,14 +284,12 @@ public sealed class DataRetentionCommandTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("{", planResult.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Json_read_commands_emit_the_exact_api_payloads()
     {
-
         DataRetentionStatus status = CreateStatus();
 
         RetentionSettings settings = CreateSettings();
@@ -317,7 +298,6 @@ public sealed class DataRetentionCommandTests
 
         RecordingHandler handler = new(request => request.Path switch
         {
-
             "/api/data/status" => SuccessResponse(
                 status,
                 ArcanumJsonContext.Default.ApiResponseDataRetentionStatus),
@@ -331,7 +311,6 @@ public sealed class DataRetentionCommandTests
                 ArcanumJsonContext.Default.ApiResponseDataRetentionPlan),
 
             _ => ErrorResponse(),
-
         });
 
         Assert.Equal(
@@ -359,14 +338,12 @@ public sealed class DataRetentionCommandTests
                 ["--json", "data", "prune", "--dry-run"])
                 .Output
                 .Trim());
-
     }
 
     [Fact]
 
     public void Retention_disable_omits_days_so_the_server_preserves_the_prior_value()
     {
-
         RecordingHandler handler = new(_ => ErrorResponse());
 
         _ = RunCommand(
@@ -384,7 +361,6 @@ public sealed class DataRetentionCommandTests
         Assert.False(json.RootElement.GetProperty("enabled").GetBoolean());
 
         Assert.False(json.RootElement.TryGetProperty("days", out _));
-
     }
 
     [Theory]
@@ -402,7 +378,6 @@ public sealed class DataRetentionCommandTests
         string path,
         string commandLine)
     {
-
         DataRetentionPlan resetPlan = CreatePlan() with
         {
             Request = new DataRetentionRequest(
@@ -438,7 +413,6 @@ public sealed class DataRetentionCommandTests
 
         if (path == "/api/data/retention")
         {
-
             Assert.Contains(
                 "archived-sessions",
                 request.Body,
@@ -447,12 +421,10 @@ public sealed class DataRetentionCommandTests
             Assert.Contains("\"enabled\":true", request.Body, StringComparison.Ordinal);
 
             Assert.Contains("\"days\":30", request.Body, StringComparison.Ordinal);
-
         }
 
         if (path == "/api/data/memory/reset")
         {
-
             Assert.Contains("entry", request.Body, StringComparison.OrdinalIgnoreCase);
 
             RecordedRequest preview = Assert.Single(
@@ -464,9 +436,7 @@ public sealed class DataRetentionCommandTests
                 ArcanumJsonContext.Default.MemoryResetRequest);
 
             Assert.Equal(MemoryResetScope.Entry, previewBody?.Scope);
-
         }
-
     }
 
     [Theory]
@@ -490,7 +460,6 @@ public sealed class DataRetentionCommandTests
     public void Data_mutations_require_confirmation_before_http(
         string commandLine)
     {
-
         bool resetMemory = commandLine.Contains(
             "reset-memory",
             StringComparison.Ordinal);
@@ -522,7 +491,6 @@ public sealed class DataRetentionCommandTests
             request => Assert.Equal(expectedPreviewPath, request.Path));
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -535,7 +503,6 @@ public sealed class DataRetentionCommandTests
         CovenantDisclosureCountKind countKind,
         string expectedCount)
     {
-
         DataRetentionPlan plan = CreatePlan() with
         {
             Request = new DataRetentionRequest(
@@ -592,13 +559,11 @@ public sealed class DataRetentionCommandTests
         Assert.True(help > count);
 
         Assert.True(cancelled > help);
-
     }
 
     [Fact]
     public void Json_reset_memory_writes_disclosure_to_diagnostics_and_one_apply_document()
     {
-
         DataRetentionPlan plan = CreatePlan() with
         {
             Request = new DataRetentionRequest(
@@ -654,13 +619,11 @@ public sealed class DataRetentionCommandTests
         Assert.Equal(
             plan.PlanId,
             apply.RootElement.GetProperty("expectedPlanId").GetString());
-
     }
 
     [Fact]
     public async Task Reset_memory_orders_preview_disclosure_targets_prompt_and_apply()
     {
-
         DataRetentionPlan plan = CreatePlan() with
         {
             Request = new DataRetentionRequest(
@@ -693,7 +656,7 @@ public sealed class DataRetentionCommandTests
         DataRetentionCommands commands = new(
             new ArcanumApiClient(
                 new FakeHttpClientFactory(handler),
-                new FakeSecretStore("test-key")),
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key")),
             dispatcher,
             new FixedInvocationContext(),
             new RecordingConfirmationPrompt(confirmed: true, events: events),
@@ -744,14 +707,12 @@ public sealed class DataRetentionCommandTests
                 handler.Requests,
                 static request => request.Path == "/api/data/memory/reset").Body,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Reset_memory_requires_an_explicit_scope_before_confirmation_or_http()
     {
-
         RecordingHandler handler = new(_ => ErrorResponse());
 
         CliTestResult result = RunCommand(
@@ -766,7 +727,6 @@ public sealed class DataRetentionCommandTests
             "scope",
             result.Output + result.Error,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Theory]
@@ -780,7 +740,6 @@ public sealed class DataRetentionCommandTests
     public void Destructive_named_choices_reject_numeric_spellings_before_http(
         string commandLine)
     {
-
         RecordingHandler handler = new(_ => ErrorResponse());
 
         CliTestResult result = RunCommand(
@@ -790,7 +749,6 @@ public sealed class DataRetentionCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Theory]
@@ -813,11 +771,9 @@ public sealed class DataRetentionCommandTests
         string value,
         RetentionDataClass expected)
     {
-
         Assert.True(DataRetentionDataClassParser.TryParse(value, out RetentionDataClass parsed));
 
         Assert.Equal(expected, parsed);
-
     }
 
     private static string[] Split(string commandLine) =>
@@ -830,7 +786,6 @@ public sealed class DataRetentionCommandTests
         string[] args,
         IConfirmationPrompt? confirmationPrompt = null)
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -847,35 +802,32 @@ public sealed class DataRetentionCommandTests
         services.AddSingleton<ISecretStore>(
             new FakeSecretStore("test-key"));
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         if (confirmationPrompt is not null)
         {
-
             services.RemoveAll<IConfirmationPrompt>();
 
             services.AddSingleton(confirmationPrompt);
-
         }
 
         return CliTestHarness.Run(services, args);
-
     }
 
     private static HttpResponseMessage SuccessResponse<T>(
         T value,
         JsonTypeInfo<ApiResponse<T>> typeInfo)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             ApiResponse<T>.FromResult(Result<T>.Success(value)),
             typeInfo);
 
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
-
             Content = new ByteArrayContent(json),
-
         };
-
     }
 
     private static DataRetentionStatus CreateStatus() =>
@@ -900,18 +852,14 @@ public sealed class DataRetentionCommandTests
     private static RetentionSettings CreateSettings() =>
         new()
         {
-
             AutomaticSweepsEnabled = true,
 
             ArchivedSessions = new RetentionRuleSettings
             {
-
                 Enabled = true,
 
                 Days = 180,
-
             },
-
         };
 
     private static DataRetentionPlan CreatePlan() =>
@@ -951,19 +899,16 @@ public sealed class DataRetentionCommandTests
     private static HttpResponseMessage ErrorResponse() =>
         new(HttpStatusCode.Conflict)
         {
-
             Content = new StringContent(
                 """
                 {"data":null,"isSuccess":false,"error":{"code":"Test.Stop","message":"Test response."}}
                 """,
                 Encoding.UTF8,
                 "application/json"),
-
         };
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>(apiKey);
 
@@ -978,43 +923,34 @@ public sealed class DataRetentionCommandTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(
         RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001/"),
-
             };
-
     }
 
     private sealed class RecordingConfirmationPrompt(
         bool confirmed,
         List<string>? events = null) : IConfirmationPrompt
     {
-
         public string Question { get; private set; } = string.Empty;
 
         public Task<bool> PromptForConfirmationAsync(
             string question,
             CancellationToken cancellationToken)
         {
-
             Question = question;
 
             events?.Add("<prompt>");
 
             return Task.FromResult(confirmed);
-
         }
-
     }
 
     private sealed class RecordingHandler(
@@ -1022,14 +958,12 @@ public sealed class DataRetentionCommandTests
         List<string>? events = null)
         : HttpMessageHandler
     {
-
         public List<RecordedRequest> Requests { get; } = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             string body = request.Content is null
                 ? string.Empty
                 : await request.Content
@@ -1048,9 +982,7 @@ public sealed class DataRetentionCommandTests
             return responder is null
                 ? new HttpResponseMessage(HttpStatusCode.NotFound)
                 : responder(recorded);
-
         }
-
     }
 
     private sealed record RecordedRequest(
@@ -1060,7 +992,6 @@ public sealed class DataRetentionCommandTests
 
     private sealed class OrderedConsoleDispatcher(List<string> events) : IConsoleDispatcher
     {
-
         public void WritePayload(string value) => events.Add(value);
 
         public void WriteDiagnostic(string value) => events.Add(value);
@@ -1073,17 +1004,13 @@ public sealed class DataRetentionCommandTests
         public void WriteJson(JsonElement value) => events.Add("<json>");
 
         public void BeginJsonStream() => events.Add("<json-stream>");
-
     }
 
     private sealed class FixedInvocationContext : ICliInvocationContext
     {
-
         public CliInvocationOptions Options { get; } = new(
             Json: false,
             Plain: true,
             Yes: false);
-
     }
-
 }

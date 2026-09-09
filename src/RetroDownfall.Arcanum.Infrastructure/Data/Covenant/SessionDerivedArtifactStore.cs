@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -36,12 +37,10 @@ internal sealed class SessionDerivedArtifactStore(
     ICovenantSqliteConnectionInitializer initializer)
     : ISessionSummaryArtifactStore, ISessionTitleArtifactStore
 {
-
     public Task<Result<SessionDerivedArtifactWriteReceipt>> ReplaceAsync(
         SessionSummaryArtifactWrite request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         return ReplaceCoreAsync(
@@ -65,14 +64,12 @@ internal sealed class SessionDerivedArtifactStore(
                 request.ProducingAdmissionDigest,
                 request.ProducingMaintenanceReceiptDigest),
             cancellationToken);
-
     }
 
     public Task<Result<SessionDerivedArtifactWriteReceipt>> ReplaceAsync(
         SessionTitleArtifactWrite request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         return ReplaceCoreAsync(
@@ -94,14 +91,12 @@ internal sealed class SessionDerivedArtifactStore(
                 request.ProducingAdmissionDigest,
                 request.ProducingMaintenanceReceiptDigest),
             cancellationToken);
-
     }
 
     private async Task<Result<SessionDerivedArtifactWriteReceipt>> ReplaceCoreAsync(
         ReplacementPlan plan,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -109,7 +104,6 @@ internal sealed class SessionDerivedArtifactStore(
 
         try
         {
-
             // The canonical spelling, which is the only one "Sessions"."Id" is permitted to hold, used
             // by every step below. This used to read the parent row's own text first and fall back to
             // this spelling, because the parent could hold either of two; with one spelling that read
@@ -172,19 +166,15 @@ internal sealed class SessionDerivedArtifactStore(
 
             if (labelled.IsFailure)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return labelled.Error;
-
             }
 
             if (priorArtifactId is { } prior)
             {
-
                 await RetirePriorAsync(connection, transaction, plan, prior, cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -194,19 +184,15 @@ internal sealed class SessionDerivedArtifactStore(
                 revision,
                 labelled.Value.Sensitivity,
                 labelled.Value.LabelId);
-
         }
         catch (SqliteException exception)
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return new Error(
                 ErrorCodes.Grimoire.WriteFailed,
                 $"The Session derived artifact could not be replaced ({exception.SqliteErrorCode}).");
-
         }
-
     }
 
     private static async Task<(Guid? ArtifactId, long Revision)> ReadCurrentAsync(
@@ -216,7 +202,6 @@ internal sealed class SessionDerivedArtifactStore(
         string sessionKey,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -232,7 +217,6 @@ internal sealed class SessionDerivedArtifactStore(
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? (Guid.Parse(reader.GetString(0)), reader.GetInt64(1))
             : (null, 0);
-
     }
 
     private static async Task InsertArtifactAsync(
@@ -245,7 +229,6 @@ internal sealed class SessionDerivedArtifactStore(
         CovenantDigest contentDigest,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -284,19 +267,16 @@ internal sealed class SessionDerivedArtifactStore(
 
         if (plan.ArtifactKind is SensitiveArtifactKind.Summary)
         {
-
             _ = command.Parameters.AddWithValue(
                 "$watermark",
                 plan.SummarizedThroughUtc is { } watermark
-                    ? watermark.ToString("o", CultureInfo.InvariantCulture)
+                    ? UtcInstantText.Format(watermark)
                     : DBNull.Value);
-
         }
 
         _ = command.Parameters.AddWithValue("$createdAtUtc", Now());
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task MovePointerAsync(
@@ -308,7 +288,6 @@ internal sealed class SessionDerivedArtifactStore(
         long revision,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -331,7 +310,6 @@ internal sealed class SessionDerivedArtifactStore(
         _ = command.Parameters.AddWithValue("$updatedAtUtc", Now());
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task WriteColumnAsync(
@@ -341,7 +319,6 @@ internal sealed class SessionDerivedArtifactStore(
         string sessionKey,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -354,17 +331,14 @@ internal sealed class SessionDerivedArtifactStore(
 
         if (plan.ArtifactKind is SensitiveArtifactKind.Summary)
         {
-
             _ = command.Parameters.AddWithValue(
                 "$watermark",
                 plan.SummarizedThroughUtc is { } watermark
-                    ? watermark.ToString("o", CultureInfo.InvariantCulture)
+                    ? UtcInstantText.Format(watermark)
                     : DBNull.Value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -382,14 +356,12 @@ internal sealed class SessionDerivedArtifactStore(
         Guid priorArtifactId,
         CancellationToken cancellationToken)
     {
-
         using CovenantSqliteAuthorizationScope replacement = initializer.Authorize(
             connection,
             CovenantSqliteAuthorizationKind.ArtifactReplacement);
 
         await using (SqliteCommand label = connection.CreateCommand())
         {
-
             label.Transaction = transaction;
 
             label.CommandText = """
@@ -402,7 +374,6 @@ internal sealed class SessionDerivedArtifactStore(
             _ = label.Parameters.AddWithValue("$artifactId", Format(priorArtifactId));
 
             _ = await label.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         await using SqliteCommand artifact = connection.CreateCommand();
@@ -414,10 +385,9 @@ internal sealed class SessionDerivedArtifactStore(
         _ = artifact.Parameters.AddWithValue("$artifactId", Format(priorArtifactId));
 
         _ = await artifact.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
-    private static string Now() => DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+    private static string Now() => UtcInstantText.Format(DateTimeOffset.UtcNow);
 
     private static string Format(Guid value) => value.ToString().ToUpperInvariant();
 
@@ -437,5 +407,4 @@ internal sealed class SessionDerivedArtifactStore(
         CovenantDigest? ProducingPlanDigest,
         CovenantDigest? ProducingAdmissionDigest,
         CovenantDigest? ProducingMaintenanceReceiptDigest);
-
 }

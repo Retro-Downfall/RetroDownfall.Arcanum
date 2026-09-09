@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 {
-
     private const int AttachmentIoPageSize = 64 * 1024;
 
     private const int DefaultBoundRecordPageSize = 128;
@@ -108,7 +107,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         IAttachmentSourceResolver? sourceResolver = null,
         ISessionAttachmentIndexQueue? indexQueue = null)
     {
-
         _db = db;
 
         _options = options;
@@ -124,7 +122,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         _attachmentsRoot = Path.GetFullPath(attachmentsRoot ?? ArcanumPaths.AttachmentsDirectory);
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_attachmentsRoot);
-
     }
 
     public async Task<SessionAttachmentRecord> PersistNewFromSourceAsync(
@@ -296,50 +293,37 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         AttachmentSourceMetadata? source,
         CancellationToken cancellationToken)
     {
-
         if (sessionId is null && string.IsNullOrWhiteSpace(pendingTurnId))
         {
-
             throw new ArgumentException("Either sessionId or pendingTurnId is required.");
-
         }
 
         if (sessionId is not null && !string.IsNullOrWhiteSpace(pendingTurnId))
         {
-
             throw new ArgumentException("Provide either sessionId or pendingTurnId, not both.");
-
         }
 
         string? validatedPendingTurnId = null;
 
         if (sessionId is null)
         {
-
             if (!SessionAttachmentPathSanitizer.TryValidatePendingTurnId(
                     pendingTurnId,
                     out validatedPendingTurnId,
                     out string turnError))
             {
-
                 throw new ArgumentException($"Unsafe pending turn id: {turnError}", nameof(pendingTurnId));
-
             }
-
         }
 
         if (!SessionAttachmentPathSanitizer.TrySanitize(logicalNameHint, out string logicalKey, out string logicalError))
         {
-
             throw new ArgumentException($"Unsafe logical name: {logicalError}", nameof(logicalNameHint));
-
         }
 
         if (!SessionAttachmentPathSanitizer.TrySanitize(originalFileName, out string safeFileName, out string fileError))
         {
-
             throw new ArgumentException($"Unsafe original file name: {fileError}", nameof(originalFileName));
-
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(mimeType);
@@ -350,11 +334,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         if (sessionId is not null)
         {
-
             sessionGate = await AttachmentGates
                 .AcquireAsync(SessionGateKey(sessionId.Value), cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         using IDisposable? sessionGateLease = sessionGate;
@@ -375,7 +357,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         if (latest is not null
 
             && string.Equals(
-
                 latest.ContentSha256,
 
                 contentSha256,
@@ -393,17 +374,14 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             return new PersistNewCoreResult(
                 latest with { Source = source },
                 NewVersionCreated: false);
-
         }
 
         if (latest?.Version == int.MaxValue)
         {
-
             throw new InvalidOperationException(
                 $"Attachment version protocol boundary reached for logical key '{logicalKey}': "
                 + $"measured version {latest.Version}; limit {int.MaxValue}. Existing versions remain saved. "
                 + "Use a new logical attachment name to continue.");
-
         }
 
         int nextVersion = latest is null ? 1 : latest.Version + 1;
@@ -412,13 +390,11 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         if (existingBytes + bytes.Length > maxBytes)
         {
-
             throw new InvalidOperationException(
                 "Physical session-attachment storage boundary reached: "
                 + $"measured {existingBytes + bytes.Length} bytes; limit {maxBytes} bytes. "
                 + "Existing attachment versions remain saved; delete unneeded versions, use a new session, "
                 + "or retry with a smaller attachment.");
-
         }
 
         string relativePath = BuildRelativePath(sessionId, validatedPendingTurnId, logicalKey, nextVersion, safeFileName);
@@ -439,10 +415,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 cancellationToken)
             .ConfigureAwait(false))
         {
-
             for (int offset = 0; offset < bytes.Length; offset += AttachmentIoPageSize)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 int count = Math.Min(AttachmentIoPageSize, bytes.Length - offset);
@@ -450,21 +424,17 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 await writer
                     .WriteAsync(bytes.Slice(offset, count), cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             descriptor = await writer
                 .CompleteAsync(cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (descriptor.PlaintextLength != bytes.Length)
         {
-
             throw new InvalidDataException(
                 "Encrypted attachment length did not match the supplied plaintext length.");
-
         }
 
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -472,10 +442,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 FileSystemObjectKind.RegularFile,
                 out IdentityOwnedFileSystemArtifact blobAuthority))
         {
-
             throw new IOException(
                 "Attachment persistence could not capture the owned blob identity.");
-
         }
 
         SessionAttachmentState state = sessionId is null
@@ -503,12 +471,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         try
         {
-
             if (AfterBytesCommittedBeforeDbForTesting is not null)
             {
-
                 await AfterBytesCommittedBeforeDbForTesting(cancellationToken).ConfigureAwait(false);
-
             }
 
             await SqliteBusyRetry.ExecuteAsync(
@@ -517,26 +482,20 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     blobAuthority,
                     cancellationToken),
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch
         {
-
             _ = IdentityOwnedFileSystemCleanup.TryDelete(blobAuthority);
 
             throw;
-
         }
 
         if (sessionId is { } boundSessionId)
         {
-
             _ = _indexQueue?.TryEnqueue(new SessionAttachmentIndexRequest(id, boundSessionId));
-
         }
 
         return new PersistNewCoreResult(record, NewVersionCreated: true);
-
     }
 
     private sealed record PersistNewCoreResult(
@@ -552,15 +511,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         Guid? entryId,
         CancellationToken cancellationToken = default)
     {
-
         if (!SessionAttachmentPathSanitizer.TryValidatePendingTurnId(
                 pendingTurnId,
                 out string validatedPendingTurnId,
                 out string turnError))
         {
-
             throw new ArgumentException($"Unsafe pending turn id: {turnError}", nameof(pendingTurnId));
-
         }
 
         using IDisposable sessionGate = await AttachmentGates
@@ -576,19 +532,15 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         if (pending.Count == 0)
         {
-
             return;
-
         }
 
         List<PromotionPlan> plans = [];
 
         try
         {
-
             foreach (SessionAttachmentRecord row in pending)
             {
-
                 string oldAbsolute = ResolveUnderRoot(row.RelativePath);
 
                 string newRelative = BuildRelativePath(
@@ -602,28 +554,22 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 if (!File.Exists(oldAbsolute))
                 {
-
                     throw new InvalidOperationException($"Pending attachment file missing: {row.RelativePath}");
-
                 }
 
                 await AtomicCopyFileAsync(oldAbsolute, newAbsolute, cancellationToken).ConfigureAwait(false);
 
                 plans.Add(new PromotionPlan(row, oldAbsolute, newAbsolute, NormalizeRelativePath(newRelative)));
-
             }
 
             if (AfterBytesCommittedBeforeDbForTesting is not null)
             {
-
                 await AfterBytesCommittedBeforeDbForTesting(cancellationToken).ConfigureAwait(false);
-
             }
 
             await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                     await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken)
@@ -631,7 +577,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                     foreach (PromotionPlan plan in plans)
                     {
-
                         await using DbCommand cmd = connection.CreateCommand();
 
                         cmd.Transaction = transaction;
@@ -669,59 +614,43 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                         if (updated != 1)
                         {
-
                             throw new InvalidOperationException(
                                 $"Pending attachment '{plan.Row.Id}' could not be promoted (missing or already bound).");
-
                         }
-
                     }
 
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
                 },
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch
         {
-
             foreach (PromotionPlan plan in plans)
             {
-
                 TryDeleteFile(plan.NewAbsolutePath);
-
             }
 
             throw;
-
         }
 
         foreach (PromotionPlan plan in plans)
         {
-
             TryDeleteFile(plan.OldAbsolutePath);
-
         }
 
         TryDeletePendingTurnDirectory(validatedPendingTurnId);
 
         foreach (PromotionPlan plan in plans)
         {
-
             _ = _indexQueue?.TryEnqueue(new SessionAttachmentIndexRequest(plan.Row.Id, sessionId));
-
         }
-
     }
 
     public async Task<SessionAttachmentRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -744,16 +673,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     return null;
-
                 }
 
                 return ReadRecord(reader);
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<SessionAttachmentRecord?> GetByLogicalAsync(
@@ -762,25 +687,20 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int? version,
         CancellationToken cancellationToken = default)
     {
-
         if (!SessionAttachmentPathSanitizer.TrySanitize(logicalKey, out string sanitizedKey, out _))
         {
-
             return null;
-
         }
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
 
                 if (version is null)
                 {
-
                     cmd.CommandText =
                         """
                         SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
@@ -795,11 +715,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                         ORDER BY "Version" DESC
                         LIMIT 1
                         """;
-
                 }
                 else
                 {
-
                     cmd.CommandText =
                         """
                         SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
@@ -816,7 +734,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                         """;
 
                     AddParameter(cmd, "@version", version.Value);
-
                 }
 
                 AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
@@ -829,23 +746,18 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     return null;
-
                 }
 
                 return ReadRecord(reader);
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
-
         List<SessionAttachmentRecord> rows = [];
 
         await foreach (IReadOnlyList<SessionAttachmentRecord> page in ReadBoundPagesAsync(
@@ -853,13 +765,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             DefaultBoundRecordPageSize,
             cancellationToken))
         {
-
             rows.AddRange(page);
-
         }
 
         return rows;
-
     }
 
     public async IAsyncEnumerable<IReadOnlyList<SessionAttachmentRecord>> ReadBoundPagesAsync(
@@ -867,7 +776,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int pageSize = DefaultBoundRecordPageSize,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-
         int effectivePageSize = Math.Clamp(
             pageSize,
             1,
@@ -879,7 +787,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         while (true)
         {
-
             IReadOnlyList<SessionAttachmentRecord> page = await ReadBoundPageAsync(
                     sessionId,
                     afterLogicalKey,
@@ -890,9 +797,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             if (page.Count == 0)
             {
-
                 yield break;
-
             }
 
             yield return page;
@@ -902,9 +807,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             afterLogicalKey = last.LogicalKey;
 
             afterVersion = last.Version;
-
         }
-
     }
 
     private async Task<IReadOnlyList<SessionAttachmentRecord>> ReadBoundPageAsync(
@@ -914,13 +817,11 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int pageSize,
         CancellationToken cancellationToken)
     {
-
         _ = Interlocked.Increment(ref _boundRecordPageReadCountForTesting);
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -961,27 +862,21 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     rows.Add(ReadRecord(reader));
-
                 }
 
                 return (IReadOnlyList<SessionAttachmentRecord>)rows;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<SessionAttachmentRecord>> ListLatestBoundAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -1021,16 +916,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     rows.Add(ReadRecord(reader));
-
                 }
 
                 return (IReadOnlyList<SessionAttachmentRecord>)rows;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<SessionAttachmentRecord>>
@@ -1039,12 +930,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             IReadOnlyList<string> logicalKeys,
             CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(logicalKeys);
 
         if (logicalKeys.Count == 0)
         {
-
             return [];
         }
 
@@ -1053,11 +942,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         foreach (string logicalKey in logicalKeys)
         {
-
             if (!string.IsNullOrWhiteSpace(logicalKey)
                 && seenKeys.Add(logicalKey))
             {
-
                 orderedKeys.Add(logicalKey);
             }
         }
@@ -1069,7 +956,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
              offset < orderedKeys.Count;
              offset += LatestLogicalKeyQueryPageSize)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             IReadOnlyList<string> pageKeys = orderedKeys
@@ -1085,7 +971,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             foreach (SessionAttachmentRecord row in page)
             {
-
                 rowsByLogicalKey[row.LogicalKey] = row;
             }
         }
@@ -1095,12 +980,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         foreach (string logicalKey in orderedKeys)
         {
-
             if (rowsByLogicalKey.TryGetValue(
                     logicalKey,
                     out SessionAttachmentRecord? row))
             {
-
                 orderedRows.Add(row);
             }
         }
@@ -1114,14 +997,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         IReadOnlyList<string> logicalKeys,
         CancellationToken cancellationToken)
     {
-
         _ = Interlocked.Increment(
             ref _latestLogicalKeyQueryPageCountForTesting);
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection =
                     await OpenConnectionAsync(cancellationToken)
                         .ConfigureAwait(false);
@@ -1131,7 +1012,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 for (int index = 0; index < logicalKeys.Count; index++)
                 {
-
                     string parameterName = $"@logicalKey{index}";
                     keyParameters[index] = parameterName;
                     AddParameter(
@@ -1181,7 +1061,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                            .ReadAsync(cancellationToken)
                            .ConfigureAwait(false))
                 {
-
                     rows.Add(ReadRecord(reader));
                 }
 
@@ -1195,7 +1074,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int maxItems,
         CancellationToken cancellationToken = default)
     {
-
         int cap = Math.Max(1, maxItems);
 
         List<SessionAttachmentIndexItem> items = [];
@@ -1207,7 +1085,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         foreach (AttachmentIndexLatestProjection latest in latestItems)
         {
-
             IReadOnlyList<int> versionPage =
                 await ReadIndexVersionPageAsync(
                     sessionId,
@@ -1233,11 +1110,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 latest.ByteLength,
                 hasMoreVersions,
                 nextVersion));
-
         }
 
         return items;
-
     }
 
     private async Task<IReadOnlyList<AttachmentIndexLatestProjection>> ReadIndexLatestAsync(
@@ -1245,11 +1120,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int maxItems,
         CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -1286,21 +1159,17 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     rows.Add(new AttachmentIndexLatestProjection(
                         reader.GetString(0),
                         reader.GetString(1),
                         reader.GetInt32(2),
                         Enum.Parse<SessionAttachmentKind>(reader.GetString(3), ignoreCase: false),
                         reader.GetInt64(4)));
-
                 }
 
                 return (IReadOnlyList<AttachmentIndexLatestProjection>)rows;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<IReadOnlyList<int>> ReadIndexVersionPageAsync(
@@ -1311,11 +1180,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int pageSize,
         CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -1353,16 +1220,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     rows.Add(reader.GetInt32(0));
-
                 }
 
                 return (IReadOnlyList<int>)rows;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private sealed record AttachmentIndexLatestProjection(
@@ -1376,16 +1239,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         SessionAttachmentRecord record,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(record);
 
         string absolutePath = ResolveUnderRoot(record.RelativePath);
 
         if (!File.Exists(absolutePath))
         {
-
             throw new FileNotFoundException("Attachment bytes not found on disk.", absolutePath);
-
         }
 
         Stream decrypted = await _blobStore
@@ -1412,34 +1272,28 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             throw;
         }
-
     }
 
     public async Task<ReadOnlyMemory<byte>> ReadBytesAsync(
         SessionAttachmentRecord record,
         CancellationToken cancellationToken = default)
     {
-
         await using Stream decrypted = await OpenReadAsync(record, cancellationToken).ConfigureAwait(false);
 
         if (record.ByteLength < 0 || record.ByteLength > int.MaxValue)
         {
-
             throw new InvalidDataException(
                 "Attachment exceeds the single-memory read protocol boundary; use OpenReadAsync.");
-
         }
 
         byte[] output = GC.AllocateUninitializedArray<byte>((int)record.ByteLength);
 
         try
         {
-
             int offset = 0;
 
             while (offset < output.Length)
             {
-
                 int count = Math.Min(AttachmentIoPageSize, output.Length - offset);
 
                 int read = await decrypted
@@ -1448,14 +1302,11 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 if (read == 0)
                 {
-
                     throw new InvalidDataException(
                         $"Attachment plaintext ended before its declared length for '{record.Id}'.");
-
                 }
 
                 offset += read;
-
             }
 
             byte[] sentinel = new byte[1];
@@ -1464,60 +1315,45 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 .ReadAsync(sentinel, cancellationToken)
                 .ConfigureAwait(false) != 0)
             {
-
                 throw new InvalidDataException(
                     $"Attachment plaintext exceeded its declared length for '{record.Id}'.");
-
             }
 
             return output;
-
         }
         catch
         {
-
             CryptographicOperations.ZeroMemory(output);
 
             throw;
-
         }
-
     }
 
     private static string ComputeContentSha256(ReadOnlyMemory<byte> bytes)
     {
-
         using IncrementalHash hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         for (int offset = 0; offset < bytes.Length; offset += AttachmentIoPageSize)
         {
-
             int count = Math.Min(AttachmentIoPageSize, bytes.Length - offset);
 
             hasher.AppendData(bytes.Span.Slice(offset, count));
-
         }
 
         byte[] digest = hasher.GetHashAndReset();
 
         try
         {
-
             return Convert.ToHexString(digest);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(digest);
-
         }
-
     }
 
     public async Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default)
     {
-
         DateTimeOffset threshold = DateTimeOffset.UtcNow - olderThan;
 
         List<(Guid Id, string PendingTurnId, string RelativePath)> stale =
@@ -1526,12 +1362,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         foreach (IGrouping<string, (Guid Id, string PendingTurnId, string RelativePath)> group in stale
                      .GroupBy(s => s.PendingTurnId, StringComparer.Ordinal))
         {
-
             if (!SessionAttachmentPathSanitizer.TryValidatePendingTurnId(group.Key, out string safeTurnId, out _))
             {
-
                 continue;
-
             }
 
             using IDisposable gate = await AttachmentGates
@@ -1543,15 +1376,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             if (stillStale.Count == 0)
             {
-
                 continue;
-
             }
 
             await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                     await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken)
@@ -1559,7 +1389,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                     foreach ((Guid id, _, _) in stillStale)
                     {
-
                         await using DbCommand delete = connection.CreateCommand();
 
                         delete.Transaction = transaction;
@@ -1576,29 +1405,23 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                         AddParameter(delete, "@state", nameof(SessionAttachmentState.Pending));
 
                         _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                     }
 
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
                 },
                 cancellationToken).ConfigureAwait(false);
 
             foreach ((_, _, string relativePath) in stillStale)
             {
-
                 TryDeleteFile(ResolveUnderRoot(relativePath));
-
             }
 
             TryDeletePendingTurnDirectory(safeTurnId);
-
         }
 
         await SweepOrphanPendingDirectoriesAsync(threshold, cancellationToken).ConfigureAwait(false);
 
         await SweepOrphanAttachmentFilesAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default) =>
@@ -1612,38 +1435,28 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         IReadOnlyList<Guid> attachmentIds,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(attachmentIds);
 
         foreach (Guid attachmentId in attachmentIds)
         {
-
             SessionAttachmentRecord? record = await GetByIdAsync(attachmentId, cancellationToken).ConfigureAwait(false);
 
             if (record is null)
             {
-
                 throw new InvalidOperationException($"Attachment '{attachmentId}' was not found.");
-
             }
 
             if (record.State != SessionAttachmentState.Bound)
             {
-
                 throw new InvalidOperationException($"Attachment '{attachmentId}' is not bound.");
-
             }
 
             if (record.SessionId != sessionId)
             {
-
                 throw new InvalidOperationException(
                     $"Attachment '{attachmentId}' does not belong to session '{sessionId}'.");
-
             }
-
         }
-
     }
 
     internal static string SessionGateKey(Guid sessionId) =>
@@ -1657,16 +1470,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     private void EnlistAmbientTransaction(DbCommand cmd)
     {
-
         IDbContextTransaction? ambient = _db.Database.CurrentTransaction;
 
         if (ambient is not null)
         {
-
             cmd.Transaction = ambient.GetDbTransaction();
-
         }
-
     }
 
     private async Task InsertRowAsync(
@@ -1674,7 +1483,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         IdentityOwnedFileSystemArtifact expectedBlob,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         IDbContextTransaction? ambient = _db.Database.CurrentTransaction;
@@ -1688,23 +1496,18 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         try
         {
-
             if (ambient is not null && connection is SqliteConnection)
             {
-
                 await AcquireAttachmentWriterLockAsync(
                     connection,
                     transaction,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             if (AfterWriterLockBeforeBlobValidationForTesting is not null)
             {
-
                 await AfterWriterLockBeforeBlobValidationForTesting(
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             ValidateOwnedBlob(record, expectedBlob);
@@ -1765,7 +1568,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             AddParameter(cmd, "@kind", record.Kind.ToString());
 
-            AddParameter(cmd, "@createdAt", record.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
+            AddParameter(cmd, "@createdAt", UtcInstantText.Format(record.CreatedAt));
 
             AddSourceParameters(cmd, record.Source ?? AttachmentSourceMetadata.SnapshotOnly);
 
@@ -1780,44 +1583,31 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             if (ownedTransaction is not null)
             {
-
                 await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             }
-
         }
         catch
         {
-
             if (ownedTransaction is not null)
             {
-
                 await ownedTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
             }
 
             throw;
-
         }
         finally
         {
-
             if (ownedTransaction is not null)
             {
-
                 await ownedTransaction.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private void ValidateOwnedBlob(
         SessionAttachmentRecord record,
         IdentityOwnedFileSystemArtifact expectedBlob)
     {
-
         string absolutePath = ResolveUnderRoot(record.RelativePath);
 
         StringComparison comparison = OperatingSystem.IsWindows()
@@ -1834,33 +1624,26 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 out IdentityOwnedFileSystemArtifact current)
             || current.Metadata != expectedBlob.Metadata)
         {
-
             throw new IOException(
                 "Attachment persistence refused to publish metadata for missing or replaced bytes.");
-
         }
-
     }
 
     private static async Task<DbTransaction> BeginImmediateAttachmentTransactionAsync(
         DbConnection connection,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (connection is SqliteConnection sqliteConnection)
         {
-
             return sqliteConnection.BeginTransaction(deferred: false);
-
         }
 
         return await connection.BeginTransactionAsync(
                 IsolationLevel.Serializable,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private static async Task AcquireAttachmentWriterLockAsync(
@@ -1868,7 +1651,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         DbTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1881,7 +1663,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             """;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task UpdateSourceAsync(
@@ -1921,7 +1702,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         AddParameter(cmd, "@sourceFileIdentity", (object?)source.LastObservedFileIdentity ?? DBNull.Value);
         AddParameter(cmd, "@sourceLastWriteAt", source.LastObservedWriteTime is null
             ? DBNull.Value
-            : source.LastObservedWriteTime.Value.ToString("o", CultureInfo.InvariantCulture));
+            : UtcInstantText.Format(source.LastObservedWriteTime.Value));
         AddParameter(cmd, "@sourceByteLength", source.LastObservedByteLength is null
             ? DBNull.Value
             : source.LastObservedByteLength.Value);
@@ -1935,14 +1716,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         string logicalKey,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand cmd = connection.CreateCommand();
 
         if (sessionId is not null)
         {
-
             cmd.CommandText =
                 """
                 SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
@@ -1958,11 +1737,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 """;
 
             AddParameter(cmd, "@sessionId", sessionId.Value.ToString().ToUpperInvariant());
-
         }
         else
         {
-
             cmd.CommandText =
                 """
                 SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
@@ -1978,7 +1755,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 """;
 
             AddParameter(cmd, "@pendingTurnId", pendingTurnId!);
-
         }
 
         AddParameter(cmd, "@logicalKey", logicalKey);
@@ -1987,13 +1763,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         return ReadRecord(reader);
-
     }
 
     private async Task<long> SumByteLengthAsync(
@@ -2001,14 +1774,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         string? pendingTurnId,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand cmd = connection.CreateCommand();
 
         if (sessionId is not null)
         {
-
             cmd.CommandText =
                 """
                 SELECT COALESCE(SUM("ByteLength"), 0)
@@ -2017,11 +1788,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 """;
 
             AddParameter(cmd, "@sessionId", sessionId.Value.ToString().ToUpperInvariant());
-
         }
         else
         {
-
             cmd.CommandText =
                 """
                 SELECT COALESCE(SUM("ByteLength"), 0)
@@ -2030,20 +1799,17 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 """;
 
             AddParameter(cmd, "@pendingTurnId", pendingTurnId!);
-
         }
 
         object? result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return result is null or DBNull ? 0L : Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<List<SessionAttachmentRecord>> ListPendingByTurnAsync(
         string pendingTurnId,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -2070,20 +1836,16 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(ReadRecord(reader));
-
         }
 
         return rows;
-
     }
 
     private async Task<List<(Guid Id, string PendingTurnId, string RelativePath)>> ListStalePendingAsync(
         DateTimeOffset threshold,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand select = connection.CreateCommand();
@@ -2099,7 +1861,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         AddParameter(select, "@state", nameof(SessionAttachmentState.Pending));
 
-        AddParameter(select, "@threshold", threshold.ToString("o", CultureInfo.InvariantCulture));
+        AddParameter(select, "@threshold", UtcInstantText.Format(threshold));
 
         List<(Guid Id, string PendingTurnId, string RelativePath)> stale = [];
 
@@ -2107,7 +1869,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             Guid id = Guid.Parse(reader.GetString(0));
 
             string turnId = reader.GetString(1);
@@ -2115,11 +1876,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             string relativePath = reader.GetString(2);
 
             stale.Add((id, turnId, relativePath));
-
         }
 
         return stale;
-
     }
 
     private async Task<List<(Guid Id, string PendingTurnId, string RelativePath)>> ListStalePendingForTurnAsync(
@@ -2127,7 +1886,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         DateTimeOffset threshold,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand select = connection.CreateCommand();
@@ -2145,7 +1903,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         AddParameter(select, "@pendingTurnId", pendingTurnId);
 
-        AddParameter(select, "@threshold", threshold.ToString("o", CultureInfo.InvariantCulture));
+        AddParameter(select, "@threshold", UtcInstantText.Format(threshold));
 
         List<(Guid Id, string PendingTurnId, string RelativePath)> stale = [];
 
@@ -2153,7 +1911,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             Guid id = Guid.Parse(reader.GetString(0));
 
             string turnId = reader.GetString(1);
@@ -2161,59 +1918,47 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             string relativePath = reader.GetString(2);
 
             stale.Add((id, turnId, relativePath));
-
         }
 
         return stale;
-
     }
 
     private async Task SweepOrphanPendingDirectoriesAsync(DateTimeOffset threshold, CancellationToken cancellationToken)
     {
-
         string pendingRoot = Path.Combine(_attachmentsRoot, "_pending");
 
         if (!Directory.Exists(pendingRoot))
         {
-
             return;
-
         }
 
         foreach (string dir in Directory.EnumerateDirectories(pendingRoot))
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string turnId = Path.GetFileName(dir);
 
             if (!SessionAttachmentPathSanitizer.TryValidatePendingTurnId(turnId, out string safeTurnId, out _))
             {
-
                 _logger.LogWarning(
                     "Leaving invalid _pending child name alone (no identity-checked delete): {TurnDir}",
                     turnId);
 
                 continue;
-
             }
 
             string absoluteDir = Path.GetFullPath(dir);
 
             if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, absoluteDir, out _))
             {
-
                 continue;
-
             }
 
             DateTime lastWriteUtc = Directory.GetLastWriteTimeUtc(absoluteDir);
 
             if (lastWriteUtc > threshold.UtcDateTime)
             {
-
                 continue;
-
             }
 
             using IDisposable gate = await AttachmentGates
@@ -2225,24 +1970,18 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             if (remaining.Count > 0)
             {
-
                 continue;
-
             }
 
             lastWriteUtc = Directory.GetLastWriteTimeUtc(absoluteDir);
 
             if (lastWriteUtc > threshold.UtcDateTime)
             {
-
                 continue;
-
             }
 
             TryDeletePendingTurnDirectory(safeTurnId);
-
         }
-
     }
 
     /// <summary>
@@ -2265,53 +2004,41 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// </remarks>
     private async Task SweepOrphanAttachmentFilesAsync(CancellationToken cancellationToken)
     {
-
         if (!Directory.Exists(_attachmentsRoot))
         {
-
             return;
-
         }
 
         if (!TryReadFilesystemClockUtc(out DateTime snapshotTakenUtc))
         {
-
             _logger.LogWarning(
                 "Skipping the orphan attachment sweep: the attachments root would not take a probe file, "
                 + "so the filesystem's clock could not be read and no file can be shown to predate the snapshot.");
 
             return;
-
         }
 
         HashSet<string> knownPaths = await ListAllRelativePathsAsync(cancellationToken).ConfigureAwait(false);
 
         if (AfterOrphanPathSnapshotForTesting is not null)
         {
-
             await AfterOrphanPathSnapshotForTesting(cancellationToken).ConfigureAwait(false);
-
         }
 
         foreach (string filePath in Directory.EnumerateFiles(_attachmentsRoot, "*", SearchOption.AllDirectories))
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string absolute = Path.GetFullPath(filePath);
 
             if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, absolute, out _))
             {
-
                 continue;
-
             }
 
             if (IsModifiedAtOrAfter(absolute, snapshotTakenUtc))
             {
-
                 continue;
-
             }
 
             // Promotion stages as `destination + ".tmp"`, but EncryptedBlobStore stages as
@@ -2321,33 +2048,25 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             if (fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
                 || fileName.Contains(".tmp.", StringComparison.OrdinalIgnoreCase))
             {
-
                 TryDeleteFile(absolute);
 
                 continue;
-
             }
 
             string relative = NormalizeRelativePath(Path.GetRelativePath(_attachmentsRoot, absolute));
 
             if (knownPaths.Contains(relative))
             {
-
                 continue;
-
             }
 
             if (await RelativePathIsClaimedAsync(relative, cancellationToken).ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             TryDeleteFile(absolute);
-
         }
-
     }
 
     /// <summary>
@@ -2357,20 +2076,14 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// </summary>
     private bool IsModifiedAtOrAfter(string absolutePath, DateTime threshold)
     {
-
         try
         {
-
             return ReadLastWriteTimeUtc(absolutePath) >= threshold;
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             return true;
-
         }
-
     }
 
     /// <summary>
@@ -2386,39 +2099,29 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// </remarks>
     private bool TryReadFilesystemClockUtc(out DateTime nowUtc)
     {
-
         string probePath = Path.Combine(_attachmentsRoot, $".sweep-clock.tmp.{Guid.NewGuid():N}");
 
         try
         {
-
             using (FileStream probe = File.Create(probePath))
             {
-
                 probe.WriteByte(0);
-
             }
 
             nowUtc = ReadLastWriteTimeUtc(probePath);
 
             return true;
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             nowUtc = default;
 
             return false;
-
         }
         finally
         {
-
             TryDeleteFile(probePath);
-
         }
-
     }
 
     private DateTime ReadLastWriteTimeUtc(string absolutePath) =>
@@ -2432,7 +2135,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// </summary>
     private async Task<bool> RelativePathIsClaimedAsync(string relativePath, CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -2447,12 +2149,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         object? found = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return found is not null and not DBNull;
-
     }
 
     private async Task<HashSet<string>> ListAllRelativePathsAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -2467,54 +2167,39 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             paths.Add(NormalizeRelativePath(reader.GetString(0)));
-
         }
 
         return paths;
-
     }
 
     private void TryDeletePendingTurnDirectory(string pendingTurnId)
     {
-
         if (!SessionAttachmentPathSanitizer.TryValidatePendingTurnId(pendingTurnId, out string safeTurnId, out _))
         {
-
             return;
-
         }
 
         string dir = Path.GetFullPath(Path.Combine(_attachmentsRoot, "_pending", safeTurnId));
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, dir, out _))
         {
-
             return;
-
         }
 
         if (!Directory.Exists(dir))
         {
-
             return;
-
         }
 
         try
         {
-
             Directory.Delete(dir, recursive: true);
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             // Best effort — leftover empty trees are cleaned on a later GC pass.
-
         }
-
     }
 
     private static async Task AtomicCopyFileAsync(
@@ -2522,14 +2207,11 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         string destination,
         CancellationToken cancellationToken)
     {
-
         string? parentDir = Path.GetDirectoryName(destination);
 
         if (string.IsNullOrEmpty(parentDir))
         {
-
             throw new InvalidOperationException("Could not resolve promoted attachment directory.");
-
         }
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(parentDir);
@@ -2538,9 +2220,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         if (File.Exists(tempPath))
         {
-
             File.Delete(tempPath);
-
         }
 
         await using (FileStream destStream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
@@ -2552,65 +2232,48 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                          bufferSize: 4096,
                          useAsync: true))
         {
-
             await srcStream.CopyToAsync(destStream, cancellationToken).ConfigureAwait(false);
 
             await destStream.FlushAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
 
         if (File.Exists(destination))
         {
-
             File.Delete(destination);
-
         }
 
         File.Move(tempPath, destination);
 
         SecureFilePermissions.ApplyOwnerOnlyFile(destination);
-
     }
 
     private static void TryDeleteFile(string absolutePath)
     {
-
         try
         {
-
             if (File.Exists(absolutePath))
             {
-
                 File.Delete(absolutePath);
-
             }
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             // Best effort compensating delete.
-
         }
-
     }
 
     private string ResolveUnderRoot(string relativePath)
     {
-
         string combined = Path.GetFullPath(Path.Combine(_attachmentsRoot, relativePath));
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, combined, out _))
         {
-
             throw new InvalidOperationException("Attachment path escapes the attachments root.");
-
         }
 
         return combined;
-
     }
 
     private static string BuildRelativePath(
@@ -2620,26 +2283,22 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int version,
         string originalFileName)
     {
-
         string ownerSegment = sessionId is not null
             ? sessionId.Value.ToString("N")
             : Path.Combine("_pending", pendingTurnId!);
 
         return Path.Combine(ownerSegment, logicalKey, "v" + version.ToString(CultureInfo.InvariantCulture), originalFileName);
-
     }
 
     private static string NormalizeRelativePath(string relativePath) =>
         relativePath.Replace('\\', '/');
 
     private static bool HasSameSourceIdentity(
-
         AttachmentSourceMetadata? existing,
 
         AttachmentSourceMetadata? requested)
 
     {
-
         AttachmentSourceMetadata existingSource = existing ?? AttachmentSourceMetadata.SnapshotOnly;
 
         AttachmentSourceMetadata requestedSource = requested ?? AttachmentSourceMetadata.SnapshotOnly;
@@ -2647,17 +2306,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         if (existingSource.Kind != requestedSource.Kind)
 
         {
-
             return false;
-
         }
 
         if (existingSource.Kind == AttachmentSourceKind.SnapshotOnly)
 
         {
-
             return true;
-
         }
 
         StringComparison pathComparison = OperatingSystem.IsWindows()
@@ -2667,7 +2322,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             : StringComparison.Ordinal;
 
         return string.Equals(
-
                 existingSource.WorkspaceIdentity,
 
                 requestedSource.WorkspaceIdentity,
@@ -2675,7 +2329,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 StringComparison.Ordinal)
 
             && string.Equals(
-
                 NormalizeSourceRelativePath(existingSource.WorkspaceRelativePath),
 
                 NormalizeSourceRelativePath(requestedSource.WorkspaceRelativePath),
@@ -2683,13 +2336,11 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 pathComparison)
 
             && SourcePathEquals(
-
                 existingSource.LastKnownCanonicalPath,
 
                 requestedSource.LastKnownCanonicalPath,
 
                 pathComparison);
-
     }
 
     private static string? NormalizeSourceRelativePath(string? relativePath) =>
@@ -2697,7 +2348,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         relativePath?.Replace('\\', '/');
 
     private static bool SourcePathEquals(
-
         string? left,
 
         string? right,
@@ -2705,30 +2355,23 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         StringComparison comparison)
 
     {
-
         if (left is null || right is null)
 
         {
-
             return left is null && right is null;
-
         }
 
         try
 
         {
-
             return string.Equals(
-
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
 
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
 
                 comparison);
-
         }
         catch (Exception exception) when (
-
             exception is ArgumentException
 
                 or NotSupportedException
@@ -2736,32 +2379,24 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 or PathTooLongException)
 
         {
-
             return false;
-
         }
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = _db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -2769,12 +2404,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static SessionAttachmentRecord ReadRecord(DbDataReader reader)
     {
-
         Guid id = Guid.Parse(reader.GetString(0));
 
         Guid? sessionId = reader.IsDBNull(1) ? null : Guid.Parse(reader.GetString(1));
@@ -2801,7 +2434,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         SessionAttachmentKind kind = Enum.Parse<SessionAttachmentKind>(reader.GetString(12));
 
-        DateTimeOffset createdAt = DateTimeOffset.Parse(reader.GetString(13), CultureInfo.InvariantCulture);
+        DateTimeOffset createdAt = UtcInstantText.Parse(reader.GetString(13));
 
         AttachmentSourceMetadata source = AttachmentSourceMetadata.SnapshotOnly;
         if (reader.FieldCount >= 24)
@@ -2821,7 +2454,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 reader.IsDBNull(19) ? null : reader.GetString(19),
                 reader.IsDBNull(20)
                     ? null
-                    : DateTimeOffset.Parse(reader.GetString(20), CultureInfo.InvariantCulture),
+                    : UtcInstantText.Parse(reader.GetString(20)),
                 reader.IsDBNull(21) ? null : reader.GetInt64(21),
                 sourceStatus,
                 reader.IsDBNull(23) ? null : reader.GetString(23));
@@ -2852,7 +2485,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             source,
             encryptionVersion,
             encryptionKeyId);
-
     }
 
     private readonly record struct PromotionPlan(
@@ -2860,5 +2492,4 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         string OldAbsolutePath,
         string NewAbsolutePath,
         string NewRelativePath);
-
 }

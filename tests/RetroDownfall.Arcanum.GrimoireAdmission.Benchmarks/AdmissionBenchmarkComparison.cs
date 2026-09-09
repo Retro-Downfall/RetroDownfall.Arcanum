@@ -4,12 +4,10 @@ namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 internal static class AdmissionBenchmarkComparison
 {
-
     internal static AdmissionBenchmarkComparisonReport Compare(
         AdmissionBenchmarkManifest manifest,
         AdmissionBenchmarkEvidenceBundle evidence)
     {
-
         ArgumentNullException.ThrowIfNull(manifest);
 
         ArgumentNullException.ThrowIfNull(evidence);
@@ -18,9 +16,7 @@ internal static class AdmissionBenchmarkComparison
 
         if (invalid.Count != 0)
         {
-
             return new(false, false, 2, 0, 0, 0, invalid.ToArray());
-
         }
 
         List<string> rejected = [];
@@ -31,7 +27,6 @@ internal static class AdmissionBenchmarkComparison
 
         for (int pairIndex = 0; pairIndex < evidence.Pairs.Length; pairIndex++)
         {
-
             AdmissionBenchmarkPair pair = evidence.Pairs[pairIndex];
 
             Dictionary<(string Operation, string Concurrency), AdmissionBenchmarkCellResult> baseline = pair.Baseline.Cells.ToDictionary(static cell => (cell.Operation, cell.Concurrency));
@@ -40,7 +35,6 @@ internal static class AdmissionBenchmarkComparison
 
             foreach (((string operation, string concurrency), AdmissionBenchmarkCellResult baselineCell) in baseline)
             {
-
                 AdmissionBenchmarkCellResult candidateCell = candidate[(operation, concurrency)];
 
                 double p50Ratio = CostRatio(baselineCell.P50Nanoseconds, candidateCell.P50Nanoseconds);
@@ -49,32 +43,24 @@ internal static class AdmissionBenchmarkComparison
 
                 if (!double.IsFinite(p50Ratio) || !double.IsFinite(p99Ratio))
                 {
-
                     return InvalidDerivedMetric(operation, concurrency);
-
                 }
 
                 if (concurrency == "one"
                     && p50Ratio > manifest.Thresholds.SingleThreadP50MaximumRatio)
                 {
-
                     rejected.Add($"p50: {operation}@{concurrency} exceeds the maximum ratio.");
-
                 }
 
                 if (p99Ratio > manifest.Thresholds.P99MaximumRatio)
                 {
-
                     rejected.Add($"p99: {operation}@{concurrency} exceeds the maximum ratio.");
-
                 }
 
                 if (AdmissionBenchmarkOperations.IsDirect(operation)
                     && AllocatesMore(baselineCell, candidateCell))
                 {
-
                     rejected.Add($"direct-allocation: {operation}@{concurrency} allocated more bytes.");
-
                 }
 
                 if (operation == "ef.pooled"
@@ -83,19 +69,14 @@ internal static class AdmissionBenchmarkComparison
                         candidateCell,
                         manifest.Thresholds.EfAllocationMaximumRatio))
                 {
-
                     rejected.Add($"ef-allocation: {operation}@{concurrency} exceeds the allocation ratio.");
-
                 }
 
                 if (candidateCell.MaterializedTerminalCallbackDelta != 0
                     || baselineCell.MaterializedTerminalCallbackDelta != 0)
                 {
-
                     rejected.Add($"terminal-waiter: {operation}@{concurrency} materialized an ordinary terminal waiter.");
-
                 }
-
             }
 
             AdmissionBenchmarkCellResult baseMixed = baseline[(manifest.MaterialImprovementOperation, manifest.MaterialImprovementConcurrency)];
@@ -106,9 +87,7 @@ internal static class AdmissionBenchmarkComparison
 
             if (!double.IsFinite(mixedRatio))
             {
-
                 return InvalidDerivedMetric(manifest.MaterialImprovementOperation, manifest.MaterialImprovementConcurrency);
-
             }
 
             mixedRatios.Add(mixedRatio);
@@ -121,13 +100,10 @@ internal static class AdmissionBenchmarkComparison
 
             if (!double.IsFinite(efRatio))
             {
-
                 return InvalidDerivedMetric("ef.pooled", "one");
-
             }
 
             efRatios.Add(efRatio);
-
         }
 
         double mixedPoint = FiniteMean(mixedRatios);
@@ -146,30 +122,22 @@ internal static class AdmissionBenchmarkComparison
             || !double.IsFinite(mixedLower)
             || !double.IsFinite(efUpper))
         {
-
             return InvalidDerivedMetric("aggregate", "qualification");
-
         }
 
         if (mixedPoint < manifest.Thresholds.MixedThroughputMinimumRatio)
         {
-
             rejected.Add("mixed-point: ordinary.mixed@logical point ratio is below the threshold.");
-
         }
 
         if (mixedLower < manifest.Thresholds.MixedThroughputMinimumRatio)
         {
-
             rejected.Add("mixed-lower: ordinary.mixed@logical bootstrap lower bound is below the threshold.");
-
         }
 
         if (efUpper > manifest.Thresholds.EfMaximumRatio)
         {
-
             rejected.Add("ef-p99: ef.pooled@one bootstrap upper bound exceeds the threshold.");
-
         }
 
         string[] reasons = rejected.Distinct(StringComparer.Ordinal).ToArray();
@@ -177,35 +145,28 @@ internal static class AdmissionBenchmarkComparison
         bool accepted = reasons.Length == 0;
 
         return new(true, accepted, accepted ? 0 : 1, mixedPoint, mixedLower, efUpper, reasons);
-
     }
 
     private static List<string> ValidateShape(
         AdmissionBenchmarkManifest manifest,
         AdmissionBenchmarkEvidenceBundle evidence)
     {
-
         List<string> errors = [];
 
         if (string.IsNullOrWhiteSpace(evidence.SessionId))
         {
-
             errors.Add("The evidence session id is missing.");
-
         }
 
         if (evidence.Pairs is null || evidence.Pairs.Length != 6)
         {
-
             errors.Add("Qualification requires exactly six process pairs.");
 
             return errors;
-
         }
 
         for (int index = 0; index < evidence.Pairs.Length; index++)
         {
-
             AdmissionBenchmarkPair pair = evidence.Pairs[index];
 
             string expectedFirst = index % 2 == 0 ? "B" : "C";
@@ -222,9 +183,7 @@ internal static class AdmissionBenchmarkComparison
                 || pair.Baseline.OrderPosition != (expectedFirst == "B" ? 0 : 1)
                 || pair.Candidate.OrderPosition != (expectedFirst == "C" ? 0 : 1))
             {
-
                 errors.Add($"Pair {index} does not match the counterbalanced order.");
-
             }
 
             errors.AddRange(AdmissionBenchmarkRunValidator.Validate(
@@ -238,11 +197,9 @@ internal static class AdmissionBenchmarkComparison
                 pair.Candidate,
                 "qualification",
                 evidence.SessionId));
-
         }
 
         return errors;
-
     }
 
     private static double BootstrapQuantile(
@@ -250,19 +207,16 @@ internal static class AdmissionBenchmarkComparison
         AdmissionBenchmarkBootstrap bootstrap,
         double quantile)
     {
-
         double[] means = new double[bootstrap.ReplicateCount];
 
         ulong state = bootstrap.Seed;
 
         for (int replicate = 0; replicate < means.Length; replicate++)
         {
-
             double sum = 0;
 
             for (int sample = 0; sample < ratios.Count; sample++)
             {
-
                 state ^= state >> 12;
 
                 state ^= state << 25;
@@ -277,15 +231,11 @@ internal static class AdmissionBenchmarkComparison
 
                 if (!double.IsFinite(sum))
                 {
-
                     throw new InvalidDataException("Bootstrap mean arithmetic was not finite.");
-
                 }
-
             }
 
             means[replicate] = sum;
-
         }
 
         Array.Sort(means);
@@ -293,7 +243,6 @@ internal static class AdmissionBenchmarkComparison
         int rank = Math.Clamp((int)Math.Ceiling(quantile * means.Length) - 1, 0, means.Length - 1);
 
         return means[rank];
-
     }
 
     private static AdmissionBenchmarkComparisonReport InvalidDerivedMetric(
@@ -310,25 +259,19 @@ internal static class AdmissionBenchmarkComparison
 
     private static double FiniteMean(IReadOnlyList<double> values)
     {
-
         double mean = 0;
 
         for (int index = 0; index < values.Count; index++)
         {
-
             mean += (values[index] - mean) / (index + 1);
 
             if (!double.IsFinite(mean))
             {
-
                 return double.NaN;
-
             }
-
         }
 
         return mean;
-
     }
 
     private static double CostRatio(double baseline, double candidate) =>
@@ -347,7 +290,6 @@ internal static class AdmissionBenchmarkComparison
         AdmissionBenchmarkCellResult candidate,
         double threshold)
     {
-
         decimal exactThreshold = (decimal)threshold;
 
         int[] bits = decimal.GetBits(exactThreshold);
@@ -369,14 +311,11 @@ internal static class AdmissionBenchmarkComparison
             * thresholdNumerator;
 
         return left > right;
-
     }
-
 }
 
 internal static class AdmissionBenchmarkRunValidator
 {
-
     private static readonly int[] RequiredHistoricalChurn = [0, 64, 640];
 
     internal static string[] Validate(
@@ -385,14 +324,11 @@ internal static class AdmissionBenchmarkRunValidator
         string expectedProfile,
         string expectedSessionId)
     {
-
         List<string> errors = [];
 
         if (run.SessionId != expectedSessionId || run.ExitCode != 0)
         {
-
             errors.Add($"Run {run.Role}/{run.PairIndex} has mismatched session or exit metadata.");
-
         }
 
         AdmissionBenchmarkProfile? profile = manifest.Profiles.SingleOrDefault(
@@ -400,9 +336,7 @@ internal static class AdmissionBenchmarkRunValidator
 
         if (profile is null || run.Profile != expectedProfile)
         {
-
             errors.Add($"Run {run.Role}/{run.PairIndex} does not use the expected profile.");
-
         }
 
         HashSet<(string Operation, string Concurrency)> required =
@@ -416,21 +350,15 @@ internal static class AdmissionBenchmarkRunValidator
 
         if (run.Cells is null)
         {
-
             errors.Add($"Run {run.Role}/{run.PairIndex} has no cells.");
-
         }
         else
         {
-
             foreach (AdmissionBenchmarkCellResult cell in run.Cells)
             {
-
                 if (!actual.Add((cell.Operation, cell.Concurrency)))
                 {
-
                     errors.Add($"Run {run.Role}/{run.PairIndex} has a duplicate cell.");
-
                 }
 
                 if (cell.Workers <= 0
@@ -453,16 +381,12 @@ internal static class AdmissionBenchmarkRunValidator
                     || cell.FailureCount != 0
                     || cell.MaterializedTerminalCallbackDelta != 0)
                 {
-
                     errors.Add($"Run {run.Role}/{run.PairIndex} has an invalid metric in {cell.Operation}@{cell.Concurrency}.");
-
                 }
 
                 if (profile is null || !required.Contains((cell.Operation, cell.Concurrency)))
                 {
-
                     continue;
-
                 }
 
                 AdmissionBenchmarkConcurrency declaredConcurrency = manifest.Concurrency.Single(
@@ -492,20 +416,14 @@ internal static class AdmissionBenchmarkRunValidator
                     || cell.SuccessCount != expectedOperations
                     || cell.Checksum != expectedChecksum)
                 {
-
                     errors.Add($"Run {run.Role}/{run.PairIndex} has invalid exact accounting in {cell.Operation}@{cell.Concurrency}.");
-
                 }
-
             }
-
         }
 
         if (!actual.SetEquals(required))
         {
-
             errors.Add($"Run {run.Role}/{run.PairIndex} does not contain the exact required cells.");
-
         }
 
         if (run.FinalState is null
@@ -517,24 +435,18 @@ internal static class AdmissionBenchmarkRunValidator
             || !run.FinalState.DrainSucceeded
             || !run.FinalState.ReopenSucceeded)
         {
-
             errors.Add($"Run {run.Role}/{run.PairIndex} did not reach the required final drained state.");
-
         }
 
         if (run.HistoricalChurn is null
             || run.HistoricalChurn.Length != RequiredHistoricalChurn.Length)
         {
-
             errors.Add($"Run {run.Role}/{run.PairIndex} does not contain the exact historical-churn observations.");
-
         }
         else
         {
-
             for (int index = 0; index < RequiredHistoricalChurn.Length; index++)
             {
-
                 AdmissionBenchmarkHistoricalChurnResult churn = run.HistoricalChurn[index];
 
                 if (churn.DisposedAdmissions != RequiredHistoricalChurn[index]
@@ -543,21 +455,15 @@ internal static class AdmissionBenchmarkRunValidator
                     || !NonnegativeFinite(churn.CloseNanoseconds)
                     || !churn.DrainSucceeded)
                 {
-
                     errors.Add($"Run {run.Role}/{run.PairIndex} has an invalid historical-churn observation at index {index}.");
-
                 }
-
             }
-
         }
 
         return errors.Distinct(StringComparer.Ordinal).ToArray();
-
     }
 
     private static bool PositiveFinite(double value) => value > 0 && double.IsFinite(value);
 
     private static bool NonnegativeFinite(double value) => value >= 0 && double.IsFinite(value);
-
 }

@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 public sealed class GrimoireSchemaInstallerTests
 {
-
     /// <summary>
     /// These tests open SQLCipher connections directly, so the provider has to be installed before
     /// the first one is constructed. Without this the class only passes when some earlier test in
@@ -28,7 +27,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_creates_the_grimoire_core_tables()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         foreach (string table in new[]
@@ -53,13 +51,12 @@ public sealed class GrimoireSchemaInstallerTests
             "SanctumBreaches",
             "UploadedFiles",
             "Batches",
+            "BatchAccountingRecoveryClaims",
             "BatchLineCheckpoints",
             "BudgetAlerts",
         })
         {
-
             Assert.True(await TableExistsAsync(connection, table), $"missing table {table}");
-
         }
 
         Assert.True(await TableExistsAsync(connection, "Entries_fts"));
@@ -75,7 +72,6 @@ public sealed class GrimoireSchemaInstallerTests
         Assert.True(await TriggerExistsAsync(connection, "TR_BatchLineCheckpoints_IncrementTotal"));
 
         Assert.True(await TriggerExistsAsync(connection, "TR_BatchLineCheckpoints_IncrementOutcome"));
-
     }
 
     /// <summary>
@@ -89,7 +85,6 @@ public sealed class GrimoireSchemaInstallerTests
     [InlineData("RootOperationId")]
     public async Task LongRunningOperations_child_lookups_are_index_backed(string column)
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         string plan = await ExplainQueryPlanAsync(
@@ -99,7 +94,6 @@ public sealed class GrimoireSchemaInstallerTests
         Assert.Contains("INDEX", plan, StringComparison.Ordinal);
 
         Assert.DoesNotContain("SCAN", plan, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -119,7 +113,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task Entries_fts_rows_are_keyed_by_the_rowid_of_the_entry_they_index()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         await ExecuteAsync(
@@ -150,7 +143,6 @@ public sealed class GrimoireSchemaInstallerTests
             """DELETE FROM "Entries" WHERE "Id" = '22222222-2222-4222-8222-22222222222B';""");
 
         Assert.Equal([1000L], await ReadFtsRowIdsAsync(connection));
-
     }
 
     /// <summary>
@@ -160,7 +152,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_creates_weave_saga_tapestry_and_lexicon_tables_from_the_same_source()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         foreach (string table in new[]
@@ -184,9 +175,7 @@ public sealed class GrimoireSchemaInstallerTests
             "lexicon_fact_attachment_provenance",
         })
         {
-
             Assert.True(await TableExistsAsync(connection, table), $"missing table {table}");
-
         }
 
         Assert.True(await TriggerExistsAsync(connection, "lexicon_entries_ai"));
@@ -194,7 +183,6 @@ public sealed class GrimoireSchemaInstallerTests
         Assert.True(await TriggerExistsAsync(connection, "lexicon_entries_ad"));
 
         Assert.True(await TriggerExistsAsync(connection, "lexicon_entries_au"));
-
     }
 
     /// <summary>
@@ -205,13 +193,11 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_installs_no_vec0_shadow_over_the_durable_embedding_table()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         Assert.False(await TableExistsAsync(connection, "entry_embeddings_vec"));
 
         Assert.True(await TableExistsAsync(connection, "entry_embeddings"));
-
     }
 
     /// <summary>
@@ -222,7 +208,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_reports_every_tier_healthy_on_a_fresh_database()
     {
-
         await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
             "Data Source=:memory:",
             CancellationToken.None);
@@ -237,13 +222,11 @@ public sealed class GrimoireSchemaInstallerTests
         Assert.True(result.CovenantCanonical.IsHealthy);
 
         Assert.True(result.CovenantAccelerator.IsHealthy);
-
     }
 
     [Fact]
     public async Task InstallAsync_is_idempotent_when_reopened()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         string first = await GrimoireSchemaIdentity.ComputeAsync(connection, CancellationToken.None);
@@ -256,7 +239,6 @@ public sealed class GrimoireSchemaInstallerTests
         string second = await GrimoireSchemaIdentity.ComputeAsync(connection, CancellationToken.None);
 
         Assert.Equal(first, second);
-
     }
 
     /// <summary>
@@ -274,7 +256,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_does_not_rebuild_the_lexicon_index_over_a_populated_corpus()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         await ExecuteAsync(
@@ -302,7 +283,6 @@ public sealed class GrimoireSchemaInstallerTests
             CancellationToken.None);
 
         Assert.Equal(0L, await CountLexiconMatchesAsync(connection, "quenchable"));
-
     }
 
     /// <summary>
@@ -314,7 +294,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_rebuilds_the_lexicon_index_when_the_corpus_is_empty()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         await ExecuteAsync(
@@ -332,7 +311,6 @@ public sealed class GrimoireSchemaInstallerTests
             CancellationToken.None);
 
         Assert.Equal(0L, await CountLexiconMatchesAsync(connection, "unmoored"));
-
     }
 
     /// <summary>
@@ -351,7 +329,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task Inspection_rejects_a_partial_index_whose_predicate_changed()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         await ExecuteAsync(connection, "DROP INDEX ux_session_turn_claims_active;");
@@ -393,34 +370,28 @@ public sealed class GrimoireSchemaInstallerTests
         Assert.True(
             restored.IsValid,
             $"failure={restored.Failure} object={restored.ObjectName}");
-
     }
 
     [Fact]
     public async Task InstallAsync_leaves_no_migration_bookkeeping_behind()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         Assert.False(await TableExistsAsync(connection, "__EFMigrationsHistory"));
-
     }
 
     [Fact]
     public async Task InstallAsync_passes_integrity_and_foreign_key_checks()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         await using (SqliteCommand quickCheck = connection.CreateCommand())
         {
-
             quickCheck.CommandText = "PRAGMA quick_check;";
 
             Assert.Equal(
                 "ok",
                 (await quickCheck.ExecuteScalarAsync(CancellationToken.None)) as string);
-
         }
 
         await using SqliteCommand foreignKeys = connection.CreateCommand();
@@ -430,7 +401,6 @@ public sealed class GrimoireSchemaInstallerTests
         await using SqliteDataReader reader = await foreignKeys.ExecuteReaderAsync(CancellationToken.None);
 
         Assert.False(await reader.ReadAsync(CancellationToken.None));
-
     }
 
     /// <summary>
@@ -446,7 +416,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_rolls_the_whole_core_tier_back_when_its_seed_fails()
     {
-
         await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
             "Data Source=:memory:",
             CancellationToken.None);
@@ -472,13 +441,11 @@ public sealed class GrimoireSchemaInstallerTests
         Assert.False(await TableExistsAsync(connection, "Sessions"));
 
         Assert.False(await TableExistsAsync(connection, "lexicon_entries"));
-
     }
 
     [Fact]
     public async Task InstallAsync_creates_non_null_reasoning_tokens_column_with_zero_default()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -489,12 +456,9 @@ public sealed class GrimoireSchemaInstallerTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             if (!string.Equals(reader.GetString(1), "ReasoningTokens", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             Assert.Equal(1, reader.GetInt32(3));
@@ -502,76 +466,74 @@ public sealed class GrimoireSchemaInstallerTests
             Assert.Equal("0", reader.GetString(4));
 
             return;
-
         }
 
         Assert.Fail("BillableOperations.ReasoningTokens was not installed.");
-
     }
 
     [Fact]
     public async Task InstallAsync_creates_the_managed_embedding_companion_tables()
     {
-
         // The templated vec0 accelerators these tables used to shadow are gone: the hermetic
         // SQLCipher runtime omits extension loading, so managed cosine over these BLOB tables is
         // the only search path and they are the source of truth rather than a fallback.
         await using SqliteConnection connection = await InstallAsync();
 
         Assert.True(await TableExistsAsync(connection, "entry_embeddings"));
-
     }
 
     [Fact]
     public void Compiled_ef_model_does_not_map_raw_sql_tables()
     {
-
-        foreach (string table in new[] { "BillableOperations", "SessionContextPins", "LongRunningOperations", "SessionAttachments" })
+        foreach (string table in new[]
+                 {
+                     "BillableOperations",
+                     "SessionContextPins",
+                     "LongRunningOperations",
+                     "SessionAttachments",
+                     "BatchAccountingRecoveryClaims",
+                 })
         {
-
             Assert.DoesNotContain(
                 ArcanumDbContextModel.Instance.GetEntityTypes(),
                 entityType => string.Equals(entityType.GetTableName(), table, StringComparison.Ordinal));
-
         }
-
     }
 
     /// <summary>
-    /// Every table the compiled EF model maps must exist in the installed schema — the two sources
-    /// are allowed to differ in breadth (many tables have no EF entity) but never in agreement.
+    /// Every table and column the compiled EF model maps must exist with the same provider storage
+    /// type in the installed schema — the two sources are allowed to differ in breadth (many tables
+    /// have no EF entity) but never in agreement.
     /// </summary>
     [Fact]
     public async Task Every_compiled_ef_model_table_exists_in_the_installed_schema()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         foreach (Microsoft.EntityFrameworkCore.Metadata.IEntityType entityType in ArcanumDbContextModel.Instance.GetEntityTypes())
         {
-
             string? table = entityType.GetTableName();
 
             if (table is null)
             {
-
                 continue;
-
             }
 
             Assert.True(await TableExistsAsync(connection, table), $"compiled model maps missing table {table}");
 
-            List<string> columns = await ReadColumnNamesAsync(connection, table);
+            Dictionary<string, string> columns = await ReadColumnsAsync(connection, table);
 
             foreach (Microsoft.EntityFrameworkCore.Metadata.IProperty property in entityType.GetProperties())
             {
+                string columnName = property.GetColumnName();
 
-                Assert.Contains(property.GetColumnName(), columns, StringComparer.Ordinal);
+                Assert.True(columns.TryGetValue(columnName, out string? installedType), $"compiled model maps missing column {table}.{columnName}");
 
+                string expectedType = property.GetColumnType();
+
+                Assert.Equal(expectedType, installedType, ignoreCase: true);
             }
-
         }
-
     }
 
     /// <summary>
@@ -587,7 +549,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_refuses_core_when_a_manifest_object_has_no_metadata_row()
     {
-
         await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
             "Data Source=:memory:",
             CancellationToken.None);
@@ -608,7 +569,6 @@ public sealed class GrimoireSchemaInstallerTests
         Assert.Equal(GrimoireSchemaTierHealth.MetadataMissing, refused.Health);
 
         Assert.False(await TableExistsAsync(connection, "Sessions"));
-
     }
 
     /// <summary>
@@ -623,7 +583,6 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_warns_but_keeps_embeddings_written_at_another_dimension()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         await ExecuteAsync(
@@ -645,12 +604,10 @@ public sealed class GrimoireSchemaInstallerTests
         surviving.CommandText = """SELECT COUNT(*) FROM "entry_embeddings" WHERE "Dim" = 8;""";
 
         Assert.Equal(1L, (long)(await surviving.ExecuteScalarAsync(CancellationToken.None))!);
-
     }
 
     private static async Task<SqliteConnection> InstallAsync()
     {
-
         SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
             "Data Source=:memory:",
             CancellationToken.None);
@@ -661,7 +618,6 @@ public sealed class GrimoireSchemaInstallerTests
             CancellationToken.None);
 
         return connection;
-
     }
 
     /// <summary>
@@ -670,7 +626,6 @@ public sealed class GrimoireSchemaInstallerTests
     /// </summary>
     private sealed class ThrowingCoreDataInitializer : IGrimoireSchemaDataInitializer
     {
-
         public GrimoireSchemaTransactionTier TransactionTier => GrimoireSchemaTransactionTier.Core;
 
         public Task InitializeAsync(
@@ -679,7 +634,6 @@ public sealed class GrimoireSchemaInstallerTests
             GrimoireSchemaInitializationContext context,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("The core tier seed failed for this test.");
-
     }
 
     /// <summary>
@@ -689,13 +643,11 @@ public sealed class GrimoireSchemaInstallerTests
     [Fact]
     public async Task InstallAsync_creates_the_transition_journal()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         Assert.True(await TableExistsAsync(connection, "grimoire_schema_transitions"));
 
         Assert.True(await IndexExistsAsync(connection, "idx_grimoire_schema_transitions_target"));
-
     }
 
     private static Task<bool> TableExistsAsync(SqliteConnection connection, string name) =>
@@ -709,7 +661,6 @@ public sealed class GrimoireSchemaInstallerTests
 
     private static async Task<bool> ObjectExistsAsync(SqliteConnection connection, string name, string type)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -726,18 +677,15 @@ public sealed class GrimoireSchemaInstallerTests
         object? result = await command.ExecuteScalarAsync(CancellationToken.None);
 
         return result is not null && result != DBNull.Value;
-
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static Task<GrimoireSchemaInspectionResult> InspectCoreAsync(SqliteConnection connection) =>
@@ -750,7 +698,6 @@ public sealed class GrimoireSchemaInstallerTests
 
     private static async Task<long> CountLexiconMatchesAsync(SqliteConnection connection, string term)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = "SELECT COUNT(*) FROM lexicon_fts WHERE lexicon_fts MATCH $term;";
@@ -760,12 +707,10 @@ public sealed class GrimoireSchemaInstallerTests
         object? result = await command.ExecuteScalarAsync(CancellationToken.None);
 
         return result is null or DBNull ? 0L : (long)result;
-
     }
 
     private static async Task<List<long>> ReadFtsRowIdsAsync(SqliteConnection connection)
     {
-
         List<long> rowIds = [];
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -776,18 +721,14 @@ public sealed class GrimoireSchemaInstallerTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             rowIds.Add(reader.GetInt64(0));
-
         }
 
         return rowIds;
-
     }
 
     private static async Task<string> ExplainQueryPlanAsync(SqliteConnection connection, string sql)
     {
-
         List<string> details = [];
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -798,35 +739,29 @@ public sealed class GrimoireSchemaInstallerTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             details.Add(reader.GetString(reader.GetOrdinal("detail")));
-
         }
 
         return string.Join('\n', details);
-
     }
 
-    private static async Task<List<string>> ReadColumnNamesAsync(SqliteConnection connection, string table)
+    private static async Task<Dictionary<string, string>> ReadColumnsAsync(SqliteConnection connection, string table)
     {
-
-        List<string> columns = [];
+        Dictionary<string, string> columns = new(StringComparer.Ordinal);
 
         await using SqliteCommand command = connection.CreateCommand();
 
-        command.CommandText = $"PRAGMA table_info(\"{table}\");";
+        command.CommandText = "SELECT name, type FROM pragma_table_info($table);";
+
+        _ = command.Parameters.AddWithValue("$table", table);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
-            columns.Add(reader.GetString(1));
-
+            columns.Add(reader.GetString(0), reader.GetString(1));
         }
 
         return columns;
-
     }
-
 }

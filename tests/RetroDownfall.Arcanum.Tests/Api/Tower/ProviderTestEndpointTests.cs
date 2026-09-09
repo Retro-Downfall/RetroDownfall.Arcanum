@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -19,16 +20,13 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ApiHost")]
 public sealed class ProviderTestEndpointTests : IAsyncLifetime
 {
-
     private const string UnresolvableHostName = "no-such-host.invalid";
 
-    private readonly ArcanumWebApplicationFactory _factory;
+    private readonly ArcanumWebApplicationFactory _factory = new();
 
     private readonly RecordingDnsResolver _dns = new();
 
     private HttpListener? _listener;
-
-    private IDnsResolver? _originalResolver;
 
     private volatile bool _tearingDown;
 
@@ -44,54 +42,27 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
             ? string.Empty
             : $" The fake provider listener never accepted the request: {_acceptFailure}";
 
-    public ProviderTestEndpointTests(ArcanumWebApplicationFactory factory)
+    public ProviderTestEndpointTests()
     {
-
-        _factory = factory;
-
+        _factory.ServiceOverrides = services => services.AddSingleton<IDnsResolver>(_dns);
     }
 
-    /// <summary>
-    /// Installs the hermetic resolver for the duration of one test. <c>OutboundUrlGuard.DnsResolver</c>
-    /// is a process-global seam, and this class cannot join the <c>OutboundUrlGuardDns</c> collection
-    /// because it needs <c>ApiHost</c> for its factory fixture — but both collections declare
-    /// <c>DisableParallelization</c>, so xUnit never runs another class while this one holds the swap.
-    /// </summary>
-    public Task InitializeAsync()
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
     {
-
-        _originalResolver = OutboundUrlGuard.DnsResolver;
-
-        OutboundUrlGuard.DnsResolver = _dns;
-
-        return Task.CompletedTask;
-
-    }
-
-    public Task DisposeAsync()
-    {
-
-        if (_originalResolver is not null)
-        {
-
-            OutboundUrlGuard.DnsResolver = _originalResolver;
-
-        }
-
         _tearingDown = true;
 
         _listener?.Stop();
 
         _listener?.Close();
 
-        return Task.CompletedTask;
-
+        await _factory.DisposeAsync();
     }
 
     [SkippableFact]
     public async Task Test_OversizedResponse_IsRejectedWithoutBufferingWholeBody()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // One byte over the endpoint's 4 MiB cap, wrapped so a full (unbounded) read would still
@@ -126,7 +97,6 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
         Assert.True(
             body.Data.Error?.Contains("exceeded the maximum allowed size", StringComparison.OrdinalIgnoreCase) == true,
             $"Expected a size-cap rejection, got: {body.Data.Error}.{ServingDetail}");
-
     }
 
     /// <summary>
@@ -139,7 +109,6 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     [SkippableFact]
     public async Task Test_HugeDeclaredContentLength_IsRefusedFromHeadersWithoutAwaitingTheBody()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string baseUrl = StartStalledListener(declaredLength: 512L * 1024 * 1024);
@@ -168,13 +137,11 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
         Assert.True(
             body.Data.Error?.Contains("exceeded the maximum allowed size", StringComparison.OrdinalIgnoreCase) == true,
             $"Expected the declared length to be refused from the headers, got: {body.Data.Error}.{ServingDetail}");
-
     }
 
     [SkippableFact]
     public async Task Test_WithinCapResponse_IsReachableAndParsesModels()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string baseUrl = StartListener("""{"data":[{"id":"gpt-test"}]}""");
@@ -205,13 +172,11 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
         Assert.True(
             body.Data.ModelsFound.Contains("gpt-test", StringComparer.Ordinal),
             $"Expected the parsed models to contain gpt-test, got: [{string.Join(", ", body.Data.ModelsFound)}].{ServingDetail}");
-
     }
 
     [SkippableFact]
     public async Task Test_BlockedUrl_ReturnsGenericMessage_NotRawGuardDetail()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -248,7 +213,6 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
         // resolves the name, the guard passes, and the endpoint issues a real outbound request from
         // the CI machine.
         Assert.Contains(UnresolvableHostName, _dns.Queries);
-
     }
 
     /// <summary>
@@ -261,7 +225,6 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     [Fact]
     public void BindLoopbackListener_retries_when_the_probed_port_was_already_taken()
     {
-
         TcpListener squatter = new(IPAddress.Loopback, 0);
 
         squatter.Start();
@@ -272,7 +235,6 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
         try
         {
-
             int freePort = GetFreeTcpPort();
 
             Queue<int> ports = new([takenPort, takenPort, freePort]);
@@ -284,17 +246,13 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
             Assert.Equal(freePort, bound);
 
             Assert.True(listener.IsListening);
-
         }
         finally
         {
-
             listener?.Close();
 
             squatter.Stop();
-
         }
-
     }
 
     /// <summary>
@@ -305,10 +263,8 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     /// </summary>
     private static (HttpListener Listener, int Port) BindLoopbackListener(Func<int> portSource, int attempts)
     {
-
         for (int attempt = 1; ; attempt++)
         {
-
             int port = portSource();
 
             HttpListener listener = new();
@@ -317,23 +273,17 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
             try
             {
-
                 listener.Start();
 
                 return (listener, port);
-
             }
             catch (HttpListenerException) when (attempt < attempts)
             {
-
                 // Something claimed the probed port between the probe's release and this bind.
 
                 listener.Close();
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -344,39 +294,30 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     /// </summary>
     private string StartStalledListener(long declaredLength)
     {
-
         (HttpListener listener, int port) = BindLoopbackListener(GetFreeTcpPort, attempts: 5);
 
         _listener = listener;
 
         _ = Task.Run(async () =>
         {
-
             HttpListenerContext ctx;
 
             try
             {
-
                 ctx = await listener.GetContextAsync().ConfigureAwait(false);
-
             }
             catch (Exception ex)
             {
-
                 if (!_tearingDown)
                 {
-
                     _acceptFailure = ex;
-
                 }
 
                 return;
-
             }
 
             try
             {
-
                 ctx.Response.StatusCode = 200;
 
                 ctx.Response.ContentType = "application/json";
@@ -390,60 +331,46 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
                 // Never completes the announced body; the probe's own 5 s timeout is the only exit for
                 // a client that insists on reading it all.
                 await Task.Delay(TimeSpan.FromMinutes(2)).ConfigureAwait(false);
-
             }
             catch (Exception)
             {
-
                 // Expected: the endpoint aborts the read as soon as the declared length passes the cap.
-
             }
-
         });
 
         return $"http://127.0.0.1:{port}/v1";
-
     }
 
     /// <summary>Starts a loopback HTTP listener that returns <paramref name="responseBody"/> for a single request, and returns its base URL.</summary>
     private string StartListener(string responseBody)
     {
-
         (HttpListener listener, int port) = BindLoopbackListener(GetFreeTcpPort, attempts: 5);
 
         _listener = listener;
 
         _ = Task.Run(async () =>
         {
-
             HttpListenerContext ctx;
 
             try
             {
-
                 ctx = await listener.GetContextAsync().ConfigureAwait(false);
-
             }
             catch (Exception ex)
             {
-
                 // Failing to accept at all means the endpoint talked to nobody, which every assertion
                 // below would otherwise report as a plain "unreachable". Teardown stops the listener
                 // deliberately, so only a failure before then is diagnostic.
                 if (!_tearingDown)
                 {
-
                     _acceptFailure = ex;
-
                 }
 
                 return;
-
             }
 
             try
             {
-
                 byte[] bytes = Encoding.UTF8.GetBytes(responseBody);
 
                 ctx.Response.StatusCode = 200;
@@ -455,20 +382,15 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
                 await ctx.Response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
 
                 ctx.Response.OutputStream.Close();
-
             }
             catch (Exception)
             {
-
                 // The client aborts the read once the response passes the cap, so a write failure
                 // after the request arrived is the expected path of the oversized-response test.
-
             }
-
         });
 
         return $"http://127.0.0.1:{port}/v1";
-
     }
 
     /// <summary>
@@ -478,7 +400,6 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     /// </summary>
     private sealed class RecordingDnsResolver : IDnsResolver
     {
-
         private readonly Dictionary<string, IPAddress[]> _map =
             new(StringComparer.OrdinalIgnoreCase) { ["127.0.0.1"] = [IPAddress.Loopback] };
 
@@ -486,30 +407,22 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
         public Task<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken = default)
         {
-
             lock (Queries)
             {
-
                 Queries.Add(host);
-
             }
 
             if (_map.TryGetValue(host, out IPAddress[]? addresses))
             {
-
                 return Task.FromResult(addresses);
-
             }
 
             throw new SocketException((int)SocketError.HostNotFound);
-
         }
-
     }
 
     private static int GetFreeTcpPort()
     {
-
         TcpListener probe = new(IPAddress.Loopback, 0);
 
         probe.Start();
@@ -519,7 +432,5 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
         probe.Stop();
 
         return port;
-
     }
-
 }

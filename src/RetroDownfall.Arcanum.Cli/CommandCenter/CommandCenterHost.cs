@@ -20,6 +20,7 @@ internal sealed class CommandCenterHost(
     IArcanumServeLauncher serveLauncher,
     ArcanumApiClient apiClient,
     ICliEnvironment cliEnvironment,
+    IConsoleDispatcher consoleDispatcher,
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     ShellCommandDispatcher dispatcher,
     CommandCenterChatRunner chatRunner,
@@ -110,22 +111,27 @@ internal sealed class CommandCenterHost(
             state.ServeLaunch = launch;
             state.HealthSummary = launch.Guidance;
 
+            if (!ServeOwnershipPolicy.CanProceed(launch))
+            {
+                consoleDispatcher.WriteDiagnostic(
+                    launch.Guidance
+                        ?? "Arcanum could not start or authenticate its local server.");
+
+                return (int)ServeOwnershipPolicy.FailureExitCode(launch);
+            }
+
             await dispatcher.RefreshMcpAsync(state, cancellationToken).ConfigureAwait(false);
             if (startupSessionId is { } sessionId)
             {
-
                 _ = await sessionWorkspace
                     .ResumeSessionAsync(state, sessionId, cancellationToken)
                     .ConfigureAwait(false);
-
             }
             else
             {
-
                 await sessionWorkspace
                     .RestoreStartupSessionAsync(state, cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             int tgCode = commandCenterApp.Run(

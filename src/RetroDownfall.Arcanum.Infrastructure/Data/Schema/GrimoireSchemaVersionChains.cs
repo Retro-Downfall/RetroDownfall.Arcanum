@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 7 and declares six steps, Covenant canonical is at version 3 and declares two,
+/// Core is at version 10 and declares nine steps, Covenant canonical is at version 4 and declares three,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </remarks>
 internal static class GrimoireSchemaVersionChains
 {
-
     /// <summary>The version of the durable schema this binary declares.</summary>
     /// <remarks>
     /// Version 2 gave <c>saga_memories</c> an explicit scope classification and <c>lexicon_entries</c> an
@@ -66,17 +65,32 @@ internal static class GrimoireSchemaVersionChains
     /// cause replay but never skip an unpaid entry. Inherited finalization guards keep a null frontier
     /// because a later turn may already have made their original boundary impossible to reconstruct
     /// safely.</para>
+    ///
+    /// <para>Version 8 aligns <c>Sessions.TotalCostUsd</c> with EF's exact decimal TEXT mapping. The
+    /// former NUMERIC affinity coerced provider decimal strings through SQLite REAL arithmetic and
+    /// discarded significant digits. The atomic step renames the old column, adds the TEXT replacement,
+    /// copies every inherited value, and drops the legacy column without rebuilding or detaching any
+    /// Session-owned foreign key.</para>
+    ///
+    /// <para>Version 9 gives every persisted instant one fixed-width UTC <c>Z</c> spelling and moves
+    /// every authoritative USD amount away from SQLite numeric affinity into exact decimal TEXT.
+    /// Its managed, bounded sweep prevalidates each page and temporarily removes only the current
+    /// table's update triggers inside the same transaction as the repairs, so immutable ledgers keep
+    /// their guards across success, cancellation, failure, and restart. Version 10 adds the private
+    /// durable claim that makes batch accounting recovery and artifact cleanup crash-resumable
+    /// without exposing a nonstandard batch status.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 7;
+    internal const int CoreSchemaVersion = 10;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
     /// Version 2 added the curation substrate: which scoped lane heads an operator has pinned against
     /// agent authorship, and which Global keys a Campaign has masked. Version 3 rebuilt
     /// <c>covenant_versions</c> so new AgentApproved retirements can carry no Ward receipt while every
-    /// historical Ward-backed tuple remains unchanged.
+    /// historical Ward-backed tuple remains unchanged. Version 4 canonicalizes the authoritative
+    /// Covenant tier's inherited instant text under its own failure domain.
     /// </remarks>
-    internal const int CovenantCanonicalSchemaVersion = 3;
+    internal const int CovenantCanonicalSchemaVersion = 4;
 
     /// <summary>The version of Covenant's inspection index this binary declares.</summary>
     internal const int CovenantAcceleratorSchemaVersion = 1;
@@ -88,7 +102,6 @@ internal static class GrimoireSchemaVersionChains
     private static readonly IReadOnlyDictionary<(GrimoireSchemaTransactionTier Tier, int ToVersion), string> SourcePins =
         new Dictionary<(GrimoireSchemaTransactionTier, int), string>
         {
-
             // Read out of the Core head tree immediately before saga_memories.sql and
             // lexicon_entries.sql were edited for version 2. Nothing can recompute it: the tree that
             // produced it no longer exists. A test reconstructs that tree from those files' frozen
@@ -140,6 +153,27 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 7)] =
                 "410CB4FD182E22CB7FA72955E337296177A2A0E92ACB4AF73137236285B0D8CB",
 
+            // Read out of the normalized Core version-7 head tree immediately before Sessions.sql
+            // changed TotalCostUsd from NUMERIC affinity to EF's exact decimal TEXT mapping.
+            // CoreSchemaVersionSevenFixture reconstructs that tree and proves this literal still
+            // recognizes an installation that published it.
+            [(GrimoireSchemaTransactionTier.Core, 8)] =
+                "814D62096F2A034B8CD8092FBA4D5A6A83BE22E2976EE4EECFEB6D3C9FB1E24A",
+
+            // Captured from the normalized Core version-8 head before any authoritative USD column
+            // or UTC-instant diagnostic object was edited for version 9. Core has published the
+            // normalized computation since version 6. Version 8 shipped only inside this version-9
+            // change, but its intermediate journal identity still has to name the exact tree produced
+            // by the version-8 step before the version-9 step can accept it.
+            [(GrimoireSchemaTransactionTier.Core, 9)] =
+                "D1BC1D6158669F4E1070B7D7B00CA2F5697E3E6CCC9081EEA15167CE8D49C7B6",
+
+            // Captured from the normalized Core version-9 head immediately before the private
+            // batch-accounting recovery claim table was added. CoreSchemaVersionNineFixture removes
+            // only that new object from the shipped tree and proves this pin still names version 9.
+            [(GrimoireSchemaTransactionTier.Core, 10)] =
+                "B0C9CE2CA6C343080B23E8DA8D79E6E3BC14B1120862C71C0095CC6B4668AD5E",
+
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture
             // reconstructs that tree by removing those objects from the shipped list and a test hashes
@@ -155,13 +189,17 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 3)] =
                 "BC0914DABEF7A54B0637E66697EE47CC7F2077E67B40BCE6D824EDE2913EDC61",
 
+            // Captured from the exact raw Covenant canonical version-3 head published by commit
+            // 1e89b6e5, immediately before its UTC-instant diagnostic object was added for version 4.
+            // This tier still publishes the raw computation, so the pin deliberately does too.
+            [(GrimoireSchemaTransactionTier.CovenantCanonical, 4)] =
+                "E85966D8DA8878566A10B08A75FBDD623064D0D7FABCFEBF4CA17F24A9E66BB1",
         };
 
     /// <summary>The sweep each step depends on, keyed the same way.</summary>
     private static readonly IReadOnlyDictionary<(GrimoireSchemaTransactionTier Tier, int ToVersion), IGrimoireSchemaBackfill> Backfills =
         new Dictionary<(GrimoireSchemaTransactionTier, int), IGrimoireSchemaBackfill>
         {
-
             // The Lexicon half of version 2 needs no sweep - its column is NOT NULL DEFAULT '' and every
             // existing row is global the moment it exists - so the step depends on the Saga
             // classification alone.
@@ -193,6 +231,13 @@ internal static class GrimoireSchemaVersionChains
             // later row from re-entering that state.
             [(GrimoireSchemaTransactionTier.Core, 7)] = new SagaExtractionCursorBackfill(),
 
+            [(GrimoireSchemaTransactionTier.Core, 9)] = new UtcInstantCanonicalizationBackfill(
+                "core-utc-instant-canonicalization",
+                UtcInstantColumnInventory.Core),
+
+            [(GrimoireSchemaTransactionTier.CovenantCanonical, 4)] = new UtcInstantCanonicalizationBackfill(
+                "covenant-utc-instant-canonicalization",
+                UtcInstantColumnInventory.CovenantCanonical),
         };
 
     private static readonly Lazy<GrimoireSchemaVersionChainSet> LoadedDefault =
@@ -212,12 +257,10 @@ internal static class GrimoireSchemaVersionChains
         GrimoireSchemaManifest headManifest,
         IReadOnlyList<GrimoireSchemaObject> headObjects)
     {
-
         List<GrimoireSchemaVersionStep> steps = [];
 
         for (int toVersion = 2; toVersion <= headManifest.Version; toVersion++)
         {
-
             List<GrimoireSchemaTransitionStatement> statements =
             [
                 .. GrimoireSchemaCatalog.TransitionStatements
@@ -233,12 +276,10 @@ internal static class GrimoireSchemaVersionChains
 
             if (!SourcePins.TryGetValue((headManifest.TransactionTier, toVersion), out string? pin))
             {
-
                 throw new InvalidOperationException(
                     $"The {headManifest.TransactionTier} schema step to version {toVersion} has no pinned "
                     + "source-definition fingerprint for the version it leaves. Record the tier's published "
                     + "fingerprint before editing any object file; it cannot be recovered afterwards.");
-
             }
 
             _ = Backfills.TryGetValue((headManifest.TransactionTier, toVersion), out IGrimoireSchemaBackfill? backfill);
@@ -252,11 +293,8 @@ internal static class GrimoireSchemaVersionChains
                     pin,
                     statements,
                     backfill));
-
         }
 
         return new GrimoireSchemaVersionChain(headManifest, headObjects, steps);
-
     }
-
 }

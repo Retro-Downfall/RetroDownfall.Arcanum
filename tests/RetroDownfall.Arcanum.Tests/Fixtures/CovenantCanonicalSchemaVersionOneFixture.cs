@@ -18,14 +18,13 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </remarks>
 internal static class CovenantCanonicalSchemaVersionOneFixture
 {
-
     /// <summary>The prefix every object version 2 introduced shares.</summary>
     private const string CurationObjectPrefix = "covenant_curation";
 
     /// <summary>Every Covenant canonical object as version 1 declared it.</summary>
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CovenantCanonicalObjects
+        .. CovenantCanonicalSchemaVersionThreeFixture.Objects
             .Where(static definition => !definition.Name.StartsWith(CurationObjectPrefix, StringComparison.Ordinal))
             .Select(static definition => definition.Name == "covenant_versions"
                 ? CovenantCanonicalSchemaVersionTwoFixture.CovenantVersionsObject
@@ -59,5 +58,4 @@ internal static class CovenantCanonicalSchemaVersionOneFixture
                 []),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
         ]);
-
 }

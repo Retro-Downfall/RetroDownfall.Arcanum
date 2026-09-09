@@ -1,13 +1,15 @@
+using System.Runtime.CompilerServices;
+
 namespace RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 /// <summary>
 /// Repository-relative locations of the hermetic SQLCipher delivery, resolved from the test
-/// binary rather than the working directory so the same paths hold under <c>dotnet test</c>,
-/// a published test host, and a coverage run.
+/// binary, with the authored caller as a fallback when artifacts live outside the checkout, rather
+/// than the working directory. The same paths therefore hold under <c>dotnet test</c>, a published
+/// test host, a coverage run, and a fresh external <c>--artifacts-path</c>.
 /// </summary>
 internal static class NativeSqlCipherTestPaths
 {
-
     /// <summary>
     /// The runtime identifiers Arcanum ships a hermetic SQLCipher library for, in ordinal order.
     /// A RID outside this set has no native asset and must fail the build rather than fall back
@@ -80,51 +82,11 @@ internal static class NativeSqlCipherTestPaths
         ExpectedOutputNames[rid]);
 
     /// <summary>
-    /// Walks up from the test binary until it finds a directory holding both the solution file and
-    /// <c>src</c>, so a partially matching ancestor cannot be mistaken for the repository root.
+    /// Walks up from the test binary and, when artifacts were emitted outside the checkout, from the
+    /// authored caller until it finds a directory holding both the solution file and <c>src</c>. A
+    /// partially matching ancestor cannot be mistaken for the repository root.
     /// </summary>
-    internal static string RepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        List<string> inspected = [];
-
-        while (directory is not null)
-        {
-
-            inspected.Add(directory.FullName);
-
-            bool hasSolution = File.Exists(
-                Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx"));
-
-            bool hasSource = Directory.Exists(Path.Combine(directory.FullName, "src"));
-
-            if (hasSolution && hasSource)
-            {
-
-                return directory.FullName;
-
-            }
-
-            if (inspected.Count > 32)
-            {
-
-                break;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException(
-            "Could not locate the repository root (a directory holding both "
-            + "RetroDownfall.Arcanum.slnx and src/) above "
-            + AppContext.BaseDirectory
-            + ". Inspected: "
-            + string.Join(", ", inspected));
-
-    }
-
+    internal static string RepositoryRoot(
+        [CallerFilePath] string sourceFilePath = "") =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(sourceFilePath);
 }

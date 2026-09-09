@@ -62,7 +62,7 @@ internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider t
         command.Parameters.AddWithValue("$target", targetIdentifier);
         command.Parameters.AddWithValue("$label", displayLabel);
         command.Parameters.AddWithValue("$version", (object?)contentVersion ?? DBNull.Value);
-        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        command.Parameters.AddWithValue("$now", UtcInstantText.Format(now));
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         return Read(reader);
@@ -102,6 +102,6 @@ internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider t
         reader.GetString(3),
         reader.GetString(4),
         reader.IsDBNull(5) ? null : reader.GetString(5),
-        DateTimeOffset.Parse(reader.GetString(6), System.Globalization.CultureInfo.InvariantCulture),
-        DateTimeOffset.Parse(reader.GetString(7), System.Globalization.CultureInfo.InvariantCulture));
+        UtcInstantText.Parse(reader.GetString(6)),
+        UtcInstantText.Parse(reader.GetString(7)));
 }

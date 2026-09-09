@@ -103,11 +103,9 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
 
     internal void Add(LongRunningOperation operation)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         _operations[operation.Id] = operation;
-
     }
 
     public Task<LongRunningOperation> CreateAsync(
@@ -124,10 +122,8 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
         LongRunningOperationRequestIdentity identity,
         CancellationToken cancellationToken = default)
     {
-
         lock (_gate)
         {
-
             // Keyed by the durable operation id, because that is the direction
             // FindRequestIdentityAsync reads. The requested name is still unique, so resolving it
             // is one scan over a map that never holds more than a handful of rows in a test.
@@ -135,7 +131,6 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
                     pair => pair.Value.RequestedOperationId == identity.RequestedOperationId)
                 is { Value: not null } existing)
             {
-
                 return Task.FromResult(
                     existing.Value.ApplyRequestDigest == identity.ApplyRequestDigest
                         ? new LongRunningOperationRequestIdentityResult(
@@ -144,7 +139,6 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
                         : new LongRunningOperationRequestIdentityResult(
                             LongRunningOperationRequestIdentityOutcome.DigestConflict,
                             Operation: null));
-
             }
 
             LongRunningOperation created = Seed(
@@ -158,9 +152,7 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
                 new LongRunningOperationRequestIdentityResult(
                     LongRunningOperationRequestIdentityOutcome.Created,
                     created));
-
         }
-
     }
 
     public Task<LongRunningOperation?> TryStartSingleFlightAsync(
@@ -192,40 +184,32 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
         Guid operationId,
         CancellationToken cancellationToken = default)
     {
-
         Interlocked.Increment(ref _requestIdentityLookupCount);
 
         lock (_gate)
         {
-
             return Task.FromResult(
                 _requestIdentities.TryGetValue(
                     operationId,
                     out LongRunningOperationRequestIdentity? identity)
                     ? identity
                     : null);
-
         }
-
     }
 
     public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
         Guid requestedOperationId,
         CancellationToken cancellationToken = default)
     {
-
         if (requestedOperationId == Guid.Empty)
         {
-
             throw new ArgumentException(
                 "A requested operation identity cannot be empty.",
                 nameof(requestedOperationId));
-
         }
 
         lock (_gate)
         {
-
             KeyValuePair<Guid, LongRunningOperationRequestIdentity> match =
                 _requestIdentities.FirstOrDefault(
                     pair => pair.Value.RequestedOperationId == requestedOperationId);
@@ -236,9 +220,7 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
                     : new LongRunningOperationRequestIdentityMatch(
                         _operations[match.Key],
                         match.Value));
-
         }
-
     }
 
     public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
@@ -675,6 +657,12 @@ internal sealed class RecordingServiceScopeFactory(
 {
     private readonly ILongRunningOperationStore _store = store;
 
+    private readonly ILongRunningOperationClassifiedRecoveryLeaseAcquisition _classifiedLeaseAcquisition =
+        store as ILongRunningOperationClassifiedRecoveryLeaseAcquisition
+        ?? throw new ArgumentException(
+            "A recovery scope requires the classified lease-acquisition capability.",
+            nameof(store));
+
     private readonly ILongRunningOperationRecoveryHandler[] _handlers = handlers;
 
     private int _created;
@@ -701,6 +689,11 @@ internal sealed class RecordingServiceScopeFactory(
             if (serviceType == typeof(ILongRunningOperationStore))
             {
                 return owner._store;
+            }
+
+            if (serviceType == typeof(ILongRunningOperationClassifiedRecoveryLeaseAcquisition))
+            {
+                return owner._classifiedLeaseAcquisition;
             }
 
             return serviceType == typeof(IEnumerable<ILongRunningOperationRecoveryHandler>)

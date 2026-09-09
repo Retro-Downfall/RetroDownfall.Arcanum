@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -15,7 +16,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// </summary>
 internal enum ProtectedSessionTransferPhase
 {
-
     Prepared = 1,
 
     BlobsStaged = 2,
@@ -27,7 +27,6 @@ internal enum ProtectedSessionTransferPhase
     Completed = 5,
 
     Abandoned = 6,
-
 }
 
 /// <summary>
@@ -36,7 +35,6 @@ internal enum ProtectedSessionTransferPhase
 /// </summary>
 internal enum ProtectedSessionTransferBlobPhase
 {
-
     Prepared = 1,
 
     TempCreated = 2,
@@ -54,7 +52,6 @@ internal enum ProtectedSessionTransferBlobPhase
     Referenced = 8,
 
     Cleaned = 9,
-
 }
 
 /// <summary>
@@ -84,7 +81,6 @@ internal sealed record ProtectedSessionTransferIntentRow(
 /// </remarks>
 internal sealed class ProtectedSessionTransferIntentStore
 {
-
     private readonly CovenantSqliteConnectionInitializer _initializer;
 
     private readonly SqliteConnection _connection;
@@ -96,13 +92,11 @@ internal sealed class ProtectedSessionTransferIntentStore
         SqliteConnection connection,
         TimeProvider timeProvider)
     {
-
         _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
 
         _connection = connection ?? throw new ArgumentNullException(nameof(connection));
 
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-
     }
 
     /// <summary>
@@ -119,13 +113,11 @@ internal sealed class ProtectedSessionTransferIntentStore
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ProtectedSessionTransferIntentRow? existing =
             await ReadAsync(intent.OperationId, transaction, cancellationToken).ConfigureAwait(false);
 
         if (existing is not null)
         {
-
             return existing.EffectDigest == intent.EffectDigest
                 && existing.DestinationSessionId == intent.DestinationSessionId
                 && existing.DestinationBindingDigest == intent.DestinationBindingDigest
@@ -135,7 +127,6 @@ internal sealed class ProtectedSessionTransferIntentStore
                     new Error(
                         ErrorCodes.Security.IdempotencyConflict,
                         "This transfer operation identity already names a different destination or plan."));
-
         }
 
         string now = Iso(_timeProvider.GetUtcNow());
@@ -183,7 +174,6 @@ internal sealed class ProtectedSessionTransferIntentStore
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return intent with { Phase = ProtectedSessionTransferPhase.Prepared, Revision = 0 };
-
     }
 
     internal async Task<ProtectedSessionTransferIntentRow?> ReadAsync(
@@ -191,7 +181,6 @@ internal sealed class ProtectedSessionTransferIntentStore
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -212,9 +201,7 @@ internal sealed class ProtectedSessionTransferIntentStore
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         return new ProtectedSessionTransferIntentRow(
@@ -230,7 +217,6 @@ internal sealed class ProtectedSessionTransferIntentStore
             (ProtectedSessionTransferPhase)reader.GetInt32(9),
             reader.IsDBNull(10) ? null : (CovenantExclusiveLeaseDisposition)reader.GetInt32(10),
             reader.GetInt64(11));
-
     }
 
     /// <summary>
@@ -244,7 +230,6 @@ internal sealed class ProtectedSessionTransferIntentStore
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         using CovenantSqliteAuthorizationScope scope = _initializer.Authorize(
             _connection,
             CovenantSqliteAuthorizationKind.ProtectedSessionTransfer);
@@ -280,7 +265,6 @@ internal sealed class ProtectedSessionTransferIntentStore
                 new Error(
                     ErrorCodes.Covenant.RevisionConflict,
                     "A protected transfer phase advance lost its compare-and-swap."));
-
     }
 
     /// <summary>
@@ -301,7 +285,6 @@ internal sealed class ProtectedSessionTransferIntentStore
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         string now = Iso(_timeProvider.GetUtcNow());
 
         await using SqliteCommand command = _connection.CreateCommand();
@@ -335,7 +318,6 @@ internal sealed class ProtectedSessionTransferIntentStore
         _ = command.Parameters.AddWithValue("$now", now);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -350,7 +332,6 @@ internal sealed class ProtectedSessionTransferIntentStore
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         using CovenantSqliteAuthorizationScope scope = _initializer.Authorize(
             _connection,
             CovenantSqliteAuthorizationKind.ProtectedSessionTransfer);
@@ -388,12 +369,10 @@ internal sealed class ProtectedSessionTransferIntentStore
                 new Error(
                     ErrorCodes.Covenant.RevisionConflict,
                     "A protected transfer blob phase advance lost its compare-and-swap."));
-
     }
 
     private static byte[] ReadBlob(SqliteDataReader reader, int ordinal)
     {
-
         using System.IO.Stream stream = reader.GetStream(ordinal);
 
         using System.IO.MemoryStream buffer = new();
@@ -401,10 +380,8 @@ internal sealed class ProtectedSessionTransferIntentStore
         stream.CopyTo(buffer);
 
         return buffer.ToArray();
-
     }
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
-
+        UtcInstantText.Format(value);
 }

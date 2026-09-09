@@ -10,7 +10,6 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 internal sealed class RecordingGrimoireWorkAdmissionGate(
     IGrimoireConnectionAdmissionGate inner) : IGrimoireConnectionAdmissionGate
 {
-
     private readonly object _observationsGate = new();
 
     private readonly List<GrimoireWorkKind> _requestedWorkKinds = [];
@@ -27,36 +26,24 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     internal IReadOnlyList<GrimoireWorkKind> RequestedWorkKinds
     {
-
         get
         {
-
             lock (_observationsGate)
             {
-
                 return _requestedWorkKinds.ToArray();
-
             }
-
         }
-
     }
 
     internal IReadOnlyList<IGrimoireWorkLease> InnerWorkLeases
     {
-
         get
         {
-
             lock (_observationsGate)
             {
-
                 return _innerWorkLeases.ToArray();
-
             }
-
         }
-
     }
 
     internal int EffectGroupAttempts => Volatile.Read(ref _effectGroupAttempts);
@@ -97,34 +84,26 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         GrimoireWorkKind kind,
         out IGrimoireWorkLease? lease)
     {
-
         lock (_observationsGate)
         {
-
             _requestedWorkKinds.Add(kind);
-
         }
 
         if (!inner.TryAcquireWorkLease(kind, out IGrimoireWorkLease? admitted))
         {
-
             lease = null;
 
             return false;
-
         }
 
         lock (_observationsGate)
         {
-
             _innerWorkLeases.Add(admitted!);
-
         }
 
         lease = new RecordingWorkLease(this, admitted!);
 
         return true;
-
     }
 
     public IGrimoireConnectionOpenTicket AcquireOrdinaryOpen(DbConnection connection) =>
@@ -197,7 +176,6 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         RecordingGrimoireWorkAdmissionGate gate,
         IGrimoireWorkLease inner) : IGrimoireWorkLease
     {
-
         public GrimoireWorkKind Kind => inner.Kind;
 
         public long Generation => inner.Generation;
@@ -207,69 +185,49 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup)
         {
-
             Interlocked.Increment(ref gate._effectGroupAttempts);
 
             gate.BeforeEffectGroupAdmission();
 
             if (!inner.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admitted))
             {
-
                 effectGroup = null;
 
                 return false;
-
             }
 
             effectGroup = new RecordingExternalEffectGroup(gate, admitted!);
 
             return true;
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             try
             {
-
                 await gate.BeforeWorkLeaseDisposalAsync();
-
             }
             finally
             {
-
                 await inner.DisposeAsync();
-
             }
-
         }
-
     }
 
     private sealed class RecordingExternalEffectGroup(
         RecordingGrimoireWorkAdmissionGate gate,
         IGrimoireExternalEffectGroup inner) : IGrimoireExternalEffectGroup
     {
-
         public async ValueTask DisposeAsync()
         {
-
             try
             {
-
                 await gate.BeforeEffectGroupDisposalAsync();
-
             }
             finally
             {
-
                 await inner.DisposeAsync();
-
             }
-
         }
-
     }
-
 }

@@ -14,9 +14,13 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// </summary>
 public sealed class ApiKeyEndpointFilter(
     ISecretStore secretStore,
-    IApiKeyDigestCache digestCache) : IEndpointFilter
+    IApiKeyDigestCache digestCache,
+    ArcanumProcessCapabilityService? processCapabilities = null) : IEndpointFilter
 {
-    private readonly ApiKeyAuthenticator _authenticator = new(secretStore, digestCache);
+    private readonly ApiKeyAuthenticator _authenticator = new(
+        secretStore,
+        digestCache,
+        processCapabilities);
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {

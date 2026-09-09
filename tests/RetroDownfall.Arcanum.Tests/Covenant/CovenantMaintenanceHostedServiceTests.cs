@@ -27,13 +27,11 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantMaintenanceHostedServiceTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public async Task A_pass_does_nothing_while_the_feature_is_off()
     {
-
         FakeCovenantAvailability availability = new();
 
         availability.Mutate(static current => current with { FeatureEnabled = false });
@@ -41,13 +39,11 @@ public sealed class CovenantMaintenanceHostedServiceTests
         // No scope is created and no coordinator is resolved, which is why the provider below holds
         // none: resolving one would throw and the pass would not come back false.
         Assert.False(await Service(availability).RunOnceAsync(Token));
-
     }
 
     [Fact]
     public async Task A_pass_does_nothing_while_the_canonical_tier_is_unhealthy()
     {
-
         FakeCovenantAvailability availability = new();
 
         availability.Mutate(static current => current with { Canonical = CovenantCapabilityState.Unavailable });
@@ -55,13 +51,11 @@ public sealed class CovenantMaintenanceHostedServiceTests
         // Re-read every pass rather than decided at boot. An installation whose tier goes down while
         // the process lives must stop sweeping it, not keep opening transactions against it.
         Assert.False(await Service(availability).RunOnceAsync(Token));
-
     }
 
     [Fact]
     public async Task One_sweep_refusing_does_not_stop_the_pass()
     {
-
         ServiceCollection services = new();
 
         // A real gate over an unavailable tier, so every acquisition refuses the way it refuses in
@@ -95,7 +89,6 @@ public sealed class CovenantMaintenanceHostedServiceTests
             NullLogger<CovenantMaintenanceHostedService>.Instance);
 
         Assert.True(await service.RunOnceAsync(Token));
-
     }
 
     [Fact]
@@ -204,19 +197,16 @@ public sealed class CovenantMaintenanceHostedServiceTests
             TimeProvider.System,
             NullLogger<CovenantMaintenanceHostedService>.Instance);
 
-
     /// <summary>
     /// A connection source that fails the test if a sweep reaches it after its lease was refused.
     /// </summary>
     private sealed class UnreachableConnectionSource : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A refused sweep opened a connection it could not use.");
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A refused sweep opened a connection it could not use.");
-
     }
 
     private sealed class CountingLogger<TCategory> : ILogger<TCategory>
@@ -242,5 +232,4 @@ public sealed class CovenantMaintenanceHostedServiceTests
             }
         }
     }
-
 }

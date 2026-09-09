@@ -14,6 +14,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Api.Models;
 
+using RetroDownfall.Arcanum.Api.Security;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Commands;
@@ -30,7 +32,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class WatchCommandTests
 {
-
     private static readonly Guid SessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     private static readonly Guid ApprenticeId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -39,16 +40,13 @@ public sealed class WatchCommandTests
 
     public void Watch_help_exposes_every_live_source_and_free_form_filters()
     {
-
         CliTestResult result = RunCommand(new ScriptedHandler(), ["watch", "--help"]);
 
         Assert.Equal(0, result.ExitCode);
 
         foreach (string source in new[] { "session", "apprentice", "logs", "mcp", "daemons", "health" })
         {
-
             Assert.Contains(source, result.Output, StringComparison.OrdinalIgnoreCase);
-
         }
 
         CliTestResult logs = RunCommand(new ScriptedHandler(), ["watch", "logs", "--help"]);
@@ -64,14 +62,12 @@ public sealed class WatchCommandTests
         Assert.Contains("--tool", logs.Output, StringComparison.Ordinal);
 
         Assert.Contains("--reconnect", logs.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Watch_json_parse_failure_keeps_event_stdout_empty()
     {
-
         ScriptedHandler handler = new();
 
         CliTestResult result = RunCommand(
@@ -85,14 +81,12 @@ public sealed class WatchCommandTests
         Assert.Contains("invalid", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public void Watch_session_rejects_an_invalid_since_cursor_without_calling_the_api()
     {
-
         ScriptedHandler handler = new();
 
         CliTestResult result = RunCommand(
@@ -104,14 +98,11 @@ public sealed class WatchCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--since", result.Error, StringComparison.Ordinal);
-
     }
 
     public static TheoryData<string[], string, string, string> SseSources => new()
     {
-
         {
-
             ["watch", "session", SessionId.ToString("D")],
 
             $"/api/sessions/{SessionId:D}/stream",
@@ -119,11 +110,9 @@ public sealed class WatchCommandTests
             "{\"id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"sessionId\":\"11111111-1111-1111-1111-111111111111\",\"role\":\"assistant\",\"content\":\"answer\",\"toolName\":null,\"createdAt\":\"2026-08-01T12:00:00Z\"}",
 
             "id"
-
         },
 
         {
-
             ["watch", "apprentice", ApprenticeId.ToString("D")],
 
             $"/api/apprentices/{ApprenticeId:D}/chronicle",
@@ -131,11 +120,9 @@ public sealed class WatchCommandTests
             "{\"type\":\"stepCompleted\",\"apprenticeId\":\"22222222-2222-2222-2222-222222222222\",\"timestamp\":\"2026-08-01T12:00:00Z\",\"description\":\"done\"}",
 
             "type"
-
         },
 
         {
-
             ["watch", "logs"],
 
             "/api/events/logs",
@@ -143,11 +130,9 @@ public sealed class WatchCommandTests
             "{\"sequence\":7,\"timestamp\":\"2026-08-01T12:00:00Z\",\"level\":\"warning\",\"category\":\"Api\",\"message\":\"slow\",\"properties\":{}}",
 
             "sequence"
-
         },
 
         {
-
             ["watch", "mcp"],
 
             "/api/events/mcp",
@@ -155,11 +140,9 @@ public sealed class WatchCommandTests
             "{\"timestamp\":\"2026-08-01T12:00:00Z\",\"serverName\":\"forge\",\"state\":\"running\",\"message\":null,\"tools\":[\"apply_patch\"]}",
 
             "serverName"
-
         },
 
         {
-
             ["watch", "daemons"],
 
             "/api/events/daemon",
@@ -167,9 +150,7 @@ public sealed class WatchCommandTests
             "{\"timestamp\":\"2026-08-01T12:00:00Z\",\"runId\":\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\",\"jobName\":\"scribe\",\"targetSpell\":\"index\",\"eventType\":\"started\"}",
 
             "jobName"
-
         },
-
     };
 
     [Theory]
@@ -182,7 +163,6 @@ public sealed class WatchCommandTests
         string payload,
         string expectedProperty)
     {
-
         ScriptedHandler handler = new(
             _ => Sse($": keep-alive\n\ndata: {payload}\n\ndata: [DONE]\n\n"));
 
@@ -196,7 +176,7 @@ public sealed class WatchCommandTests
 
         Assert.Equal(expectedPath, request.RequestUri!.AbsolutePath);
 
-        Assert.True(handler.SawApiKey);
+        Assert.True(handler.SawProcessCapability);
 
         string line = Assert.Single(OutputLines(result.Output));
 
@@ -207,14 +187,12 @@ public sealed class WatchCommandTests
         Assert.DoesNotContain("keep-alive", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("[DONE]", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Watch_logs_passes_server_filters_and_applies_free_form_event_filter()
     {
-
         const string Debug = "{\"sequence\":1,\"timestamp\":\"2026-08-01T12:00:00Z\",\"level\":\"debug\",\"category\":\"Api\",\"message\":\"needle\",\"properties\":{}}";
 
         const string Warning = "{\"sequence\":2,\"timestamp\":\"2026-08-01T12:00:01Z\",\"level\":\"warning\",\"category\":\"Api\",\"message\":\"needle\",\"properties\":{}}";
@@ -225,7 +203,6 @@ public sealed class WatchCommandTests
         CliTestResult result = RunCommand(
             handler,
             [
-
                 "--json",
 
                 "watch",
@@ -247,7 +224,6 @@ public sealed class WatchCommandTests
                 "--event-type",
 
                 "WaRnInG",
-
             ]);
 
         Assert.Equal(0, result.ExitCode);
@@ -265,14 +241,12 @@ public sealed class WatchCommandTests
         using JsonDocument document = JsonDocument.Parse(line);
 
         Assert.Equal(2, document.RootElement.GetProperty("sequence").GetInt64());
-
     }
 
     [Fact]
 
     public void Watch_mcp_tool_filter_is_case_insensitive_and_does_not_hide_other_matching_tools()
     {
-
         const string First = "{\"timestamp\":\"2026-08-01T12:00:00Z\",\"serverName\":\"one\",\"state\":\"running\",\"tools\":[\"read_file\"]}";
 
         const string Second = "{\"timestamp\":\"2026-08-01T12:00:01Z\",\"serverName\":\"two\",\"state\":\"running\",\"tools\":[\"Apply_Patch\",\"write_file\"]}";
@@ -291,14 +265,12 @@ public sealed class WatchCommandTests
         using JsonDocument document = JsonDocument.Parse(line);
 
         Assert.Equal("two", document.RootElement.GetProperty("serverName").GetString());
-
     }
 
     [Fact]
 
     public void Watch_logs_tool_filter_reads_serilog_tool_name_properties()
     {
-
         const string Payload = "{\"sequence\":16,\"timestamp\":\"2026-08-01T12:00:00Z\",\"level\":\"information\",\"category\":\"Tools\",\"message\":\"invoked\",\"properties\":{\"ToolName\":\"\\\"Apply_Patch\\\"\"}}";
 
         ScriptedHandler handler = new(
@@ -315,14 +287,12 @@ public sealed class WatchCommandTests
         using JsonDocument document = JsonDocument.Parse(line);
 
         Assert.Equal(16, document.RootElement.GetProperty("sequence").GetInt64());
-
     }
 
     [Fact]
 
     public void Watch_blank_filter_values_do_not_hide_events()
     {
-
         const string Payload = "{\"timestamp\":\"2026-08-01T12:00:00Z\",\"serverName\":\"forge\",\"state\":\"running\",\"tools\":[]}";
 
         ScriptedHandler handler = new(
@@ -331,7 +301,6 @@ public sealed class WatchCommandTests
         CliTestResult result = RunCommand(
             handler,
             [
-
                 "--json",
 
                 "watch",
@@ -345,20 +314,17 @@ public sealed class WatchCommandTests
                 "--tool",
 
                 string.Empty,
-
             ]);
 
         Assert.Equal(0, result.ExitCode);
 
         Assert.Single(OutputLines(result.Output));
-
     }
 
     [Fact]
 
     public void Watch_parser_joins_multiline_data_and_stops_only_on_done()
     {
-
         ScriptedHandler handler = new(
             _ => Sse(
                 "data: {\"sequence\":9,\"timestamp\":\"2026-08-01T12:00:00Z\",\n"
@@ -374,14 +340,12 @@ public sealed class WatchCommandTests
         using JsonDocument document = JsonDocument.Parse(line);
 
         Assert.Equal("joined", document.RootElement.GetProperty("message").GetString());
-
     }
 
     [Fact]
 
     public void Watch_logs_emits_a_domain_event_that_has_a_connected_property()
     {
-
         const string Payload = "{\"connected\":true,\"sequence\":13,\"timestamp\":\"2026-08-01T12:00:00Z\",\"level\":\"information\",\"category\":\"Api\",\"message\":\"client connected\",\"properties\":{}}";
 
         ScriptedHandler handler = new(
@@ -398,14 +362,12 @@ public sealed class WatchCommandTests
         using JsonDocument document = JsonDocument.Parse(line);
 
         Assert.Equal(13, document.RootElement.GetProperty("sequence").GetInt64());
-
     }
 
     [Fact]
 
     public void Watch_session_treats_a_non_string_type_as_domain_data()
     {
-
         const string Payload = "{\"id\":\"dddddddd-dddd-dddd-dddd-dddddddddddd\",\"sessionId\":\"11111111-1111-1111-1111-111111111111\",\"type\":7,\"role\":\"assistant\",\"content\":\"numeric domain type\",\"createdAt\":\"2026-08-01T12:00:00Z\"}";
 
         ScriptedHandler handler = new(
@@ -422,14 +384,12 @@ public sealed class WatchCommandTests
         using JsonDocument document = JsonDocument.Parse(line);
 
         Assert.Equal(7, document.RootElement.GetProperty("type").GetInt32());
-
     }
 
     [Fact]
 
     public void Watch_skips_a_malformed_event_without_losing_later_valid_events()
     {
-
         const string Valid = "{\"sequence\":10,\"timestamp\":\"2026-08-01T12:00:00Z\",\"level\":\"information\",\"category\":\"Api\",\"message\":\"valid\",\"properties\":{}}";
 
         ScriptedHandler handler = new(
@@ -449,14 +409,12 @@ public sealed class WatchCommandTests
         Assert.Equal(10, document.RootElement.GetProperty("sequence").GetInt64());
 
         Assert.Contains("Api.InvalidResponse", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Watch_skips_a_non_object_json_frame_without_losing_later_events()
     {
-
         const string Valid = "{\"sequence\":17,\"timestamp\":\"2026-08-01T12:00:00Z\",\"level\":\"information\",\"category\":\"Api\",\"message\":\"valid\",\"properties\":{}}";
 
         ScriptedHandler handler = new(
@@ -476,14 +434,12 @@ public sealed class WatchCommandTests
         Assert.Equal(17, document.RootElement.GetProperty("sequence").GetInt64());
 
         Assert.Contains("Api.InvalidResponse", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Watch_unexpected_eof_is_diagnostic_and_fails_without_reconnect()
     {
-
         const string Payload = "{\"timestamp\":\"2026-08-01T12:00:00Z\",\"serverName\":\"forge\",\"state\":\"running\",\"tools\":[]}";
 
         ScriptedHandler handler = new(_ => Sse($"data: {Payload}\n\n"));
@@ -495,21 +451,17 @@ public sealed class WatchCommandTests
         Assert.Single(OutputLines(result.Output));
 
         Assert.Contains("disconnect", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Watch_http_error_leaves_json_stdout_empty_and_reports_stderr_only()
     {
-
         ScriptedHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
             {
-
                 Content = new StringContent(
                     "{\"isSuccess\":false,\"error\":{\"code\":\"Api.RateLimited\",\"message\":\"Try later.\"}}"),
-
             });
 
         CliTestResult result = RunCommand(
@@ -523,14 +475,12 @@ public sealed class WatchCommandTests
         Assert.Contains("Api.RateLimited", result.Error, StringComparison.Ordinal);
 
         Assert.Contains("Try later", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Watch_reconnect_warns_about_possible_gap_and_resumes_session_cursor_without_claiming_replay()
     {
-
         Guid entryId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
 
         string payload = "{\"id\":\"cccccccc-cccc-cccc-cccc-cccccccccccc\",\"sessionId\":\"11111111-1111-1111-1111-111111111111\",\"role\":\"assistant\",\"content\":\"answer\",\"createdAt\":\"2026-08-01T12:00:00Z\"}";
@@ -558,21 +508,17 @@ public sealed class WatchCommandTests
         Assert.Contains("may", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("replayed", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Watch_reconnect_does_not_retry_a_permanent_http_error()
     {
-
         ScriptedHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
             {
-
                 Content = new StringContent(
                     "{\"isSuccess\":false,\"error\":{\"code\":\"Validation.InvalidQuery\",\"message\":\"Invalid filter.\"}}"),
-
             });
 
         ServiceCollection services = CreateServices(handler);
@@ -594,19 +540,16 @@ public sealed class WatchCommandTests
         Assert.Equal(1, exitCode);
 
         Assert.Single(handler.Requests);
-
     }
 
     [Fact]
 
     public void Watch_reconnect_keeps_increasing_backoff_when_each_connection_flaps_after_data()
     {
-
         const string Payload = "{\"timestamp\":\"2026-08-01T12:00:00Z\",\"serverName\":\"forge\",\"state\":\"running\",\"tools\":[]}";
 
         Queue<HttpResponseMessage> responses = new(
             [
-
                 Sse($"data: {Payload}\n\n"),
 
                 Sse($"data: {Payload}\n\n"),
@@ -614,7 +557,6 @@ public sealed class WatchCommandTests
                 Sse($"data: {Payload}\n\n"),
 
                 Sse("data: [DONE]\n\n"),
-
             ]);
 
         ScriptedHandler handler = new(_ => responses.Dequeue());
@@ -636,7 +578,6 @@ public sealed class WatchCommandTests
         Assert.Equal(
             [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4)],
             timeProvider.Delays);
-
     }
 
     /// <summary>
@@ -646,7 +587,6 @@ public sealed class WatchCommandTests
     [Fact]
     public void Watch_apprentice_preserves_raw_ndjson()
     {
-
         const string Payload = "{\"type\":\"toolCall\",\"apprenticeId\":\"22222222-2222-2222-2222-222222222222\",\"timestamp\":\"2026-08-01T12:00:00Z\",\"toolCall\":{\"name\":\"apply_patch\"}}";
 
         ScriptedHandler handler = new(
@@ -665,7 +605,6 @@ public sealed class WatchCommandTests
         Assert.Equal("toolCall", document.RootElement.GetProperty("type").GetString());
 
         Assert.True(document.RootElement.TryGetProperty("toolCall", out _));
-
     }
 
     [Theory]
@@ -684,18 +623,15 @@ public sealed class WatchCommandTests
         int attempt,
         int expectedSeconds)
     {
-
         Assert.Equal(
             TimeSpan.FromSeconds(expectedSeconds),
             WatchCommands.ReconnectDelay(attempt));
-
     }
 
     [Fact]
 
     public void Watch_health_emits_an_unhealthy_503_snapshot_before_a_later_transport_failure()
     {
-
         HealthReportDto report = new(
             HealthStatus.Unhealthy,
             [new HealthComponentDto("Grimoire", HealthStatus.Unhealthy, "Unavailable")]);
@@ -707,16 +643,12 @@ public sealed class WatchCommandTests
 
         Queue<HttpResponseMessage> responses = new(
             [
-
                 new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
                 {
-
                     Content = new ByteArrayContent(json),
-
                 },
 
                 new HttpResponseMessage(HttpStatusCode.BadGateway),
-
             ]);
 
         ScriptedHandler handler = new(_ => responses.Dequeue());
@@ -738,14 +670,12 @@ public sealed class WatchCommandTests
         Assert.True(document.RootElement.TryGetProperty("status", out _));
 
         Assert.Single(document.RootElement.GetProperty("components").EnumerateArray());
-
     }
 
     [Fact]
 
     public void Watch_health_rejects_only_a_non_positive_poll_interval()
     {
-
         ScriptedHandler handler = new();
 
         CliTestResult result = RunCommand(
@@ -757,14 +687,12 @@ public sealed class WatchCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("positive", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Watch_health_reconnect_does_not_retry_missing_authentication()
     {
-
         ScriptedHandler handler = new();
 
         ServiceCollection services = CreateServices(handler);
@@ -788,14 +716,12 @@ public sealed class WatchCommandTests
         Assert.Equal(1, exitCode);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public void Watch_health_reconnect_retries_a_structured_transient_status()
     {
-
         Error transientError = new(
             ErrorCodes.RateLimit.TooManyRequests,
             "Try the health observation again.");
@@ -816,23 +742,17 @@ public sealed class WatchCommandTests
 
         Queue<HttpResponseMessage> responses = new(
             [
-
                 new HttpResponseMessage(HttpStatusCode.TooManyRequests)
                 {
-
                     Content = new ByteArrayContent(transientJson),
-
                 },
 
                 new HttpResponseMessage(HttpStatusCode.OK)
                 {
-
                     Content = new ByteArrayContent(successJson),
-
                 },
 
                 new HttpResponseMessage(HttpStatusCode.BadRequest),
-
             ]);
 
         ScriptedHandler handler = new(_ => responses.Dequeue());
@@ -859,14 +779,12 @@ public sealed class WatchCommandTests
         Assert.Single(OutputLines(result.Output));
 
         Assert.Contains("gap", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Watch_terminal_output_uses_explicit_utc_timestamp_and_event_type()
     {
-
         const string Payload = "{\"sequence\":11,\"timestamp\":\"2026-08-01T08:00:00-04:00\",\"level\":\"warning\",\"category\":\"Api\",\"message\":\"slow\",\"properties\":{}}";
 
         ScriptedHandler handler = new(
@@ -884,14 +802,12 @@ public sealed class WatchCommandTests
             StringComparison.Ordinal);
 
         Assert.Contains("Api: slow", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Watch_health_terminal_timestamp_is_invariant_utc()
     {
-
         HealthReportDto report = new(
             HealthStatus.Healthy,
             [new HealthComponentDto("API", HealthStatus.Healthy, "Ready")]);
@@ -903,16 +819,12 @@ public sealed class WatchCommandTests
 
         Queue<HttpResponseMessage> responses = new(
             [
-
                 new HttpResponseMessage(HttpStatusCode.OK)
                 {
-
                     Content = new ByteArrayContent(json),
-
                 },
 
                 new HttpResponseMessage(HttpStatusCode.BadGateway),
-
             ]);
 
         ScriptedHandler handler = new(_ => responses.Dequeue());
@@ -934,7 +846,6 @@ public sealed class WatchCommandTests
 
         try
         {
-
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("ar-SA");
 
             CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("ar-SA");
@@ -951,24 +862,19 @@ public sealed class WatchCommandTests
                 StringComparison.Ordinal);
 
             Assert.Contains("Ready", result.Output, StringComparison.Ordinal);
-
         }
         finally
         {
-
             CultureInfo.CurrentCulture = originalCulture;
 
             CultureInfo.CurrentUICulture = originalUiCulture;
-
         }
-
     }
 
     [Fact]
 
     public void Watch_json_keeps_prior_events_and_reports_late_exceptions_only_on_stderr()
     {
-
         const string First = "{\"sequence\":14,\"level\":\"information\",\"category\":\"Api\",\"message\":\"kept\",\"properties\":{}}";
 
         const string Second = "{\"sequence\":15,\"level\":\"information\",\"category\":\"Api\",\"message\":\"throws\",\"properties\":{}}";
@@ -997,14 +903,12 @@ public sealed class WatchCommandTests
         Assert.DoesNotContain("exitCode", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("unexpected", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Watch_caller_cancellation_returns_130()
     {
-
         ScriptedHandler handler = new(
             _ => Sse("data: [DONE]\n\n"));
 
@@ -1023,14 +927,12 @@ public sealed class WatchCommandTests
             cancellation.Token);
 
         Assert.Equal((int)CliExitCode.Cancelled, exitCode);
-
     }
 
     [Fact]
 
     public async Task Watch_json_flushes_each_event_before_the_stream_completes()
     {
-
         const string FirstEvent = "data: {\"sequence\":12,\"timestamp\":\"2026-08-01T12:00:00Z\",\"level\":\"information\",\"category\":\"Api\",\"message\":\"live\",\"properties\":{}}\n\n";
 
         GatedSseStream stream = new(
@@ -1040,9 +942,7 @@ public sealed class WatchCommandTests
         ScriptedHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new StreamContent(stream),
-
             });
 
         ServiceCollection services = CreateServices(handler);
@@ -1057,7 +957,6 @@ public sealed class WatchCommandTests
 
         try
         {
-
             Task<int> invocation = CliApplicationFactory.RunAsync(
                 ["--json", "watch", "logs"],
                 provider);
@@ -1078,31 +977,24 @@ public sealed class WatchCommandTests
             Assert.True(
                 observedBeforeCompletion,
                 "The first NDJSON event was buffered until the watch completed.");
-
         }
         finally
         {
-
             stream.Release();
 
             Console.SetOut(originalOutput);
-
         }
-
     }
 
     private static CliTestResult RunCommand(ScriptedHandler handler, string[] args)
     {
-
         ServiceCollection services = CreateServices(handler);
 
         return CliTestHarness.Run(services, args);
-
     }
 
     private static ServiceCollection CreateServices(ScriptedHandler handler)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -1117,8 +1009,11 @@ public sealed class WatchCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        return services;
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return services;
     }
 
     private static async Task<bool> WaitForOutputAsync(
@@ -1126,32 +1021,24 @@ public sealed class WatchCommandTests
         string expected,
         TimeSpan timeout)
     {
-
         DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
-
             if (writer.ToString().Contains(expected, StringComparison.Ordinal))
             {
-
                 return true;
-
             }
 
             await Task.Delay(10);
-
         }
 
         return false;
-
     }
 
     private static HttpResponseMessage Sse(string content) => new(HttpStatusCode.OK)
     {
-
         Content = new StringContent(content, Encoding.UTF8, "text/event-stream"),
-
     };
 
     private static string[] OutputLines(string output) =>
@@ -1161,7 +1048,6 @@ public sealed class WatchCommandTests
 
     private sealed class FakeSecretStore(string? apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -1175,37 +1061,31 @@ public sealed class WatchCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(ScriptedHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false)
         {
-
             BaseAddress = new Uri("http://localhost:5001/"),
 
             Timeout = Timeout.InfiniteTimeSpan,
-
         };
-
     }
 
     private sealed class ScriptedHandler(
         Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
-        public bool SawApiKey { get; private set; }
+        public bool SawProcessCapability { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
-            SawApiKey |= request.Headers.Contains("X-Arcanum-Key");
+            SawProcessCapability |= request.Headers.Contains(
+                ArcanumApiHeaders.ProcessCapability);
 
             Requests.Add(new HttpRequestMessage(request.Method, request.RequestUri));
 
@@ -1214,16 +1094,13 @@ public sealed class WatchCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
 
     private sealed class GatedSseStream(
         string firstChunk,
         string finalChunk) : Stream
     {
-
         private readonly byte[] _first = Encoding.UTF8.GetBytes(firstChunk);
 
         private readonly byte[] _final = Encoding.UTF8.GetBytes(finalChunk);
@@ -1248,11 +1125,9 @@ public sealed class WatchCommandTests
 
         public override long Position
         {
-
             get => throw new NotSupportedException();
 
             set => throw new NotSupportedException();
-
         }
 
         public void Release() => _release.TrySetResult();
@@ -1264,10 +1139,8 @@ public sealed class WatchCommandTests
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-
             if (_readIndex == 0)
             {
-
                 _readIndex++;
 
                 _first.AsSpan().CopyTo(buffer.Span);
@@ -1275,12 +1148,10 @@ public sealed class WatchCommandTests
                 FirstReadSource.TrySetResult();
 
                 return _first.Length;
-
             }
 
             if (_readIndex == 1)
             {
-
                 await _release.Task.WaitAsync(cancellationToken);
 
                 _readIndex++;
@@ -1288,16 +1159,13 @@ public sealed class WatchCommandTests
                 _final.AsSpan().CopyTo(buffer.Span);
 
                 return _final.Length;
-
             }
 
             return 0;
-
         }
 
         public override void Flush()
         {
-
         }
 
         public override long Seek(long offset, SeekOrigin origin) =>
@@ -1308,12 +1176,10 @@ public sealed class WatchCommandTests
 
         public override void Write(byte[] buffer, int offset, int count) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class LiveCaptureWriter : TextWriter
     {
-
         private readonly object _gate = new();
 
         private readonly StringBuilder _buffer = new();
@@ -1322,46 +1188,32 @@ public sealed class WatchCommandTests
 
         public override void Write(char value)
         {
-
             lock (_gate)
             {
-
                 _buffer.Append(value);
-
             }
-
         }
 
         public override void Write(string? value)
         {
-
             lock (_gate)
             {
-
                 _buffer.Append(value);
-
             }
-
         }
 
         public override string ToString()
         {
-
             lock (_gate)
             {
-
                 return _buffer.ToString();
-
             }
-
         }
-
     }
 
     private sealed class ImmediateRecordingTimeProvider(
         DateTimeOffset? utcNow = null) : TimeProvider
     {
-
         public List<TimeSpan> Delays { get; } = [];
 
         public override DateTimeOffset GetUtcNow() =>
@@ -1373,55 +1225,42 @@ public sealed class WatchCommandTests
             TimeSpan dueTime,
             TimeSpan period)
         {
-
             Delays.Add(dueTime);
 
             ThreadPool.QueueUserWorkItem(
                 _ => callback(state));
 
             return NoopTimer.Instance;
-
         }
 
         private sealed class NoopTimer : ITimer
         {
-
             public static NoopTimer Instance { get; } = new();
 
             public bool Change(TimeSpan dueTime, TimeSpan period) => true;
 
             public void Dispose()
             {
-
             }
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
         }
-
     }
 
     private sealed class ThrowingTimeProvider : TimeProvider
     {
-
         private int _calls;
 
         public override DateTimeOffset GetUtcNow()
         {
-
             if (Interlocked.Increment(ref _calls) > 1)
             {
-
                 throw new InvalidOperationException("Test clock failure.");
-
             }
 
             return DateTimeOffset.Parse(
                 "2026-08-01T12:00:00Z",
                 CultureInfo.InvariantCulture);
-
         }
-
     }
-
 }

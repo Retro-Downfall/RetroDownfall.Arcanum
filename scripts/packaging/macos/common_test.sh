@@ -225,6 +225,189 @@ else
   fail "local signature disables the timestamp — got $(tr '\n' ' ' <"$CODESIGN_ARGS")"
 fi
 
+# The notarization password enters the packaging shell through its environment, but no build,
+# signing, or inspection child needs it. Capture it into shell-only state before any child starts.
+cat >"$BIN/xcrun" <<'STUB'
+#!/usr/bin/env bash
+IFS= read -r supplied_password
+printf '%s' "$supplied_password" >"$NOTARY_STDIN_CAPTURE"
+printf '%s' "${APPLE_APP_SPECIFIC_PASSWORD+exported}" >"$NOTARY_ENV_CAPTURE"
+STUB
+chmod +x "$BIN/xcrun"
+
+NOTARY_TEST_KEYCHAIN="$WORK/existing-notary.keychain-db"
+NOTARY_STDIN_CAPTURE="$WORK/notary.stdin"
+NOTARY_ENV_CAPTURE="$WORK/notary.env"
+NOTARY_PATH_CAPTURE="$WORK/notary.path"
+touch "$NOTARY_TEST_KEYCHAIN"
+export NOTARY_STDIN_CAPTURE NOTARY_ENV_CAPTURE NOTARY_PATH_CAPTURE
+
+(
+  export TMPDIR="$WORK"
+  export APPLE_APP_SPECIFIC_PASSWORD="notary-password-sentinel"
+  export APPLE_ID="operator@example.invalid"
+  export APPLE_TEAM_ID="TEAM123456"
+  export KEYCHAIN_PATH="$NOTARY_TEST_KEYCHAIN"
+  # shellcheck source=common.sh
+  source "$COMMON"
+  notarize_prepare_credentials
+  printf '%s' "$NOTARY_KEYCHAIN" >"$NOTARY_PATH_CAPTURE"
+  notarize_cleanup
+) >/dev/null 2>&1
+
+expect_eq "notarization receives the private captured password" \
+  "notary-password-sentinel" \
+  "$(cat "$NOTARY_STDIN_CAPTURE")"
+expect_eq "notarization child does not inherit the password environment variable" \
+  "" \
+  "$(cat "$NOTARY_ENV_CAPTURE")"
+
+NOTARY_OWNED_PATH="$(cat "$NOTARY_PATH_CAPTURE")"
+
+if [[ "$NOTARY_OWNED_PATH" == "$NOTARY_TEST_KEYCHAIN" ]]; then
+  fail "notarization never stores its credential in the caller's signing keychain"
+else
+  pass "notarization never stores its credential in the caller's signing keychain"
+fi
+
+if [[ -e "$NOTARY_TEST_KEYCHAIN" ]]; then
+  pass "notarization leaves the caller's signing keychain untouched"
+else
+  fail "notarization leaves the caller's signing keychain untouched"
+fi
+
+if [[ -e "$NOTARY_OWNED_PATH" || -e "$(dirname "$NOTARY_OWNED_PATH")" ]]; then
+  fail "notarization removes its dedicated owned keychain and directory"
+else
+  pass "notarization removes its dedicated owned keychain and directory"
+fi
+
+# ---------------------------------------------------------------------------
+# Owned credential and workspace cleanup
+# ---------------------------------------------------------------------------
+
+stub_keychain_cleanup() {
+  cat >"$BIN/security" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  delete-keychain)
+    attempt=0
+
+    if [[ -f "$STUB_SECURITY_ATTEMPTS" ]]; then
+      attempt="$(/bin/cat "$STUB_SECURITY_ATTEMPTS")"
+    fi
+
+    attempt=$((attempt + 1))
+    printf '%s' "$attempt" >"$STUB_SECURITY_ATTEMPTS"
+
+    if [[ "$STUB_SECURITY_MODE" == always-fail || "$attempt" -lt 3 ]]; then
+      echo "transient keychain contention" >&2
+      exit 77
+    fi
+
+    /bin/rm -f "$STUB_SECURITY_KEYCHAIN"
+    ;;
+  list-keychains)
+    if [[ -e "$STUB_SECURITY_KEYCHAIN" ]]; then
+      printf '    "%s"\n' "$STUB_SECURITY_KEYCHAIN"
+    fi
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+STUB
+
+  chmod +x "$BIN/security"
+}
+
+stub_keychain_cleanup
+
+KEYCHAIN_ROOT="$WORK/transient-notary"
+KEYCHAIN_PATH_UNDER_TEST="$KEYCHAIN_ROOT/notary.keychain-db"
+KEYCHAIN_ATTEMPTS="$WORK/transient-keychain-attempts"
+mkdir -p "$KEYCHAIN_ROOT"
+touch "$KEYCHAIN_PATH_UNDER_TEST"
+
+output="$( (
+  export STUB_SECURITY_MODE=transient
+  export STUB_SECURITY_KEYCHAIN="$KEYCHAIN_PATH_UNDER_TEST"
+  export STUB_SECURITY_ATTEMPTS="$KEYCHAIN_ATTEMPTS"
+  # shellcheck source=common.sh
+  source "$COMMON"
+  NOTARY_KEYCHAIN="$KEYCHAIN_PATH_UNDER_TEST"
+  NOTARY_KEYCHAIN_OWNED=1
+  notarize_cleanup
+) 2>&1 )"
+status=$?
+
+expect_eq "owned keychain cleanup survives transient contention" "0" "$status"
+expect_eq "owned keychain cleanup makes three bounded attempts" "3" "$(cat "$KEYCHAIN_ATTEMPTS")"
+
+if [[ -e "$KEYCHAIN_ROOT" ]]; then
+  fail "owned keychain cleanup removes its private directory"
+else
+  pass "owned keychain cleanup removes its private directory"
+fi
+
+KEYCHAIN_ROOT="$WORK/stuck-notary"
+KEYCHAIN_PATH_UNDER_TEST="$KEYCHAIN_ROOT/notary.keychain-db"
+KEYCHAIN_ATTEMPTS="$WORK/stuck-keychain-attempts"
+mkdir -p "$KEYCHAIN_ROOT"
+touch "$KEYCHAIN_PATH_UNDER_TEST"
+
+output="$( (
+  export STUB_SECURITY_MODE=always-fail
+  export STUB_SECURITY_KEYCHAIN="$KEYCHAIN_PATH_UNDER_TEST"
+  export STUB_SECURITY_ATTEMPTS="$KEYCHAIN_ATTEMPTS"
+  # shellcheck source=common.sh
+  source "$COMMON"
+  NOTARY_KEYCHAIN="$KEYCHAIN_PATH_UNDER_TEST"
+  NOTARY_KEYCHAIN_OWNED=1
+  notarize_cleanup
+) 2>&1 )"
+status=$?
+
+expect_eq "stuck owned keychain cleanup fails closed" "1" "$status"
+expect_contains "stuck owned keychain cleanup names the credential risk" "could not delete owned notarization keychain" "$output"
+/bin/rm -rf "$KEYCHAIN_ROOT"
+
+FAILED_WORK="$WORK/stuck-packaging-work"
+mkdir -p "$FAILED_WORK"
+export STUB_FAILED_WORK="$FAILED_WORK"
+
+cat >"$BIN/rm" <<'STUB'
+#!/usr/bin/env bash
+for argument in "$@"; do
+  if [[ "$argument" == "$STUB_FAILED_WORK" ]]; then
+    echo "transient workspace contention" >&2
+    exit 78
+  fi
+done
+
+exec /bin/rm "$@"
+STUB
+chmod +x "$BIN/rm"
+
+output="$( (
+  # shellcheck source=common.sh
+  source "$COMMON"
+  packaging_cleanup_exit 0 "$FAILED_WORK"
+) 2>&1 )"
+status=$?
+
+expect_eq "packaging workspace cleanup failure changes success to failure" "1" "$status"
+expect_contains "packaging workspace cleanup failure is explicit" "could not remove packaging temporary directory" "$output"
+
+output="$( (
+  # shellcheck source=common.sh
+  source "$COMMON"
+  packaging_cleanup_exit 73 "$FAILED_WORK"
+) 2>&1 )"
+status=$?
+
+expect_eq "packaging workspace cleanup preserves a primary failure" "73" "$status"
+
 # ---------------------------------------------------------------------------
 
 if [[ "$FAILED" -ne 0 ]]; then

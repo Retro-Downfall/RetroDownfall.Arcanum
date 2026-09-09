@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </remarks>
 public sealed class OsCredentialStoreAvailabilityTests
 {
-
     /// <summary>
     /// The backend reporting that nothing answered is the strongest evidence there is, and it must
     /// outrank the store's own optimistic platform answer.
@@ -28,12 +27,9 @@ public sealed class OsCredentialStoreAvailabilityTests
     [InlineData("delete")]
     public void Availability_is_false_once_the_backend_reports_it_cannot_be_reached(string operation)
     {
-
         OptimisticBackend backend = new()
         {
-
             Outcome = OsCredentialStoreResult.Unavailable("no secret service answered"),
-
         };
 
         OsCredentialStore store = new(backend);
@@ -41,7 +37,6 @@ public sealed class OsCredentialStoreAvailabilityTests
         Invoke(store, operation);
 
         Assert.False(store.IsAvailable);
-
     }
 
     /// <summary>
@@ -51,12 +46,9 @@ public sealed class OsCredentialStoreAvailabilityTests
     [Fact]
     public void Availability_survives_a_reachable_backend_that_merely_refuses()
     {
-
         OptimisticBackend backend = new()
         {
-
             Outcome = OsCredentialStoreResult.Failed("the keychain is locked"),
-
         };
 
         OsCredentialStore store = new(backend);
@@ -64,7 +56,6 @@ public sealed class OsCredentialStoreAvailabilityTests
         _ = store.Set("arcanum", "master-api-key", "sk-new");
 
         Assert.True(store.IsAvailable);
-
     }
 
     /// <summary>
@@ -74,12 +65,9 @@ public sealed class OsCredentialStoreAvailabilityTests
     [Fact]
     public void An_ambiguous_failure_sends_the_next_question_back_to_the_backend()
     {
-
         OptimisticBackend backend = new()
         {
-
             Outcome = OsCredentialStoreResult.Failed("transient libsecret error"),
-
         };
 
         OsCredentialStore store = new(backend);
@@ -89,7 +77,6 @@ public sealed class OsCredentialStoreAvailabilityTests
         backend.Reachable = false;
 
         Assert.False(store.IsAvailable);
-
     }
 
     /// <summary>
@@ -99,12 +86,9 @@ public sealed class OsCredentialStoreAvailabilityTests
     [Fact]
     public void Availability_returns_once_the_backend_answers_again()
     {
-
         OptimisticBackend backend = new()
         {
-
             Outcome = OsCredentialStoreResult.Unavailable("no secret service answered"),
-
         };
 
         OsCredentialStore store = new(backend);
@@ -118,7 +102,6 @@ public sealed class OsCredentialStoreAvailabilityTests
         _ = store.Set("arcanum", "master-api-key", "sk-new");
 
         Assert.True(store.IsAvailable);
-
     }
 
     /// <summary>
@@ -128,26 +111,58 @@ public sealed class OsCredentialStoreAvailabilityTests
     [Fact]
     public void Nothing_is_assumed_before_the_backend_has_been_asked()
     {
-
         OptimisticBackend backend = new()
         {
-
             Reachable = false,
-
         };
 
         OsCredentialStore store = new(backend);
 
         Assert.False(store.IsAvailable);
+    }
 
+    [Fact]
+    public void Presence_probe_uses_only_the_backends_metadata_capability()
+    {
+        OptimisticBackend backend = new()
+        {
+            Outcome = OsCredentialStoreResult.Ok("secret-that-must-not-be-read"),
+            PresenceOutcome = OsCredentialStoreStatus.NotFound,
+        };
+
+        OsCredentialStore store = new(backend);
+
+        OsCredentialStoreStatus result = store.ProbePresence(
+            "arcanum",
+            "installation-reset-active-anchor:test");
+
+        Assert.Equal(OsCredentialStoreStatus.NotFound, result);
+
+        Assert.Equal(1, backend.PresenceProbeCount);
+
+        Assert.Equal(0, backend.SecretReadCount);
+    }
+
+    [Fact]
+    public void Backend_without_a_metadata_capability_is_indeterminate_without_a_secret_read()
+    {
+        SecretOnlyBackend backend = new();
+
+        OsCredentialStore store = new(backend);
+
+        OsCredentialStoreStatus result = store.ProbePresence(
+            "arcanum",
+            "installation-reset-active-anchor:test");
+
+        Assert.Equal(OsCredentialStoreStatus.Failed, result);
+
+        Assert.Equal(0, backend.SecretReadCount);
     }
 
     private static void Invoke(IOsCredentialStore store, string operation)
     {
-
         switch (operation)
         {
-
             case "get":
 
                 _ = store.TryGet("arcanum", "master-api-key");
@@ -165,9 +180,7 @@ public sealed class OsCredentialStoreAvailabilityTests
                 _ = store.Delete("arcanum", "master-api-key");
 
                 return;
-
         }
-
     }
 
     /// <summary>
@@ -178,22 +191,60 @@ public sealed class OsCredentialStoreAvailabilityTests
     /// This is the headless Linux shape the real store produces: <c>libsecret-1.so.0</c> loads and
     /// <c>secret_schema_new</c> succeeds, and no Secret Service is on the bus to answer anything.
     /// </remarks>
-    private sealed class OptimisticBackend : IOsCredentialStore
+    private sealed class OptimisticBackend :
+        IOsCredentialStore,
+        IOsCredentialPresenceProbe
     {
-
         internal OsCredentialStoreResult Outcome { get; set; } =
             OsCredentialStoreResult.Unavailable("no secret service answered");
 
         internal bool Reachable { get; set; } = true;
 
+        internal OsCredentialStoreStatus PresenceOutcome { get; set; } =
+            OsCredentialStoreStatus.NotFound;
+
+        internal int PresenceProbeCount { get; private set; }
+
+        internal int SecretReadCount { get; private set; }
+
         public bool IsAvailable => Reachable;
 
-        public OsCredentialStoreResult TryGet(string service, string account) => Outcome;
+        public OsCredentialStoreStatus ProbePresence(string service, string account)
+        {
+            PresenceProbeCount++;
+
+            return PresenceOutcome;
+        }
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            SecretReadCount++;
+
+            return Outcome;
+        }
 
         public OsCredentialStoreResult Set(string service, string account, string secret) => Outcome;
 
         public OsCredentialStoreResult Delete(string service, string account) => Outcome;
-
     }
 
+    private sealed class SecretOnlyBackend : IOsCredentialStore
+    {
+        internal int SecretReadCount { get; private set; }
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            SecretReadCount++;
+
+            return OsCredentialStoreResult.Ok("secret-that-must-not-be-read");
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Ok(secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.Ok(string.Empty);
+    }
 }

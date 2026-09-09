@@ -11,14 +11,12 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("ProcessEnvironment")]
 public sealed class OsKeychainSecretStoreTests : IDisposable
 {
-
     private readonly string _storeDir = Path.Combine(Path.GetTempPath(), $"arcanum-oskey-{Guid.NewGuid():N}");
 
     private readonly Dictionary<string, string?> _originalEnvironment = new();
 
     public OsKeychainSecretStoreTests()
     {
-
         SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
 
         SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
@@ -28,49 +26,35 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Directory.CreateDirectory(_storeDir);
 
         DeleteSecurityDat();
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             DeleteSecurityDat();
 
             if (Directory.Exists(_storeDir))
             {
-
                 Directory.Delete(_storeDir, recursive: true);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup.
-
         }
         finally
         {
-
             foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
             {
-
                 global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task SaveAndGet_RoundTripThroughOsStore()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using OsKeychainSecretStore store = CreateStore(os);
@@ -86,13 +70,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
             ArcanumCredentialIdentity.MasterApiKeyAccount);
 
         Assert.Equal("round-trip-key", direct.Value);
-
     }
 
     [Fact]
     public async Task Get_MigratesLegacySecurityDatIntoOsStore()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using DataProtectionSecretStore legacy = CreateDataProtectionStore();
@@ -112,13 +94,46 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(OsCredentialStoreStatus.Ok, migrated.Status);
 
         Assert.Equal("legacy-dp-key", migrated.Value);
+    }
 
+    [Fact]
+    public async Task Get_RepairsMissingMirrorWithoutInvalidatingTheCanonicalDigest()
+    {
+        const string apiKey = "canonical-key-with-missing-mirror";
+
+        InMemoryOsCredentialStore os = new();
+
+        _ = os.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount,
+            apiKey);
+
+        ApiKeyDigestCache digestCache = new(new FakeTimeProvider());
+
+        byte[] expectedDigest = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(apiKey));
+
+        digestCache.StoreDigest(expectedDigest, ttlSeconds: 600);
+
+        using DataProtectionSecretStore mirror = CreateDataProtectionStore(digestCache);
+
+        using OsKeychainSecretStore store = CreateStore(
+            os,
+            mirror,
+            digestCache);
+
+        SecretStoreReadResult read = await store.GetApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, read.Status);
+        Assert.Equal(apiKey, read.Value);
+        Assert.Equal(apiKey, (await mirror.GetApiKeyReadResultAsync()).Value);
+        Assert.True(digestCache.TryGetDigest(out byte[]? retainedDigest));
+        Assert.Equal(expectedDigest, retainedDigest);
     }
 
     [Fact]
     public async Task Get_FallsBackToSecurityDatWhenOsUnavailable()
     {
-
         UnavailableStore os = new();
 
         using DataProtectionSecretStore legacy = CreateDataProtectionStore();
@@ -130,13 +145,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         string? key = await store.GetApiKeyAsync();
 
         Assert.Equal("fallback-key", key);
-
     }
 
     [Fact]
     public async Task Save_RemovesTheSupersededOsCredentialWhenTheOsWriteFails()
     {
-
         InMemoryOsCredentialStore backing = new();
 
         _ = backing.Set(
@@ -157,13 +170,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
             backing.TryGet(
                 ArcanumCredentialIdentity.Service,
                 ArcanumCredentialIdentity.MasterApiKeyAccount).Status);
-
     }
 
     [Fact]
     public async Task Save_FailsWhenTheSupersededOsCredentialCannotBeRemoved()
     {
-
         InMemoryOsCredentialStore backing = new();
 
         _ = backing.Set(
@@ -179,7 +190,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
             () => store.SaveApiKeyAsync("new-key"));
 
         Assert.Equal("old-key", await store.GetApiKeyAsync());
-
     }
 
     /// <summary>
@@ -190,7 +200,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     [Fact]
     public async Task Get_ReportsCorruptWhenTheOsReadFailsWithNoLegacyMirror()
     {
-
         ReadFailingStore os = new();
 
         using OsKeychainSecretStore store = CreateStore(os);
@@ -200,13 +209,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
 
         Assert.Contains("OS key storage failed", result.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Get_PrefersTheLegacyMirrorOverAFailedOsRead()
     {
-
         ReadFailingStore os = new();
 
         using DataProtectionSecretStore legacy = CreateDataProtectionStore();
@@ -220,13 +227,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(SecretStoreReadStatus.Ok, result.Status);
 
         Assert.Equal("mirrored-key", result.Value);
-
     }
 
     [Fact]
     public async Task PeekApiKey_NotFoundOsCredential_ReturnsMirrorWithoutMigratingOrChangingFiles()
     {
-
         using DataProtectionSecretStore legacy = CreateDataProtectionStore();
 
         await legacy.SaveApiKeyAsync("peek-master-key");
@@ -254,13 +259,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(0, os.DeleteCallCount);
 
         Assert.Equal(before, SnapshotFileTree());
-
     }
 
     [Fact]
     public async Task PeekApiKey_FailedOsRead_RejectsAnOtherwiseValidMirrorWithoutMutation()
     {
-
         using DataProtectionSecretStore legacy = CreateDataProtectionStore();
 
         await legacy.SaveApiKeyAsync("possibly-superseded-key");
@@ -284,13 +287,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(0, os.DeleteCallCount);
 
         Assert.Equal(before, SnapshotFileTree());
-
     }
 
     [Fact]
     public async Task PeekApiKey_MissingAndCorruptMirrorsRemainPureAndFailClosed()
     {
-
         RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
 
         using OsKeychainSecretStore store = CreateStore(os);
@@ -320,13 +321,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(0, os.SetCallCount);
 
         Assert.Equal(0, os.DeleteCallCount);
-
     }
 
     [Fact]
     public async Task PeekApiKey_WhitespaceMirror_RemainsMissingLikeTheOrdinaryRead()
     {
-
         using DataProtectionSecretStore legacy = CreateDataProtectionStore();
 
         await legacy.SaveApiKeyAsync("   ");
@@ -343,13 +342,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(0, os.SetCallCount);
 
         Assert.Equal(0, os.DeleteCallCount);
-
     }
 
     [Fact]
     public async Task FileEncryptionSecret_ReportsCorruptWhenTheOsReadFails()
     {
-
         ReadFailingStore os = new();
 
         using OsKeychainSecretStore store = CreateStore(os);
@@ -357,7 +354,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         SecretStoreReadResult result = await store.GetFileEncryptionSecretReadResultAsync();
 
         Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
-
     }
 
     [Fact]
@@ -402,7 +398,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     [Fact]
     public async Task PeekFileEncryptionSecret_NotFoundOsCredential_ReturnsMirrorWithoutMigration()
     {
-
         using DataProtectionSecretStore dataProtection = CreateDataProtectionStore();
 
         string secret = Convert.ToBase64String(
@@ -435,13 +430,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(0, os.DeleteCallCount);
 
         Assert.Equal(before, SnapshotFileTree());
-
     }
 
     [Fact]
     public async Task PeekFileEncryptionSecret_FailedOsRead_RejectsMirrorWithoutMutation()
     {
-
         using DataProtectionSecretStore dataProtection = CreateDataProtectionStore();
 
         await dataProtection.SaveFileEncryptionSecretAsync("possibly-superseded-file-key");
@@ -465,13 +458,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(0, os.DeleteCallCount);
 
         Assert.Equal(before, SnapshotFileTree());
-
     }
 
     [Fact]
     public async Task PeekFileEncryptionSecret_WhitespaceMirror_RemainsMissingLikeTheOrdinaryRead()
     {
-
         using DataProtectionSecretStore dataProtection = CreateDataProtectionStore();
 
         await dataProtection.SaveFileEncryptionSecretAsync("   ");
@@ -488,7 +479,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(0, os.SetCallCount);
 
         Assert.Equal(0, os.DeleteCallCount);
-
     }
 
     // The keychain write owns its own invalidation: the security.dat mirror is best-effort and its
@@ -498,7 +488,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     [Fact]
     public async Task SaveApiKeyAsync_OsStoreAccepts_InvalidatesDigestCache()
     {
-
         ApiKeyDigestCache digestCache = new(new FakeTimeProvider());
 
         InMemoryOsCredentialStore os = new();
@@ -512,13 +501,11 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.False(digestCache.TryGetDigest(out byte[]? retiredDigest));
 
         Assert.Null(retiredDigest);
-
     }
 
     [Fact]
     public async Task SaveApiKeyAsync_OsStoreUnavailable_StillInvalidatesDigestCache()
     {
-
         ApiKeyDigestCache digestCache = new(new FakeTimeProvider());
 
         UnavailableStore os = new();
@@ -532,7 +519,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.False(digestCache.TryGetDigest(out byte[]? retiredDigest));
 
         Assert.Null(retiredDigest);
-
     }
 
     private OsKeychainSecretStore CreateStore(
@@ -540,7 +526,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         DataProtectionSecretStore? legacy = null,
         IApiKeyDigestCache? apiKeyDigestCache = null)
     {
-
         DataProtectionSecretStore dp = legacy ?? CreateDataProtectionStore();
 
         return new OsKeychainSecretStore(
@@ -548,52 +533,42 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
             dp,
             apiKeyDigestCache ?? new ApiKeyDigestCache(new FakeTimeProvider()),
             NullLogger<OsKeychainSecretStore>.Instance);
-
     }
 
-    private DataProtectionSecretStore CreateDataProtectionStore()
+    private DataProtectionSecretStore CreateDataProtectionStore(
+        IApiKeyDigestCache? apiKeyDigestCache = null)
     {
-
         IDataProtectionProvider dataProtectionProvider = DataProtectionProvider.Create(
             new DirectoryInfo(_storeDir),
             _ => { });
 
-        return new DataProtectionSecretStore(dataProtectionProvider, new ApiKeyDigestCache(new FakeTimeProvider()));
-
+        return new DataProtectionSecretStore(
+            dataProtectionProvider,
+            apiKeyDigestCache ?? new ApiKeyDigestCache(new FakeTimeProvider()));
     }
 
     private static void DeleteSecurityDat()
     {
-
         string path = ArcanumPaths.ApiKeyStoreFile;
 
         try
         {
-
             if (File.Exists(path))
             {
-
                 File.Delete(path);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup.
-
         }
-
     }
 
     private void SetEnvironment(string name, string value)
     {
-
         _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
 
         global::System.Environment.SetEnvironmentVariable(name, value);
-
     }
 
     private string[] SnapshotFileTree() => Directory
@@ -610,7 +585,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     private sealed class RecordingOsCredentialStore(OsCredentialStoreResult readResult)
         : IOsCredentialStore
     {
-
         public bool IsAvailable => readResult.Status != OsCredentialStoreStatus.Unavailable;
 
         public int SetCallCount { get; private set; }
@@ -621,22 +595,17 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
 
         public OsCredentialStoreResult Set(string service, string account, string secret)
         {
-
             SetCallCount++;
 
             return OsCredentialStoreResult.Ok(secret);
-
         }
 
         public OsCredentialStoreResult Delete(string service, string account)
         {
-
             DeleteCallCount++;
 
             return OsCredentialStoreResult.Ok(string.Empty);
-
         }
-
     }
 
     /// <summary>
@@ -646,7 +615,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     private sealed class WriteFailingStore(IOsCredentialStore inner, bool deleteFails = false)
         : IOsCredentialStore
     {
-
         public bool IsAvailable => true;
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
@@ -659,7 +627,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
             deleteFails
                 ? OsCredentialStoreResult.Failed("test delete failure")
                 : inner.Delete(service, account);
-
     }
 
     /// <summary>
@@ -669,7 +636,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     /// </summary>
     private sealed class ReadFailingStore : IOsCredentialStore
     {
-
         public bool IsAvailable => true;
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
@@ -680,12 +646,10 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Ok(string.Empty);
-
     }
 
     private sealed class UnavailableStore : IOsCredentialStore
     {
-
         public bool IsAvailable => false;
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
@@ -696,7 +660,5 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Unavailable("test unavailable");
-
     }
-
 }

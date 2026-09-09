@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
+using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
@@ -19,14 +21,6 @@ public static class ArcanumMasterKeyBootstrapper
     /// <returns>The newly generated key material when one was created; otherwise null.</returns>
     public static async Task<string?> EnsureMasterApiKeyExistsAsync(CancellationToken cancellationToken = default)
     {
-
-        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP")))
-        {
-
-            return null;
-
-        }
-
         ServiceCollection services = new();
 
         services.AddDataProtection()
@@ -41,35 +35,103 @@ public static class ArcanumMasterKeyBootstrapper
 
         ISecretStore store = provider.GetRequiredService<ISecretStore>();
 
-        SecretStoreReadResult existing = await store.GetApiKeyReadResultAsync().ConfigureAwait(false);
+        return await EnsureMasterApiKeyExistsAsync(
+                store,
+                provider.GetRequiredService<IOsCredentialStore>(),
+                provider.GetRequiredService<IApiKeyDigestCache>(),
+                static () => File.Exists(ArcanumPaths.GrimoireDatabaseFile),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
 
-        if (existing.Status == SecretStoreReadStatus.Ok)
+    /// <summary>
+    /// Host-owned bootstrap path. It uses the host's singleton secret store and digest cache so the
+    /// first presence proof and API authentication reuse the startup read instead of opening secure
+    /// storage again after Kestrel begins listening.
+    /// </summary>
+    internal static async Task<string?> EnsureMasterApiKeyExistsAsync(
+        ISecretStore store,
+        IOsCredentialStore osStore,
+        IApiKeyDigestCache digestCache,
+        Func<bool> grimoireExists,
+        CancellationToken cancellationToken = default)
+    {
+        MasterApiKeyBootstrapResult? result = await PrepareMasterApiKeyAsync(
+                store,
+                osStore,
+                digestCache,
+                grimoireExists,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return result?.WasGenerated == true
+            ? result.ApiKey
+            : null;
+    }
+
+    /// <summary>
+    /// Reads or creates the master credential once and carries that same process-local value into
+    /// Grimoire bootstrap. The shipping host consumes this result immediately; it is never persisted,
+    /// logged, or exposed over the API.
+    /// </summary>
+    internal static async Task<MasterApiKeyBootstrapResult?> PrepareMasterApiKeyAsync(
+        ISecretStore store,
+        IOsCredentialStore osStore,
+        IApiKeyDigestCache digestCache,
+        Func<bool> grimoireExists,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(osStore);
+        ArgumentNullException.ThrowIfNull(digestCache);
+        ArgumentNullException.ThrowIfNull(grimoireExists);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP")))
         {
             return null;
         }
 
+        SecretStoreReadResult existing = await store.GetApiKeyReadResultAsync().ConfigureAwait(false);
+
+        if (existing.Status == SecretStoreReadStatus.Ok)
+        {
+            if (string.IsNullOrWhiteSpace(existing.Value))
+            {
+                Log.Fatal(
+                    "Master API key storage reported success but returned an empty credential; "
+                    + "refusing to replace a credential whose state is inconsistent.");
+
+                throw new MasterApiKeyUnavailableException(
+                    "The stored master API key is empty. Repair or remove the invalid credential "
+                    + "explicitly before restarting Arcanum; no replacement was generated.");
+            }
+
+            SeedDigestCache(existing.Value, digestCache);
+
+            return new MasterApiKeyBootstrapResult(
+                existing.Value,
+                wasGenerated: false);
+        }
+
         if (existing.Status == SecretStoreReadStatus.Corrupted)
         {
+            bool databaseExists = grimoireExists();
 
-            bool grimoireExists = File.Exists(ArcanumPaths.GrimoireDatabaseFile);
-
-            if (grimoireExists)
+            if (databaseExists)
             {
-
                 Log.Fatal(
                     "Master API key store is corrupt while an existing Grimoire database is present. "
                     + "Restore the matching credential and Data Protection key ring before restart.");
 
-                ThrowIfCorruptedWithExistingGrimoire(existing, grimoireExists);
-
+                ThrowIfCorruptedWithExistingGrimoire(existing, databaseExists);
             }
 
             // Regenerating over corruption is only safe when OS key storage is known to hold nothing of
             // ours. The read that produced Corrupted may itself have been the OS failure, in which case
             // the live credential's existence is unknown — and SaveApiKeyAsync would overwrite it, or on
             // a failed write delete it outright. Probe once and fail closed unless the answer is clear.
-            IOsCredentialStore osStore = provider.GetRequiredService<IOsCredentialStore>();
-
             OsCredentialStoreResult probe = osStore.TryGet(
                 ArcanumCredentialIdentity.Service,
                 ArcanumCredentialIdentity.MasterApiKeyAccount);
@@ -77,7 +139,6 @@ public static class ArcanumMasterKeyBootstrapper
             ThrowIfOsKeyStorageMayHoldTheLiveKey(probe, osStore);
 
             Log.Warning("Master API key store is corrupt with no Grimoire database; generating a new key.");
-
         }
 
         byte[] keyBytes = new byte[32];
@@ -90,29 +151,50 @@ public static class ArcanumMasterKeyBootstrapper
 
         await store.SaveApiKeyAsync(apiKey).ConfigureAwait(false);
 
+        SeedDigestCache(apiKey, digestCache);
+
         Log.Information(
             "Master API key stored in the OS credential store ({Service}/{Account}) with security.dat mirror.",
             ArcanumCredentialIdentity.Service,
             ArcanumCredentialIdentity.MasterApiKeyAccount);
 
-        return apiKey;
+        return new MasterApiKeyBootstrapResult(
+            apiKey,
+            wasGenerated: true);
+    }
 
+    private static void SeedDigestCache(
+        string apiKey,
+        IApiKeyDigestCache digestCache)
+    {
+        byte[] encoded = Encoding.UTF8.GetBytes(apiKey);
+
+        byte[] digest = SHA256.HashData(encoded);
+
+        try
+        {
+            int ttlSeconds = ArcanumSettingClamps.ApiKeyCacheTtlSeconds(
+                ArcanumRuntimeDefaults.SecurityApiKeyCacheTtlSeconds);
+
+            digestCache.StoreDigest(digest, ttlSeconds);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(encoded);
+            CryptographicOperations.ZeroMemory(digest);
+        }
     }
 
     internal static void ThrowIfCorruptedWithExistingGrimoire(
         SecretStoreReadResult result,
         bool grimoireExists)
     {
-
         ArgumentNullException.ThrowIfNull(result);
 
         if (result.Status == SecretStoreReadStatus.Corrupted && grimoireExists)
         {
-
             throw new MasterApiKeyUnavailableException();
-
         }
-
     }
 
     /// <summary>
@@ -138,26 +220,21 @@ public static class ArcanumMasterKeyBootstrapper
         OsCredentialStoreResult probe,
         IOsCredentialStore store)
     {
-
         ArgumentNullException.ThrowIfNull(store);
 
         if (probe.Status is OsCredentialStoreStatus.NotFound or OsCredentialStoreStatus.Unavailable)
         {
-
             return;
-
         }
 
         if (probe.Status == OsCredentialStoreStatus.Failed && !store.IsAvailable)
         {
-
             Log.Warning(
                 "OS key storage did not answer ({Message}); no credential of ours can be stored there, so "
                 + "the master API key is minted through the security.dat mirror.",
                 probe.Message);
 
             return;
-
         }
 
         Log.Fatal(
@@ -169,7 +246,22 @@ public static class ArcanumMasterKeyBootstrapper
             "The master API key store is corrupt and OS key storage could not confirm that the existing "
             + "credential is gone. Repair the OS credential and the Data Protection key ring before "
             + "restarting Arcanum, so a replacement key is not minted over the live one.");
+    }
+}
 
+internal sealed class MasterApiKeyBootstrapResult
+{
+    internal MasterApiKeyBootstrapResult(
+        string apiKey,
+        bool wasGenerated)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+
+        ApiKey = apiKey;
+        WasGenerated = wasGenerated;
     }
 
+    internal string ApiKey { get; }
+
+    internal bool WasGenerated { get; }
 }

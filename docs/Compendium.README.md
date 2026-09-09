@@ -432,4 +432,4 @@ dotnet run --project src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux
 dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
 ```
 
-Compendium is not Native AOT-published, but it edits the same source-generated, Native-AOT-compatible configuration contract used by Arcanum.
+Compendium edits the same source-generated, AOT-analyzed configuration contract used by Arcanum. Compendium ships self-contained; the Arcanum CLI/host ships as Native AOT.

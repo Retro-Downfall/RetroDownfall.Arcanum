@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Tests.Benchmarks;
 
 public sealed class GrimoireAdmissionBenchmarkManifestTests
 {
-
     private static readonly string[] ExactOperations =
     [
         "request.finite",
@@ -35,7 +34,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
     [Fact]
     public void Cell_contract_records_exact_phase_and_raw_allocation_accounting()
     {
-
         string[] requiredProperties =
         [
             "WarmupOperationCount",
@@ -52,13 +50,11 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             .ToArray();
 
         Assert.All(requiredProperties, property => Assert.Contains(property, actual));
-
     }
 
     [Fact]
     public void Exact_count_and_mixed_checksum_match_a_hand_derived_partition_fixture()
     {
-
         AdmissionBenchmarkProfile profile = new(
             "literal",
             3,
@@ -71,13 +67,11 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
         Assert.Equal(12, AdmissionBenchmarkExpected.OperationCount(profile));
 
         Assert.Equal(18, AdmissionBenchmarkExpected.Checksum(profile, "ordinary.mixed", workers: 2));
-
     }
 
     [Fact]
     public void Checked_in_input_catalog_exactly_closes_every_tracked_benchmark_and_product_input()
     {
-
         string root = FindRepositoryRoot();
 
         const string catalogPath = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-input-catalog-v1.txt";
@@ -90,7 +84,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             .Select(
                 static line =>
                 {
-
                     string[] parts = line.Split('\t');
 
                     Assert.Equal(2, parts.Length);
@@ -98,7 +91,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
                     Assert.Contains(parts[0], new[] { "R", "O" });
 
                     return (parts[1], parts[0] == "O");
-
                 })
             .ToArray();
 
@@ -112,7 +104,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             catalog,
             static entry =>
             {
-
                 Assert.False(Path.IsPathFullyQualified(entry.Path));
 
                 Assert.DoesNotContain('\\', entry.Path);
@@ -120,7 +111,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
                 Assert.DoesNotContain(
                     entry.Path.Split('/'),
                     static segment => segment is "" or "." or "..");
-
             });
 
         string[] tracked = GitTrackedFiles(root);
@@ -171,13 +161,11 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
         Assert.Equal(
             ShapeDigest(catalog),
             manifest.RootElement.GetProperty("inputCatalogShapeDigest").GetString());
-
     }
 
     [Fact]
     public void Checked_in_manifest_is_closed_positive_and_source_generated_round_trips()
     {
-
         string path = Path.Combine(
             FindRepositoryRoot(),
             "tests",
@@ -211,7 +199,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             manifest.Profiles,
             static profile =>
             {
-
                 Assert.True(profile.WarmupIterations > 0);
 
                 Assert.True(profile.LatencyBundleSize > 0);
@@ -223,7 +210,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
                 Assert.True(profile.MaximumDurationSeconds > 0);
 
                 Assert.NotEmpty(profile.MixedSchedule);
-
             });
 
         Assert.Equal("ordinary.mixed", manifest.MaterialImprovementOperation);
@@ -265,7 +251,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         for (int index = 0; index < manifest.Profiles.Length; index++)
         {
-
             Assert.Equal(manifest.Profiles[index].Name, roundTripped.Profiles[index].Name);
 
             Assert.Equal(manifest.Profiles[index].WarmupIterations, roundTripped.Profiles[index].WarmupIterations);
@@ -279,7 +264,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             Assert.Equal(manifest.Profiles[index].MaximumDurationSeconds, roundTripped.Profiles[index].MaximumDurationSeconds);
 
             Assert.Equal(manifest.Profiles[index].MixedSchedule, roundTripped.Profiles[index].MixedSchedule);
-
         }
 
         Assert.Equal(manifest.Thresholds, roundTripped.Thresholds);
@@ -287,7 +271,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
         Assert.Equal(manifest.InputCatalogShapeDigest, roundTripped.InputCatalogShapeDigest);
 
         Assert.Equal(manifest.SourceDifferenceAllowlist, roundTripped.SourceDifferenceAllowlist);
-
     }
 
     [Theory]
@@ -301,7 +284,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
     [InlineData("directory-allowlist")]
     public void Parser_rejects_open_or_malformed_manifest_shapes(string mutation)
     {
-
         AdmissionBenchmarkManifest valid = AdmissionBenchmarkManifest.CreateDefault();
 
         string json = mutation == "non-finite-threshold"
@@ -317,7 +299,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             () => AdmissionBenchmarkManifest.Parse(
                 json,
                 ManifestTestJsonContext.Default.AdmissionBenchmarkManifest));
-
     }
 
     private static AdmissionBenchmarkManifest Mutate(
@@ -346,7 +327,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
     private static string[] GitTrackedFiles(string root)
     {
-
         ProcessStartInfo start = new("git")
         {
             WorkingDirectory = root,
@@ -368,19 +348,16 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
         Assert.True(process.ExitCode == 0, error);
 
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
     }
 
     private static string ShapeDigest(IEnumerable<(string Path, bool Optional)> entries)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         Span<byte> length = stackalloc byte[sizeof(int)];
 
         foreach ((string path, bool optional) in entries)
         {
-
             byte[] pathBytes = Encoding.UTF8.GetBytes(path);
 
             BinaryPrimitives.WriteInt32LittleEndian(length, pathBytes.Length);
@@ -390,36 +367,13 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             hash.AppendData(pathBytes);
 
             hash.AppendData([optional ? (byte)1 : (byte)0]);
-
         }
 
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
-
     }
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }
 
 [JsonSourceGenerationOptions(

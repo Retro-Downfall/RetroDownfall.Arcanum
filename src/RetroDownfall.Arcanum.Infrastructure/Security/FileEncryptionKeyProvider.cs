@@ -4,7 +4,10 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
-public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposable
+public sealed class FileEncryptionKeyProvider :
+    IFileEncryptionKeyRing,
+    IFileEncryptionKeyStartupValidator,
+    IDisposable
 {
     private const string KeyRingHeader = "ARCANUM-KEYRING-1";
     private const string MissingRecoveryMessage =
@@ -12,16 +15,25 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         + "'file-encryption-master-key', or restore file-encryption-key.dat and the matching "
         + "Data Protection key ring from backup. Arcanum will not treat "
         + "encrypted attachment, upload, or batch bytes as plaintext.";
+    private const string IndeterminateInventoryMessage =
+        "Arcanum could not safely determine whether encrypted attachment, upload, or batch "
+        + "bytes exist. Resolve unreadable or linked paths in the managed blob directories and "
+        + "try again. Arcanum will not create a replacement file-encryption secret while the "
+        + "encrypted-blob inventory is uncertain.";
 
     private readonly ISecretStore _secretStore;
 
-    private readonly Func<bool> _encryptedBlobsExist;
+    private readonly IEncryptedBlobPresenceInspector _presenceInspector;
+
+    private readonly FileEncryptionRuntimeStatus _runtimeStatus;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Dictionary<string, FileEncryptionKeyMaterial>? _keys;
 
     private string? _activeKeyId;
 
     private bool _keysLoadedByPeek;
+
+    private int _disposeState;
 
     /// <summary>
     /// Material dropped from the ring that a reader may still hold, zeroized only at disposal.
@@ -35,16 +47,32 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
     /// </remarks>
     private readonly List<FileEncryptionKeyMaterial> _retired = [];
 
-    public FileEncryptionKeyProvider(
-        ISecretStore secretStore,
-        Func<bool>? encryptedBlobsExist = null)
+    public FileEncryptionKeyProvider(ISecretStore secretStore)
+        : this(
+            secretStore,
+            new EncryptedBlobPresenceInspector(),
+            new FileEncryptionRuntimeStatus())
     {
+    }
+
+    internal FileEncryptionKeyProvider(
+        ISecretStore secretStore,
+        IEncryptedBlobPresenceInspector presenceInspector,
+        FileEncryptionRuntimeStatus runtimeStatus)
+    {
+        ArgumentNullException.ThrowIfNull(presenceInspector);
         _secretStore = secretStore ?? throw new ArgumentNullException(nameof(secretStore));
-        _encryptedBlobsExist = encryptedBlobsExist ?? HasEncryptedBlobFiles;
+        _presenceInspector = presenceInspector;
+        _runtimeStatus = runtimeStatus ?? throw new ArgumentNullException(nameof(runtimeStatus));
     }
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+        {
+            return;
+        }
+
         if (_keys is not null)
         {
             foreach (FileEncryptionKeyMaterial material in _keys.Values)
@@ -75,6 +103,50 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
             }
 
             return _keys![_activeKeyId!];
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async ValueTask ValidateStartupStateAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (_keys is not null && !_keysLoadedByPeek)
+            {
+                _runtimeStatus.PublishReady();
+
+                return;
+            }
+
+            EncryptedBlobPresence presence = InspectPresence(cancellationToken);
+            switch (presence)
+            {
+                case EncryptedBlobPresence.Absent:
+                    _runtimeStatus.PublishDeferred();
+
+                    return;
+
+                case EncryptedBlobPresence.Indeterminate:
+                    _runtimeStatus.PublishUnavailable();
+
+                    throw new EncryptedBlobKeyException(IndeterminateInventoryMessage);
+
+                case EncryptedBlobPresence.Present:
+                    await LoadExistingCoreAsync(cancellationToken).ConfigureAwait(false);
+
+                    return;
+
+                default:
+                    _runtimeStatus.PublishUnavailable();
+
+                    throw new EncryptedBlobKeyException(IndeterminateInventoryMessage);
+            }
         }
         finally
         {
@@ -240,24 +312,58 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
 
     private async Task LoadOrCreateAsync(CancellationToken cancellationToken)
     {
-        SecretStoreReadResult result = await _secretStore
-            .GetFileEncryptionSecretReadResultAsync()
-            .ConfigureAwait(false);
+        SecretStoreReadResult result;
+        try
+        {
+            result = await _secretStore
+                .GetFileEncryptionSecretReadResultAsync()
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _runtimeStatus.PublishUnavailable();
+
+            throw;
+        }
+
         if (result.Status == SecretStoreReadStatus.Corrupted)
         {
+            _runtimeStatus.PublishUnavailable();
+
             throw new EncryptedBlobKeyException(result.Message ?? MissingRecoveryMessage);
         }
 
         if (result.Status != SecretStoreReadStatus.Missing)
         {
-            Load(result.Value);
-            _keysLoadedByPeek = false;
+            try
+            {
+                Load(result.Value);
+                _keysLoadedByPeek = false;
+                _runtimeStatus.PublishReady();
+            }
+            catch
+            {
+                _runtimeStatus.PublishUnavailable();
+
+                throw;
+            }
+
             return;
         }
 
-        if (_encryptedBlobsExist())
+        EncryptedBlobPresence presence = InspectPresence(cancellationToken);
+        if (presence is EncryptedBlobPresence.Present)
         {
+            _runtimeStatus.PublishUnavailable();
+
             throw new EncryptedBlobKeyException(MissingRecoveryMessage);
+        }
+
+        if (presence is not EncryptedBlobPresence.Absent)
+        {
+            _runtimeStatus.PublishUnavailable();
+
+            throw new EncryptedBlobKeyException(IndeterminateInventoryMessage);
         }
 
         byte[] generated = RandomNumberGenerator.GetBytes(32);
@@ -273,6 +379,8 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
             catch
             {
                 material.Dispose();
+                _runtimeStatus.PublishUnavailable();
+
                 throw;
             }
 
@@ -283,6 +391,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
                 },
                 material.KeyId);
             _keysLoadedByPeek = false;
+            _runtimeStatus.PublishReady();
         }
         finally
         {
@@ -294,26 +403,50 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         CancellationToken cancellationToken,
         bool peek = false)
     {
-        SecretStoreReadResult result = peek
-            ? await _secretStore
-                .PeekFileEncryptionSecretReadResultAsync()
-                .ConfigureAwait(false)
-            : await _secretStore
-                .GetFileEncryptionSecretReadResultAsync()
-                .ConfigureAwait(false);
-        if (result.Status == SecretStoreReadStatus.Missing)
+        try
         {
-            throw new EncryptedBlobKeyException(MissingRecoveryMessage);
-        }
+            SecretStoreReadResult result = peek
+                ? await _secretStore
+                    .PeekFileEncryptionSecretReadResultAsync()
+                    .ConfigureAwait(false)
+                : await _secretStore
+                    .GetFileEncryptionSecretReadResultAsync()
+                    .ConfigureAwait(false);
+            if (result.Status == SecretStoreReadStatus.Missing)
+            {
+                throw new EncryptedBlobKeyException(MissingRecoveryMessage);
+            }
 
-        if (result.Status == SecretStoreReadStatus.Corrupted)
+            if (result.Status == SecretStoreReadStatus.Corrupted)
+            {
+                throw new EncryptedBlobKeyException(result.Message ?? MissingRecoveryMessage);
+            }
+
+            Load(result.Value);
+
+            _keysLoadedByPeek = peek;
+            _runtimeStatus.PublishReady();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            throw new EncryptedBlobKeyException(result.Message ?? MissingRecoveryMessage);
+            _runtimeStatus.PublishUnavailable();
+
+            throw;
         }
+    }
 
-        Load(result.Value);
+    private EncryptedBlobPresence InspectPresence(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return _presenceInspector.Inspect(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _runtimeStatus.PublishUnavailable();
 
-        _keysLoadedByPeek = peek;
+            throw;
+        }
     }
 
     private void Load(string? encoded)
@@ -475,51 +608,5 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
                 + "matching Data Protection key ring from backup.",
                 ex);
         }
-    }
-
-    private static bool HasEncryptedBlobFiles() =>
-        DirectoryContainsEncryptedBlob(ArcanumPaths.AttachmentsDirectory, SearchOption.AllDirectories)
-        || DirectoryContainsEncryptedBlob(ArcanumPaths.FilesDirectory, SearchOption.TopDirectoryOnly);
-
-    private static bool DirectoryContainsEncryptedBlob(
-        string directory,
-        SearchOption searchOption)
-    {
-        if (!Directory.Exists(directory))
-        {
-            return false;
-        }
-
-        try
-        {
-            Span<byte> magic = stackalloc byte[8];
-            foreach (string path in Directory.EnumerateFiles(directory, "*", searchOption))
-            {
-                magic.Clear();
-                try
-                {
-                    using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    if (stream.Read(magic) == magic.Length
-                        && CryptographicOperations.FixedTimeEquals(magic, "ARCABLOB"u8))
-                    {
-                        return true;
-                    }
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
-            }
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-
-        return false;
     }
 }

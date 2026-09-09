@@ -31,7 +31,6 @@ internal readonly record struct CovenantCanonicalDatasetTransition(
     Guid TargetDatasetGeneration,
     CovenantOfflineTransitionEpochsV1 TargetEpochs)
 {
-
     /// <summary>Whether this pair is one a launch could have committed to.</summary>
     internal bool IsCoherent =>
         SourceDatasetGeneration != Guid.Empty
@@ -45,7 +44,6 @@ internal readonly record struct CovenantCanonicalDatasetTransition(
 
     private static bool IsSuccessor(ulong source, ulong target) =>
         source is > 0 and < long.MaxValue && target == source + 1;
-
 }
 
 /// <summary>
@@ -59,7 +57,6 @@ internal readonly record struct CovenantCanonicalDatasetTransition(
 /// </remarks>
 internal interface ICovenantCanonicalErasure
 {
-
     /// <summary>
     /// Removes the family's rows and stamps one new dataset, reporting its generation.
     /// </summary>
@@ -73,7 +70,6 @@ internal interface ICovenantCanonicalErasure
         CovenantCanonicalDatasetTransition dataset,
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -99,7 +95,6 @@ internal interface ICovenantCanonicalErasure
 /// </remarks>
 internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalErasure
 {
-
     /// <summary>The Covenant family's row in the shared per-capability cleanup cursor.</summary>
     private const int CovenantFamilyCode = (int)GrimoireSchemaFamily.Covenant;
 
@@ -157,11 +152,9 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         ICovenantSqliteConnectionInitializer initializer,
         TimeProvider timeProvider)
     {
-
         _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
 
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-
     }
 
     public async Task<Result<Guid>> ApplyAsync(
@@ -170,28 +163,23 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
-
         // Refused before the drain, not after: an incoherent pair cannot become coherent by closing
         // handles, and the cheapest place to answer is the one where nothing has been let go of yet.
         if (!dataset.IsCoherent)
         {
-
             return Result<Guid>.Failure(
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The canonical dataset transition is not one a launch could have committed to."));
-
         }
 
         if (operation is not CovenantExclusiveOperation.CovenantReset
             and not CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
         {
-
             return Result<Guid>.Failure(
                 new Error(
                     ErrorCodes.Covenant.InvalidScope,
                     "Only a Covenant reset or a healthy-catalog factory erasure erases the canonical family."));
-
         }
 
         // No drain here any more. The closed period this runs inside was entered through the
@@ -204,22 +192,17 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         if (opened.IsFailure)
         {
-
             return Result<Guid>.Failure(opened.Error);
-
         }
 
         await using (opened.Value.ConfigureAwait(false))
         {
-
             return await ApplyOnConnectionAsync(
                 opened.Value.Connection,
                 operation,
                 dataset,
                 cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -237,23 +220,17 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         CovenantCanonicalDatasetTransition dataset,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             return await SqliteBusyRetry.ExecuteAsync(
                 () => ApplyWithinTransactionAsync(connection, operation, dataset, cancellationToken),
                 cancellationToken,
                 RetryingForTesting).ConfigureAwait(false);
-
         }
         catch (GrimoireBusyTimeoutException timedOut)
         {
-
             return Failure(timedOut, "erase the Covenant canonical family");
-
         }
-
     }
 
     private async Task<Result<Guid>> ApplyWithinTransactionAsync(
@@ -262,17 +239,13 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         CovenantCanonicalDatasetTransition dataset,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             Result proven = await RequireSecureDeleteAsync(connection, cancellationToken).ConfigureAwait(false);
 
             if (proven.IsFailure)
             {
-
                 return Result<Guid>.Failure(proven.Error);
-
             }
 
             using CovenantSqliteAuthorizationScope authorization = _initializer.Authorize(
@@ -286,26 +259,20 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
             if (erased.IsFailure)
             {
-
                 return erased;
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return erased;
-
         }
         // SQLITE_BUSY/LOCKED propagates to SqliteBusyRetry.ExecuteAsync in ApplyOnConnectionAsync
         // above rather than becoming a terminal Failure here - that is the whole point of wrapping
         // the acquisition in it.
         catch (SqliteException failed) when (failed.SqliteErrorCode is not (5 or 6))
         {
-
             return Failure(failed, "erase the Covenant canonical family");
-
         }
-
     }
 
     /// <summary>
@@ -318,7 +285,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         CovenantCanonicalDatasetTransition dataset,
         CancellationToken cancellationToken)
     {
-
         bool factoryErasure = operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure;
 
         bool acceleratorInstalled = await ObjectExistsAsync(
@@ -332,24 +298,20 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         // index, which a plain delete against the index itself would corrupt rather than clear.
         if (acceleratorInstalled)
         {
-
             _ = await ExecuteAsync(
                 connection,
                 transaction,
                 "DELETE FROM covenant_search_documents;",
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         foreach (string table in FamilyTablesInDeletionOrder)
         {
-
             _ = await ExecuteAsync(
                 connection,
                 transaction,
                 $"DELETE FROM \"{table}\";",
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         long campaignSequence = await ReadOwnerSequenceAsync(
@@ -379,9 +341,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         if (generation.IsFailure)
         {
-
             return generation;
-
         }
 
         await ResetCleanupCursorAsync(
@@ -394,21 +354,16 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         if (factoryErasure && acceleratorInstalled)
         {
-
             Result reseeded = await ReseedAcceleratorAsync(connection, transaction, cancellationToken)
                 .ConfigureAwait(false);
 
             if (reseeded.IsFailure)
             {
-
                 return Result<Guid>.Failure(reseeded.Error);
-
             }
-
         }
 
         return generation;
-
     }
 
     /// <summary>
@@ -431,7 +386,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         string updatedAtUtc,
         CancellationToken cancellationToken)
     {
-
         Guid generation = dataset.TargetDatasetGeneration;
 
         int updated = await ExecuteAsync(
@@ -471,17 +425,15 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             ("$campaignSequence", campaignSequence),
             ("$sessionSequence", sessionSequence),
             ("$rebuildStateCode", (long)CovenantFtsRebuildState.FullRebuildRequired),
-            ("$updatedAtUtc", updatedAtUtc)).ConfigureAwait(false);
+            ("$updatedAtUtc", UtcInstantText.Normalize(updatedAtUtc))).ConfigureAwait(false);
 
         if (updated == 1)
         {
-
             // Read back inside the same transaction. The caller is owed the generation the committed
             // row carries rather than the one this method was handed: those are the same value only if
             // the statement did what it was asked, and "did it" is exactly the question.
             return await ReadStampedGenerationAsync(connection, transaction, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         // Zero rows has three causes and they are three different answers.
@@ -500,7 +452,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         if (await CountAsync(connection, transaction, "covenant_state", cancellationToken)
                 .ConfigureAwait(false) == 1)
         {
-
             Result<Guid> observed = await ReadStampedGenerationAsync(
                 connection,
                 transaction,
@@ -518,17 +469,14 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
                         ErrorCodes.Covenant.IntegrityFailure,
                         "The Covenant canonical source state is not the one this transition was "
                             + "launched against."));
-
         }
 
         if (!factoryErasure)
         {
-
             return Result<Guid>.Failure(
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The Covenant canonical singleton is absent, so a reset has no dataset to replace."));
-
         }
 
         // An offline transition's launch records a source epoch above zero for all three counters, so
@@ -540,7 +488,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The Covenant canonical singleton is absent, so no offline transition can have been "
                     + "launched against it."));
-
     }
 
     /// <summary>
@@ -559,12 +506,9 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         Guid observedGeneration,
         CancellationToken cancellationToken)
     {
-
         if (observedGeneration != dataset.TargetDatasetGeneration)
         {
-
             return false;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -593,7 +537,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             checked((long)dataset.TargetEpochs.EnvelopeKeyEpoch));
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L;
-
     }
 
     /// <summary>
@@ -604,7 +547,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -624,7 +566,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The stamped Covenant dataset generation could not be read back."));
-
     }
 
     /// <summary>
@@ -649,7 +590,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         string updatedAtUtc,
         CancellationToken cancellationToken)
     {
-
         int updated = await ExecuteAsync(
             connection,
             transaction,
@@ -664,14 +604,12 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             cancellationToken,
             ("$campaignSequence", campaignSequence),
             ("$sessionSequence", sessionSequence),
-            ("$updatedAtUtc", updatedAtUtc),
+            ("$updatedAtUtc", UtcInstantText.Normalize(updatedAtUtc)),
             ("$family", (long)CovenantFamilyCode)).ConfigureAwait(false);
 
         if (updated == 1)
         {
-
             return;
-
         }
 
         _ = await ExecuteAsync(
@@ -687,8 +625,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             ("$family", (long)CovenantFamilyCode),
             ("$campaignSequence", campaignSequence),
             ("$sessionSequence", sessionSequence),
-            ("$updatedAtUtc", updatedAtUtc)).ConfigureAwait(false);
-
+            ("$updatedAtUtc", UtcInstantText.Normalize(updatedAtUtc))).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -704,7 +641,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         _ = await ExecuteAsync(
             connection,
             transaction,
@@ -725,7 +661,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             : new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The Covenant accelerator did not report secure delete after it was reseeded.");
-
     }
 
     /// <summary>
@@ -742,7 +677,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = "PRAGMA secure_delete;";
@@ -755,7 +689,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
             : new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A Covenant erasure connection cannot prove secure delete, so it deletes nothing.");
-
     }
 
     private static async Task<long> ReadOwnerSequenceAsync(
@@ -764,7 +697,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         long ownerKindCode,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -780,7 +712,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<bool> ObjectExistsAsync(
@@ -789,7 +720,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         string name,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -801,7 +731,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is not null and not DBNull;
-
     }
 
     private static async Task<long> CountAsync(
@@ -810,7 +739,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         string table,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -820,7 +748,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<int> ExecuteAsync(
@@ -830,7 +757,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -839,13 +765,10 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static Result<Guid> Failure(SqliteException failed, string step) =>
@@ -860,5 +783,4 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
                 ErrorCodes.Covenant.MaintenanceFailed,
                 $"A Covenant erasure could not {step}: another handle held the database for "
                 + $"{timedOut.Attempts} attempt(s) over {timedOut.Elapsed}."));
-
 }

@@ -32,7 +32,6 @@ namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 [Collection("WorkspacePathPolicy")]
 public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifetime
 {
-
     private static readonly CancellationToken Token = CancellationToken.None;
 
     private readonly TempWorkspace _workspace = new();
@@ -44,7 +43,6 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
     [Fact]
     public async Task The_lease_is_adopted_first_and_the_handler_runs_under_that_owner()
     {
-
         FakeTimeProvider time = new();
 
         FakeLongRunningOperationStore store = new(time);
@@ -81,7 +79,6 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
         Assert.Equal(
             LongRunningOperationState.Completed,
             Assert.Single(store.Operations, row => row.Id == seeded.Id).State);
-
     }
 
     [Theory]
@@ -116,7 +113,6 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
         Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
 
         Assert.Equal([seeded.Id], handler.Invocations);
-
     }
 
     [Theory]
@@ -199,13 +195,11 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
         Assert.Empty(handler.Invocations);
 
         Assert.Same(drifted, await store.GetAsync(drifted.Id, Token));
-
     }
 
     [Fact]
     public async Task A_lease_the_installation_lock_cannot_take_refuses_before_the_handler()
     {
-
         FakeTimeProvider time = new();
 
         FakeLongRunningOperationStore store = new(time);
@@ -234,18 +228,15 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, dispatched.Error.Code);
 
         Assert.Empty(handler.Invocations);
-
     }
 
     private Held Hold(string name)
     {
-
         string root = _workspace.CreateSubdir("handler-dispatch-" + name);
 
         return new Held(
             Assert.IsType<ArcanumMaintenanceLock>(ArcanumMaintenanceLock.TryAcquire(root)),
             root);
-
     }
 
     private static async Task<(
@@ -281,7 +272,6 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
         RecordingLeaseAdoption adoption,
         params ILongRunningOperationRecoveryHandler[] handlers)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<ILongRunningOperationStore>(store);
@@ -294,9 +284,7 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
 
         foreach (ILongRunningOperationRecoveryHandler handler in handlers)
         {
-
             services.AddSingleton(handler);
-
         }
 
         services.AddScoped(sp => new LongRunningOperationReconciler(
@@ -311,14 +299,11 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
         return new GrimoireOfflineTransitionHandlerDispatch(
             provider.GetRequiredService<IServiceScopeFactory>(),
             time);
-
     }
 
     private sealed record Held(ArcanumMaintenanceLock Lock, string Root) : IDisposable
     {
-
         public void Dispose() => Lock.Dispose();
-
     }
 
     /// <summary>
@@ -332,7 +317,6 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
     private sealed class RecordingLeaseAdoption(FakeLongRunningOperationStore store)
         : ILongRunningOperationMaintenanceLeaseAdoption
     {
-
         internal bool Refuse { get; init; }
 
         internal string? OwnerId { get; private set; }
@@ -348,7 +332,6 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
             DateTimeOffset leaseExpiresAt,
             CancellationToken cancellationToken = default)
         {
-
             heldInstallationLock.AssertHeldFor(guardedDirectory);
 
             OwnerId = ownerId;
@@ -365,28 +348,21 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
                 || current.CheckpointVersion != expected.CheckpointVersion
                 || current.Revision != expected.Revision)
             {
-
                 return new LongRunningOperationLeaseResult(false, current);
-
             }
 
             LongRunningOperation adopted = current with
             {
-
                 LeaseOwner = ownerId,
 
                 LeaseExpiresAt = leaseExpiresAt,
 
                 Revision = current.Revision + 1,
-
             };
 
             store.Add(adopted);
 
             return new LongRunningOperationLeaseResult(true, adopted);
-
         }
-
     }
-
 }

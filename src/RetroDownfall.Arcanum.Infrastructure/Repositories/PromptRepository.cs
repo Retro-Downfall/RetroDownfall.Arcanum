@@ -1,5 +1,5 @@
 using System.Text.Json;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public sealed class PromptRepository : IPromptRepository
 {
-
     private const int DefaultListLimit = 100;
 
     private readonly ArcanumDbContext _db;
@@ -29,10 +28,10 @@ public sealed class PromptRepository : IPromptRepository
 
     public async Task<Prompt?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        return await _db.Prompts
-            .AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
-            .ConfigureAwait(false);
+        return await ReadSingleAsync(
+            $"SELECT {GrimoireEntitySql.PromptColumns} FROM \"Prompts\" WHERE \"Id\" = $id LIMIT 1;",
+            command => GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(id)),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<Prompt?> GetByNameAndVersionAsync(
@@ -45,14 +44,29 @@ public sealed class PromptRepository : IPromptRepository
 
         string trimmedVersion = version.Trim();
 
-        return await _db.Prompts
-            .AsNoTracking()
-            .FirstOrDefaultAsync(
-                p => p.Name == trimmedName
-                    && p.Version == trimmedVersion
-                    && p.CampaignId == campaignId,
-                cancellationToken)
-            .ConfigureAwait(false);
+        return await ReadSingleAsync(
+            $"""
+            SELECT {GrimoireEntitySql.PromptColumns}
+            FROM "Prompts"
+            WHERE "Name" = $name
+              AND "Version" = $version
+              AND
+              (
+                  "CampaignId" = $campaignId
+                  OR ("CampaignId" IS NULL AND $campaignId IS NULL)
+              )
+            LIMIT 1;
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$name", trimmedName);
+                GrimoireEntitySql.AddParameter(command, "$version", trimmedVersion);
+                GrimoireEntitySql.AddParameter(
+                    command,
+                    "$campaignId",
+                    campaignId is { } id ? GrimoireEntitySql.Format(id) : null);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<Prompt>> ListVersionsAsync(
@@ -65,11 +79,26 @@ public sealed class PromptRepository : IPromptRepository
         // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY (see
         // PromptRepository.ListAsync for the same constraint). Materialize the name+campaign-
         // scoped rows (small set) and sort client-side.
-        List<Prompt> matched = await _db.Prompts
-            .AsNoTracking()
-            .Where(p => p.Name == trimmedName && p.CampaignId == campaignId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        List<Prompt> matched = await ReadManyAsync(
+            $"""
+            SELECT {GrimoireEntitySql.PromptColumns}
+            FROM "Prompts"
+            WHERE "Name" = $name
+              AND
+              (
+                  "CampaignId" = $campaignId
+                  OR ("CampaignId" IS NULL AND $campaignId IS NULL)
+              );
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$name", trimmedName);
+                GrimoireEntitySql.AddParameter(
+                    command,
+                    "$campaignId",
+                    campaignId is { } id ? GrimoireEntitySql.Format(id) : null);
+            },
+            cancellationToken).ConfigureAwait(false);
 
         return matched
             .OrderByDescending(p => p.UpdatedAt)
@@ -90,11 +119,18 @@ public sealed class PromptRepository : IPromptRepository
         // "SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses" from the
         // EF Core Sqlite provider's paging translator. Sort and page client-side instead; prompt tables
         // are workspace-scoped and small, so this is not a performance concern.
-        List<Prompt> matched = await _db.Prompts
-            .AsNoTracking()
-            .Where(p => p.CampaignId == campaignId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        List<Prompt> matched = await ReadManyAsync(
+            $"""
+            SELECT {GrimoireEntitySql.PromptColumns}
+            FROM "Prompts"
+            WHERE "CampaignId" = $campaignId
+               OR ("CampaignId" IS NULL AND $campaignId IS NULL);
+            """,
+            command => GrimoireEntitySql.AddParameter(
+                command,
+                "$campaignId",
+                campaignId is { } id ? GrimoireEntitySql.Format(id) : null),
+            cancellationToken).ConfigureAwait(false);
 
         Prompt[] ordered = matched
             .OrderBy(p => p.Name, StringComparer.Ordinal)
@@ -139,12 +175,57 @@ public sealed class PromptRepository : IPromptRepository
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        int deleted = await _db.Prompts
-            .Where(p => p.Id == id)
-            .ExecuteDeleteAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            "DELETE FROM \"Prompts\" WHERE \"Id\" = $id;",
+            cancellationToken).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(id));
+
+        int deleted = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return deleted > 0;
+    }
+
+    private async Task<Prompt?> ReadSingleAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? GrimoireEntitySql.ReadPrompt(reader)
+            : null;
+    }
+
+    private async Task<List<Prompt>> ReadManyAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        List<Prompt> prompts = [];
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            prompts.Add(GrimoireEntitySql.ReadPrompt(reader));
+        }
+
+        return prompts;
     }
 
     public static string[] DeserializeTags(string json)
@@ -159,5 +240,4 @@ public sealed class PromptRepository : IPromptRepository
 
     public static string SerializeTags(string[] tags) =>
         JsonSerializer.Serialize(tags, ArcanumCoreJsonContext.Default.StringArray);
-
 }

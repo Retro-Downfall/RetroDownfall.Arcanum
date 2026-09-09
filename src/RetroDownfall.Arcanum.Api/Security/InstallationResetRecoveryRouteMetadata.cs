@@ -1,12 +1,15 @@
 namespace RetroDownfall.Arcanum.Api.Security;
 
 /// <summary>
-/// Marks one exact authenticated route as callable while the host exists only to replay an admitted
-/// installation factory reset. The method is retained in the marker so a future route refactor cannot
-/// accidentally widen recovery admission by reusing a name on a different verb.
+/// Marks one exact route as callable while the host exists only to replay an admitted installation
+/// factory reset. The method is retained in the marker so a future route refactor cannot accidentally
+/// widen recovery admission by reusing a name on a different verb. The presence proof is the sole
+/// anonymous member: it authenticates the local server before a client retrieves or transmits its key.
 /// </summary>
 internal sealed class InstallationResetRecoveryApiRouteMetadata(string method)
 {
+    internal static InstallationResetRecoveryApiRouteMetadata Presence { get; } =
+        new("GET");
 
     internal static InstallationResetRecoveryApiRouteMetadata GetHealth { get; } =
         new("GET");
@@ -18,7 +21,6 @@ internal sealed class InstallationResetRecoveryApiRouteMetadata(string method)
         new("POST");
 
     internal string Method { get; } = method;
-
 }
 
 /// <summary>
@@ -27,13 +29,11 @@ internal sealed class InstallationResetRecoveryApiRouteMetadata(string method)
 /// </summary>
 internal sealed class InstallationResetRecoveryHiddenRouteMetadata
 {
-
     internal static InstallationResetRecoveryHiddenRouteMetadata Instance { get; } = new();
 
     private InstallationResetRecoveryHiddenRouteMetadata()
     {
     }
-
 }
 
 /// <summary>
@@ -42,11 +42,9 @@ internal sealed class InstallationResetRecoveryHiddenRouteMetadata
 /// </summary>
 internal sealed class InstallationResetRecoveryBlockedRouteMetadata
 {
-
     internal static InstallationResetRecoveryBlockedRouteMetadata Instance { get; } = new();
 
     private InstallationResetRecoveryBlockedRouteMetadata()
     {
     }
-
 }

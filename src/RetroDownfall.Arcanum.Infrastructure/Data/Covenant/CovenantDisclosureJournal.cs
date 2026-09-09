@@ -17,14 +17,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal interface ICovenantDisclosureTransactionWriter
 {
-
     ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
         SqliteConnection connection,
         CovenantDisclosureDraft draft,
         CovenantDisclosureEffectCategory category,
         ProviderCallSensitivity sensitivity,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -33,7 +31,6 @@ internal interface ICovenantDisclosureTransactionWriter
 internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
     : ICovenantDisclosureTransactionWriter
 {
-
     public async ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
         SqliteConnection connection,
         CovenantDisclosureDraft draft,
@@ -41,7 +38,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         ProviderCallSensitivity sensitivity,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(draft);
@@ -57,11 +53,9 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         // the two disagree, the receipt would record provenance for a payload that was never sent.
         if (sensitivity.Digest != draft.SensitivityDigest)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The supplied sensitivity does not match the disclosure draft's frozen digest.");
-
         }
 
         return await SqliteBusyRetry.ExecuteAsync(
@@ -72,7 +66,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
                 sensitivity,
                 cancellationToken),
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<Result<CovenantDisclosureReceipt>> AcknowledgeWithinTransactionAsync(
@@ -82,7 +75,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         ProviderCallSensitivity sensitivity,
         CancellationToken cancellationToken)
     {
-
         // No authorization scope: the journal is append-only by schema. Its guard triggers refuse
         // update and delete outright rather than gating them on a capability, because a receipt that
         // could be rewritten under some authorization would not be evidence of anything.
@@ -95,12 +87,10 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
 
         if (replayed is { } ordinal)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<CovenantDisclosureReceipt>.Success(
                 new CovenantDisclosureReceipt(draft, ordinal));
-
         }
 
         SubjectState state = await ReadOrSeedSubjectAsync(owned, draft, cancellationToken)
@@ -108,13 +98,11 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
 
         if (state.Lifecycle is not (1 or 2))
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new Error(
                 ErrorCodes.Covenant.LifecycleConflict,
                 "This disclosure subject is closed and cannot record another effect.");
-
         }
 
         ulong allocated = checked(state.LastAllocatedOrdinal + 1);
@@ -148,7 +136,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return Result<CovenantDisclosureReceipt>.Success(receipt);
-
     }
 
     private static async Task<ulong?> ReadReplayedOrdinalAsync(
@@ -156,7 +143,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         CovenantDisclosureDraft draft,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -175,7 +161,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? null : (ulong)Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<SubjectState> ReadOrSeedSubjectAsync(
@@ -183,10 +168,8 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         CovenantDisclosureDraft draft,
         CancellationToken cancellationToken)
     {
-
         await using (SqliteCommand seed = transaction.CreateCommand())
         {
-
             seed.CommandText = """
                 INSERT OR IGNORE INTO disclosure_subject_state (
                     OriginInstallationId, SubjectKind, SubjectId, LifecycleCode, CreatorBootId,
@@ -206,7 +189,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
                 CovenantEvidenceChains.SeedDisclosureChain().Head.Bytes);
 
             _ = await seed.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         await using SqliteCommand command = transaction.CreateCommand();
@@ -232,7 +214,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
             (ulong)reader.GetInt64(1),
             (ulong)reader.GetInt64(2),
             new CovenantDigest((byte[])reader.GetValue(3)));
-
     }
 
     private static async Task<ulong> CountCategoryAsync(
@@ -241,7 +222,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         CovenantDisclosureEffectCategory category,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -260,7 +240,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return (ulong)Convert.ToInt64(value ?? 0L, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task InsertReceiptAsync(
@@ -272,7 +251,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         ulong attemptOrdinal,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -342,7 +320,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         _ = command.Parameters.AddWithValue("$disclosedAt", Iso(draft.Timestamp));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task AdvanceSubjectAsync(
@@ -353,7 +330,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         CovenantDisclosureChain chain,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -383,12 +359,10 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         _ = command.Parameters.AddWithValue("$now", Iso(draft.Timestamp));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static void BindSubject(SqliteCommand command, CovenantDisclosureDraft draft)
     {
-
         _ = command.Parameters.AddWithValue(
             "$installation",
             draft.OriginInstallationId.ToString("D"));
@@ -396,7 +370,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         _ = command.Parameters.AddWithValue("$kind", (long)draft.SubjectKind);
 
         _ = command.Parameters.AddWithValue("$subject", draft.SubjectId.ToString("D"));
-
     }
 
     /// <summary>
@@ -409,7 +382,6 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
     /// </remarks>
     private static byte[] PackGenerationIds(GenerationProvenance provenance)
     {
-
         byte[] packed = new byte[provenance.ExactGenerationIds.Length * 16];
 
         for (int index = 0; index < provenance.ExactGenerationIds.Length; index++)
@@ -424,18 +396,14 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
         }
 
         return packed;
-
     }
 
     private static string Iso(long timestamp) =>
-        DateTimeOffset.FromUnixTimeMilliseconds(timestamp)
-            .UtcDateTime
-            .ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(DateTimeOffset.FromUnixTimeMilliseconds(timestamp));
 
     private readonly record struct SubjectState(
         long Lifecycle,
         ulong ExternalEffectCount,
         ulong LastAllocatedOrdinal,
         CovenantDigest ChainHead);
-
 }

@@ -1,7 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 using Spectre.Console;
 
@@ -25,6 +27,25 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </summary>
 internal static class CliTestHarness
 {
+    /// <summary>
+    /// Explicitly gives a CLI test a local responder that proves knowledge of
+    /// <paramref name="serverKey"/> before the real credential lease exposes
+    /// the key from the test's registered <see cref="ISecretStore"/> to the API client.
+    /// </summary>
+    public static void AddKeyedArcanumResponder(
+        IServiceCollection services,
+        string serverKey)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverKey);
+
+        services.RemoveAll<ArcanumApiCredentialLease>();
+
+        services.AddSingleton(serviceProvider =>
+            ArcanumApiCredentialLeaseTestFactory.Create(
+                serviceProvider.GetRequiredService<ISecretStore>(),
+                serverKey));
+    }
 
     public static CliTestResult Run(IServiceCollection services, params string[] args) =>
         RunAsync(services, args).GetAwaiter().GetResult();
@@ -34,7 +55,6 @@ internal static class CliTestHarness
         string[] args,
         string? input = null)
     {
-
         ApplyInstalledStartupProbe(services);
 
         ServiceProvider provider = services.BuildServiceProvider();
@@ -84,7 +104,6 @@ internal static class CliTestHarness
 
             provider.Dispose();
         }
-
     }
 
     /// <summary>
@@ -109,7 +128,6 @@ internal static class CliTestHarness
     private static void ApplyInstalledStartupProbe(
         IServiceCollection services)
     {
-
         bool callerOwnsTheProbe = services.Any(static descriptor =>
             descriptor.ServiceType == typeof(IInstallationStartupProbe)
             && (descriptor.ImplementationInstance?.GetType() ?? descriptor.ImplementationType)
@@ -117,17 +135,13 @@ internal static class CliTestHarness
 
         if (callerOwnsTheProbe)
         {
-
             return;
-
         }
 
         services.RemoveAll<IInstallationStartupProbe>();
 
         services.AddSingleton<IInstallationStartupProbe>(new InstalledStartupProbe());
-
     }
-
 }
 
 internal readonly record struct CliTestResult(int ExitCode, string Output, string Error);
@@ -140,16 +154,12 @@ internal readonly record struct CliTestResult(int ExitCode, string Output, strin
 /// </summary>
 internal static class Utf16Assert
 {
-
     public static bool ContainsLoneSurrogate(string text)
     {
-
         for (int index = 0; index < text.Length; index++)
         {
-
             if (char.IsHighSurrogate(text[index]))
             {
-
                 if (index + 1 >= text.Length || !char.IsLowSurrogate(text[index + 1]))
                 {
                     return true;
@@ -158,18 +168,14 @@ internal static class Utf16Assert
                 index++;
 
                 continue;
-
             }
 
             if (char.IsLowSurrogate(text[index]))
             {
                 return true;
             }
-
         }
 
         return false;
-
     }
-
 }

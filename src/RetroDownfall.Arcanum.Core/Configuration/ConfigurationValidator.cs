@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed class ConfigurationValidator(
     ILogger<ConfigurationValidator>? logger = null)
 {
-
     internal const string ObsoleteLlamaCppMigrationMessage =
         "Arcanum:LlamaCpp is no longer supported. Configure an OpenAI-compatible HTTP provider (type OpenAICompatible) instead; Ollama may use endpoint http://localhost:11434/v1.";
 
@@ -152,7 +151,6 @@ public sealed class ConfigurationValidator(
     /// </summary>
     public Result RejectObsoleteKeys(IConfiguration configuration)
     {
-
         List<ConfigurationValidationError> errors = [];
 
         IConfigurationSection arcanum = configuration.GetSection("Arcanum");
@@ -188,16 +186,12 @@ public sealed class ConfigurationValidator(
 
         foreach ((string path, string message) in ObsoleteInternalWorkflowPaths)
         {
-
             if (arcanum.GetSection(path.Replace('.', ':')).Exists())
             {
-
                 AddErrorIfMissing(
                     new ConfigurationValidationError(path, message),
                     errors);
-
             }
-
         }
 
         if (arcanum.GetSection("Host:Https:CertificatePassword").Exists())
@@ -310,7 +304,6 @@ public sealed class ConfigurationValidator(
             errors);
 
         return BuildRawTreeValidationResult(errors);
-
     }
 
     /// <summary>
@@ -320,7 +313,6 @@ public sealed class ConfigurationValidator(
     /// </summary>
     public Result RejectObsoleteJsonKeys(JsonElement root)
     {
-
         List<ConfigurationValidationError> errors = [];
 
         if (root.ValueKind != JsonValueKind.Object)
@@ -363,16 +355,12 @@ public sealed class ConfigurationValidator(
 
         foreach ((string path, string message) in ObsoleteInternalWorkflowPaths)
         {
-
             if (TryGetNestedPropertyIgnoreCase(root, path, out _))
             {
-
                 AddErrorIfMissing(
                     new ConfigurationValidationError(path, message),
                     errors);
-
             }
-
         }
 
         if (TryGetPropertyIgnoreCase(root, "host", out JsonElement host)
@@ -495,7 +483,6 @@ public sealed class ConfigurationValidator(
             errors);
 
         return BuildRawTreeValidationResult(errors);
-
     }
 
     /// <summary>
@@ -806,6 +793,13 @@ public sealed class ConfigurationValidator(
                 return true;
             }
 
+            if (string.Equals(suppliedName, "supportsTools", StringComparison.OrdinalIgnoreCase))
+            {
+                propertyName = "supportsTools";
+                propertyType = typeof(bool?);
+                return true;
+            }
+
             if (string.Equals(suppliedName, "reasoning", StringComparison.OrdinalIgnoreCase))
             {
                 // The JSON reasoning block keeps the historical ReasoningCapabilities shape: removed
@@ -918,7 +912,6 @@ public sealed class ConfigurationValidator(
 
     private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
     {
-
         foreach (JsonProperty property in element.EnumerateObject())
         {
             if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
@@ -932,7 +925,6 @@ public sealed class ConfigurationValidator(
         value = default;
 
         return false;
-
     }
 
     private static bool TryGetNestedPropertyIgnoreCase(
@@ -940,31 +932,24 @@ public sealed class ConfigurationValidator(
         string path,
         out JsonElement value)
     {
-
         value = root;
 
         foreach (string segment in path.Split('.'))
         {
-
             if (value.ValueKind != JsonValueKind.Object
                 || !TryGetPropertyIgnoreCase(value, segment, out value))
             {
-
                 value = default;
 
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     public Result Validate(ArcanumSettings settings)
     {
-
         List<ConfigurationValidationError> errors = [];
 
         ProviderSettings[] providers = settings.Providers ?? [];
@@ -974,7 +959,6 @@ public sealed class ConfigurationValidator(
 
         for (int providerIndex = 0; providerIndex < providers.Length; providerIndex++)
         {
-
             ProviderSettings provider = providers[providerIndex];
 
             string providerPointer = $"providers[{providerIndex}]";
@@ -984,13 +968,11 @@ public sealed class ConfigurationValidator(
             // with a NullReferenceException that says nothing about which key is wrong.
             if (provider is null)
             {
-
                 errors.Add(new ConfigurationValidationError(
                     providerPointer,
                     "Provider entry must be a JSON object."));
 
                 continue;
-
             }
 
             if (string.IsNullOrWhiteSpace(provider.Name))
@@ -1004,11 +986,9 @@ public sealed class ConfigurationValidator(
             // leftovers; do not require Type to be present.
             if (!Enum.IsDefined(provider.Type))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     $"{providerPointer}.type",
                     $"Provider '{provider.Name}' type must be OpenAICompatible (Ollama via http://localhost:11434/v1), ClaudeCodeCli, or CodexCli."));
-
             }
 
             bool isFamiliar = FamiliarProviders.IsFamiliar(provider.Type);
@@ -1017,13 +997,10 @@ public sealed class ConfigurationValidator(
 
             if (isFamiliar)
             {
-
                 ValidateFamiliarProvider(provider, providerPointer, errors);
-
             }
             else
             {
-
                 ValidateHttpProviderOnlyFields(provider, providerPointer, errors);
 
                 ValidateOptionalEnvironmentVariableName(
@@ -1039,13 +1016,10 @@ public sealed class ConfigurationValidator(
                 // models array here would defeat the automatic availability the kind exists for.
                 if (models.Count == 0)
                 {
-
                     errors.Add(new ConfigurationValidationError(
                         providerPointer,
                         $"Provider '{provider.Name}' has no configured models."));
-
                 }
-
             }
 
             for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
@@ -1080,17 +1054,14 @@ public sealed class ConfigurationValidator(
                 && (!Uri.TryCreate(provider.Endpoint.Trim(), UriKind.Absolute, out Uri? endpointUri)
                     || (endpointUri.Scheme != Uri.UriSchemeHttp && endpointUri.Scheme != Uri.UriSchemeHttps)))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     providerPointer,
                     $"Provider '{provider.Name}' endpoint must be an absolute http or https URI."));
-
             }
 
             if (!string.IsNullOrWhiteSpace(provider.Name)
                 && !seenProviderNames.Add(provider.Name.Trim()))
             {
-
                 // Provider health is keyed by Name (ProviderHealthTracker), and ProviderResolver's
                 // by-name lookups (TryResolveProviderByName, used by embeddings config) return only
                 // the first match — a duplicate name would otherwise silently share health state and
@@ -1098,9 +1069,7 @@ public sealed class ConfigurationValidator(
                 errors.Add(new ConfigurationValidationError(
                     $"{providerPointer}.name",
                     $"Provider name '{provider.Name}' is configured more than once; provider names must be unique."));
-
             }
-
         }
 
         HttpsSettings https = settings.Host?.Https ?? new HttpsSettings();
@@ -1136,12 +1105,10 @@ public sealed class ConfigurationValidator(
             errors);
         if (!string.IsNullOrWhiteSpace(a2a.OutboundCredentialEnvironmentVariable))
         {
-
             AddEnvironmentVariableReference(
                 a2a.OutboundCredentialEnvironmentVariable.Trim(),
                 "integrations.a2A.outboundCredentialEnvironmentVariable",
                 environmentReferences);
-
         }
         ValidateA2A(a2a, errors);
         ValidateWebResearch(webResearch, errors);
@@ -1149,30 +1116,22 @@ public sealed class ConfigurationValidator(
 
         if (!string.IsNullOrWhiteSpace(settings.DefaultModel))
         {
-
             if (!ModelExists(settings, settings.DefaultModel))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     "defaultModel",
                     $"DefaultModel '{settings.DefaultModel}' does not match any configured provider model."));
-
             }
-
         }
 
         if (!string.IsNullOrWhiteSpace(settings.FastModel))
         {
-
             if (!ModelExists(settings, settings.FastModel))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     "fastModel",
                     $"FastModel '{settings.FastModel}' does not match any configured provider model."));
-
             }
-
         }
 
         ValidatePricing(settings.ResolvePricing(), errors);
@@ -1199,16 +1158,13 @@ public sealed class ConfigurationValidator(
 
         if (errors.Count > 0)
         {
-
             return Result.Failure(new Error(
                 "Configuration.ValidationFailed",
                 $"{errors.Count} configuration validation error(s).",
                 errors));
-
         }
 
         return Result.Success();
-
     }
 
     /// <summary>
@@ -1222,40 +1178,32 @@ public sealed class ConfigurationValidator(
         DaemonSettings? daemon,
         List<ConfigurationValidationError> errors)
     {
-
         List<UnseenServantJob> jobs = daemon?.Jobs ?? [];
 
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
         for (int index = 0; index < jobs.Count; index++)
         {
-
             string pointer = $"daemon.jobs[{index}].name";
 
             string? name = jobs[index]?.Name;
 
             if (string.IsNullOrWhiteSpace(name))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     pointer,
                     "Unseen Servant job names must not be blank."));
 
                 continue;
-
             }
 
             if (!seen.Add(name.Trim()))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     pointer,
                     $"Unseen Servant job name '{name.Trim()}' is configured more than once; job names must be unique."));
-
             }
-
         }
-
     }
 
     private static void ValidateCodingTools(
@@ -1724,7 +1672,6 @@ public sealed class ConfigurationValidator(
 
     private void ValidateEventBus(ArcanumSettings settings)
     {
-
         EventBusSettings eventBus = settings.ResolveEventBus();
 
         int maxConnections = ArcanumSettingClamps.MaxSseConnections(eventBus.MaxSseConnections);
@@ -1733,16 +1680,13 @@ public sealed class ConfigurationValidator(
 
         if (maxConnections > 0 && perTypeLimit > maxConnections)
         {
-
             // Not a failure — the global cap triggers first and remains safe, but the per-type
             // cap can never engage, which likely does not match operator intent.
             logger?.LogWarning(
                 "Arcanum:Execution:MaxSseConnectionsPerType ({PerTypeLimit}) exceeds Arcanum:Execution:MaxSseConnections ({MaxConnections}); the global cap will always trigger first, making the per-type cap meaningless.",
                 perTypeLimit,
                 maxConnections);
-
         }
-
     }
 
     /// <summary>
@@ -1752,49 +1696,37 @@ public sealed class ConfigurationValidator(
     /// </summary>
     private static void ValidateEmbeddings(ArcanumSettings settings, List<ConfigurationValidationError> errors)
     {
-
         EmbeddingSettings embeddings = settings.ResolveEmbeddings();
 
         if (embeddings.Enabled)
         {
-
             if (string.IsNullOrWhiteSpace(embeddings.Provider))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     "integrations.embeddings.provider",
                     "Arcanum:Integrations:Embeddings:Provider is required when an embedding-backed feature is enabled."));
-
             }
             else if (!ProviderResolver.TryResolveProviderByName(settings, embeddings.Provider, out ProviderSettings? embeddingProvider)
                 || embeddingProvider is null)
             {
-
                 errors.Add(new ConfigurationValidationError(
                     "integrations.embeddings.provider",
                     $"Arcanum:Integrations:Embeddings:Provider '{embeddings.Provider}' does not match any configured provider."));
-
             }
             else if (embeddingProvider.Type != AiProviderKind.OpenAICompatible)
             {
-
                 errors.Add(new ConfigurationValidationError(
                     "integrations.embeddings.provider",
                     $"Arcanum:Integrations:Embeddings:Provider '{embeddings.Provider}' must be type OpenAICompatible (Ollama embeddings via /v1 with exact model names). A Familiar serves chat completions only and has no embedding surface."));
-
             }
 
             if (string.IsNullOrWhiteSpace(embeddings.Model))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     "integrations.embeddings.model",
                     "Arcanum:Integrations:Embeddings:Model is required when an embedding-backed feature is enabled."));
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -1805,18 +1737,14 @@ public sealed class ConfigurationValidator(
     /// </summary>
     private static void ValidateScrying(ArcanumSettings settings, List<ConfigurationValidationError> errors)
     {
-
         ScryingSettings scrying = settings.ResolveScrying();
 
         if (scrying.Enabled && (scrying.AllowedMimeTypes is null || scrying.AllowedMimeTypes.Length == 0))
         {
-
             errors.Add(new ConfigurationValidationError(
                 "security.allowedImageMimeTypes",
                 "Security.AllowedImageMimeTypes must not be empty when Features.Scrying is true."));
-
         }
-
     }
 
     private static void ValidateReasoningFacts(
@@ -1873,38 +1801,30 @@ public sealed class ConfigurationValidator(
         string providerPointer,
         List<ConfigurationValidationError> errors)
     {
-
         string kind = provider.Type.ToString();
 
         if (!string.IsNullOrWhiteSpace(provider.Endpoint))
         {
-
             errors.Add(new ConfigurationValidationError(
                 $"{providerPointer}.endpoint",
                 $"Provider '{provider.Name}' is a {kind} provider, which is invoked as a local command and has no endpoint. Remove endpoint."));
-
         }
 
         if (!string.IsNullOrWhiteSpace(provider.CredentialEnvironmentVariable))
         {
-
             errors.Add(new ConfigurationValidationError(
                 $"{providerPointer}.credentialEnvironmentVariable",
                 $"Provider '{provider.Name}' is a {kind} provider, which signs in through its own CLI. Arcanum never reads its credentials, so remove credentialEnvironmentVariable and run `{FamiliarProviders.SignInCommand(provider.Type)}` instead."));
-
         }
 
         if (provider.Command is not null && string.IsNullOrWhiteSpace(provider.Command))
         {
-
             errors.Add(new ConfigurationValidationError(
                 $"{providerPointer}.command",
                 $"Provider '{provider.Name}' command must name the {FamiliarProviders.DisplayName(provider.Type)} binary, or be omitted to resolve `{FamiliarProviders.DefaultCommand(provider.Type)}` on PATH."));
-
         }
 
         ValidateHiddenModels(provider, providerPointer, errors);
-
     }
 
     /// <summary>
@@ -1917,25 +1837,19 @@ public sealed class ConfigurationValidator(
         string providerPointer,
         List<ConfigurationValidationError> errors)
     {
-
         if (provider.Command is not null)
         {
-
             errors.Add(new ConfigurationValidationError(
                 $"{providerPointer}.command",
                 $"Provider '{provider.Name}' is an OpenAICompatible provider, which is reached over HTTP rather than spawned. Remove command."));
-
         }
 
         if (provider.HiddenModels is { Length: > 0 })
         {
-
             errors.Add(new ConfigurationValidationError(
                 $"{providerPointer}.hiddenModels",
                 $"Provider '{provider.Name}' is an OpenAICompatible provider, whose models array is already the operator's own list. Remove the models entry instead of hiding it."));
-
         }
-
     }
 
     private static void ValidateHiddenModels(
@@ -1943,40 +1857,32 @@ public sealed class ConfigurationValidator(
         string providerPointer,
         List<ConfigurationValidationError> errors)
     {
-
         string[] hidden = provider.HiddenModels ?? [];
 
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
         for (int i = 0; i < hidden.Length; i++)
         {
-
             string pointer = $"{providerPointer}.hiddenModels[{i}]";
 
             string entry = hidden[i] ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(entry))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     pointer,
                     $"Provider '{provider.Name}' hiddenModels entries must name a model; blank entries hide nothing."));
 
                 continue;
-
             }
 
             if (!seen.Add(entry.Trim()))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     pointer,
                     $"Provider '{provider.Name}' hides '{entry}' more than once; matching is case-insensitive."));
-
             }
-
         }
-
     }
 
     private static void ValidateOptionalEnvironmentVariableName(
@@ -2018,51 +1924,40 @@ public sealed class ConfigurationValidator(
         ConclaveA2ASettings settings,
         List<ConfigurationValidationError> errors)
     {
-
         if (!string.IsNullOrWhiteSpace(settings.ServerPath)
             && settings.ServerPath.Contains("://", StringComparison.Ordinal))
         {
-
             errors.Add(new ConfigurationValidationError(
                 "integrations.a2A.serverPath",
                 "A2A ServerPath must be a path, not an absolute URL. A path outside /api is mounted under it."));
-
         }
 
         string[] allowedRemoteAgents = settings.AllowedRemoteAgents ?? [];
 
         for (int index = 0; index < allowedRemoteAgents.Length; index++)
         {
-
             string entry = allowedRemoteAgents[index];
 
             if (string.IsNullOrWhiteSpace(entry))
             {
-
                 continue;
-
             }
 
             if (!Uri.TryCreate(entry.Trim(), UriKind.Absolute, out Uri? allowed)
                 || (allowed.Scheme != Uri.UriSchemeHttp && allowed.Scheme != Uri.UriSchemeHttps))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     $"integrations.a2A.allowedRemoteAgents[{index}]",
                     $"'{entry}' must be an absolute http or https URL or origin; it can never match a remote agent as written."));
-
             }
-
         }
 
         if (!string.IsNullOrWhiteSpace(settings.OutboundCredentialHeader)
             && settings.OutboundCredentialHeader.AsSpan().ContainsAny(InvalidHeaderNameCharacters))
         {
-
             errors.Add(new ConfigurationValidationError(
                 "integrations.a2A.outboundCredentialHeader",
                 "The outbound credential header name must be a single HTTP token (no whitespace, colons, or separators)."));
-
         }
 
         // A typo here is silent at runtime — callback mode simply falls back to waiting inline — so it is
@@ -2072,12 +1967,10 @@ public sealed class ConfigurationValidator(
             && (!Uri.TryCreate(settings.PushCallbackBaseUrl.Trim(), UriKind.Absolute, out Uri? callbackBase)
                 || (callbackBase.Scheme != Uri.UriSchemeHttp && callbackBase.Scheme != Uri.UriSchemeHttps)))
         {
-
             errors.Add(new ConfigurationValidationError(
                 "integrations.a2A.pushCallbackBaseUrl",
                 "The push callback base URL must be an absolute http or https URL a remote agent can reach, "
                 + "for example https://arcanum.example.com."));
-
         }
 
         ValidateModes(settings.InputModes, "integrations.a2A.inputModes", errors);
@@ -2090,45 +1983,36 @@ public sealed class ConfigurationValidator(
 
         for (int index = 0; index < skills.Length; index++)
         {
-
             A2ASkillSettings skill = skills[index];
 
             if (skill is null)
             {
-
                 errors.Add(new ConfigurationValidationError(
                     $"integrations.a2A.skills[{index}]",
                     "An advertised A2A skill must be a JSON object."));
 
                 continue;
-
             }
 
             if (string.IsNullOrWhiteSpace(skill.Id))
             {
-
                 // A skill with no id is silently dropped from the card, so say so at startup rather than
                 // letting an operator wonder why their declaration never appeared (issue #63).
                 errors.Add(new ConfigurationValidationError(
                     $"integrations.a2A.skills[{index}].id",
                     "An advertised A2A skill requires a non-empty id; peers match on it."));
-
             }
             else if (!seenSkillIds.Add(skill.Id.Trim()))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     $"integrations.a2A.skills[{index}].id",
                     $"Advertised A2A skill id '{skill.Id.Trim()}' is declared more than once."));
-
             }
 
             ValidateModes(skill.InputModes, $"integrations.a2A.skills[{index}].inputModes", errors);
 
             ValidateModes(skill.OutputModes, $"integrations.a2A.skills[{index}].outputModes", errors);
-
         }
-
     }
 
     /// <summary>
@@ -2140,15 +2024,11 @@ public sealed class ConfigurationValidator(
         string path,
         List<ConfigurationValidationError> errors)
     {
-
         foreach (string mode in modes ?? [])
         {
-
             if (string.IsNullOrWhiteSpace(mode))
             {
-
                 continue;
-
             }
 
             string trimmed = mode.Trim();
@@ -2159,15 +2039,11 @@ public sealed class ConfigurationValidator(
                 || slash == trimmed.Length - 1
                 || trimmed.AsSpan().ContainsAny(WhitespaceCharacters))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     path,
                     $"'{mode}' is not a media type; advertised A2A modalities look like 'text/plain'."));
-
             }
-
         }
-
     }
 
     private static readonly System.Buffers.SearchValues<char> InvalidHeaderNameCharacters =
@@ -2242,7 +2118,6 @@ public sealed class ConfigurationValidator(
     /// </summary>
     private static void ValidateHttps(HostSettings host, List<ConfigurationValidationError> errors)
     {
-
         HttpsSettings https = host.Https ?? new HttpsSettings();
 
         ValidateOptionalEnvironmentVariableName(
@@ -2254,83 +2129,64 @@ public sealed class ConfigurationValidator(
 
         if (listenAny && !https.Enabled)
         {
-
             errors.Add(new ConfigurationValidationError(
                 "host.https.enabled",
                 "Host.Https.Enabled must be true when Host.ListenAny or ARCANUM_HOST_ANY is enabled; plaintext any-IP HTTP is not permitted."));
 
             return;
-
         }
 
         if (!https.Enabled)
         {
-
             return;
-
         }
 
         if (string.IsNullOrWhiteSpace(https.CertificatePath))
         {
-
             errors.Add(new ConfigurationValidationError(
                 "host.https.certificatePath",
                 "Host.Https.CertificatePath is required when Host.Https.Enabled is true."));
-
         }
 
         if (https.Port != ArcanumSettingClamps.HostHttpsPort(https.Port))
         {
-
             errors.Add(new ConfigurationValidationError(
                 "host.https.port",
                 $"Host.Https.Port ({https.Port}) must be within the 1-65535 clamp range."));
-
         }
 
         if (https.Port == ArcanumSettingClamps.HostPort(host.Port))
         {
-
             errors.Add(new ConfigurationValidationError(
                 "host.https.port",
                 $"Host.Https.Port ({https.Port}) must differ from Host.Port ({ArcanumSettingClamps.HostPort(host.Port)}); the HTTP and HTTPS listeners cannot share a port."));
-
         }
 
         if (string.IsNullOrWhiteSpace(https.CertificatePath))
         {
-
             return;
-
         }
 
         string? resolvedCertificatePath = HttpsCertificatePathResolver.Resolve(https.CertificatePath);
 
         if (!string.IsNullOrWhiteSpace(resolvedCertificatePath) && !File.Exists(resolvedCertificatePath))
         {
-
             errors.Add(new ConfigurationValidationError(
                 "host.https.certificatePath",
                 $"Host.Https.CertificatePath '{https.CertificatePath}' does not exist or is not a file."));
-
         }
 
         if (!string.IsNullOrWhiteSpace(https.PrivateKeyPath))
         {
-
             string? resolvedKeyPath = HttpsCertificatePathResolver.Resolve(https.PrivateKeyPath);
 
             if (!string.IsNullOrWhiteSpace(resolvedKeyPath) && !File.Exists(resolvedKeyPath))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     "host.https.privateKeyPath",
                     $"Host.Https.PrivateKeyPath '{https.PrivateKeyPath}' does not exist or is not a file."));
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -2346,35 +2202,25 @@ public sealed class ConfigurationValidator(
     /// </remarks>
     private static bool ModelExists(ArcanumSettings settings, string model)
     {
-
         ProviderSettings[] providers = settings.Providers ?? [];
 
         for (int i = 0; i < providers.Length; i++)
         {
-
             if (FamiliarProviders.IsFamiliar(providers[i]))
             {
-
                 return true;
-
             }
 
             foreach (string configured in ProviderResolver.EnumerateAdvertisedModels(providers[i]))
             {
-
                 if (ProviderResolver.ModelNameMatches(configured, model))
                 {
-
                     return true;
-
                 }
-
             }
-
         }
 
         return false;
-
     }
 
     private static void ValidatePathAllowlist(
@@ -2382,38 +2228,28 @@ public sealed class ConfigurationValidator(
         string pointer,
         List<ConfigurationValidationError> errors)
     {
-
         foreach (string root in roots ?? [])
         {
-
             if (string.IsNullOrWhiteSpace(root))
             {
-
                 errors.Add(new ConfigurationValidationError(pointer, $"Path allowlist entry must not be empty."));
 
                 continue;
-
             }
 
             if (!Path.IsPathRooted(root))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     pointer,
                     $"Path allowlist entry '{root}' must be an absolute path."));
-
             }
             else if (!Directory.Exists(root))
             {
-
                 errors.Add(new ConfigurationValidationError(
                     pointer,
                     $"Path allowlist entry '{root}' does not exist or is not a directory."));
-
             }
-
         }
-
     }
 
     private static void ValidateHostWorkspace(
@@ -2421,10 +2257,8 @@ public sealed class ConfigurationValidator(
         string pointer,
         List<ConfigurationValidationError> errors)
     {
-
         if (string.IsNullOrWhiteSpace(workspace))
         {
-
             return;
         }
 
@@ -2432,13 +2266,9 @@ public sealed class ConfigurationValidator(
 
         if (!Directory.Exists(rooted))
         {
-
             errors.Add(new ConfigurationValidationError(
                 pointer,
                 $"Host workspace '{workspace}' does not exist or is not a directory."));
-
         }
-
     }
-
 }

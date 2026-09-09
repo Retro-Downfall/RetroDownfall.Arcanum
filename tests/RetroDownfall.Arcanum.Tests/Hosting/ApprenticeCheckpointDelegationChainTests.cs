@@ -47,6 +47,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
         Assert.Equal(InboundChain, ChainOf(repo.Get(apprenticeId)));
     }
+
     [Fact]
     public async Task CompleteStepAsync_PreservesDelegationChain()
     {
@@ -60,6 +61,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
         Assert.Equal(InboundChain, ChainOf(repo.Get(apprenticeId)));
     }
+
     /// <summary>
     /// The general contract behind the chain loss: a rewrite forwards every member it does not deliberately
     /// change. Reflecting over the record instead of naming members means a property added to
@@ -104,6 +106,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         {
             Assert.Contains(properties, property => property.Name == name);
         }
+
         foreach (PropertyInfo property in properties.Where(p => !deliberatelyChanged.Contains(p.Name)))
         {
             Assert.True(
@@ -111,6 +114,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
                 $"CompleteStepAsync dropped ApprenticeCheckpoint.{property.Name}.");
         }
     }
+
     [Fact]
     public async Task EscalateAsync_PreservesDelegationChain()
     {
@@ -143,6 +147,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
         Assert.Equal(InboundChain, ChainOf(repo.Get(apprenticeId)));
     }
+
     [Fact]
     public async Task ResumeCrashRecoveryAsync_PreservesDelegationChainWhileEscalatingInterruptedPlanning()
     {
@@ -169,113 +174,60 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
         Assert.Equal(InboundChain, ChainOf(persisted));
     }
+
     /// <summary>
-    /// A locally cast child of a delegated Apprentice inherits the caller's chain. <c>cast_sending</c>
-    /// builds its <c>ConclaveCastRequest</c> without one, so this stamping pass is where the lineage the
-    /// peer needs for <c>ContainsSelf</c> is attached — exactly as it already attaches ParentApprenticeId.
+    /// A locally cast child of a delegated Apprentice receives the caller's lineage atomically with
+    /// creation, before any later launch or settlement can observe it.
     /// </summary>
     [Fact]
-    public async Task StampCastSendingsAsync_GivesTheChildTheParentDelegationChain()
+    public async Task CastAsync_PersistsTheParentDelegationChainAtCreation()
     {
         Guid parentId = Guid.NewGuid();
 
-        Guid childId = Guid.NewGuid();
+        RecordingApprenticeRepository repo = new();
+        ConclaveArchmage archmage = CreateArchmage(repo);
 
-        Apprentice parent = DelegatedApprentice(parentId, ApprenticeStatus.Running);
+        Result<Apprentice> cast = await archmage.CastAsync(new ConclaveCastRequest(
+            Goal: "locally cast child",
+            Name: "child",
+            WorkspacePath: "/tmp/arcanum-test",
+            ParentApprenticeId: parentId,
+            DelegationChain: InboundChain,
+            LaunchRequested: true));
 
-        Apprentice child = new()
-        {
-            Id = childId,
-            Name = "child",
-            Goal = "locally cast child",
-            WorkspacePath = "/tmp/arcanum-test",
-            Status = ApprenticeStatus.Idle.ToString(),
-            Plan = "[]",
-            CurrentStep = 0,
-            SessionId = Guid.NewGuid(),
-        };
-        RecordingApprenticeRepository repo = new(parent, child);
+        Assert.True(cast.IsSuccess, cast.Error.Message);
 
-        ApprenticeService service = CreateService(repo, apprenticesEnabled: false);
-
-        Task task = InvokeStampCastSendingsAsync(service, repo, parentId, childId);
-
-        await task.WaitAsync(TimeSpan.FromSeconds(15));
-
-        Apprentice persisted = repo.Get(childId);
+        Apprentice persisted = repo.Get(cast.Value.Id);
 
         Assert.Equal(parentId, persisted.ParentApprenticeId);
 
         Assert.Equal(InboundChain, ChainOf(persisted));
+
+        Assert.True(ApprenticeRepository.DeserializeCheckpoint(persisted.CheckpointData)?.LaunchRequested);
     }
+
     /// <summary>
     /// A child cast by an Apprentice that is not itself delegated stays purely local: no chain is
     /// invented, so a later dispatch is not refused by a peer that never saw this work.
     /// </summary>
     [Fact]
-    public async Task StampCastSendingsAsync_LeavesTheChildChainEmptyForPurelyLocalWork()
+    public async Task CastAsync_LeavesTheChildChainEmptyForPurelyLocalWork()
     {
         Guid parentId = Guid.NewGuid();
+        RecordingApprenticeRepository repo = new();
+        ConclaveArchmage archmage = CreateArchmage(repo);
 
-        Guid childId = Guid.NewGuid();
+        Result<Apprentice> cast = await archmage.CastAsync(new ConclaveCastRequest(
+            Goal: "locally cast child",
+            Name: "local-child",
+            WorkspacePath: "/tmp/arcanum-test",
+            ParentApprenticeId: parentId,
+            LaunchRequested: true));
 
-        Apprentice parent = new()
-        {
-            Id = parentId,
-            Name = "local-parent",
-            Goal = "purely local work",
-            WorkspacePath = "/tmp/arcanum-test",
-            Status = ApprenticeStatus.Running.ToString(),
-            Plan = "[]",
-            CurrentStep = 0,
-            SessionId = Guid.NewGuid(),
-        };
-        Apprentice child = new()
-        {
-            Id = childId,
-            Name = "local-child",
-            Goal = "locally cast child",
-            WorkspacePath = "/tmp/arcanum-test",
-            Status = ApprenticeStatus.Idle.ToString(),
-            Plan = "[]",
-            CurrentStep = 0,
-            SessionId = Guid.NewGuid(),
-        };
-        RecordingApprenticeRepository repo = new(parent, child);
-
-        ApprenticeService service = CreateService(repo, apprenticesEnabled: false);
-
-        Task task = InvokeStampCastSendingsAsync(service, repo, parentId, childId);
-
-        await task.WaitAsync(TimeSpan.FromSeconds(15));
-
-        Assert.Null(ChainOf(repo.Get(childId)));
+        Assert.True(cast.IsSuccess, cast.Error.Message);
+        Assert.Null(ChainOf(repo.Get(cast.Value.Id)));
     }
-    /// <summary>
-    /// Stamping happens before the child is started, so the Apprentice feature is left off: the start
-    /// attempt then fails fast instead of launching a background execution task that would rewrite the
-    /// very checkpoint under assertion.
-    /// </summary>
-    private static Task InvokeStampCastSendingsAsync(
-        ApprenticeService service,
-        IApprenticeRepository repo,
-        Guid parentId,
-        Guid childId)
-    {
-        MethodInfo? method = typeof(ApprenticeService)
-            .GetMethod("StampCastSendingsAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
-        Assert.NotNull(method);
-
-        return (Task)method!.Invoke(
-            service,
-            [
-                repo,
-                parentId,
-                new List<Guid> { childId },
-                CancellationToken.None,
-            ])!;
-    }
     private static async Task InvokeCompleteStepAsync(
         ApprenticeService service,
         IApprenticeRepository repo,
@@ -302,6 +254,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
         await task.WaitAsync(TimeSpan.FromSeconds(15));
     }
+
     private static bool ValuesMatch(object? seeded, object? rewritten)
     {
         if (seeded is System.Collections.IEnumerable left and not string
@@ -309,8 +262,10 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         {
             return left.Cast<object>().SequenceEqual(right.Cast<object>());
         }
+
         return Equals(seeded, rewritten);
     }
+
     private static IReadOnlyList<string>? ChainOf(Apprentice apprentice) =>
         ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData)?.DelegationChain;
 
@@ -359,6 +314,15 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             NullLogger<ApprenticeService>.Instance,
             new GrimoireConnectionAdmissionGate(TimeProvider.System));
     }
+
+    private static ConclaveArchmage CreateArchmage(IApprenticeRepository repository) =>
+        new(
+            repository,
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
+            {
+                Features = new FeatureSettings { Conclave = true },
+            }));
+
     private sealed class RecordingApprenticeRepository : IApprenticeRepository
     {
         private readonly Dictionary<Guid, Apprentice> _store = new();
@@ -370,6 +334,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
                 _store[apprentice.Id] = apprentice;
             }
         }
+
         public Apprentice Get(Guid id) => _store[id];
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
@@ -378,6 +343,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
             return Task.FromResult(apprentice);
         }
+
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(_store.TryGetValue(id, out Apprentice? found) ? found : null);
 
@@ -387,6 +353,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
             return Task.FromResult(apprentice);
         }
+
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
 
@@ -400,6 +367,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
             return Task.FromResult(interrupted);
         }
+
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(_store.Remove(id));
 

@@ -245,12 +245,9 @@ public static class ApiBootstrapper
     /// </summary>
     private static bool IsMetricsRequireApiKeyEffective(IConfiguration configuration)
     {
-
         if (ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(configuration)))
         {
-
             return true;
-
         }
 
         string? configured =
@@ -258,13 +255,10 @@ public static class ApiBootstrapper
 
         if (string.IsNullOrEmpty(configured))
         {
-
             return true;
-
         }
 
         return !bool.TryParse(configured, out bool parsed) || parsed;
-
     }
 
     private static string[] ReadCorsAllowedOriginsFromConfiguration(IConfiguration configuration)
@@ -295,7 +289,6 @@ public static class ApiBootstrapper
 
     public static IServiceCollection AddArcanumApiServices(this IServiceCollection services, IConfiguration configuration)
     {
-
         services.AddExceptionHandler<ArcanumExceptionHandler>();
 
         services.AddProblemDetails();
@@ -316,6 +309,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<ApiKeyAuthenticator>();
 
+        services.AddSingleton<ArcanumProcessCapabilityService>();
+
         services.AddSingleton<ApiKeyEndpointFilter>();
 
         services.AddCors(options =>
@@ -333,11 +328,9 @@ public static class ApiBootstrapper
 
                     if (wildcard && listenAny)
                     {
-
                         origins = DefaultCorsAllowedOrigins;
 
                         wildcard = false;
-
                     }
 
                     if (wildcard)
@@ -511,9 +504,7 @@ public static class ApiBootstrapper
     /// </summary>
     public static void UseArcanumExceptionHandler(this WebApplication app)
     {
-
         app.UseExceptionHandler();
-
     }
 
     /// <summary>
@@ -524,9 +515,7 @@ public static class ApiBootstrapper
     /// </summary>
     public static void UseArcanumResponseCompression(this WebApplication app)
     {
-
         app.UseResponseCompression();
-
     }
 
     /// <summary>
@@ -586,29 +575,23 @@ public static class ApiBootstrapper
     {
         app.Use(async (HttpContext context, Func<Task> next) =>
         {
-
             if (context.Request.Path.StartsWithSegments("/metrics"))
             {
-
                 await next().ConfigureAwait(false);
 
                 return;
-
             }
 
             bool completed = false;
 
             try
             {
-
                 await next().ConfigureAwait(false);
 
                 completed = true;
-
             }
             finally
             {
-
                 string routeLabel = (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText
                     ?? UnmatchedRouteMetricLabel;
 
@@ -621,9 +604,7 @@ public static class ApiBootstrapper
                     new KeyValuePair<string, object?>("endpoint", routeLabel),
                     new KeyValuePair<string, object?>("method", ResolveMethodMetricLabel(context.Request.Method)),
                     new KeyValuePair<string, object?>("status_code", statusCode.ToString(CultureInfo.InvariantCulture)));
-
             }
-
         });
     }
 
@@ -643,60 +624,46 @@ public static class ApiBootstrapper
     {
         app.Use(static async (HttpContext context, Func<Task> next) =>
         {
-
             if (context.GetEndpoint()?.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is null)
             {
-
                 if (await HideRecoveryIneligibleAnonymousRouteAsync(context).ConfigureAwait(false))
                 {
-
                     return;
-
                 }
 
                 if (!TryAdmitGrimoireRequest(context))
                 {
-
                     _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
 
                     return;
-
                 }
 
                 if (context.GetEndpoint()?.Metadata
                         .GetMetadata<InstallationResetRecoveryBlockedRouteMetadata>() is not null
                     && await ApplyInstallationResetRecoveryAdmissionAsync(context).ConfigureAwait(false))
                 {
-
                     return;
-
                 }
 
                 await ContinueWithMaintenanceRefusalAsync(context, next).ConfigureAwait(false);
 
                 return;
-
             }
 
             ApiKeyAuthenticator authenticator = context.RequestServices.GetRequiredService<ApiKeyAuthenticator>();
 
             if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
             {
-
                 if (!TryAdmitGrimoireRequest(context))
                 {
-
                     _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
 
                     return;
-
                 }
 
                 if (await ApplyInstallationResetRecoveryAdmissionAsync(context).ConfigureAwait(false))
                 {
-
                     return;
-
                 }
 
                 // Authentication stays first, so a wrong key plus a malformed context policy is a
@@ -704,34 +671,27 @@ public static class ApiBootstrapper
                 // reached a real route and that their header spelling was the only problem.
                 if (await ApplyCovenantPreBindingPolicyAsync(context).ConfigureAwait(false))
                 {
-
                     return;
-
                 }
 
                 await ContinueWithMaintenanceRefusalAsync(context, next).ConfigureAwait(false);
 
                 return;
-
             }
 
             await ApiKeyAuthenticator.Unauthorized(context).ExecuteAsync(context).ConfigureAwait(false);
-
         });
     }
 
     private static async Task<bool> HideRecoveryIneligibleAnonymousRouteAsync(
         HttpContext context)
     {
-
         if (context.GetEndpoint()?.Metadata
                 .GetMetadata<InstallationResetRecoveryHiddenRouteMetadata>() is null
             || context.RequestServices.GetService<InstallationResetApiAdmission>()?
                 .ActiveRecovery is null)
         {
-
             return false;
-
         }
 
         context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -739,7 +699,6 @@ public static class ApiBootstrapper
         await context.Response.CompleteAsync().ConfigureAwait(false);
 
         return true;
-
     }
 
     /// <summary>
@@ -763,20 +722,14 @@ public static class ApiBootstrapper
     /// </remarks>
     private static async Task ContinueWithMaintenanceRefusalAsync(HttpContext context, Func<Task> next)
     {
-
         try
         {
-
             await next().ConfigureAwait(false);
-
         }
         catch (GrimoireMaintenanceUnavailableException)
         {
-
             _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -821,32 +774,25 @@ public static class ApiBootstrapper
     /// </remarks>
     private static bool TryAdmitGrimoireRequest(HttpContext context)
     {
-
         if (context.GetEndpoint() is not RouteEndpoint endpoint
             || endpoint.Metadata.GetMetadata<GrimoireAdmissionExemptRouteMetadata>() is not null)
         {
-
             return true;
-
         }
 
         if (!context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
             && !context.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         if (context.RequestServices.GetService<GrimoireRequestAdmissionScope>() is not { } admission)
         {
-
             // A host that maps these endpoints without the Arcanum infrastructure stack has no
             // Grimoire, so there is no admission to take and nothing for a refusal to protect. The
             // two stages below answer an absent service exactly this way. That the composed host does
             // register it is a composition contract, held by its own test rather than by a throw here.
             return true;
-
         }
 
         // The kind comes from the route's own marker rather than from its path, so a route that moves
@@ -860,7 +806,6 @@ public static class ApiBootstrapper
                 { Class: GrimoireStreamClass.GrimoireQuiesceableStream }
                 ? GrimoireRequestKind.QuiesceableStream
                 : GrimoireRequestKind.Finite);
-
     }
 
     /// <summary>
@@ -870,13 +815,10 @@ public static class ApiBootstrapper
     private static async Task<bool> ApplyInstallationResetRecoveryAdmissionAsync(
         HttpContext context)
     {
-
         if (context.RequestServices.GetService<InstallationResetApiAdmission>()?
                 .ActiveRecovery is null)
         {
-
             return false;
-
         }
 
         InstallationResetRecoveryApiRouteMetadata? admitted = context.GetEndpoint()?.Metadata
@@ -888,9 +830,7 @@ public static class ApiBootstrapper
                 admitted.Method,
                 StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         const string Message =
@@ -902,7 +842,6 @@ public static class ApiBootstrapper
                 "/v1",
                 StringComparison.OrdinalIgnoreCase))
         {
-
             blocked = Results.Json(
                 new OpenAiErrorResponse(
                     new OpenAiErrorDetail(
@@ -912,11 +851,9 @@ public static class ApiBootstrapper
                         Code: "installation_reset_in_progress")),
                 ArcanumJsonContext.Default.OpenAiErrorResponse,
                 statusCode: StatusCodes.Status409Conflict);
-
         }
         else
         {
-
             blocked = Results.Json(
                 ApiResponse<string>.FromResult(
                     Result<string>.Failure(
@@ -924,13 +861,11 @@ public static class ApiBootstrapper
                     context.TraceIdentifier),
                 ArcanumJsonContext.Default.ApiResponseString,
                 statusCode: StatusCodes.Status409Conflict);
-
         }
 
         await blocked.ExecuteAsync(context).ConfigureAwait(false);
 
         return true;
-
     }
 
     /// <summary>
@@ -952,7 +887,6 @@ public static class ApiBootstrapper
     /// </remarks>
     private static async Task<bool> ApplyCovenantPreBindingPolicyAsync(HttpContext context)
     {
-
         Endpoint? endpoint = context.GetEndpoint();
 
         bool allowsContext =
@@ -962,19 +896,16 @@ public static class ApiBootstrapper
 
         if (policy.IsFailure)
         {
-
             await CovenantAuthorityRefusal
                 .InvalidContextPolicy(context, policy.Error)
                 .ExecuteAsync(context)
                 .ConfigureAwait(false);
 
             return true;
-
         }
 
         if (policy.Value is CovenantContextPolicy.None && !allowsContext)
         {
-
             await CovenantAuthorityRefusal
                 .InvalidContextPolicy(
                     context,
@@ -985,28 +916,23 @@ public static class ApiBootstrapper
                 .ConfigureAwait(false);
 
             return true;
-
         }
 
         CovenantRequestFeatures.RecordContextPolicy(context, policy.Value);
 
         if (policy.Value is CovenantContextPolicy.None)
         {
-
             // Echoed so a client can confirm the policy the server actually applied rather than
             // assuming its header was understood. It is exposed through CORS for the same reason.
             context.Response.Headers[ArcanumApiHeaders.ContextPolicy] = "none";
-
         }
 
         if (endpoint?.Metadata.GetMetadata<CovenantAuthorityRequirementMetadata>() is not
             { } requirementMetadata)
         {
-
             IssueConditionalSensitivityPurgeAuthority(context, endpoint);
 
             return false;
-
         }
 
         IOperatorAuthorityContextIssuer? issuer =
@@ -1014,19 +940,16 @@ public static class ApiBootstrapper
 
         if (issuer is null)
         {
-
             // A host composed without the Covenant authority stack cannot mint a context, and a
             // route that declared a requirement must not run without one. The filter refuses on the
             // absent feature; nothing here invents authority to fill the gap.
             return false;
-
         }
 
         Result<OperatorAuthorityContext> issued = issuer.Issue(requirementMetadata.Requirement);
 
         if (issued.IsFailure)
         {
-
             CovenantRequestFeatures.MarkProtectedResponse(context);
 
             await new CovenantUnavailableAuthorityResult(issued.Error)
@@ -1034,7 +957,6 @@ public static class ApiBootstrapper
                 .ConfigureAwait(false);
 
             return true;
-
         }
 
         CovenantRequestFeatures.MarkProtectedResponse(context);
@@ -1047,7 +969,6 @@ public static class ApiBootstrapper
                 issued.Value.AuthorityEpoch));
 
         return false;
-
     }
 
     /// <summary>
@@ -1065,19 +986,14 @@ public static class ApiBootstrapper
     /// </remarks>
     private static void IssueConditionalSensitivityPurgeAuthority(HttpContext context, Endpoint? endpoint)
     {
-
         if (endpoint?.Metadata.GetMetadata<CovenantConditionalSensitivityPurgeMetadata>() is null)
         {
-
             return;
-
         }
 
         if (context.RequestServices.GetService<IOperatorAuthorityContextIssuer>() is not { } issuer)
         {
-
             return;
-
         }
 
         Result<OperatorAuthorityContext> issued =
@@ -1085,9 +1001,7 @@ public static class ApiBootstrapper
 
         if (issued.IsFailure)
         {
-
             return;
-
         }
 
         CovenantRequestFeatures.MarkProtectedResponse(context);
@@ -1098,15 +1012,12 @@ public static class ApiBootstrapper
                 issued.Value,
                 CovenantAuthorityRequirement.SensitivityRetentionPurge,
                 issued.Value.AuthorityEpoch));
-
     }
 
     private sealed class CovenantUnavailableAuthorityResult(Error error) : IResult
     {
-
         public async Task ExecuteAsync(HttpContext httpContext)
         {
-
             CovenantProtectedResponseHeaders.Apply(httpContext.Response);
 
             httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(error.Code);
@@ -1122,9 +1033,7 @@ public static class ApiBootstrapper
                     ArcanumJsonContext.Default.ApiResponseBoolean,
                     httpContext.RequestAborted)
                 .ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -1154,6 +1063,13 @@ public static class ApiBootstrapper
         app.UseArcanumApiKeyAuthentication();
 
         bool rateLimitEnabled = IsRateLimitEnabled(app.Configuration);
+
+        RouteHandlerBuilder presence = app.MapArcanumPresenceEndpoint();
+
+        if (rateLimitEnabled)
+        {
+            presence.RequireRateLimiting(ArcanumRateLimiterPolicyName);
+        }
 
         RouteGroupBuilder openAiV1 = app
             .MapGroup("/v1")
@@ -1197,16 +1113,12 @@ public static class ApiBootstrapper
 
         if (IsMetricsRequireApiKeyEffective(app.Configuration))
         {
-
             metrics.RequireArcanumApiKey();
 
             if (rateLimitEnabled)
             {
-
                 metrics.RequireRateLimiting(ArcanumRateLimiterPolicyName);
-
             }
-
         }
 
         apiGroup.MapOpenApi();
@@ -1345,5 +1257,4 @@ public static class ApiBootstrapper
 
         apiGroup.MapDaemonEndpoints();
     }
-
 }

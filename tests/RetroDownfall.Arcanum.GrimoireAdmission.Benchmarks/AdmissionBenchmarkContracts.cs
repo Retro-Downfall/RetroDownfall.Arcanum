@@ -4,7 +4,6 @@ namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 internal static class AdmissionBenchmarkOperations
 {
-
     internal static readonly string[] All =
     [
         "request.finite",
@@ -19,7 +18,6 @@ internal static class AdmissionBenchmarkOperations
     ];
 
     internal static bool IsDirect(string operation) => operation != "ef.pooled";
-
 }
 
 internal sealed record AdmissionBenchmarkConcurrency(string Id, int Workers);
@@ -35,7 +33,6 @@ internal sealed record AdmissionBenchmarkProfile(
 
 internal static class AdmissionBenchmarkExpected
 {
-
     internal static long OperationCount(AdmissionBenchmarkProfile profile) =>
         checked((long)profile.WarmupIterations
             + ((long)profile.LatencySampleCount * profile.LatencyBundleSize)
@@ -46,21 +43,17 @@ internal static class AdmissionBenchmarkExpected
         string operation,
         int workers)
     {
-
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(workers);
 
         if (operation != "ordinary.mixed")
         {
-
             return checked(OperationCount(profile) * Contribution(operation));
-
         }
 
         return checked(
             PhaseChecksum(profile.MixedSchedule, profile.WarmupIterations, 1, workers)
             + PhaseChecksum(profile.MixedSchedule, profile.LatencySampleCount, profile.LatencyBundleSize, workers)
             + PhaseChecksum(profile.MixedSchedule, profile.ThroughputIterations, 1, workers));
-
     }
 
     private static long PhaseChecksum(
@@ -69,12 +62,10 @@ internal static class AdmissionBenchmarkExpected
         int bundleSize,
         int workers)
     {
-
         long total = 0;
 
         for (int worker = 0; worker < workers; worker++)
         {
-
             int units = totalUnits / workers + (worker < totalUnits % workers ? 1 : 0);
 
             long operationCount = checked((long)units * bundleSize);
@@ -89,15 +80,11 @@ internal static class AdmissionBenchmarkExpected
 
             for (int index = 0; index < remainder; index++)
             {
-
                 total = checked(total + Contribution(schedule[(worker + index) % schedule.Count]));
-
             }
-
         }
 
         return total;
-
     }
 
     private static int Contribution(string operation) => operation switch
@@ -112,7 +99,6 @@ internal static class AdmissionBenchmarkExpected
         "ef.pooled" => 1,
         _ => throw new InvalidDataException($"Unsupported benchmark operation '{operation}'."),
     };
-
 }
 
 internal sealed record AdmissionBenchmarkThresholds(
@@ -215,9 +201,7 @@ internal sealed record AdmissionBenchmarkRevisionRun(
     AdmissionBenchmarkFinalState FinalState,
     int ExitCode)
 {
-
     public AdmissionBenchmarkHistoricalChurnResult[] HistoricalChurn { get; init; } = [];
-
 }
 
 internal sealed record AdmissionBenchmarkPair(

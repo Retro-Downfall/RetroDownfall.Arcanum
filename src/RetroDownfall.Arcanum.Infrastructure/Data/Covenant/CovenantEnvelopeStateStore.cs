@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -20,7 +21,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal static class CovenantEnvelopeStateStore
 {
-
     /// <summary>
     /// Reads the canonical envelope-key identity, or <see langword="null"/> when no state row exists.
     /// </summary>
@@ -29,7 +29,6 @@ internal static class CovenantEnvelopeStateStore
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -58,10 +57,8 @@ internal static class CovenantEnvelopeStateStore
             || reader.GetValue(2) is not byte[] fingerprint
             || fingerprint.Length != 32)
         {
-
             throw new InvalidOperationException(
                 "Covenant canonical envelope state is malformed; the capability fails closed rather than reseeding it.");
-
         }
 
         return new CovenantEnvelopeStateRow(
@@ -69,7 +66,6 @@ internal static class CovenantEnvelopeStateStore
             checked((uint)reader.GetInt64(1)),
             fingerprint,
             reader.GetInt64(3));
-
     }
 
     /// <summary>
@@ -90,7 +86,6 @@ internal static class CovenantEnvelopeStateStore
         DateTimeOffset updatedAtUtc,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -134,7 +129,7 @@ internal static class CovenantEnvelopeStateStore
 
         _ = command.Parameters.AddWithValue(
             "$updatedAtUtc",
-            updatedAtUtc.ToString("o", System.Globalization.CultureInfo.InvariantCulture));
+            UtcInstantText.Format(updatedAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -144,9 +139,7 @@ internal static class CovenantEnvelopeStateStore
             MasterKeyFingerprint = currentMasterKeyFingerprint,
             EnvelopeKeyEpoch = nextEpoch,
         };
-
     }
-
 }
 
 /// <summary>

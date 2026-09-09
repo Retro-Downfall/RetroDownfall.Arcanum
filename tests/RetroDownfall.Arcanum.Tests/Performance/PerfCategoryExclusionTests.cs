@@ -8,13 +8,11 @@ namespace RetroDownfall.Arcanum.Tests.Performance;
 /// </summary>
 public sealed class PerfCategoryExclusionTests
 {
-
     private const string PerfCategory = "Perf";
 
     [Fact]
     public void Coverage_run_excludes_the_perf_category()
     {
-
         string script = File.ReadAllText(
             Path.Combine(FindRepositoryRoot(), "scripts", "coverage.sh"));
 
@@ -22,7 +20,6 @@ public sealed class PerfCategoryExclusionTests
             "Category!=Perf",
             script,
             StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -34,7 +31,6 @@ public sealed class PerfCategoryExclusionTests
     [Fact]
     public void Ci_test_lanes_cannot_select_the_perf_category()
     {
-
         string workflow = File
             .ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "ci.yml"))
             .Replace("\r\n", "\n", StringComparison.Ordinal)
@@ -45,23 +41,18 @@ public sealed class PerfCategoryExclusionTests
 
         foreach (string line in workflow.Split('\n'))
         {
-
             int start = line.IndexOf("dotnet test", StringComparison.Ordinal);
 
             if (start < 0)
             {
-
                 continue;
-
             }
 
             string command = line[start..];
 
             if (!command.Contains("RetroDownfall.Arcanum.Tests.csproj", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             // Either the category is excluded outright, or the lane names the tests it wants — an
@@ -69,13 +60,10 @@ public sealed class PerfCategoryExclusionTests
             if (command.Contains($"Category!={PerfCategory}", StringComparison.Ordinal)
                 || command.Contains("FullyQualifiedName~", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             offenders.Add(command.Trim());
-
         }
 
         Assert.True(
@@ -85,13 +73,11 @@ public sealed class PerfCategoryExclusionTests
             + $"--filter \"Category!={PerfCategory}\":"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     [Fact]
     public void Every_perf_namespace_test_class_carries_the_perf_category()
     {
-
         IEnumerable<Type> candidates = typeof(PerfCategoryExclusionTests).Assembly
             .GetTypes()
             .Where(static type =>
@@ -101,14 +87,11 @@ public sealed class PerfCategoryExclusionTests
 
         foreach (Type candidate in candidates)
         {
-
             Assert.True(
                 HasPerfCategory(candidate),
                 $"{candidate.Name} runs wall-clock assertions but is missing "
                     + $"[Trait(\"Category\", \"{PerfCategory}\")], so the coverage run cannot exclude it.");
-
         }
-
     }
 
     private static bool HasTestMethods(Type type) =>
@@ -127,27 +110,6 @@ public sealed class PerfCategoryExclusionTests
                 && attribute.ConstructorArguments[0].Value as string == "Category"
                 && attribute.ConstructorArguments[1].Value as string == PerfCategory);
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

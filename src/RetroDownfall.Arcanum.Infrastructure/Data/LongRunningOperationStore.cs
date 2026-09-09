@@ -114,7 +114,7 @@ internal sealed class LongRunningOperationStore(
                 Add(cmd, "@inference", FormatReferenceNullable(request.InferenceRunId));
                 Add(cmd, "@reservation", FormatNullable(request.BudgetReservationId));
                 Add(cmd, "@claim", FormatNullable(request.IdempotencyClaimId));
-                Add(cmd, "@created", Format(request.CreatedAt));
+                _ = UtcInstantSql.AddParameter(cmd, "@created", request.CreatedAt);
                 Add(cmd, "@summary", summary);
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -153,7 +153,6 @@ internal sealed class LongRunningOperationStore(
         LongRunningOperationRequestIdentity identity,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(identity);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Kind);
@@ -162,29 +161,23 @@ internal sealed class LongRunningOperationStore(
 
         if (identity.RequestedOperationId == Guid.Empty)
         {
-
             throw new ArgumentException(
                 "A requested operation identity cannot be empty; an empty name would collide with every other empty one.",
                 nameof(identity));
-
         }
 
         if (!identity.ApplyRequestDigest.IsValid || !identity.EffectDigest.IsValid)
         {
-
             throw new ArgumentException(
                 "A requested operation identity carries a complete apply-request digest and effect digest.",
                 nameof(identity));
-
         }
 
         if (!LongRunningOperationPolicyCatalog.IsRegistered(request.Kind, request.RecoveryPolicy))
         {
-
             throw new ArgumentException(
                 $"Operation kind '{request.Kind}' is not registered with recovery policy '{request.RecoveryPolicy}'.",
                 nameof(request));
-
         }
 
         string kind = Bound(request.Kind, MaxKindLength);
@@ -194,7 +187,6 @@ internal sealed class LongRunningOperationStore(
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // BEGIN IMMEDIATE: the lookup and the two inserts have to be one write transaction,
@@ -210,7 +202,6 @@ internal sealed class LongRunningOperationStore(
 
                 await using (DbCommand lookup = connection.CreateCommand())
                 {
-
                     lookup.Transaction = transaction;
 
                     lookup.CommandText =
@@ -229,18 +220,14 @@ internal sealed class LongRunningOperationStore(
 
                     if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
-
                         existingOperationId = ParseGuid(reader.GetString(0));
 
                         existingDigest = (byte[])reader.GetValue(1);
-
                     }
-
                 }
 
                 if (existingOperationId is { } resolved)
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     // A different digest under the same name means the caller changed what it was
@@ -251,11 +238,9 @@ internal sealed class LongRunningOperationStore(
                             identity.ApplyRequestDigest.Bytes,
                             existingDigest))
                     {
-
                         return new LongRunningOperationRequestIdentityResult(
                             LongRunningOperationRequestIdentityOutcome.DigestConflict,
                             Operation: null);
-
                     }
 
                     LongRunningOperation? replayed = await GetAsync(resolved, cancellationToken).ConfigureAwait(false);
@@ -263,14 +248,12 @@ internal sealed class LongRunningOperationStore(
                     return new LongRunningOperationRequestIdentityResult(
                         LongRunningOperationRequestIdentityOutcome.Replayed,
                         replayed);
-
                 }
 
                 Guid id = Guid.NewGuid();
 
                 await using (DbCommand insert = connection.CreateCommand())
                 {
-
                     insert.Transaction = transaction;
 
                     insert.CommandText =
@@ -299,16 +282,14 @@ internal sealed class LongRunningOperationStore(
                     Add(insert, "@inference", FormatReferenceNullable(request.InferenceRunId));
                     Add(insert, "@reservation", FormatNullable(request.BudgetReservationId));
                     Add(insert, "@claim", FormatNullable(request.IdempotencyClaimId));
-                    Add(insert, "@created", Format(request.CreatedAt));
+                    _ = UtcInstantSql.AddParameter(insert, "@created", request.CreatedAt);
                     Add(insert, "@summary", summary);
 
                     _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await using (DbCommand link = connection.CreateCommand())
                 {
-
                     link.Transaction = transaction;
 
                     link.CommandText =
@@ -323,10 +304,9 @@ internal sealed class LongRunningOperationStore(
                     Add(link, "@requested", Format(identity.RequestedOperationId));
                     Add(link, "@apply", identity.ApplyRequestDigest.Bytes);
                     Add(link, "@effect", identity.EffectDigest.Bytes);
-                    Add(link, "@created", Format(request.CreatedAt));
+                    _ = UtcInstantSql.AddParameter(link, "@created", request.CreatedAt);
 
                     _ = await link.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -358,10 +338,8 @@ internal sealed class LongRunningOperationStore(
                         summary,
                         TerminalErrorCode: null,
                         Revision: 0));
-
             },
             cancellationToken);
-
     }
 
     public Task<LongRunningOperation?> TryStartSingleFlightAsync(
@@ -371,7 +349,6 @@ internal sealed class LongRunningOperationStore(
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Kind);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(request.PublicSummary);
@@ -382,20 +359,16 @@ internal sealed class LongRunningOperationStore(
                 request.Kind,
                 request.RecoveryPolicy))
         {
-
             throw new ArgumentException(
                 $"Operation kind '{request.Kind}' is not registered with recovery policy '{request.RecoveryPolicy}'.",
                 nameof(request));
-
         }
 
         if (leaseExpiresAt <= utcNow)
         {
-
             throw new ArgumentOutOfRangeException(
                 nameof(leaseExpiresAt),
                 "Lease expiry must be in the future.");
-
         }
 
         Guid id = Guid.NewGuid();
@@ -409,7 +382,6 @@ internal sealed class LongRunningOperationStore(
         return SqliteBusyRetry.ExecuteAsync<LongRunningOperation?>(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(
                     cancellationToken).ConfigureAwait(false);
 
@@ -484,7 +456,7 @@ internal sealed class LongRunningOperationStore(
 
                 Add(command, "@claim", FormatNullable(request.IdempotencyClaimId));
 
-                Add(command, "@created", Format(request.CreatedAt));
+                _ = UtcInstantSql.AddParameter(command, "@created", request.CreatedAt);
 
                 Add(command, "@now", Format(utcNow));
 
@@ -524,10 +496,8 @@ internal sealed class LongRunningOperationStore(
                         PublicSummary: summary,
                         TerminalErrorCode: null,
                         Revision: 1);
-
             },
             cancellationToken);
-
     }
 
     public Task<LongRunningOperation?> GetAsync(
@@ -592,14 +562,11 @@ internal sealed class LongRunningOperationStore(
         Guid requestedOperationId,
         CancellationToken cancellationToken = default)
     {
-
         if (requestedOperationId == Guid.Empty)
         {
-
             throw new ArgumentException(
                 "A requested operation identity cannot be empty.",
                 nameof(requestedOperationId));
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
@@ -624,9 +591,7 @@ internal sealed class LongRunningOperationStore(
 
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     return null;
-
                 }
 
                 return new LongRunningOperationRequestIdentityMatch(
@@ -637,7 +602,6 @@ internal sealed class LongRunningOperationStore(
                         new CovenantDigest((byte[])reader.GetValue(26))));
             },
             cancellationToken);
-
     }
 
     public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
@@ -783,7 +747,6 @@ internal sealed class LongRunningOperationStore(
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         // Asserted, never acquired and never disposed. The caller owns this lock for the whole of
@@ -798,7 +761,6 @@ internal sealed class LongRunningOperationStore(
             requireExpiredLease: false,
             cancellationToken,
             expected);
-
     }
 
     public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
@@ -1020,20 +982,16 @@ internal sealed class LongRunningOperationStore(
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
 
         if (leaseExpiresAt <= utcNow)
         {
-
             throw new ArgumentOutOfRangeException(nameof(leaseExpiresAt));
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
                     .OpenFreshAsync(
                         GrimoireOrdinaryFreshConnectionKind.IsolatedHeartbeat,
@@ -1042,9 +1000,7 @@ internal sealed class LongRunningOperationStore(
 
                 if (acquired.IsFailure)
                 {
-
                     throw new GrimoireMaintenanceUnavailableException();
-
                 }
 
                 await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
@@ -1078,10 +1034,8 @@ internal sealed class LongRunningOperationStore(
 
                 return await command.ExecuteNonQueryAsync(
                     cancellationToken).ConfigureAwait(false) == 1;
-
             },
             cancellationToken);
-
     }
 
     public Task<bool> SaveCheckpointAsync(
@@ -1352,7 +1306,7 @@ internal sealed class LongRunningOperationStore(
     private static Guid ParseGuid(string value) => Guid.Parse(value);
 
     private static DateTimeOffset ParseDate(string value) =>
-        DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        UtcInstantText.Parse(value);
 
     private static string Format(Guid value) => value.ToString("N");
 
@@ -1382,7 +1336,7 @@ internal sealed class LongRunningOperationStore(
         value is null ? null : FormatReference(value.Value);
 
     private static string Format(DateTimeOffset value) =>
-        value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private static string Bound(string value, int maxLength)
     {

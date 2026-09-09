@@ -39,7 +39,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class CliContextServicePagingTests
 {
-
     private static readonly Guid StaleCampaignId =
         Guid.Parse("31313131-3131-3131-3131-313131313131");
 
@@ -55,12 +54,11 @@ public sealed class CliContextServicePagingTests
     [Fact]
     public async Task ValidateAsync_stops_when_the_campaign_cursor_does_not_advance()
     {
-
         StuckCursorHandler handler = new();
 
         ArcanumApiClient client = new(
             new FakeHttpClientFactory(handler),
-            new FakeSecretStore());
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
 
         FakeContextStore store = new();
 
@@ -79,7 +77,6 @@ public sealed class CliContextServicePagingTests
         Assert.Equal(1, handler.CampaignRequests);
 
         Assert.Empty(validation.Campaigns);
-
     }
 
     [Theory]
@@ -88,7 +85,6 @@ public sealed class CliContextServicePagingTests
     public async Task ValidateAsync_refused_stale_cleanup_retains_saved_context_and_reports_the_refusal(
         byte dispositionValue)
     {
-
         CliContextDocument retained = StaleContext();
 
         FakeContextStore store = new(retained);
@@ -123,13 +119,11 @@ public sealed class CliContextServicePagingTests
                 "could not be cleared",
                 warning,
                 StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public async Task ValidateAsync_completed_stale_cleanup_uses_one_exclusive_write()
     {
-
         FakeContextStore store = new(StaleContext());
 
         RecordingArcanumClientMutationBoundary boundary = new();
@@ -159,18 +153,14 @@ public sealed class CliContextServicePagingTests
                 "was cleared",
                 warning,
                 StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public async Task ValidateAsync_no_context_does_not_read_or_mutate_saved_context()
     {
-
         FakeContextStore store = new()
         {
-
             ThrowOnLoad = true,
-
         };
 
         RecordingArcanumClientMutationBoundary boundary = new();
@@ -189,7 +179,6 @@ public sealed class CliContextServicePagingTests
         Assert.Equal(0, boundary.Calls);
 
         Assert.Equal(0, store.ExclusiveSaves);
-
     }
 
     private static CliContextService CreateService(
@@ -202,7 +191,7 @@ public sealed class CliContextServicePagingTests
             new UnusedResourceCatalog(),
             new ArcanumApiClient(
                 new FakeHttpClientFactory(handler),
-                new FakeSecretStore()),
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key")),
             Options.Create(new ArcanumSettings()),
             boundary);
 
@@ -218,29 +207,24 @@ public sealed class CliContextServicePagingTests
 
     private sealed class StuckCursorHandler : HttpMessageHandler
     {
-
         public int CampaignRequests { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string path = request.RequestUri!.AbsolutePath;
 
             if (path == "/api/campaigns")
             {
-
                 CampaignRequests++;
 
                 if (CampaignRequests > 5)
                 {
-
                     throw new InvalidOperationException(
                         $"The campaign paging loop followed a non-advancing cursor {CampaignRequests} times.");
-
                 }
 
                 ListPageResult<CampaignDto> page = new(
@@ -253,41 +237,33 @@ public sealed class CliContextServicePagingTests
                         JsonSerializer.SerializeToUtf8Bytes(
                             new ApiResponse<ListPageResult<CampaignDto>>(page, true, null),
                             ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto)));
-
             }
 
             if (path == "/api/workspaces")
             {
-
                 return Task.FromResult(
                     Json(
                         JsonSerializer.SerializeToUtf8Bytes(
                             new ApiResponse<WorkspaceInfo[]>([], true, null),
                             ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray)));
-
             }
 
             if (path == "/api/models")
             {
-
                 return Task.FromResult(
                     Json(
                         JsonSerializer.SerializeToUtf8Bytes(
                             new ApiResponse<ModelInfoDto[]>([], true, null),
                             ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray)));
-
             }
 
             throw new InvalidOperationException($"Unexpected request to {path}.");
-
         }
 
         private static HttpResponseMessage Json(byte[] payload) =>
             new(HttpStatusCode.OK)
             {
-
                 Content = new ByteArrayContent(payload),
-
             };
 
         private static CampaignDto Campaign() =>
@@ -300,24 +276,20 @@ public sealed class CliContextServicePagingTests
                 CampaignSettings.CreateDefault(),
                 DateTimeOffset.UnixEpoch,
                 DateTimeOffset.UnixEpoch);
-
     }
 
     private sealed class StaleContextHandler : HttpMessageHandler
     {
-
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string path = request.RequestUri!.AbsolutePath;
 
             if (path == "/api/campaigns")
             {
-
                 return Task.FromResult(
                     Json(
                         JsonSerializer.SerializeToUtf8Bytes(
@@ -326,34 +298,28 @@ public sealed class CliContextServicePagingTests
                                 true,
                                 null),
                             ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto)));
-
             }
 
             if (path == "/api/workspaces")
             {
-
                 return Task.FromResult(
                     Json(
                         JsonSerializer.SerializeToUtf8Bytes(
                             new ApiResponse<WorkspaceInfo[]>([], true, null),
                             ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray)));
-
             }
 
             if (path == "/api/models")
             {
-
                 return Task.FromResult(
                     Json(
                         JsonSerializer.SerializeToUtf8Bytes(
                             new ApiResponse<ModelInfoDto[]>([], true, null),
                             ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray)));
-
             }
 
             if (path == $"/api/sessions/{StaleSessionId:D}")
             {
-
                 ApiResponse<SessionDetailDto> envelope =
                     ApiResponse<SessionDetailDto>.FromResult(
                         Result<SessionDetailDto>.Failure(
@@ -367,11 +333,9 @@ public sealed class CliContextServicePagingTests
                             envelope,
                             ArcanumJsonContext.Default.ApiResponseSessionDetailDto),
                         HttpStatusCode.NotFound));
-
             }
 
             throw new InvalidOperationException($"Unexpected request to {path}.");
-
         }
 
         private static HttpResponseMessage Json(
@@ -379,11 +343,8 @@ public sealed class CliContextServicePagingTests
             HttpStatusCode status = HttpStatusCode.OK) =>
             new(status)
             {
-
                 Content = new ByteArrayContent(payload),
-
             };
-
     }
 
     private sealed class FakeContextStore(
@@ -391,7 +352,6 @@ public sealed class CliContextServicePagingTests
         ICliContextStore,
         ICliContextExclusiveWriter
     {
-
         private CliContextDocument _document =
             document ?? CliContextDocument.Empty;
 
@@ -411,41 +371,31 @@ public sealed class CliContextServicePagingTests
 
         public void Save(CliContextDocument value)
         {
-
             UnprotectedSaves++;
 
             _document = value;
-
         }
 
         public void SaveUnderExclusive(CliContextDocument value)
         {
-
             ExclusiveSaves++;
 
             _document = value;
-
         }
-
     }
 
     private sealed class FakeHttpClientFactory(
         HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001/"),
-
             };
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>("test-key");
 
@@ -459,12 +409,10 @@ public sealed class CliContextServicePagingTests
 
         public Task SaveGrimoireEncryptionSecretAsync(
             string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class UnusedResourceCatalog : ICliResourceCatalog
     {
-
         public Task<ResourceSelectionResult<CampaignDto>> SelectCampaignAsync(
             string? identifier,
             CancellationToken cancellationToken) => throw Unused();
@@ -509,7 +457,5 @@ public sealed class CliContextServicePagingTests
 
         private static InvalidOperationException Unused() =>
             new("Context validation must not open a resource selector.");
-
     }
-
 }

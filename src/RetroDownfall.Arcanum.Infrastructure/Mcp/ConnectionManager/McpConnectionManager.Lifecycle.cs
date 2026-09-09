@@ -169,7 +169,7 @@ public sealed partial class McpConnectionManager
     // Shared start completion for both transports: run the initialize handshake, project tools, and
     // wire the entry. On any non-cancellation failure the freshly created client is disposed (which
     // tears down a stdio subprocess) and the entry is reset so a retry starts clean.
-    private async Task<Result> FinishStartAsync(
+    internal async Task<Result> FinishStartAsync(
         ManagedMcpServerEntry entry,
         McpServerConfig cfg,
         IMcpClient client,
@@ -184,24 +184,30 @@ public sealed partial class McpConnectionManager
 
             IReadOnlyList<McpBridgeTool> tools = await pending.GetToolsAsync(cancellationToken).ConfigureAwait(false);
 
-            entry.Client = pending;
+            LoadedMcpToolRow[] loadedTools = tools
+                .Select(tool => new LoadedMcpToolRow(tool, cfg, client))
+                .ToArray();
 
-            pending = null;
+            string[] toolNames = tools.Select(static tool => tool.Name).ToArray();
 
             entry.LoadedTools.Clear();
 
-            foreach (McpBridgeTool t in tools)
-            {
-                entry.LoadedTools.Add(new LoadedMcpToolRow(t, cfg, entry.Client));
-            }
+            entry.LoadedTools.AddRange(loadedTools);
 
-            entry.Tools = tools.Select(static t => t.Name).ToArray();
+            entry.Tools = toolNames;
 
             logger.LogInformation(
                 "Started MCP server {ServerName} ({Scope}) with {ToolCount} tools.",
                 entry.Name,
                 logScope,
                 tools.Count);
+
+            // This is the ownership transfer. It is deliberately the last potentially observable
+            // state change in the successful path: every operation that can throw while projecting
+            // the remote tool catalog still leaves pending responsible for disposing the client.
+            entry.Client = pending;
+
+            pending = null;
 
             return Result.Success();
         }
@@ -215,18 +221,16 @@ public sealed partial class McpConnectionManager
             // stood up before cancellation.
             if (pending is not null)
             {
-                await pending.DisposeAsync().ConfigureAwait(false);
+                await DisposeClientAfterFailedStartAsync(
+                    pending,
+                    entry,
+                    logScope).ConfigureAwait(false);
             }
 
             throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (pending is not null)
-            {
-                await pending.DisposeAsync().ConfigureAwait(false);
-            }
-
             Exception baseEx = ex.GetBaseException();
 
             entry.Client = null;
@@ -235,6 +239,14 @@ public sealed partial class McpConnectionManager
 
             entry.Tools = [];
 
+            if (pending is not null)
+            {
+                await DisposeClientAfterFailedStartAsync(
+                    pending,
+                    entry,
+                    logScope).ConfigureAwait(false);
+            }
+
             logger.LogError(
                 ex,
                 "MCP server {ServerName} ({Scope}) failed to start or list tools.",
@@ -242,6 +254,25 @@ public sealed partial class McpConnectionManager
                 entry.ScopeWorkingDirectory ?? "global");
 
             return new Error("Mcp.StartFailed", baseEx.Message);
+        }
+    }
+
+    private async Task DisposeClientAfterFailedStartAsync(
+        IMcpClient client,
+        ManagedMcpServerEntry entry,
+        string logScope)
+    {
+        try
+        {
+            await client.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception cleanupException)
+        {
+            logger.LogWarning(
+                cleanupException,
+                "Error disposing MCP client for server {ServerName} ({Scope}) after its start did not complete.",
+                entry.Name,
+                logScope);
         }
     }
 

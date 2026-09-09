@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 /// <summary>Runs the real sweep and weaver; only persistence and outbound providers are substituted.</summary>
 internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 {
-
     internal static readonly TapestryScope First = new(TapestryScopeKind.Workspace, "/first");
 
     internal static readonly TapestryScope Second = new(TapestryScopeKind.Workspace, "/second");
@@ -43,7 +42,6 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
     internal TapestryAdmissionHarness(TimeProvider? clock = null)
     {
-
         Gate = new RecordingGrimoireWorkAdmissionGate(Inner)
         {
             BeforeEffectGroupDisposalAsync = () => new ValueTask(StepAsync("group-dispose", CancellationToken.None)),
@@ -75,7 +73,6 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
             new TestOptionsMonitor<ArcanumSettings>(Configuration),
             Gate,
             NullLogger<TapestryWeavingService>.Instance);
-
     }
 
     internal static EmbeddingSettings Settings() => new()
@@ -91,81 +88,64 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
     internal async Task StepAsync(string step, CancellationToken token)
     {
-
         Events.Enqueue(step);
 
         await OnStep(step, token);
-
     }
 
     public async ValueTask DisposeAsync()
     {
-
         Service.Dispose();
 
         await _provider.DisposeAsync();
-
     }
 
     internal sealed class Checkpoint
     {
-
         internal TaskCompletionSource Reached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal async Task PauseAsync(CancellationToken token = default)
         {
-
             Reached.TrySetResult();
 
             await Release.Task.WaitAsync(token);
-
         }
 
         internal Task WaitAsync() => Reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
-
     }
 
     internal sealed class ObservingScopeFactory(TapestryAdmissionHarness harness, IServiceScopeFactory inner) : IServiceScopeFactory
     {
-
         internal int Created { get; private set; }
 
         public IServiceScope CreateScope()
         {
-
             Created++;
 
             harness.Events.Enqueue("scope-create");
 
             return new Scope(harness, inner.CreateScope());
-
         }
 
         private sealed class Scope(TapestryAdmissionHarness harness, IServiceScope inner) : IServiceScope, IAsyncDisposable
         {
-
             public IServiceProvider ServiceProvider => inner.ServiceProvider;
 
             public void Dispose() => throw new InvalidOperationException("The sweep must dispose its scope asynchronously.");
 
             public async ValueTask DisposeAsync()
             {
-
                 await harness.StepAsync("scope-dispose", CancellationToken.None);
 
                 await ((IAsyncDisposable)inner).DisposeAsync();
-
             }
-
         }
-
     }
 
     internal sealed class Store(TapestryAdmissionHarness harness) : ITapestryStore
     {
-
         internal IReadOnlyList<TapestryScope> Scopes { get; set; } = [First];
 
         internal Dictionary<string, TapestryGeneration> Generations { get; } = [];
@@ -178,20 +158,16 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
         public async Task<IReadOnlyList<TapestryScope>> DiscoverScopesAsync(bool includeWorkspace, bool includeSessionAttachments, bool includeSessions, CancellationToken cancellationToken)
         {
-
             await harness.StepAsync("discover", cancellationToken);
 
             return Scopes;
-
         }
 
         public async Task<IReadOnlyList<TapestryLeafSource>> EnumerateLeafSourcesAsync(TapestryScope scope, int expectedDimensions, bool includeEmbeddings, CancellationToken cancellationToken)
         {
-
             await harness.StepAsync("leaves:" + scope.Id, cancellationToken);
 
             return [new("a", "a.cs", Corpus + " alpha", "hash-a-" + Corpus, null), new("b", "b.cs", Corpus + " beta", "hash-b-" + Corpus, null)];
-
         }
 
         public Task<TapestryGeneration?> GetCurrentGenerationAsync(TapestryScope scope, CancellationToken cancellationToken) =>
@@ -199,7 +175,6 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
         public async Task<string> BeginGenerationAsync(TapestryScope scope, string algorithmVersion, string settingsFingerprint, string? summaryModel, string summaryRecipeVersion, int embeddingDimension, string corpusFingerprint, DateTimeOffset startedAt, CancellationToken cancellationToken)
         {
-
             Begins++;
 
             await harness.StepAsync("begin:" + scope.Id, cancellationToken);
@@ -209,7 +184,6 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
             Generations.Add(id, new(id, scope.Kind, scope.Id, TapestryGenerationStatus.Building, algorithmVersion, settingsFingerprint, summaryModel, summaryRecipeVersion, embeddingDimension, corpusFingerprint, 0, 0, 0, null, startedAt, null));
 
             return id;
-
         }
 
         public Task AppendNodesAsync(IReadOnlyList<TapestryNodeWrite> nodes, CancellationToken cancellationToken) =>
@@ -220,41 +194,32 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
         public async Task PublishGenerationAsync(string generationId, int layerCount, int nodeCount, int rootNodeCount, TapestryTerminalReason terminalReason, DateTimeOffset completedAt, CancellationToken cancellationToken)
         {
-
             await harness.StepAsync("publish", cancellationToken);
 
             TapestryGeneration built = Generations[generationId];
 
             foreach (TapestryGeneration prior in Generations.Values.Where(generation => generation.ScopeId == built.ScopeId && generation.Status == TapestryGenerationStatus.Complete).ToArray())
             {
-
                 Generations[prior.GenerationId] = prior with { Status = TapestryGenerationStatus.Superseded };
-
             }
 
             Generations[generationId] = built with { Status = TapestryGenerationStatus.Complete, LayerCount = layerCount, NodeCount = nodeCount, RootNodeCount = rootNodeCount, TerminalReason = terminalReason, CompletedAt = completedAt };
 
             await harness.StepAsync("published", cancellationToken);
-
         }
 
         public async Task AbandonGenerationAsync(string generationId, CancellationToken cancellationToken)
         {
-
             await harness.StepAsync("abandon", cancellationToken);
 
             if (Generations[generationId].Status == TapestryGenerationStatus.Building)
             {
-
                 Generations.Remove(generationId);
-
             }
-
         }
 
         public async Task<int> ReconcileGenerationsAsync(CancellationToken cancellationToken)
         {
-
             Cleanups++;
 
             await harness.StepAsync("cleanup", cancellationToken);
@@ -263,22 +228,17 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
             foreach (string id in removed)
             {
-
                 Generations.Remove(id);
-
             }
 
             return removed.Length;
-
         }
 
         public async Task<int> PruneRemovedScopesAsync(bool includeWorkspace, bool includeSessionAttachments, bool includeSessions, CancellationToken cancellationToken)
         {
-
             await harness.StepAsync("prune", cancellationToken);
 
             return 0;
-
         }
 
         public Task<TapestrySummaryReuseCandidate?> TryGetReusableSummaryAsync(TapestryScope scope, string childMembershipHash, CancellationToken cancellationToken) => Task.FromResult<TapestrySummaryReuseCandidate?>(null);
@@ -294,63 +254,49 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
         public Task<IReadOnlyList<TapestryScopeStatus>> GetScopeStatusesAsync(Guid? sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<int> CountPublishedNodesAsync(Guid? sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
     }
 
     private static Embedding<float> Vector()
     {
-
         float[] vector = new float[64];
 
         vector[0] = 1;
 
         return new Embedding<float>(vector);
-
     }
 
     private sealed class Embeddings(TapestryAdmissionHarness harness) : IWeaveService
     {
-
         public bool IsAvailable => true;
 
         public async Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken)
         {
-
             await harness.StepAsync("embed-summary", cancellationToken);
 
             return Vector();
-
         }
 
         public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
-
             await harness.StepAsync("embed-leaves", cancellationToken);
 
             return texts.Select(static _ => Vector()).ToArray();
-
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) => throw new NotSupportedException();
-
     }
 
     private sealed class Summarizer(TapestryAdmissionHarness harness) : ITapestrySummarizer
     {
-
         public string? ResolveSummaryModel() => "summary-model";
 
         public bool FitsOneRequest(TapestrySummaryRequest request) => true;
 
         public async Task<Result<string>> SummarizeAsync(TapestrySummaryRequest request, CancellationToken cancellationToken)
         {
-
             await harness.StepAsync("summarize", cancellationToken);
 
             return "the cluster summary";
-
         }
-
     }
-
 }

@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks;
 
 internal sealed class BenchmarkComposition : IAsyncDisposable
 {
-
     private static readonly TimeSpan CleanupDeadline = TimeSpan.FromSeconds(10);
 
     private readonly ServiceProvider _provider;
@@ -30,7 +29,6 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
         GrimoireOrdinaryConnectionLifecycle lifecycle,
         CovenantSqliteConnectionInitializer initializer)
     {
-
         _provider = provider;
 
         Gate = gate;
@@ -40,7 +38,6 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
         Lifecycle = lifecycle;
 
         Initializer = initializer;
-
     }
 
     internal GrimoireConnectionAdmissionGate Gate { get; }
@@ -55,7 +52,6 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
 
     internal static BenchmarkComposition Create()
     {
-
         SqliteNativeRuntime.Instance.Initialize();
 
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
@@ -112,75 +108,57 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
             drain,
             lifecycle,
             initializer);
-
     }
 
     public async ValueTask DisposeAsync()
     {
-
         AdmissionBenchmarkTeardownWitness witness = await TeardownAsync().ConfigureAwait(false);
 
         if (!witness.HomeDeletionAuthorized)
         {
-
             throw new InvalidDataException(string.Join("; ", witness.Errors));
-
         }
-
     }
 
     internal async ValueTask<AdmissionBenchmarkTeardownWitness> TeardownAsync()
     {
-
         using CancellationTokenSource cleanupCancellation = new(CleanupDeadline);
 
         return await AdmissionBenchmarkTeardownCoordinator.RunAsync(
             runtimeResourcesCreated: true,
             async cancellationToken =>
             {
-
                 Result drained = await Drain.DrainAsync(cancellationToken).ConfigureAwait(false);
 
                 if (drained.IsFailure)
                 {
-
                     throw new InvalidDataException(drained.Error.Message);
-
                 }
-
             },
             () => _provider.DisposeAsync(),
             async cancellationToken =>
             {
-
                 Result drained = await Drain.DrainAsync(cancellationToken).ConfigureAwait(false);
 
                 if (drained.IsFailure)
                 {
-
                     throw new InvalidDataException(drained.Error.Message);
-
                 }
-
             },
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools,
             cleanupCancellation.Token).ConfigureAwait(false);
-
     }
 
     private sealed class BenchmarkMaintenancePaths(string canonicalPath) : IGrimoireMaintenancePathAuthority
     {
-
         public string CanonicalDatabasePath => canonicalPath;
 
         public string ExportStagingDatabasePath(Guid operationId) =>
             canonicalPath + "." + operationId.ToString("N") + ".candidate";
-
     }
 
     private sealed class BenchmarkSecretStore : ISecretStore
     {
-
         internal static BenchmarkSecretStore Instance { get; } = new();
 
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
@@ -194,7 +172,5 @@ internal sealed class BenchmarkComposition : IAsyncDisposable
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             throw new NotSupportedException();
-
     }
-
 }

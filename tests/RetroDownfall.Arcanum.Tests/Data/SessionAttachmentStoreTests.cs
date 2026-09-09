@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Trait("Category", "Integration")]
 public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -34,14 +33,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
     public SessionAttachmentStoreTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _attachmentsRoot = Path.Combine(Path.GetTempPath(), "arcanum-attachments-" + Guid.NewGuid().ToString("N"));
@@ -55,33 +51,24 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         _store = CreateStore(_settings);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_attachmentsRoot))
         {
-
             Directory.Delete(_attachmentsRoot, recursive: true);
-
         }
-
     }
 
     private SessionAttachmentStore CreateStore(ArcanumSettings settings) =>
@@ -100,14 +87,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
     public async Task PersistNewAsync_uses_streaming_encrypted_writer()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         InstrumentedEncryptedBlobStore blobs = new(CreateEncryptedBlobStore())
         {
-
             RejectWholeStreamWrite = true,
-
         };
 
         SessionAttachmentStore store = new(
@@ -137,25 +121,21 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)), record.ContentSha256);
 
         Assert.Equal(bytes, (await store.ReadBytesAsync(record)).ToArray());
-
     }
 
     [SkippableFact]
 
     public async Task PersistNewAsync_streaming_cancellation_leaves_no_row_or_blob()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using CancellationTokenSource cancellation = new();
 
         InstrumentedEncryptedBlobStore blobs = new(CreateEncryptedBlobStore())
         {
-
             CancelWriterAfterWriteCall = 1,
 
             WriterCancellation = cancellation,
-
         };
 
         SessionAttachmentStore store = new(
@@ -186,14 +166,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             _attachmentsRoot,
             "*",
             SearchOption.AllDirectories));
-
     }
 
     [SkippableFact]
 
     public async Task ReadBytesAsync_uses_incremental_reads_without_CopyTo_buffer_duplication()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         InstrumentedEncryptedBlobStore blobs = new(CreateEncryptedBlobStore());
@@ -220,21 +198,18 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         blobs.RejectCopyToRead = true;
 
         Assert.Equal(bytes, (await store.ReadBytesAsync(record)).ToArray());
-
     }
 
     [SkippableFact]
 
     public async Task ReadBoundPagesAsync_keyset_pages_every_version_in_stable_order()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
 
         foreach (string logicalKey in new[] { "charlie.txt", "alpha.txt", "bravo.txt", "echo.txt", "delta.txt" })
         {
-
             _ = await _store!.PersistNewAsync(
                 sessionId,
                 pendingTurnId: null,
@@ -244,7 +219,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 Encoding.UTF8.GetBytes(logicalKey),
                 mimeType: "text/plain",
                 SessionAttachmentKind.Text);
-
         }
 
         List<IReadOnlyList<SessionAttachmentRecord>> pages = [];
@@ -253,9 +227,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             sessionId,
             pageSize: 2))
         {
-
             pages.Add(page);
-
         }
 
         Assert.Equal([2, 2, 1], pages.Select(static page => page.Count));
@@ -265,14 +237,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             pages.SelectMany(static page => page).Select(static row => row.LogicalKey));
 
         Assert.Equal(5, (await _store!.ListBoundAsync(sessionId)).Count);
-
     }
 
     [SkippableFact]
 
     public async Task ListLatestBoundAsync_returns_only_latest_version_per_logical_key()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -322,13 +292,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(
             [bravo.Id, alphaLatest.Id],
             selected.Select(static row => row.Id));
-
     }
 
     [SkippableFact]
     public async Task ListLatestBoundByLogicalKeysAsync_pages_queries_and_preserves_selected_order()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionAttachmentStore store = _store!;
@@ -338,7 +306,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         for (int index = 0; index < 130; index++)
         {
-
             string logicalKey = $"attachment-{index:D3}.txt";
             logicalKeys.Add(logicalKey);
 
@@ -351,7 +318,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 Encoding.UTF8.GetBytes(logicalKey),
                 "text/plain",
                 SessionAttachmentKind.Text);
-
         }
 
         string[] requested = logicalKeys
@@ -371,14 +337,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(
             2,
             store.LatestLogicalKeyQueryPageCountForTesting);
-
     }
 
     [SkippableFact]
 
     public async Task BuildIndexAsync_pushes_logical_limit_before_full_record_paging()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionAttachmentStore store = _store!;
@@ -387,7 +351,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         foreach (string content in new[] { "alpha-v1", "alpha-v2" })
         {
-
             _ = await store.PersistNewAsync(
                 sessionId,
                 null,
@@ -397,12 +360,10 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 Encoding.UTF8.GetBytes(content),
                 "text/plain",
                 SessionAttachmentKind.Text);
-
         }
 
         foreach (string logicalKey in new[] { "bravo.txt", "charlie.txt" })
         {
-
             _ = await store.PersistNewAsync(
                 sessionId,
                 null,
@@ -412,7 +373,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 Encoding.UTF8.GetBytes(logicalKey),
                 "text/plain",
                 SessionAttachmentKind.Text);
-
         }
 
         IReadOnlyList<SessionAttachmentIndexItem> index = await store
@@ -425,13 +385,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal([1, 2], alpha.Versions);
 
         Assert.Equal(0, store.BoundRecordPageReadCountForTesting);
-
     }
 
     [SkippableFact]
     public async Task BuildIndexAsync_bounds_one_version_page_without_losing_history()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionAttachmentStore store = _store!;
@@ -440,7 +398,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         for (int version = 1; version <= 260; version++)
         {
-
             _ = await store.PersistNewAsync(
                 sessionId,
                 null,
@@ -450,7 +407,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 Encoding.UTF8.GetBytes($"version-{version}"),
                 "text/plain",
                 SessionAttachmentKind.Text);
-
         }
 
         IReadOnlyList<SessionAttachmentIndexItem> index = await store
@@ -475,7 +431,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                     version: 260));
 
         Assert.Equal(260, last.Version);
-
     }
 
     [SkippableFact]
@@ -527,11 +482,9 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     public async Task RevalidateBoundSourcesAsync_marks_changed_workspace_file_as_prior_version()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string workspace = Path.Combine(
-
             Path.GetTempPath(),
 
             "arcanum-workspace-" + Guid.NewGuid().ToString("N"));
@@ -541,7 +494,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         try
 
         {
-
             byte[] before = Encoding.UTF8.GetBytes("before");
 
             string sourcePath = Path.Combine(workspace, "source.txt");
@@ -551,7 +503,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
 
             SessionAttachmentStore store = new(
-
                 _db!,
 
                 Options.Create(_settings),
@@ -565,7 +516,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             Guid sessionId = Guid.NewGuid();
 
             _ = await store.PersistNewFromSourceAsync(
-
                 sessionId,
 
                 null,
@@ -597,20 +547,15 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             Assert.False(row.Source.IsRefreshable);
 
             Assert.Equal(
-
                 Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("after"))),
 
                 row.Source.LastObservedContentSha256);
-
         }
         finally
 
         {
-
             Directory.Delete(workspace, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
@@ -744,7 +689,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task PersistNewAsync_bound_v1_writes_row_and_bytes_readable()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -790,7 +734,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.NotNull(byId);
 
         Assert.Equal(record.Id, byId!.Id);
-
     }
 
     [SkippableFact]
@@ -861,7 +804,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     public async Task Identical_snapshot_after_live_reference_creates_snapshot_version_without_provenance_blur()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -869,7 +811,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         byte[] bytes = Encoding.UTF8.GetBytes("same bytes, different attachment mode");
 
         SessionAttachmentRecord live = await _store!.PersistNewResolvedSourceAsync(
-
             sessionId,
 
             pendingTurnId: null,
@@ -885,7 +826,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             CreateResolvedSource(bytes));
 
         SessionAttachmentRecord snapshot = await _store.PersistNewAsync(
-
             sessionId,
 
             pendingTurnId: null,
@@ -911,13 +851,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(AttachmentSourceKind.WorkspaceFile, live.Source!.Kind);
 
         Assert.Equal(
-
             AttachmentSourceKind.SnapshotOnly,
 
             (snapshot.Source ?? AttachmentSourceMetadata.SnapshotOnly).Kind);
 
         Assert.Equal(2, (await _store.ListBoundAsync(sessionId)).Count);
-
     }
 
     [SkippableFact]
@@ -925,7 +863,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     public async Task Identical_live_reference_after_snapshot_creates_live_version_without_provenance_blur()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -933,7 +870,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         byte[] bytes = Encoding.UTF8.GetBytes("same bytes, different attachment mode");
 
         SessionAttachmentRecord snapshot = await _store!.PersistNewAsync(
-
             sessionId,
 
             pendingTurnId: null,
@@ -951,7 +887,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             SessionAttachmentKind.Text);
 
         SessionAttachmentRecord live = await _store.PersistNewResolvedSourceAsync(
-
             sessionId,
 
             pendingTurnId: null,
@@ -973,7 +908,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(2, live.Version);
 
         Assert.Equal(
-
             AttachmentSourceKind.SnapshotOnly,
 
             (snapshot.Source ?? AttachmentSourceMetadata.SnapshotOnly).Kind);
@@ -981,7 +915,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(AttachmentSourceKind.WorkspaceFile, live.Source!.Kind);
 
         Assert.Equal(2, (await _store.ListBoundAsync(sessionId)).Count);
-
     }
 
     [SkippableTheory]
@@ -991,13 +924,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     [InlineData("other-workspace-id", "reference.txt")]
 
     public async Task Identical_live_reference_from_different_source_identity_creates_new_version(
-
         string workspaceIdentity,
 
         string relativePath)
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1009,25 +940,19 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         AttachmentSourceResolution distinctSource = firstSource with
 
         {
-
             Metadata = firstSource.Metadata with
 
             {
-
                 WorkspaceIdentity = workspaceIdentity,
 
                 WorkspaceRelativePath = relativePath,
 
                 LastKnownCanonicalPath = Path.GetFullPath(
-
                     Path.Combine(Path.GetTempPath(), workspaceIdentity, relativePath)),
-
             },
-
         };
 
         SessionAttachmentRecord first = await _store!.PersistNewResolvedSourceAsync(
-
             sessionId,
 
             pendingTurnId: null,
@@ -1043,7 +968,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             firstSource);
 
         SessionAttachmentRecord distinct = await _store.PersistNewResolvedSourceAsync(
-
             sessionId,
 
             pendingTurnId: null,
@@ -1067,7 +991,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(workspaceIdentity, distinct.Source!.WorkspaceIdentity);
 
         Assert.Equal(relativePath, distinct.Source.WorkspaceRelativePath);
-
     }
 
     [SkippableFact]
@@ -1223,7 +1146,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     private sealed class InstrumentedEncryptedBlobStore(IEncryptedBlobStore inner)
         : IEncryptedBlobStore
     {
-
         public bool RejectWholeStreamWrite { get; init; }
 
         public bool RejectCopyToRead { get; set; }
@@ -1244,15 +1166,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             long? plaintextLength = null,
             CancellationToken cancellationToken = default)
         {
-
             WholeStreamWriteCallCount++;
 
             if (RejectWholeStreamWrite)
             {
-
                 throw new InvalidOperationException(
                     "The whole-stream encrypted write path must not be used.");
-
             }
 
             return inner.WriteAsync(
@@ -1262,7 +1181,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 authenticatedMetadata,
                 plaintextLength,
                 cancellationToken);
-
         }
 
         public async Task<Stream> OpenReadAsync(
@@ -1270,7 +1188,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             EncryptedBlobPurpose purpose,
             CancellationToken cancellationToken = default)
         {
-
             Stream stream = await inner
                 .OpenReadAsync(path, purpose, cancellationToken)
                 .ConfigureAwait(false);
@@ -1278,7 +1195,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             return RejectCopyToRead
                 ? new CopyRejectingReadStream(stream)
                 : stream;
-
         }
 
         public async Task<EncryptedBlobWriter> CreateWriterAsync(
@@ -1287,7 +1203,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             ReadOnlyMemory<byte> authenticatedMetadata = default,
             CancellationToken cancellationToken = default)
         {
-
             CreateWriterCallCount++;
 
             EncryptedBlobWriter writer = await inner
@@ -1305,7 +1220,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                         cancelAfter,
                         writerCancellation)
                     : writer;
-
         }
 
         public Task<EncryptedBlobDescriptor> InspectAsync(
@@ -1320,7 +1234,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 cancellationToken);
 
         public bool HasEnvelope(string path) => inner.HasEnvelope(path);
-
     }
 
     private sealed class CancelingEncryptedBlobWriter(
@@ -1328,7 +1241,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         int cancelAfterWriteCall,
         CancellationTokenSource cancellation) : EncryptedBlobWriter
     {
-
         private int _writeCallCount;
 
         public override bool CanRead => false;
@@ -1341,29 +1253,23 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         public override long Position
         {
-
             get => inner.Position;
 
             set => throw new NotSupportedException();
-
         }
 
         public override async ValueTask WriteAsync(
             ReadOnlyMemory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-
             await inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
 
             _writeCallCount++;
 
             if (_writeCallCount == cancelAfterWriteCall)
             {
-
                 cancellation.Cancel();
-
             }
-
         }
 
         public override void Write(byte[] buffer, int offset, int count) =>
@@ -1389,32 +1295,24 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         protected override void Dispose(bool disposing)
         {
-
             if (disposing)
             {
-
                 inner.Dispose();
-
             }
 
             base.Dispose(disposing);
-
         }
 
         public override async ValueTask DisposeAsync()
         {
-
             await inner.DisposeAsync().ConfigureAwait(false);
 
             GC.SuppressFinalize(this);
-
         }
-
     }
 
     private sealed class CopyRejectingReadStream(Stream inner) : Stream
     {
-
         public override bool CanRead => inner.CanRead;
 
         public override bool CanSeek => inner.CanSeek;
@@ -1425,11 +1323,9 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         public override long Position
         {
-
             get => inner.Position;
 
             set => inner.Position = value;
-
         }
 
         public override int Read(byte[] buffer, int offset, int count) =>
@@ -1455,7 +1351,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         public override void Flush()
         {
-
         }
 
         public override void Write(byte[] buffer, int offset, int count) =>
@@ -1463,33 +1358,25 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         protected override void Dispose(bool disposing)
         {
-
             if (disposing)
             {
-
                 inner.Dispose();
-
             }
 
             base.Dispose(disposing);
-
         }
 
         public override async ValueTask DisposeAsync()
         {
-
             await inner.DisposeAsync().ConfigureAwait(false);
 
             GC.SuppressFinalize(this);
-
         }
-
     }
 
     [SkippableFact]
     public async Task PersistNewAsync_identical_bytes_same_logical_key_returns_same_id_no_v2()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1523,13 +1410,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         IReadOnlyList<SessionAttachmentRecord> listed = await _store.ListBoundAsync(sessionId);
 
         Assert.Single(listed);
-
     }
 
     [SkippableFact]
     public async Task PersistNewAsync_changed_bytes_creates_v2()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1569,13 +1454,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.NotNull(byVersion);
 
         Assert.Equal(v1.Id, byVersion!.Id);
-
     }
 
     [SkippableFact]
     public async Task PersistNewAsync_rejects_unsafe_names()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1599,13 +1482,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             Encoding.UTF8.GetBytes("x"),
             "text/plain",
             SessionAttachmentKind.Text));
-
     }
 
     [SkippableFact]
     public async Task PersistPending_then_PromotePendingAsync_moves_to_bound_session_path()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string pendingTurnId = "turn-" + Guid.NewGuid().ToString("N");
@@ -1667,13 +1548,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         ReadOnlyMemory<byte> loaded = await _store.ReadBytesAsync(promoted);
 
         Assert.Equal(bytes, loaded.ToArray());
-
     }
 
     [SkippableFact]
     public async Task DeleteStalePendingAsync_removes_old_pending_row_and_directory()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string pendingTurnId = "stale-" + Guid.NewGuid().ToString("N");
@@ -1702,13 +1581,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Null(gone);
 
         Assert.False(Directory.Exists(pendingDir));
-
     }
 
     [SkippableFact]
     public async Task ValidateReferencesAsync_rejects_wrong_session_and_over_max()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionA = Guid.NewGuid();
@@ -1741,13 +1618,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         await _store.ValidateReferencesAsync(sessionA, [a.Id, a.Id]);
 
         await _store.ValidateReferencesAsync(sessionA, [a.Id]);
-
     }
 
     [SkippableFact]
     public async Task PersistNewAsync_accepts_versions_beyond_the_former_count_ceiling()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionAttachmentStore store = CreateStore(new ArcanumSettings());
@@ -1780,13 +1655,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 SessionAttachmentKind.Text);
 
         Assert.Equal(formerDefaultMaxVersions + 1, next.Version);
-
     }
 
     [SkippableFact]
     public async Task PromotePendingAsync_db_failure_retains_pending_and_removes_destination()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string pendingTurnId = "turn-" + Guid.NewGuid().ToString("N");
@@ -1827,13 +1700,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.True(File.Exists(pendingAbsolute));
 
         Assert.False(File.Exists(expectedBoundAbsolute));
-
     }
 
     [SkippableFact]
     public async Task PersistNewAsync_db_failure_deletes_orphan_bytes()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1842,7 +1713,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         _store!.AfterBytesCommittedBeforeDbForTesting = _ =>
         {
-
             capturedPath = Path.Combine(
                 _attachmentsRoot,
                 sessionId.ToString("N"),
@@ -1853,7 +1723,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             Assert.True(File.Exists(capturedPath));
 
             throw new InvalidOperationException("simulated insert failure");
-
         };
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -1870,13 +1739,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.NotNull(capturedPath);
 
         Assert.False(File.Exists(capturedPath));
-
     }
 
     [SkippableFact]
     public async Task Partial_unique_indexes_reject_duplicate_bound_and_pending_versions()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1907,14 +1774,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using (System.Data.Common.DbCommand boundDup = connection.CreateCommand())
         {
-
             boundDup.CommandText =
                 """
                 INSERT INTO "SessionAttachments"
@@ -1937,12 +1801,10 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             Exception ex = await Assert.ThrowsAnyAsync<Exception>(() => boundDup.ExecuteNonQueryAsync());
 
             Assert.Contains("UNIQUE", ex.Message, StringComparison.OrdinalIgnoreCase);
-
         }
 
         await using (System.Data.Common.DbCommand pendingDup = connection.CreateCommand())
         {
-
             pendingDup.CommandText =
                 """
                 INSERT INTO "SessionAttachments"
@@ -1962,15 +1824,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             Exception ex = await Assert.ThrowsAnyAsync<Exception>(() => pendingDup.ExecuteNonQueryAsync());
 
             Assert.Contains("UNIQUE", ex.Message, StringComparison.OrdinalIgnoreCase);
-
         }
-
     }
 
     [SkippableFact]
     public async Task PromotePending_and_DeleteStalePending_serialize_on_same_turn_gate()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string pendingTurnId = "turn-" + Guid.NewGuid().ToString("N");
@@ -2013,7 +1872,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         using (IDisposable holdGate = await SessionAttachmentStore.AttachmentGates
                    .AcquireAsync(SessionAttachmentStore.PendingTurnGateKey(pendingTurnId)))
         {
-
             promote = promoteStore.PromotePendingAsync(pendingTurnId, sessionId, entryId: null);
 
             gc = gcStore.DeleteStalePendingAsync(TimeSpan.FromHours(24));
@@ -2026,7 +1884,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
             Assert.True(SessionAttachmentStore.AttachmentGates.IsHeld(
                 SessionAttachmentStore.PendingTurnGateKey(pendingTurnId)));
-
         }
 
         await Task.WhenAll(promote, gc);
@@ -2036,11 +1893,9 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         // Exactly one winner: promoted (Bound) or GC'd (missing). Never a Bound row with missing bytes.
         if (after is null)
         {
-
             Assert.False(Directory.Exists(Path.Combine(_attachmentsRoot, "_pending", pendingTurnId)));
 
             return;
-
         }
 
         Assert.Equal(SessionAttachmentState.Bound, after.State);
@@ -2052,13 +1907,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         ReadOnlyMemory<byte> bytes = await _store.ReadBytesAsync(after);
 
         Assert.Equal(Encoding.UTF8.GetBytes("race-bytes"), bytes.ToArray());
-
     }
 
     [SkippableFact]
     public async Task DeleteStalePendingAsync_removes_aged_orphan_pending_directory()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string orphanTurnId = "orphan-" + Guid.NewGuid().ToString("N");
@@ -2078,13 +1931,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         await _store!.DeleteStalePendingAsync(TimeSpan.FromHours(24));
 
         Assert.False(Directory.Exists(orphanDir));
-
     }
 
     [SkippableFact]
     public async Task DeleteStalePendingAsync_sweeps_orphan_files_without_rows()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -2110,13 +1961,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         await _store!.DeleteStalePendingAsync(TimeSpan.FromHours(24));
 
         Assert.False(File.Exists(orphanFile));
-
     }
 
     [SkippableFact]
     public async Task ListBoundForForkAsync_full_includes_null_entry_cutoff_excludes()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -2217,9 +2066,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                                maximumSourceEntrySequence: 2,
                                includeEntrylessAttachments: true))
         {
-
             pagedFullFork.AddRange(page);
-
         }
 
         Assert.Equal(3, pagedFullFork.Count);
@@ -2232,21 +2079,17 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                                maximumSourceEntrySequence: 1,
                                includeEntrylessAttachments: false))
         {
-
             pagedCutoffFork.AddRange(page);
-
         }
 
         SessionAttachmentRecord cutoffRecord = Assert.Single(pagedCutoffFork);
 
         Assert.Equal(mapped.Id, cutoffRecord.Id);
-
     }
 
     [SkippableFact]
     public async Task CopyBytesForForkAsync_then_InsertForkRows_remaps_and_hash_matches()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sourceSessionId = Guid.NewGuid();
@@ -2279,7 +2122,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         try
         {
-
             await _store.CopyBytesForForkAsync(forkSessionId, [plan]);
 
             using IDisposable gate = await _store.AcquireSessionGateAsync(forkSessionId);
@@ -2316,24 +2158,19 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             string hash = Convert.ToHexString(SHA256.HashData(loaded.Span));
 
             Assert.Equal(source.ContentSha256, hash, ignoreCase: true);
-
         }
         finally
         {
-
             Assert.True(_store.TryDeleteSessionDirectory(forkSessionId));
 
             Assert.False(Directory.Exists(Path.Combine(_attachmentsRoot, forkSessionId.ToString("N"))));
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task InsertForkRowsInAmbientTransactionAsync_AcquiresWriterBeforeBlobValidation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sourceSessionId = Guid.NewGuid();
@@ -2369,11 +2206,9 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         _store.AfterWriterLockBeforeBlobValidationForTesting = async cancellationToken =>
         {
-
             validationReached.TrySetResult();
 
             await releaseValidation.Task.WaitAsync(cancellationToken);
-
         };
 
         SqliteConnection connection =
@@ -2381,9 +2216,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using SqliteTransaction sqliteTransaction =
@@ -2399,14 +2232,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         try
         {
-
             await validationReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             Exception? competingFailure;
 
             await using (ArcanumDbContext competingDb = _fixture.CreateContext(_dbPath))
             {
-
                 SqliteConnection competingConnection =
                     (SqliteConnection)competingDb.Database.GetDbConnection();
 
@@ -2416,64 +2247,48 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
                 await using (SqliteCommand timeout = competingConnection.CreateCommand())
                 {
-
                     timeout.CommandText = "PRAGMA busy_timeout = 1";
 
                     _ = await timeout.ExecuteNonQueryAsync();
-
                 }
 
                 try
                 {
-
                     await using SqliteTransaction competingTransaction =
                         competingConnection.BeginTransaction(deferred: false);
 
                     competingFailure = null;
-
                 }
                 catch (SqliteException ex)
                 {
-
                     competingFailure = ex;
-
                 }
-
             }
 
             SqliteException busy = Assert.IsType<SqliteException>(competingFailure);
 
             Assert.Equal(5, busy.SqliteErrorCode);
-
         }
         finally
         {
-
             releaseValidation.TrySetResult();
 
             try
             {
-
                 await insert;
-
             }
             finally
             {
-
                 _store.AfterWriterLockBeforeBlobValidationForTesting = null;
-
             }
-
         }
 
         await ambient.CommitAsync();
-
     }
 
     [SkippableFact]
     public async Task DeleteRowsForSession_under_gate_then_TryDeleteSessionDirectory_clears_all()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -2498,14 +2313,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         using (IDisposable gate = await _store.AcquireSessionGateAsync(sessionId))
         {
-
             await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
                 await _db!.Database.BeginTransactionAsync();
 
             await _store.DeleteRowsForSessionInAmbientTransactionAsync(sessionId);
 
             await tx.CommitAsync();
-
         }
 
         Assert.True(_store.TryDeleteSessionDirectory(sessionId));
@@ -2515,13 +2328,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Empty(await _store.ListBoundAsync(sessionId));
 
         Assert.False(Directory.Exists(sessionDir));
-
     }
 
     [SkippableFact]
     public async Task ClearEntryIdsInAmbientTransactionAsync_nulls_EntryId()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -2558,13 +2369,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Null(cleared!.EntryId);
 
         Assert.Equal(sessionId, cleared.SessionId);
-
     }
 
     [SkippableFact]
     public async Task ReconcileAsync_deletes_row_whose_file_is_missing()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -2592,12 +2401,51 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         await _store.ReconcileAsync(TimeSpan.FromHours(24));
 
         Assert.Null(await _store.GetByIdAsync(record.Id));
+    }
 
+    [SkippableFact]
+    public async Task ReconcileAsync_deletes_a_missing_sessions_attachment_and_keeps_a_live_sessions_attachment()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid liveSessionId = Guid.NewGuid();
+        Guid missingSessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(liveSessionId, "live-session");
+
+        SessionAttachmentRecord live = await _store!.PersistNewAsync(
+            liveSessionId,
+            pendingTurnId: null,
+            entryId: null,
+            "live.txt",
+            "live.txt",
+            Encoding.UTF8.GetBytes("live"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+        SessionAttachmentRecord orphan = await _store.PersistNewAsync(
+            missingSessionId,
+            pendingTurnId: null,
+            entryId: null,
+            "orphan.txt",
+            "orphan.txt",
+            Encoding.UTF8.GetBytes("orphan"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        string livePath = Path.Combine(_attachmentsRoot, live.RelativePath);
+        string orphanPath = Path.Combine(_attachmentsRoot, orphan.RelativePath);
+
+        await _store.ReconcileAsync(TimeSpan.FromDays(365));
+
+        Assert.NotNull(await _store.GetByIdAsync(live.Id));
+        Assert.True(File.Exists(livePath));
+        Assert.Null(await _store.GetByIdAsync(orphan.Id));
+        Assert.False(File.Exists(orphanPath));
+        Assert.False(Directory.Exists(Path.Combine(_attachmentsRoot, missingSessionId.ToString("N"))));
     }
 
     private async Task EnsureSessionAsync(Guid sessionId, string title)
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         _db!.Sessions.Add(new Session
@@ -2610,13 +2458,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         });
 
         await _db.SaveChangesAsync();
-
     }
 
     [SkippableFact]
     public async Task ReconcileAsync_keeps_a_row_promoted_after_the_missing_file_snapshot()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string pendingTurnId = "race-" + Guid.NewGuid().ToString("N");
@@ -2642,11 +2488,9 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         // path that no longer exists, even though the attachment is alive and bound.
         _store.AfterMissingFileSnapshotForTesting = async _ =>
         {
-
             await _store.PromotePendingAsync(pendingTurnId, sessionId, entryId);
 
             _store.AfterMissingFileSnapshotForTesting = null;
-
         };
 
         await _store.ReconcileAsync(TimeSpan.FromDays(365));
@@ -2664,13 +2508,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         ReadOnlyMemory<byte> loaded = await _store.ReadBytesAsync(survivor);
 
         Assert.Equal(bytes, loaded.ToArray());
-
     }
 
     [SkippableFact]
     public async Task ReconcileAsync_spares_an_unreferenced_file_written_after_the_sweep_started()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string liveDirectory = Path.Combine(_attachmentsRoot, Guid.NewGuid().ToString("N"), "in-flight.txt", "v1");
@@ -2696,11 +2538,9 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         // is that each pass spares what appeared after its own snapshot.
         _store!.AfterOrphanPathSnapshotForTesting = async _ =>
         {
-
             Directory.CreateDirectory(liveDirectory);
 
             await File.WriteAllTextAsync(inFlight, "ciphertext");
-
         };
 
         await _store.ReconcileAsync(TimeSpan.FromDays(365));
@@ -2710,13 +2550,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.True(File.Exists(inFlight), "the sweep unlinked ciphertext for an attachment write still in flight.");
 
         Assert.False(File.Exists(abandoned), "the sweep left a genuinely unreferenced file behind.");
-
     }
 
     [SkippableFact]
     public async Task ReconcileAsync_spares_an_in_flight_file_when_the_file_clock_lags_the_process_clock()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // The same commit spared this file on one Windows runner and unlinked it on another, so the real
@@ -2745,26 +2583,20 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         _store.AfterOrphanPathSnapshotForTesting = async _ =>
         {
-
             Directory.CreateDirectory(liveDirectory);
 
             await File.WriteAllTextAsync(inFlight, "ciphertext");
-
         };
 
         try
         {
-
             await _store.ReconcileAsync(TimeSpan.FromDays(365));
-
         }
         finally
         {
-
             _store.AfterOrphanPathSnapshotForTesting = null;
 
             _store.FileLastWriteTimeUtcForTesting = null;
-
         }
 
         Assert.True(
@@ -2773,7 +2605,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             + "ciphertext for an attachment write still in flight.");
 
         Assert.False(File.Exists(abandoned), "the sweep left a genuinely unreferenced file behind.");
-
     }
 
     private sealed class TestWorkspaceContext(string workspacePath) : IHostWorkspaceContext
@@ -2783,7 +2614,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
     private static void AddParam(System.Data.Common.DbCommand cmd, string name, object value)
     {
-
         System.Data.Common.DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -2791,19 +2621,15 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private async Task BackdateCreatedAtAsync(Guid id, DateTimeOffset createdAt)
     {
-
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using System.Data.Common.DbCommand cmd = connection.CreateCommand();
@@ -2835,7 +2661,5 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         cmd.Parameters.Add(createdParam);
 
         _ = await cmd.ExecuteNonQueryAsync();
-
     }
-
 }

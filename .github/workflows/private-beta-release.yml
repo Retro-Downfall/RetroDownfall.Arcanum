@@ -149,11 +149,38 @@ jobs:
 
       - name: Package Windows artifacts
         shell: pwsh
+        env:
+          RID: win-x64
         run: |
           New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
           .\scripts\packaging\windows\package-windows.ps1 `
             -Version "${{ steps.ver.outputs.version }}" `
-            -OutputDir .\dist\windows
+            -OutputDir .\dist\windows `
+            -Rid $env:RID
+
+      - name: Verify exact packaged Arcanum provider-contract smoke
+        shell: pwsh
+        env:
+          RID: win-x64
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = "dist\windows\arcanum-$env:RID.zip"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP ("arcanum-package-smoke-" + [guid]::NewGuid().ToString("N"))
+
+          try {
+              Expand-Archive -LiteralPath $archive -DestinationPath $smokeRoot
+              $executable = Join-Path $smokeRoot "arcanum-$env:RID\arcanum.exe"
+              & bash ./scripts/verify-published-apphost.sh --executable $executable
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Exact packaged Arcanum apphost smoke failed with exit code $LASTEXITCODE."
+              }
+          }
+          finally {
+              if (Test-Path -LiteralPath $smokeRoot) {
+                  Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+              }
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

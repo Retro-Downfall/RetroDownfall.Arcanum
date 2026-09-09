@@ -8,8 +8,7 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 {
-
-    [Theory]
+    [SkippableTheory]
     [InlineData("physical")]
     [InlineData("alias")]
     [InlineData("trailing-slash")]
@@ -17,19 +16,12 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
     [InlineData("empty")]
     public async Task Workspace_uses_physical_paths_and_removes_only_its_created_directory(string parentKind)
     {
-
-        if (!OperatingSystem.IsMacOS())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsMacOS(), "Requires macOS filesystem semantics.");
 
         string fixture = await CreatePhysicalFixtureAsync();
 
         try
         {
-
             string parent = Path.Combine(fixture, "physical parent with spaces");
 
             Directory.CreateDirectory(parent);
@@ -72,36 +64,25 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             Assert.False(Directory.Exists(workspace));
 
             Assert.True(Directory.Exists(sentinel));
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData("retarget-alias")]
     [InlineData("replace-with-symlink")]
     [InlineData("replace-with-directory")]
     public async Task Cleanup_uses_original_physical_identity_and_refuses_replaced_workspaces(string replacement)
     {
-
-        if (!OperatingSystem.IsMacOS())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsMacOS(), "Requires macOS filesystem semantics.");
 
         string fixture = await CreatePhysicalFixtureAsync();
 
         try
         {
-
             string parent = Path.Combine(fixture, "physical parent");
 
             string other = Path.Combine(fixture, "other parent");
@@ -141,56 +122,39 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             if (replacement == "retarget-alias")
             {
-
                 Assert.Empty(Directory.EnumerateFileSystemEntries(parent));
-
             }
             else
             {
-
                 Assert.True(Directory.Exists(workspace));
 
                 Assert.True(Directory.Exists(workspace + "-original"));
 
                 Assert.Equal("sentinel", await File.ReadAllTextAsync(Path.Combine(workspace, "sentinel")));
-
             }
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Workspace_rejects_missing_or_nondirectory_temp_parent_before_creating_anything(bool useFile)
     {
-
-        if (!OperatingSystem.IsMacOS())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsMacOS(), "Requires macOS filesystem semantics.");
 
         string fixture = await CreatePhysicalFixtureAsync();
 
         try
         {
-
             string parent = Path.Combine(fixture, "invalid parent");
 
             if (useFile)
             {
-
                 await File.WriteAllTextAsync(parent, "sentinel");
-
             }
 
             ProcessResult result = await RunLauncherFunctionsAsync(
@@ -204,37 +168,26 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             Assert.Empty(result.StandardOutput);
 
             Assert.Equal(useFile ? 1 : 0, Directory.EnumerateFileSystemEntries(fixture).Count());
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData("symlink")]
     [InlineData("outside-parent")]
     [InlineData("unexpected-name")]
     [InlineData("nested-child")]
     public async Task Workspace_refuses_unconfined_or_symlinked_mktemp_results(string resultKind)
     {
-
-        if (!OperatingSystem.IsMacOS())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsMacOS(), "Requires macOS filesystem semantics.");
 
         string fixture = await CreatePhysicalFixtureAsync();
 
         try
         {
-
             string parent = Path.Combine(fixture, "physical parent");
 
             string other = Path.Combine(fixture, "other parent");
@@ -257,15 +210,11 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             if (resultKind == "symlink")
             {
-
                 Directory.CreateSymbolicLink(returned, other);
-
             }
             else
             {
-
                 Directory.CreateDirectory(returned);
-
             }
 
             string sentinel = Path.Combine(returned, "sentinel");
@@ -290,27 +239,17 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             Assert.Empty(result.StandardOutput);
 
             Assert.Equal("sentinel", await File.ReadAllTextAsync(sentinel));
-
         }
         finally
         {
-
             Directory.Delete(fixture, recursive: true);
-
         }
-
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Corrected_launcher_refuses_historical_H_B_C_instrument_bytes()
     {
-
-        if (!OperatingSystem.IsMacOS())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(OperatingSystem.IsMacOS(), "Requires macOS filesystem semantics.");
 
         const string harness = "f51ac3f84c3b408510e448311d7a5e15bdbc041e";
 
@@ -322,7 +261,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         foreach (string revision in new[] { harness, baseline, candidate })
         {
-
             ProcessResult historical = await RunProcessAsync(
                 "git",
                 ["show", revision + ":scripts/benchmark-grimoire-admission.sh"],
@@ -333,7 +271,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             Assert.Equal(
                 historicalScriptSha256,
                 Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(historical.StandardOutput))));
-
         }
 
         ProcessResult result = await RunLauncherFunctionsAsync(
@@ -342,12 +279,10 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             [harness, baseline, candidate]);
 
         Assert.Equal(2, result.ExitCode);
-
     }
 
     private static async Task<string> CreatePhysicalFixtureAsync()
     {
-
         string fixture = Directory.CreateTempSubdirectory("arcanum-admission-portability-").FullName;
 
         ProcessResult physical = await RunProcessAsync("/bin/pwd", ["-P"], fixture);
@@ -355,7 +290,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         Assert.Equal(0, physical.ExitCode);
 
         return physical.StandardOutput.Trim();
-
     }
 
     private static async Task<ProcessResult> RunLauncherFunctionsAsync(
@@ -364,7 +298,6 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         IReadOnlyList<string> arguments,
         IReadOnlyDictionary<string, string?>? environment = null)
     {
-
         string scriptPath = Path.Combine(root, "scripts", "benchmark-grimoire-admission.sh");
 
         string script = await File.ReadAllTextAsync(scriptPath);
@@ -380,7 +313,5 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             ["-c", script[..dispatcherIndex] + body, scriptPath, .. arguments],
             root,
             environment);
-
     }
-
 }

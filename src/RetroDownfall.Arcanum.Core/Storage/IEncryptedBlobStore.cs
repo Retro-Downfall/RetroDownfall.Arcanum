@@ -156,6 +156,37 @@ public interface IFileEncryptionKeyProvider
         GetForReadAsync(keyId, cancellationToken);
 }
 
+/// <summary>
+/// Validates only the file-encryption state that existing ciphertext makes mandatory at startup.
+/// A fresh installation performs no credential-store read and creates no key.
+/// </summary>
+public interface IFileEncryptionKeyStartupValidator
+{
+    ValueTask ValidateStartupStateAsync(
+        CancellationToken cancellationToken = default);
+}
+
+public enum FileEncryptionRuntimeState : byte
+{
+    Pending,
+    Deferred,
+    Ready,
+    Unavailable,
+}
+
+public sealed record FileEncryptionRuntimeSnapshot(
+    FileEncryptionRuntimeState State,
+    string Detail);
+
+/// <summary>
+/// Publishes the last validated file-encryption readiness state without reopening secure storage
+/// or rescanning the encrypted-blob corpus.
+/// </summary>
+public interface IFileEncryptionRuntimeStatus
+{
+    FileEncryptionRuntimeSnapshot Current { get; }
+}
+
 public interface IFileEncryptionKeyRing : IFileEncryptionKeyProvider
 {
     Task<FileEncryptionKeyMaterial> RotateAsync(

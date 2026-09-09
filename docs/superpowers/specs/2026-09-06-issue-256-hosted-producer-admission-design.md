@@ -154,9 +154,9 @@ accepted only as an exact stopped-host path, never because a method is named `St
 ### 3.2 Bidirectional discovery and validation
 
 The inventory follows the existing Roslyn acquisition inventory rather than relying on comments. Its
-production validation builds the Infrastructure, Api, and Cli source compilations so hosted
-registrations, endpoint-invoked hosted operations, and live Backup command roots share one semantic
-call graph.
+production validation builds the Core, Secrets, Infrastructure, Api, and Cli source compilations so
+hosted registrations, endpoint-invoked hosted operations, live Backup command roots, and every
+dependency-reachable first-party body share one semantic call graph.
 Discovery covers:
 
 - direct `AddHostedService` registrations and the closed generic argument to

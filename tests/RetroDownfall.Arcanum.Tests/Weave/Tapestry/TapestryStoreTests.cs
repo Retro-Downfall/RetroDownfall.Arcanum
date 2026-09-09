@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 [Trait("Category", "Integration")]
 public sealed class TapestryStoreTests : IAsyncLifetime
 {
-
     private const int TestDimensions = 8;
 
     private static readonly TapestryScope WorkspaceScope = new(TapestryScopeKind.Workspace, "/repo");
@@ -33,7 +32,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -41,37 +39,28 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         _store = new TapestryStore(_db, new WeaveIndexAvailability());
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     private static float[] Vec(params float[] leading)
     {
-
         float[] result = new float[TestDimensions];
 
         leading.AsSpan().CopyTo(result);
 
         return result;
-
     }
 
     private Task<string> BeginAsync(string corpusFingerprint = "corpus-1") =>
@@ -143,14 +132,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
     private async Task SeedWorkspaceChunkAsync(string chunkId, string content)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -181,7 +167,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         command.Parameters.Add(body);
 
         _ = await command.ExecuteNonQueryAsync();
-
     }
 
     /// <summary>
@@ -199,7 +184,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     /// </remarks>
     private async Task SeedAttachmentChunkAsync(string sessionId, string chunkId, string content)
     {
-
         string attachmentId = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
         await ExecuteAsync(
@@ -231,7 +215,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             ("@attachmentId", attachmentId),
             ("@content", content),
             ("@dimensions", TestDimensions));
-
     }
 
     private Task RetireAttachmentChunkAsync(string chunkId) =>
@@ -241,14 +224,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
     private async Task ExecuteAsync(string sql, params (string Name, object Value)[] parameters)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -257,7 +237,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
         foreach ((string name, object value) in parameters)
         {
-
             DbParameter parameter = command.CreateParameter();
 
             parameter.ParameterName = name;
@@ -265,17 +244,14 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             parameter.Value = value;
 
             command.Parameters.Add(parameter);
-
         }
 
         _ = await command.ExecuteNonQueryAsync();
-
     }
 
     [SkippableFact]
     public async Task BuildingGenerationIsInvisibleUntilPublished()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string generationId = await BeginAsync();
@@ -304,13 +280,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(TapestryTerminalReason.LeafOnly, current.TerminalReason);
 
         Assert.Equal(SphericalKMeans.AlgorithmVersion, current.AlgorithmVersion);
-
     }
 
     [SkippableFact]
     public async Task PublishingSupersedesExactlyOnePriorGeneration()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string first = await BeginAsync("corpus-1");
@@ -344,13 +318,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(second, current!.GenerationId);
 
         Assert.Equal("corpus-2", current.CorpusFingerprint);
-
     }
 
     [SkippableFact]
     public async Task AbandoningAStagingGenerationLeavesTheCompleteOneCurrent()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string published = await BeginAsync("corpus-1");
@@ -377,13 +349,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(published, current!.GenerationId);
 
         Assert.Empty(await _store.GetNodeEmbeddingsAsync(["n2"], CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task AbandonAfterPublicationPreservesTheCompleteGenerationAndItsNodes()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string published = await BeginAsync();
@@ -403,13 +373,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal("published-leaf", Assert.Single(await _store.GetLayerNodesAsync(published, 0, CancellationToken.None)).NodeId);
 
         Assert.Contains("published-leaf", await _store.GetNodeEmbeddingsAsync(["published-leaf"], CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task ReconcileRemovesEverythingThatIsNotTheCurrentCompleteGeneration()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string published = await BeginAsync("corpus-1");
@@ -436,13 +404,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(published, (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))!.GenerationId);
 
         Assert.Single(await _store.GetNodeEmbeddingsAsync(["n1", "n2"], CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task SummariesAreOfferedForReuseByExactChildMembership()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string generationId = await BeginAsync();
@@ -480,13 +446,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             WorkspaceScope,
             TapestryHash.OfChildMembership(["h1", "h3"], TapestryHash.SummaryRecipeVersion, "fast"),
             CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task HydrationResolvesLeafContentFromTheCorpusRow()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedWorkspaceChunkAsync("c1", "public sealed class Alpha { }");
@@ -523,13 +487,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(TapestryNodeKind.Leaf, node.NodeKind);
 
         Assert.Equal(0.9f, node.Similarity);
-
     }
 
     [SkippableFact]
     public async Task HydrationDropsALeafWhoseSourceChangedSinceTheGenerationWasBuilt()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedWorkspaceChunkAsync("c1", "original");
@@ -558,13 +520,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Empty(hydrated);
-
     }
 
     [SkippableFact]
     public async Task HydrationDropsAnAttachmentLeafWhoseVersionHasBeenSuperseded()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string sessionId = Guid.NewGuid().ToString();
@@ -640,13 +600,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Empty(hydrated);
-
     }
 
     [SkippableFact]
     public async Task HydrationCarriesTheCompleteAncestorChain()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedWorkspaceChunkAsync("c1", "leaf body");
@@ -691,13 +649,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(["s1", "s2"], Assert.Single(hydrated).AncestorNodeIds);
-
     }
 
     [SkippableFact]
     public async Task LeafEnumerationReusesTheAlreadyImprintedWorkspaceEmbedding()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedWorkspaceChunkAsync("c1", "chunk body");
@@ -706,7 +662,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
         await using (DbCommand command = connection.CreateCommand())
         {
-
             command.CommandText =
                 """
                 INSERT OR REPLACE INTO workspace_file_embeddings (ChunkId, Embedding, Dim)
@@ -730,7 +685,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             command.Parameters.Add(dimension);
 
             _ = await command.ExecuteNonQueryAsync();
-
         }
 
         IReadOnlyList<TapestryLeafSource> leaves = await _store!.EnumerateLeafSourcesAsync(
@@ -750,13 +704,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.NotNull(leaf.ExistingEmbedding);
 
         Assert.Equal(0.5f, leaf.ExistingEmbedding![0]);
-
     }
 
     [SkippableFact]
     public async Task LeafEnumerationIgnoresAWrongDimensionEmbedding()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedWorkspaceChunkAsync("c1", "chunk body");
@@ -765,7 +717,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
         await using (DbCommand command = connection.CreateCommand())
         {
-
             command.CommandText =
                 """
                 INSERT OR REPLACE INTO workspace_file_embeddings (ChunkId, Embedding, Dim)
@@ -781,7 +732,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             command.Parameters.Add(embedding);
 
             _ = await command.ExecuteNonQueryAsync();
-
         }
 
         IReadOnlyList<TapestryLeafSource> leaves = await _store!.EnumerateLeafSourcesAsync(
@@ -791,13 +741,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Null(Assert.Single(leaves).ExistingEmbedding);
-
     }
 
     [SkippableFact]
     public async Task DiscoverScopesHonoursPerCorpusParticipation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedWorkspaceChunkAsync("c1", "chunk body");
@@ -817,13 +765,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.DoesNotContain(withoutWorkspace, scope => scope.Kind == TapestryScopeKind.Workspace);
-
     }
 
     [SkippableFact]
     public async Task StatusesReportOnlyPublishedGenerations()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string generationId = await BeginAsync();
@@ -862,13 +808,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(TapestryTerminalReason.SingleRoot, status.TerminalReason);
 
         Assert.Equal(2, await _store.CountPublishedNodesAsync(null, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task TerminalLayerReflectsTheHighestWrittenLayer()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string generationId = await BeginAsync();
@@ -881,7 +825,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(1, await _store.GetTerminalLayerAsync(generationId, CancellationToken.None));
-
     }
 
     /// <summary>
@@ -892,7 +835,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task PruneRemovedScopesAsync_removes_the_published_tree_of_a_scope_that_no_longer_exists()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string published = await BeginAsync();
@@ -927,7 +869,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Empty(await _store.GetNodeEmbeddingsAsync(["n1"], CancellationToken.None));
 
         Assert.Equal(0, await _store.CountPublishedNodesAsync(null, CancellationToken.None));
-
     }
 
     /// <summary>
@@ -938,7 +879,6 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task PruneRemovedScopesAsync_leaves_a_disabled_corpus_untouched()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string published = await BeginAsync();
@@ -963,7 +903,5 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(0, pruned);
 
         Assert.NotNull(await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None));
-
     }
-
 }

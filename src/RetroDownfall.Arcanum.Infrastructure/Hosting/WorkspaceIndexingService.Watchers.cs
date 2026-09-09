@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -200,6 +201,49 @@ internal sealed partial class WorkspaceIndexingService
             return;
         }
 
+        lock (_schedulerGate)
+        {
+            if (_intakeClosed || !IsCurrentLocked(entry) || entry.Watcher is not null)
+            {
+                return;
+            }
+
+            int maximum = ArcanumSettingClamps.EmbeddingsCodebaseMaxWatchers(embeddings.Codebase.MaxWatchers);
+
+            if (_watcherCount >= maximum)
+            {
+                entry.Status.MarkDegraded(overflowed: false);
+
+                return;
+            }
+        }
+
+        if (!_workAdmission.TryAcquireWorkLease(
+                GrimoireWorkKind.WorkspaceIndexing,
+                out IGrimoireWorkLease? admitted))
+        {
+            return;
+        }
+
+        IGrimoireWorkLease workLease = admitted!;
+
+        try
+        {
+            EnsureWatcherUnderLease(entry, embeddings);
+        }
+        finally
+        {
+            ValueTask disposal = workLease.DisposeAsync();
+
+            if (!disposal.IsCompletedSuccessfully)
+            {
+                disposal.AsTask().GetAwaiter().GetResult();
+            }
+        }
+    }
+
+    private void EnsureWatcherUnderLease(WorkspaceEntry entry, EmbeddingSettings embeddings)
+    {
         WatcherRegistration registration;
 
         lock (_schedulerGate)

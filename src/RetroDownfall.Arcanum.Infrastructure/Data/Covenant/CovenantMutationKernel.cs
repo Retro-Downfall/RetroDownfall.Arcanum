@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 {
-
     /// <summary>
     /// A kernel over the process-wide connection initializer, for callers with no guard of their own.
     /// </summary>
@@ -39,7 +38,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(batch);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -48,27 +46,21 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (state.IsFailure)
         {
-
             return state.Error;
-
         }
 
         if (state.Value.DatasetGeneration != batch.DatasetGeneration)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed before this mutation batch could commit.");
-
         }
 
         if (state.Value.KeyReclamationEpoch != batch.ExpectedKeyReclamationEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant key-reclamation epoch changed before this mutation batch could commit.");
-
         }
 
         // Only a batch that bound the registry is checked against it. A Campaign mutation reaches one
@@ -77,19 +69,15 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         // has a Campaign for it to apply to.
         if (batch.ExpectedCampaignRegistryEpoch is { } expectedRegistryEpoch)
         {
-
             long registryEpoch = await ReadCampaignRegistryEpochAsync(transaction, cancellationToken)
                 .ConfigureAwait(false);
 
             if (registryEpoch != expectedRegistryEpoch)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "The Campaign registry epoch changed before this mutation batch could commit.");
-
             }
-
         }
 
         // One capacity check per scope for the whole batch, before anything is appended. Checking
@@ -99,7 +87,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
                 intent.Target.Scope.Kind,
                 intent.Target.Scope.CampaignId ?? Guid.Empty)))
         {
-
             CovenantOperationScope scope = group.Key.Kind == CovenantScope.Global
                 ? CovenantOperationScope.Global
                 : CovenantOperationScope.ForCampaign(group.Key.Campaign);
@@ -110,11 +97,8 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
             if (capacity.IsFailure)
             {
-
                 return capacity.Error;
-
             }
-
         }
 
         List<CovenantMutationReceipt> receipts = [];
@@ -125,7 +109,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         foreach (CovenantMutationIntent intent in batch.Intents)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             Result<CovenantMutationReceipt?> replayed = await TryReplayAsync(transaction, intent, cancellationToken)
@@ -133,27 +116,21 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
             if (replayed.IsFailure)
             {
-
                 return replayed.Error;
-
             }
 
             if (replayed.Value is { } existing)
             {
-
                 receipts.Add(existing);
 
                 continue;
-
             }
 
             if (searchSequence == 0)
             {
-
                 // One sequence per batch, allocated lazily: a batch that turns out to be entirely
                 // NoChange must not advance a counter the accelerator uses to detect real work.
                 searchSequence = checked(state.Value.CanonicalSearchSequence + 1);
-
             }
 
             Result<AppliedMutation> applied = await ApplyIntentAsync(
@@ -167,32 +144,24 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
             if (applied.IsFailure)
             {
-
                 return applied.Error;
-
             }
 
             receipts.Add(applied.Value.Receipt);
 
             if (applied.Value.HeadChanged)
             {
-
                 changedHeads = checked(changedHeads + 1);
-
             }
-
         }
 
         if (changedHeads > 0)
         {
-
             await AdvanceSearchSequenceAsync(transaction, searchSequence, batch.CommittedAtUtc, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         return receipts;
-
     }
 
     private static async ValueTask<Result<CovenantMutationReceipt?>> TryReplayAsync(
@@ -200,7 +169,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationIntent intent,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         // The receipt table carries no EntryId column, so the committed entry has to be recovered
@@ -229,20 +197,16 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<CovenantMutationReceipt?>.Success(null);
-
         }
 
         CovenantDigest storedRequest = new((byte[])reader.GetValue(0));
 
         if (storedRequest != intent.Authorization.RequestIdempotencyDigest)
         {
-
             return new Error(
                 "Security.IdempotencyConflict",
                 "This Covenant mutation ID was already used with different client input.");
-
         }
 
         Guid? resultingVersionId = reader.IsDBNull(8)
@@ -278,7 +242,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
                 new CovenantDigest((byte[])reader.GetValue(1)),
                 new CovenantDigest((byte[])reader.GetValue(2)),
                 Replayed: true));
-
     }
 
     private static async ValueTask<Result<AppliedMutation>> ApplyIntentAsync(
@@ -289,7 +252,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         int ordinal,
         CancellationToken cancellationToken)
     {
-
         HeadRow? head = await ReadHeadAsync(transaction, intent, cancellationToken).ConfigureAwait(false);
 
         long keyEpoch = await ReadKeyEpochAsync(transaction, intent.Target.NormalizedKey.Value, cancellationToken)
@@ -297,22 +259,18 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (keyEpoch != intent.ExpectedKeyEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "This normalized key changed after the mutation was prepared.");
-
         }
 
         long currentRevision = head?.LaneRevision ?? 0;
 
         if (currentRevision != intent.ExpectedLaneRevision)
         {
-
             return new Error(
                 ErrorCodes.Covenant.RevisionConflict,
                 "The targeted Covenant lane head is not at the expected revision.");
-
         }
 
         // A pin refuses agent authorship of the head it marks, and it is enforced here rather than only
@@ -321,11 +279,9 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved
             && await IsPinnedAsync(transaction, intent, keyEpoch, cancellationToken).ConfigureAwait(false))
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant entry is pinned, so the agent may not write over it or retire it.");
-
         }
 
         bool retired = head is { OperationCode: (int)CovenantOperation.Retire };
@@ -334,14 +290,11 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (lifecycle.IsFailure)
         {
-
             return lifecycle.Error;
-
         }
 
         if (!lifecycle.Value)
         {
-
             CovenantMutationReceipt noChange = new(
                 intent.MutationId,
                 CovenantMutationOutcome.NoChange,
@@ -360,7 +313,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             await InsertReceiptAsync(transaction, batch, intent, noChange, cancellationToken).ConfigureAwait(false);
 
             return new AppliedMutation(noChange, HeadChanged: false);
-
         }
 
         Guid entryId = head?.EntryId
@@ -386,9 +338,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         foreach (CovenantMutationProvenanceLeaf leaf in intent.Provenance)
         {
-
             await InsertProvenanceAsync(transaction, versionId, leaf, cancellationToken).ConfigureAwait(false);
-
         }
 
         long searchRowId = head?.SearchRowId
@@ -436,7 +386,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         await InsertReceiptAsync(transaction, batch, intent, receipt, cancellationToken).ConfigureAwait(false);
 
         return new AppliedMutation(receipt, HeadChanged: true);
-
     }
 
     /// <summary>
@@ -456,7 +405,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         long keyEpoch,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -479,60 +427,46 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is not (null or DBNull) && Convert.ToInt64(value, CultureInfo.InvariantCulture) == 1;
-
     }
 
     private static Result<bool> ValidateLifecycle(CovenantMutationIntent intent, HeadRow? head, bool retired)
     {
-
         if (intent.Operation == CovenantOperation.Retire)
         {
-
             if (head is null)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "There is no Covenant head in this scope and lane to retire.");
-
             }
 
             // Retiring a tombstone is a deliberate no-op rather than an error: the caller's intent is
             // already satisfied.
             return Result<bool>.Success(!retired);
-
         }
 
         if (retired)
         {
-
             if (intent.Target.Lane == CovenantLane.Proposed)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "An agent cannot reactivate a retired Proposed Covenant lane.");
-
             }
 
             if (!intent.Reactivate)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "This Covenant head is retired and reactivation was not requested.");
-
             }
 
             return Result<bool>.Success(true);
-
         }
 
         if (head is null)
         {
-
             return Result<bool>.Success(true);
-
         }
 
         // Byte-identical authored and compiled content against a live head changes nothing, so it
@@ -541,7 +475,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             && head.RenderedHash == intent.Artifact.RenderedHash;
 
         return Result<bool>.Success(!identical);
-
     }
 
     private static CovenantDigest ProvenanceDigest(ImmutableArray<CovenantMutationProvenanceLeaf> provenance) =>
@@ -562,7 +495,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -576,11 +508,9 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "The Covenant canonical tier has no state row, so nothing can be published against it.");
-
         }
 
         return new CanonicalState(
@@ -588,14 +518,12 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             reader.GetInt64(1),
             reader.GetInt64(2),
             reader.GetInt64(3));
-
     }
 
     private static async ValueTask<long> ReadCampaignRegistryEpochAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = "SELECT RegistryEpoch FROM campaign_registry_state WHERE StateKey = 1;";
@@ -603,7 +531,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async ValueTask<long> ReadKeyEpochAsync(
@@ -611,7 +538,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         string normalizedKey,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = "SELECT COALESCE(MAX(KeyEpoch), 0) FROM covenant_key_epochs WHERE NormalizedKey = $key;";
@@ -621,7 +547,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async ValueTask<HeadRow?> ReadHeadAsync(
@@ -629,7 +554,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationIntent intent,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = $"""
@@ -649,9 +573,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (intent.Target.Scope.Kind == CovenantScope.Campaign)
         {
-
             Bind(command, "$campaign", intent.Target.Scope.CampaignId!.Value.ToString("D"));
-
         }
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
@@ -659,9 +581,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         return new HeadRow(
@@ -672,7 +592,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             reader.GetInt64(4),
             reader.IsDBNull(5) ? null : new CovenantDigest((byte[])reader.GetValue(5)),
             reader.IsDBNull(6) ? null : new CovenantDigest((byte[])reader.GetValue(6)));
-
     }
 
     private static async ValueTask<Guid> ResolveOrCreateEntryAsync(
@@ -681,10 +600,8 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationIntent intent,
         CancellationToken cancellationToken)
     {
-
         await using (SqliteCommand existing = transaction.CreateCommand())
         {
-
             existing.CommandText = $"""
                 SELECT EntryId
                 FROM covenant_entries
@@ -698,20 +615,15 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
             if (intent.Target.Scope.Kind == CovenantScope.Campaign)
             {
-
                 Bind(existing, "$campaign", intent.Target.Scope.CampaignId!.Value.ToString("D"));
-
             }
 
             object? found = await existing.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
             if (found is string text)
             {
-
                 return Guid.Parse(text, CultureInfo.InvariantCulture);
-
             }
-
         }
 
         Guid entryId = Guid.NewGuid();
@@ -741,7 +653,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return entryId;
-
     }
 
     private static async ValueTask InsertVersionAsync(
@@ -755,7 +666,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantDigest provenanceDigest,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -846,7 +756,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Bind(command, "$created", Iso(batch.CommittedAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask InsertProvenanceAsync(
@@ -855,7 +764,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationProvenanceLeaf leaf,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -888,7 +796,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Bind(command, "$reference", (object?)leaf.MaterializationReference ?? DBNull.Value);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask<long> AllocateSearchRowIdAsync(
@@ -896,7 +803,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         DateTimeOffset committedAtUtc,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         // The counter advances before the head exists, because the head insert trigger refuses a row
@@ -914,7 +820,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async ValueTask UpsertHeadAsync(
@@ -928,7 +833,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         bool exists,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = exists
@@ -967,13 +871,10 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (exists)
         {
-
             Bind(command, "$expected", intent.ExpectedLaneRevision);
-
         }
         else
         {
-
             Bind(command, "$scope", (int)intent.Target.Scope.Kind);
 
             Bind(
@@ -984,21 +885,17 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             Bind(command, "$key", intent.Target.NormalizedKey.Value);
 
             Bind(command, "$row", searchRowId);
-
         }
 
         int affected = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         if (affected != 1)
         {
-
             // The revision matched when it was read and did not match when it was written, so another
             // writer committed in between. Failing here rolls the whole batch back.
             throw new InvalidOperationException(
                 "The Covenant lane head changed between its compare and its swap.");
-
         }
-
     }
 
     private static async ValueTask InsertOutboxAsync(
@@ -1011,7 +908,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Guid desiredVersionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -1032,7 +928,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Bind(command, "$desired", desiredVersionId.ToString("D"));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask InsertReceiptAsync(
@@ -1042,7 +937,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationReceipt receipt,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -1093,7 +987,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Bind(command, "$committed", Iso(batch.CommittedAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask AdvanceSearchSequenceAsync(
@@ -1102,7 +995,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         DateTimeOffset committedAtUtc,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -1119,19 +1011,16 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         if (affected != 1)
         {
-
             throw new InvalidOperationException(
                 "The Covenant canonical search sequence moved while this batch was publishing.");
-
         }
-
     }
 
     private static void Bind(SqliteCommand command, string name, object value) =>
         _ = command.Parameters.AddWithValue(name, value);
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private readonly record struct CanonicalState(
         Guid DatasetGeneration,
@@ -1149,5 +1038,4 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantDigest? RenderedHash);
 
     private readonly record struct AppliedMutation(CovenantMutationReceipt Receipt, bool HeadChanged);
-
 }

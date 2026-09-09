@@ -21,21 +21,20 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class GrimoireAdmissionRouteInventoryTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public GrimoireAdmissionRouteInventoryTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     /// <summary>
-    /// Exactly two composed routes are exempt, and both are exempt for a stated reason.
+    /// Exactly three composed routes are exempt, and all are exempt for a stated reason.
     /// </summary>
     /// <remarks>
-    /// Health because it already answers a closed gate better than a refusal could — its own probe
+    /// Presence because it must authenticate the local server before a client retrieves its API key,
+    /// and its minimal handler uses only the process-local digest cache. Health because it already
+    /// answers a closed gate better than a refusal could — its own probe
     /// catches the refusal and reports an Unhealthy component naming only an exception type, inside
     /// the documented success envelope that <c>arcanum doctor</c>, <c>arcanum watch health</c> and
     /// auto-launch all parse. Quit because it is the shutdown step of the factory-reset sequence and
@@ -47,9 +46,8 @@ public sealed class GrimoireAdmissionRouteInventoryTests
     /// the erasure can promote it out of its own drain.</para>
     /// </remarks>
     [Fact]
-    public void Exactly_health_and_quit_stand_outside_grimoire_admission()
+    public void Exactly_presence_health_and_quit_stand_outside_grimoire_admission()
     {
-
         _ = _factory.CreateAuthenticatedClient();
 
         EndpointDataSource endpoints = _factory.Services.GetRequiredService<EndpointDataSource>();
@@ -66,8 +64,21 @@ public sealed class GrimoireAdmissionRouteInventoryTests
                 .OrderBy(static name => name, StringComparer.Ordinal),
         ];
 
-        Assert.Equal(["GetHealth", "QuitServer"], exempt);
+        Assert.Equal(["GetArcanumPresenceProof", "GetHealth", "QuitServer"], exempt);
 
+        Endpoint presence = Assert.Single(
+            endpoints.Endpoints,
+            static candidate => string.Equals(
+                candidate.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName,
+                "GetArcanumPresenceProof",
+                StringComparison.Ordinal));
+
+        Assert.Null(presence.Metadata.GetMetadata<ApiKeyRequirementMetadata>());
+
+        Assert.Equal(
+            "GET",
+            Assert.IsType<InstallationResetRecoveryApiRouteMetadata>(presence.Metadata
+                .GetMetadata<InstallationResetRecoveryApiRouteMetadata>()).Method);
     }
 
     /// <summary>
@@ -82,7 +93,6 @@ public sealed class GrimoireAdmissionRouteInventoryTests
     [Fact]
     public void The_composed_host_registers_the_admission_holder_per_request()
     {
-
         _ = _factory.CreateAuthenticatedClient();
 
         using IServiceScope first = _factory.Services.CreateScope();
@@ -99,7 +109,6 @@ public sealed class GrimoireAdmissionRouteInventoryTests
             second.ServiceProvider.GetRequiredService<GrimoireRequestAdmissionScope>());
 
         Assert.Null(one.Lease);
-
     }
 
     /// <summary>
@@ -108,7 +117,6 @@ public sealed class GrimoireAdmissionRouteInventoryTests
     [Fact]
     public void The_factory_reset_route_is_not_exempt_from_admission()
     {
-
         _ = _factory.CreateAuthenticatedClient();
 
         EndpointDataSource endpoints = _factory.Services.GetRequiredService<EndpointDataSource>();
@@ -124,7 +132,6 @@ public sealed class GrimoireAdmissionRouteInventoryTests
 
         Assert.NotNull(
             factoryReset.Metadata.GetMetadata<InstallationResetRecoveryApiRouteMetadata>());
-
     }
 
     /// <summary>
@@ -139,7 +146,6 @@ public sealed class GrimoireAdmissionRouteInventoryTests
     [Fact]
     public void Grimoire_admission_precedes_recovery_admission_and_covenant_authority_after_the_key_check()
     {
-
         string source = Assert.Single(
             ProductionSourceInventory.Sources(),
             static candidate => candidate.IsExactOwner(
@@ -171,7 +177,6 @@ public sealed class GrimoireAdmissionRouteInventoryTests
         Assert.True(recovery > admission, "recovery admission ran before Grimoire admission");
 
         Assert.True(covenant > admission, "Covenant authority was issued before Grimoire admission");
-
     }
 
     /// <summary>
@@ -186,7 +191,6 @@ public sealed class GrimoireAdmissionRouteInventoryTests
     [Fact]
     public void The_anonymous_branch_hides_before_it_admits()
     {
-
         string source = Assert.Single(
             ProductionSourceInventory.Sources(),
             static candidate => candidate.IsExactOwner(
@@ -211,7 +215,5 @@ public sealed class GrimoireAdmissionRouteInventoryTests
         Assert.True(
             admission < authenticated,
             "the anonymous branch does not take Grimoire admission");
-
     }
-
 }

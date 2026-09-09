@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </summary>
 public sealed class NullableInterfaceConstructorDefaultTests
 {
-
     /// <summary>
     /// The parameters this inventory does not fail on, each with the reason a reviewer can check.
     /// </summary>
@@ -52,7 +51,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// </remarks>
     private static readonly Dictionary<string, string> Allowed = new(StringComparer.Ordinal)
     {
-        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:encryptedBlobDiagnostics"] = "owner is container-activated and IEncryptedBlobDiagnostics is registered; the container supplies it in a composed host",
+        ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:fileEncryptionRuntimeStatus"] = "owner is container-activated and IFileEncryptionRuntimeStatus is registered; the container supplies its constant-time snapshot in a composed host",
 
         ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:operationDiagnosticsSource"] = "every use of the IDurableOperationDiagnostics is null-safe; absence disables an observation, not a refusal",
 
@@ -162,6 +161,10 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:policyStore"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDataRetentionPolicyStore",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:sameOwnerLeaseResumption"] = "owner is container-activated and ILongRunningOperationSameOwnerLeaseResumption is registered from the same scoped LongRunningOperationStore; an omitted test seam fails closed into reconciliation instead of resuming without proof",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/ApprenticeService.cs:ApprenticeService:executionCapacity"] = "the null coalesces to a process-owned DefaultApprenticeExecutionCapacity, so every host has the atomic concurrency gate while focused reliability tests can inject a controlled implementation",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs:LongRunningOperationStore:covenantDrain"] = "every use of the ICovenantConnectionDrain is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs:SagaMemoryStore:labeledArtifactGuard"] = "the owner is registered at ServiceCollectionExtensions.cs:1225 and ICovenantLabeledArtifactGuard at :1949; a null skips the label guard in DeleteAsync (SagaMemoryStore.cs:518) and DeleteAllAsync (:622), so the container supplying it is what keeps those refusals reachable",
@@ -175,6 +178,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:GrimoireDatabaseHostedService:transitionRecovery"] = "IGrimoireOfflineTransitionStartupRecovery is registered at ServiceCollectionExtensions.cs and the composed host factory passes it; absence does not open a bypass - the else arm falls back to InstallationResetHostStartupAdmission.LeavesTransitionUnfinished, which is the refusal this parameter replaced, so a null resumes nothing and admits nothing",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:GrimoireDatabaseHostedService:startupProbe"] = "the null coalesces to InstallationStartupProbe.CreateDefault() at GrimoireDatabaseHostedService.cs:37, and the only construction in src - the DI factory at ServiceCollectionExtensions.cs:1058 - never passes one, so that default is the production probe",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs:GrimoireDatabaseHostedService:postTopologyStartupAction"] = "optional startup presentation hook; absence skips console redirection or listen-any acknowledgement persistence, not database initialization, recovery, admission, or a refusal",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetCoordinator.cs:HostToolsMarkerPairResetCoordinator:managedFiles"] = "every use of the IFullInstallationResetManagedFileReconciler is null-safe; absence disables an observation, not a refusal",
 
@@ -193,6 +198,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:stoppedHostPairReader"] = "every use of the IInstallationResetStoppedHostProcessToolsPairReader is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:workspaceResolver"] = "every use of the IInstallationResetWorkspaceResolver is null-safe; absence disables an observation, not a refusal",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs:InstallationResetService:deferredServices"] = "the composed host registers IInstallationResetDeferredServices; omission is a restricted test seam that stops full reset at durable admitted/recovery-required state instead of bypassing marker-pair or terminal verification",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellCatalogService.cs:SpellCatalogService:progressObserver"] = "every use of the ISpellCatalogProgressObserver is null-safe; absence disables an observation, not a refusal",
 
@@ -259,31 +266,22 @@ public sealed class NullableInterfaceConstructorDefaultTests
     [Fact]
     public void Every_nullable_interface_constructor_default_is_removed_or_allowed_with_a_reason()
     {
-
         List<string> offenders = [];
 
         foreach (ProductionSource source in ProductionSourceInventory.Sources())
         {
-
             foreach (ConstructorParameters constructor in ConstructorParameterLists.Of(source.Text))
             {
-
                 foreach (Match match in NullableInterfaceDefault.Matches(constructor.ParameterList))
                 {
-
                     string key = $"{source.RelativePath}:{constructor.DeclaringType}:{match.Groups[2].Value}";
 
                     if (!Allowed.ContainsKey(key))
                     {
-
                         offenders.Add($"{key} is a {match.Groups[1].Value} defaulting to null");
-
                     }
-
                 }
-
             }
-
         }
 
         // Named rather than counted. Assert.Empty truncates each entry at fifty characters and prints
@@ -292,7 +290,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
         Assert.True(
             offenders.Count == 0,
             string.Join("\n", offenders.Order(StringComparer.Ordinal)));
-
     }
 
     /// <summary>
@@ -311,7 +308,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
     [Fact]
     public void The_Grimoire_repository_composes_through_one_closed_constructor()
     {
-
         ConstructorInfo constructor = Assert.Single(
             typeof(GrimoireRepository).GetConstructors(
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic));
@@ -332,9 +328,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
                 .Where(static parameter => parameter.HasDefaultValue)
                 .Select(static parameter => $"{parameter.Name} is optional")
                 .ToArray());
-
     }
-
 }
 
 /// <summary>
@@ -359,7 +353,6 @@ internal readonly record struct ConstructorParameters(string DeclaringType, stri
 /// </remarks>
 internal static class ConstructorParameterLists
 {
-
     private static readonly Regex TypeName = new(
         @"\b(?:class|record|struct)\s+(\w+)",
         RegexOptions.Compiled,
@@ -389,45 +382,35 @@ internal static class ConstructorParameterLists
     /// </summary>
     internal static IReadOnlyList<ConstructorParameters> Of(string text)
     {
-
         HashSet<string> declaredTypes = new(StringComparer.Ordinal);
 
         foreach (Match match in TypeName.Matches(text))
         {
-
             _ = declaredTypes.Add(match.Groups[1].Value);
-
         }
 
         List<ConstructorParameters> constructors = [];
 
         foreach (Match match in PrimaryConstructor.Matches(text))
         {
-
             constructors.Add(new ConstructorParameters(
                 match.Groups[1].Value,
                 ParenthesisedRun(text, match.Index + match.Length - 1)));
-
         }
 
         foreach (Match match in OrdinaryConstructor.Matches(text))
         {
-
             // A method cannot share its enclosing type's name, so an identifier that does name a
             // declared type and is immediately called is a constructor declaration.
             if (declaredTypes.Contains(match.Groups[1].Value))
             {
-
                 constructors.Add(new ConstructorParameters(
                     match.Groups[1].Value,
                     ParenthesisedRun(text, match.Index + match.Length - 1)));
-
             }
-
         }
 
         return constructors;
-
     }
 
     /// <summary>
@@ -440,40 +423,29 @@ internal static class ConstructorParameterLists
     /// </remarks>
     private static string ParenthesisedRun(string text, int opening)
     {
-
         StringBuilder run = new();
 
         int depth = 0;
 
         for (int index = opening; index < text.Length; index++)
         {
-
             _ = run.Append(text[index]);
 
             if (text[index] == '(')
             {
-
                 depth++;
-
             }
             else if (text[index] == ')')
             {
-
                 depth--;
 
                 if (depth == 0)
                 {
-
                     break;
-
                 }
-
             }
-
         }
 
         return run.ToString();
-
     }
-
 }

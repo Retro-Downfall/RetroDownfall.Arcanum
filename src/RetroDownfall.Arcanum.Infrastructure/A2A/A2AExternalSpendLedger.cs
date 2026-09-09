@@ -31,7 +31,6 @@ internal sealed class A2AExternalSpendLedger(
     TimeProvider timeProvider,
     ILogger<A2AExternalSpendLedger> logger) : IExternalSpendLedger
 {
-
     /// <summary>
     /// Rows read per day. A ceiling on the scan, not on delegation: exceeding it is logged rather than
     /// silently truncating the figure an operator is about to make a spending decision on.
@@ -40,25 +39,20 @@ internal sealed class A2AExternalSpendLedger(
 
     public async Task<ExternalSpendSummary> GetTodayAsync(CancellationToken cancellationToken = default)
     {
-
         DateTimeOffset now = timeProvider.GetUtcNow();
 
         DateTimeOffset dayStart = new(now.Year, now.Month, now.Day, 0, 0, 0, TimeSpan.Zero);
 
         try
         {
-
             return await SqliteBusyRetry.ExecuteAsync(
                     async () =>
                     {
-
                         DbConnection connection = db.Database.GetDbConnection();
 
                         if (connection.State != ConnectionState.Open)
                         {
-
                             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
                         }
 
                         await using DbCommand cmd = connection.CreateCommand();
@@ -78,9 +72,9 @@ internal sealed class A2AExternalSpendLedger(
 
                         Add(cmd, "@completed", (int)LongRunningOperationState.Completed);
 
-                        Add(cmd, "@dayStart", dayStart.ToString("o", CultureInfo.InvariantCulture));
+                        Add(cmd, "@dayStart", UtcInstantText.Format(dayStart));
 
-                        Add(cmd, "@dayEnd", dayStart.AddDays(1).ToString("o", CultureInfo.InvariantCulture));
+                        Add(cmd, "@dayEnd", UtcInstantText.Format(dayStart.AddDays(1)));
 
                         Add(cmd, "@limit", MaxRowsPerDay);
 
@@ -100,32 +94,25 @@ internal sealed class A2AExternalSpendLedger(
 
                         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                         {
-
                             rows++;
 
                             if (reader.IsDBNull(0)
                                 || reader.GetInt32(1) != A2ASendingLedger.CheckpointVersion)
                             {
-
                                 continue;
-
                             }
 
                             if (A2ASendingLedger.TryReadPayload((byte[])reader.GetValue(0)) is not { } record
                                 || record.Direction != A2ASendingRecordDirection.Outbound)
                             {
-
                                 continue;
-
                             }
 
                             if (!record.CostKnown)
                             {
-
                                 unpriced++;
 
                                 continue;
-
                             }
 
                             priced++;
@@ -133,42 +120,33 @@ internal sealed class A2AExternalSpendLedger(
                             knownCost += record.CostUsd ?? 0m;
 
                             knownTokens += Math.Max(0, record.TotalTokens ?? 0);
-
                         }
 
                         if (rows >= MaxRowsPerDay)
                         {
-
                             logger.LogWarning(
                                 "A2A: today's delegated-spend figure was computed from the first {Rows} settled "
                                 + "Sendings; anything beyond that is not included in the reported total.",
                                 MaxRowsPerDay);
-
                         }
 
                         return new ExternalSpendSummary(knownCost, knownTokens, priced, unpriced);
-
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             // Budget surfaces degrade to "no delegated spend known" rather than failing: a Grimoire read
             // that cannot answer must not take down the operator's view of local spend with it.
             logger.LogWarning(ex, "A2A: could not read today's delegated spend.");
 
             return ExternalSpendSummary.None;
-
         }
-
     }
 
     private static void Add(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -176,7 +154,5 @@ internal sealed class A2AExternalSpendLedger(
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
-
 }

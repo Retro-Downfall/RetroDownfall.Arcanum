@@ -24,11 +24,9 @@ internal sealed record CovenantArtifactPurgeTarget(
     string KeyColumn,
     bool ExistsConditionally = false)
 {
-
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
     internal string DeleteBy(string parameter) =>
         $"DELETE FROM {Table} WHERE {CovenantIdentitySql.Keyed(KeyColumn, parameter)};";
-
 }
 
 /// <summary>
@@ -53,7 +51,6 @@ internal sealed record CovenantArtifactPurgePlan(
 /// </summary>
 internal static class CovenantArtifactPurgePlans
 {
-
     private static readonly Dictionary<SensitiveArtifactKind, CovenantArtifactPurgePlan> Plans = new()
     {
         [SensitiveArtifactKind.AssistantEntry] = new(
@@ -166,7 +163,6 @@ internal static class CovenantArtifactPurgePlans
 
     /// <summary>The kinds whose content rows this build can actually delete.</summary>
     internal static IReadOnlyCollection<SensitiveArtifactKind> MaterializedKinds => Plans.Keys;
-
 }
 
 /// <summary>
@@ -186,7 +182,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
     ICovenantSqliteConnectionInitializer initializer,
     TimeProvider timeProvider) : ICovenantProtectedArtifactErasureKernel
 {
-
     private readonly ICovenantConnectionSource _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
 
@@ -200,7 +195,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         CovenantArtifactErasureAuthority authority,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(page);
 
         ArgumentNullException.ThrowIfNull(authority);
@@ -209,9 +203,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         if (current.IsFailure)
         {
-
             return Stalled(CovenantErasureBlocker.AuthorityStale);
-
         }
 
         // A page computed against a dataset generation the lease did not capture describes artifacts
@@ -220,9 +212,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         if (authority.Snapshot.DatasetGeneration is { } generation
             && generation != page.ExpectedDatasetGeneration)
         {
-
             return Stalled(CovenantErasureBlocker.IntegrityFailure);
-
         }
 
         SqliteConnection connection = await _connections
@@ -236,7 +226,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         foreach (CovenantProtectedArtifactErasureItem item in page.Items)
         {
-
             Result<CovenantArtifactErasureProgress> erased = await EraseOneAsync(
                 connection,
                 item,
@@ -246,9 +235,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
             if (erased.IsFailure)
             {
-
                 return erased;
-
             }
 
             progress = progress.Add(erased.Value);
@@ -258,15 +245,11 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             // authorized.
             if (erased.Value.IsBlocked)
             {
-
                 break;
-
             }
-
         }
 
         return Result<CovenantArtifactErasureProgress>.Success(progress);
-
     }
 
     private async Task<Result<CovenantArtifactErasureProgress>> EraseOneAsync(
@@ -276,19 +259,15 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         CovenantSqliteAuthorizationKind authorization,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantSensitiveArtifactPurgeRule> rule = CovenantSensitiveArtifactPurgePolicy.Resolve(item.Kind);
 
         if (rule.IsFailure)
         {
-
             return Result<CovenantArtifactErasureProgress>.Failure(rule.Error);
-
         }
 
         try
         {
-
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
             Result<CovenantOperationScope?> owner = await ReadCurrentOwnerAsync(
@@ -299,16 +278,13 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
             if (owner.IsFailure)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return Blocked(CovenantErasureBlocker.IntegrityFailure);
-
             }
 
             if (owner.Value is not { } scope)
             {
-
                 // No live label at the exact identity, kind, revision, and digest the page named. The
                 // artifact was either already purged or is not the one this page described, and both
                 // answers are "do not delete anything here".
@@ -316,21 +292,17 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
                 return Result<CovenantArtifactErasureProgress>.Success(
                     new CovenantArtifactErasureProgress(1, 0, 1, CovenantErasureBlocker.None));
-
             }
 
             if (!authority.Covers(scope))
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return Blocked(CovenantErasureBlocker.ManualOwnershipMismatch);
-
             }
 
             using (_initializer.Authorize(connection, authorization))
             {
-
                 await ApplyPlanAsync(
                     connection,
                     transaction,
@@ -338,7 +310,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                     rule.Value,
                     ErasureOperationIdentity(authority),
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -349,15 +320,11 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                     1,
                     rule.Value.AppendsErasureReceipt ? 1UL : 0UL,
                     CovenantErasureBlocker.None));
-
         }
         catch (SqliteException)
         {
-
             return Blocked(CovenantErasureBlocker.IntegrityFailure);
-
         }
-
     }
 
     /// <summary>
@@ -377,19 +344,15 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         Guid operationId,
         CancellationToken cancellationToken)
     {
-
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(item.Kind);
 
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
-
             if (projection.ExistsConditionally
                 && !await TableExistsAsync(connection, transaction, projection.Table, cancellationToken)
                     .ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             await ExecuteAsync(
@@ -398,38 +361,31 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                 projection.DeleteBy("$artifactKey"),
                 item,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (rule.RepairsCurrentPointer && plan.CurrentPointerTable is { } pointer)
         {
-
             await ExecuteAsync(
                 connection,
                 transaction,
                 $"DELETE FROM {pointer} WHERE {CovenantIdentitySql.Keyed("CurrentArtifactId", "$artifactKey")};",
                 item,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (plan.RedactionSql is { } redaction)
         {
-
             await ExecuteAsync(connection, transaction, redaction, item, cancellationToken).ConfigureAwait(false);
-
         }
 
         if (plan.Artifact is { } artifact)
         {
-
             await ExecuteAsync(
                 connection,
                 transaction,
                 artifact.DeleteBy("$artifactKey"),
                 item,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         // The label is the one table whose identities have a single writer. ArtifactSensitivityLedger
@@ -445,20 +401,15 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         if (rule.AppendsErasureReceipt)
         {
-
             await AppendErasureReceiptAsync(connection, transaction, item, operationId, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (rule.RepairsSessionSensitivityState && item.SessionId is { } sessionId)
         {
-
             await RepairSessionSensitivityAsync(connection, transaction, sessionId, cancellationToken)
                 .ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -478,7 +429,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         Guid operationId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -504,7 +454,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         _ = command.Parameters.AddWithValue("$now", Iso(_time.GetUtcNow()));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -542,7 +491,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -562,7 +510,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         _ = command.Parameters.AddWithValue("$now", Iso(_time.GetUtcNow()));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -574,7 +521,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         CovenantProtectedArtifactErasureItem item,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -605,9 +551,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<CovenantOperationScope?>.Success(null);
-
         }
 
         Guid? liveSession = reader.IsDBNull(1)
@@ -619,19 +563,16 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         // computed, and no authority computed against the old owner may erase it.
         if (liveSession != item.SessionId)
         {
-
             return Result<CovenantOperationScope?>.Failure(
                 new Error(
                     ErrorCodes.Covenant.RevisionConflict,
                     "The artifact's recorded Session owner changed after this erasure page was computed."));
-
         }
 
         return Result<CovenantOperationScope?>.Success(
             reader.IsDBNull(0)
                 ? CovenantOperationScope.Global
                 : CovenantOperationScope.ForCampaign(Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture)));
-
     }
 
     private static async Task ExecuteAsync(
@@ -641,7 +582,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         CovenantProtectedArtifactErasureItem item,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -675,7 +615,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             item.SessionId is { } key ? CovenantIdentitySql.Key(key) : DBNull.Value);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -696,7 +635,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         string table,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -710,7 +648,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         object? found = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return found is not null && found != DBNull.Value;
-
     }
 
     private static Result<CovenantArtifactErasureProgress> Stalled(CovenantErasureBlocker blocker) =>
@@ -722,8 +659,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             new CovenantArtifactErasureProgress(1, 0, 1, blocker));
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
 }

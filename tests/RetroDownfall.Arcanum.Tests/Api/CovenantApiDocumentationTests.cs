@@ -15,11 +15,9 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// </remarks>
 public sealed class CovenantApiDocumentationTests
 {
-
     [Fact]
     public void The_api_reference_does_not_call_the_inspection_routes_unmapped_while_they_are_mapped()
     {
-
         string root = RepositoryRoot();
 
         string bootstrapper = File.ReadAllText(
@@ -35,30 +33,8 @@ public sealed class CovenantApiDocumentationTests
             "those dedicated management routes remain unregistered",
             reference,
             StringComparison.Ordinal);
-
     }
 
-    private static string RepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
+    private static string RepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

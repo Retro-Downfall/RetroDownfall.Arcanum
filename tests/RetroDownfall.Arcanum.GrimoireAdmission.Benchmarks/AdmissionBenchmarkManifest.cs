@@ -16,8 +16,7 @@ internal sealed record AdmissionBenchmarkManifest(
     string InputCatalogShapeDigest,
     string[] SourceDifferenceAllowlist)
 {
-
-    private const string ExactInputCatalogShapeDigest = "a91e37b24069581e03cdc473a5fc188f8eeceb6bd83f4d9d273fb17ffebf20fa";
+    private const string ExactInputCatalogShapeDigest = "f3379e03364f8abc45b18e9abe1940997bc8ffa718a40668f9189bd6fadafb34";
 
     private static readonly string[] ExactAllowlist =
     [
@@ -29,29 +28,23 @@ internal sealed record AdmissionBenchmarkManifest(
         string json,
         JsonTypeInfo<AdmissionBenchmarkManifest> typeInfo)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(json);
 
         AdmissionBenchmarkManifest manifest;
 
         try
         {
-
             manifest = JsonSerializer.Deserialize(json, typeInfo)
                 ?? throw new InvalidDataException("The benchmark manifest is empty.");
-
         }
         catch (JsonException exception)
         {
-
             throw new InvalidDataException("The benchmark manifest is not valid closed-schema JSON.", exception);
-
         }
 
         manifest.Validate();
 
         return manifest;
-
     }
 
     internal static AdmissionBenchmarkManifest CreateDefault() =>
@@ -105,15 +98,12 @@ internal sealed record AdmissionBenchmarkManifest(
 
     internal void Validate()
     {
-
         if (SchemaVersion != 1
             || Operations is null
             || !Operations.SequenceEqual(AdmissionBenchmarkOperations.All, StringComparer.Ordinal)
             || Operations.Distinct(StringComparer.Ordinal).Count() != Operations.Length)
         {
-
             throw new InvalidDataException("The manifest operation schema is not the closed version 1 contract.");
-
         }
 
         if (Concurrency is null
@@ -124,9 +114,7 @@ internal sealed record AdmissionBenchmarkManifest(
             || Concurrency[2] != new AdmissionBenchmarkConcurrency("eight", 8)
             || Concurrency[3] != new AdmissionBenchmarkConcurrency("logical", 0))
         {
-
             throw new InvalidDataException("The manifest concurrency schema is invalid.");
-
         }
 
         if (Profiles is null
@@ -141,9 +129,7 @@ internal sealed record AdmissionBenchmarkManifest(
                 || profile.MixedSchedule.Length == 0
                 || profile.MixedSchedule.Any(operation => !AdmissionBenchmarkOperations.All.Contains(operation, StringComparer.Ordinal))))
         {
-
             throw new InvalidDataException("The manifest profiles are invalid.");
-
         }
 
         if (MaterialImprovementOperation != "ordinary.mixed"
@@ -155,9 +141,7 @@ internal sealed record AdmissionBenchmarkManifest(
             || !PositiveFinite(Thresholds.EfAllocationMaximumRatio)
             || !PositiveFinite(Thresholds.MixedThroughputMinimumRatio))
         {
-
             throw new InvalidDataException("The manifest thresholds are invalid.");
-
         }
 
         if (Bootstrap is null
@@ -167,9 +151,7 @@ internal sealed record AdmissionBenchmarkManifest(
             || !PositiveFinite(Bootstrap.LowerQuantile)
             || Bootstrap.LowerQuantile >= 1)
         {
-
             throw new InvalidDataException("The bootstrap contract is invalid.");
-
         }
 
         if (SourceDifferenceAllowlist is null
@@ -179,13 +161,9 @@ internal sealed record AdmissionBenchmarkManifest(
                 || path.EndsWith("/", StringComparison.Ordinal)
                 || !path.EndsWith(".cs", StringComparison.Ordinal)))
         {
-
             throw new InvalidDataException("The source difference allowlist is invalid.");
-
         }
-
     }
 
     private static bool PositiveFinite(double value) => value > 0 && double.IsFinite(value);
-
 }

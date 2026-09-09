@@ -36,7 +36,6 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 {
-
     private readonly string _tempDir;
 
     private readonly string _dbPath;
@@ -51,9 +50,61 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     private readonly InMemoryOsCredentialStore _credentialStore = new();
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Production_host_startup_reads_the_master_credential_exactly_once(
+        bool existingCredential)
+    {
+        const string apiKey = "single-startup-read-key";
+
+        if (existingCredential)
+        {
+            _secretStore.SetApiKey(apiKey);
+        }
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+        HostLockSerilogFileSink sink = new(
+            _tempDir,
+            Path.Combine(_tempDir, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: false);
+        ApiKeyDigestCache digestCache = new();
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset(),
+            sink,
+            masterKeyBootstrap: cancellationToken =>
+                ArcanumMasterKeyBootstrapper.PrepareMasterApiKeyAsync(
+                    _secretStore,
+                    _credentialStore,
+                    digestCache,
+                    () => File.Exists(_dbPath),
+                    cancellationToken));
+
+        await service.StartAsync(CancellationToken.None);
+
+        Assert.Equal(1, _secretStore.ApiKeyReadCount);
+
+        if (existingCredential)
+        {
+            Assert.Null(service.TakeGeneratedMasterApiKey());
+        }
+        else
+        {
+            Assert.False(
+                string.IsNullOrWhiteSpace(service.TakeGeneratedMasterApiKey()));
+        }
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
     public GrimoireDatabaseBootstrapperTests()
     {
-
         SqliteNativeRuntime.Instance.Initialize();
 
         _tempDir = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"bootstrapper-{Guid.NewGuid():N}");
@@ -69,13 +120,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         _passphraseSource = new GrimoireDbPassphraseSource();
 
         _scopeFactory = CreateScopeFactory(_credentialStore);
-
     }
 
     [Fact]
     public async Task EnsureInitializedAsync_missing_api_key_throws_MissingMasterApiKeyException()
     {
-
         // No API key set on the secret store -> GetApiKeyAsync returns null/whitespace,
         // which must surface as a recoverable MissingMasterApiKeyException (not Environment.FailFast).
 
@@ -89,13 +138,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 CancellationToken.None));
 
         Assert.Equal(MissingMasterApiKeyException.MessageText, ex.Message);
-
     }
 
     [Fact]
     public async Task EnsureInitializedAsync_NewDatabase_CreatesSidecarAndUsesPbkdf2()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
@@ -115,7 +162,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.Equal(GrimoireKeyDerivation.KdfVersion2, sidecar.Version);
 
         Assert.NotNull(_secretStore.DedicatedSecret);
-
     }
 
     /// <summary>
@@ -133,7 +179,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_PublishesTheCanonicalStateItInstalled()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
@@ -161,13 +206,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(snapshot.RebuildRequired);
 
         Assert.Null(snapshot.AppliedDatasetGeneration);
-
     }
 
     [Fact]
     public async Task EnsureInitializedAsync_LegacyApiKeyDatabase_UpgradesToPbkdf2()
     {
-
         _secretStore.SetApiKey("legacy-api-key");
 
         string legacyPassphrase = GrimoireKeyDerivation.DerivePassphraseFromApiKeyLegacy("legacy-api-key");
@@ -199,13 +242,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         cmd.CommandText = "SELECT 1;";
 
         _ = await cmd.ExecuteScalarAsync();
-
     }
 
     [Fact]
     public async Task EnsureInitializedAsync_LegacyDedicatedSecretDatabase_UpgradesToPbkdf2()
     {
-
         _secretStore.SetApiKey("legacy-api-key");
 
         string dedicatedSecret = "dedicated-legacy-secret";
@@ -239,13 +280,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         cmd.CommandText = "SELECT 1;";
 
         _ = await cmd.ExecuteScalarAsync();
-
     }
 
     [Fact]
     public async Task EnsureInitializedAsync_CorruptedDedicatedSecret_FailsClosedWithoutTerminatingProcess()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         _secretStore.SetGrimoireReadResult(
@@ -274,7 +313,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             "missing test key",
             error.Message,
             StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -291,7 +329,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_UnreadableKdfSidecar_FailsClosedNamingTheSidecar()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         _secretStore.SetDedicatedSecret(
@@ -311,7 +348,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                     CancellationToken.None));
 
         Assert.Contains("arcanum.db.kdf", error.Message, StringComparison.Ordinal);
-
     }
 
     // Issue: the legacy KDF upgrade used to run the irreversible PRAGMA rekey before persisting the
@@ -321,7 +357,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_LegacyUpgrade_DoesNotRekeyWhenTheSaltCannotBePersisted()
     {
-
         _secretStore.SetApiKey("legacy-api-key");
 
         string dedicatedSecret = "dedicated-legacy-secret";
@@ -364,7 +399,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         cmd.CommandText = "SELECT 1;";
 
         _ = await cmd.ExecuteScalarAsync();
-
     }
 
     // The salt is staged before the rekey and promoted after it, so a completed upgrade leaves the
@@ -372,7 +406,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_LegacyUpgrade_PromotesTheStagedSaltAndLeavesNoPendingFile()
     {
-
         _secretStore.SetApiKey("legacy-api-key");
 
         string dedicatedSecret = "dedicated-legacy-secret";
@@ -399,7 +432,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 _secretStore.DedicatedSecret!,
                 GrimoireKdfSidecarFile.Read(_dbPath).GetSaltBytes()),
             _passphraseSource.Passphrase);
-
     }
 
     // Crash side A: the rekey committed but the pending sidecar was never promoted. The salt is on
@@ -407,7 +439,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_PendingSidecarAfterCommittedRekey_RecoversAndPromotes()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         string dedicatedSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -441,7 +472,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.False(File.Exists(GrimoireKdfSidecarFile.GetPendingSidecarPath(_dbPath)));
 
         Assert.Equal(sidecar.SaltBase64, GrimoireKdfSidecarFile.Read(_dbPath).SaltBase64);
-
     }
 
     // Crash side B: the salt was staged but the rekey never committed. The stale pending salt must
@@ -449,7 +479,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_StalePendingSidecarBeforeRekey_RedrivesLegacyUpgrade()
     {
-
         _secretStore.SetApiKey("legacy-api-key");
 
         string dedicatedSecret = "dedicated-legacy-secret";
@@ -488,7 +517,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         cmd.CommandText = "SELECT 1;";
 
         _ = await cmd.ExecuteScalarAsync();
-
     }
 
     // A sidecar-backed database is never keyed from the master API key, so a missing
@@ -497,7 +525,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_MissingGrimoireSecretWithSidecar_NamesTheMissingKeyFile()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
@@ -535,12 +562,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             "key verification failed",
             error.Message,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     private async Task CreateLegacyDatabaseAsync(string passphrase)
     {
-
         await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
         {
             DataSource = _dbPath,
@@ -555,7 +580,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             CancellationToken.None);
 
         await connection.CloseAsync();
-
     }
 
     // W3.4 Group D #9: graceful shutdown must run PRAGMA wal_checkpoint(TRUNCATE) so the
@@ -566,7 +590,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task CheckpointOnShutdownAsync_truncates_populated_wal_when_no_readers_hold_it()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
@@ -588,7 +611,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         await using (SqliteCommand populateWal = walOwner.CreateCommand())
         {
-
             populateWal.CommandText =
                 """
                 PRAGMA wal_autocheckpoint = 0;
@@ -600,7 +622,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 """;
 
             await populateWal.ExecuteNonQueryAsync();
-
         }
 
         string walPath = _dbPath + "-wal";
@@ -620,7 +641,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(beforeSize > 0, "WAL was not populated before the checkpoint; the test would be trivial.");
 
         Assert.True(afterSize == 0, $"WAL was not truncated by the checkpoint: before={beforeSize}, after={afterSize}.");
-
     }
 
     // W3.4 Group D #9: the hosted service's StopAsync is the real shutdown entry point and
@@ -629,17 +649,14 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task StopAsync_does_not_throw_on_missing_database()
     {
-
         GrimoireDatabaseHostedService svc = new(_scopeFactory, _secretStore, new GrimoireDbPassphraseSource());
 
         await svc.StopAsync(CancellationToken.None);
-
     }
 
     [Fact]
     public async Task StartAsync_refuses_to_open_the_database_when_the_maintenance_lock_is_unavailable()
     {
-
         using ArcanumMaintenanceLock? held =
             ArcanumMaintenanceLock.TryAcquire(_tempDir);
 
@@ -661,7 +678,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             StringComparison.OrdinalIgnoreCase);
 
         Assert.False(File.Exists(_dbPath));
-
     }
 
     [SkippableTheory]
@@ -672,7 +688,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     public async Task StartAsync_rejects_ambiguous_topology_before_recovery_or_shipping_mutation(
         LockedStartupTopology topology)
     {
-
         Skip.If(
             topology is LockedStartupTopology.InaccessibleAncestor && OperatingSystem.IsWindows(),
             "The inaccessible-ancestor topology relies on Unix owner-only mode bits.");
@@ -682,9 +697,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         if (topology is LockedStartupTopology.InaccessibleAncestor
             && OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string target = Path.Combine(_tempDir, $"topology-target-{topology}");
@@ -766,7 +779,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             accessor,
             new DelegateStartupRecovery((_, _) =>
             {
-
                 recoveryCalls++;
 
                 return Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
@@ -774,22 +786,18 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                         ActiveReset: null,
                         ExpectedInstallationId: null,
                         IsLegacyV1: false)));
-
             }),
             sink,
             masterKeyBootstrap: _ =>
             {
-
                 shippingMutationCalls++;
 
-                return Task.FromException<string?>(
+                return Task.FromException<MasterApiKeyBootstrapResult?>(
                     new IOException("Injected post-topology mutation stop."));
-
             });
 
         try
         {
-
             Exception error = await Assert.ThrowsAnyAsync<Exception>(() =>
                 service.StartAsync(CancellationToken.None));
 
@@ -800,9 +808,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
             if (Directory.Exists(target))
             {
-
                 Assert.Empty(Directory.GetFileSystemEntries(target));
-
             }
 
             Assert.Equal(0, recoveryCalls);
@@ -810,34 +816,25 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             Assert.Equal(0, shippingMutationCalls);
 
             Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
-
         }
         finally
         {
-
             if (inaccessible is not null && originalMode is not null)
             {
-
                 File.SetUnixFileMode(inaccessible, originalMode.Value);
-
             }
 
             if (symlink is not null
                 && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(symlink, out _))
             {
-
                 Directory.Delete(symlink);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task StartAsync_admits_a_genuinely_absent_guarded_root_after_ordinary_lineage()
     {
-
         string guardedRoot = Path.Combine(
             _tempDir,
             "fresh-lineage",
@@ -862,7 +859,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             new InstallationResetMaintenanceLockAccessor(),
             new DelegateStartupRecovery((_, _) =>
             {
-
                 recoveryCalls++;
 
                 return Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
@@ -870,17 +866,14 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                         ActiveReset: null,
                         ExpectedInstallationId: null,
                         IsLegacyV1: false)));
-
             }),
             sink,
             masterKeyBootstrap: _ =>
             {
-
                 shippingMutationCalls++;
 
-                return Task.FromException<string?>(
+                return Task.FromException<MasterApiKeyBootstrapResult?>(
                     new IOException("Injected post-topology mutation stop."));
-
             });
 
         _ = await Assert.ThrowsAsync<IOException>(() =>
@@ -891,18 +884,15 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.Equal(1, shippingMutationCalls);
 
         Assert.False(Directory.Exists(guardedRoot));
-
     }
 
     [Fact]
     public async Task StartAsync_acquires_the_maintenance_lock_before_classifying_active_reset_evidence()
     {
-
         InstallationResetMaintenanceLockAccessor accessor = new();
 
         DelegateStartupRecovery recovery = new((held, _) =>
         {
-
             held.AssertHeldFor(_tempDir);
 
             Result<ArcanumMaintenanceLock> borrowed = accessor.BorrowHeldLock(_tempDir);
@@ -919,7 +909,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                         PlanId: "active-plan"),
                     ExpectedInstallationId: null,
                     IsLegacyV1: true)));
-
         });
 
         GrimoireDatabaseHostedService service = new(
@@ -947,7 +936,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.NotNull(reacquired);
 
         Assert.False(File.Exists(_dbPath));
-
     }
 
     [Theory]
@@ -957,12 +945,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     public async Task StartAsync_detaches_and_disposes_the_host_lock_when_locked_recovery_fails(
         StartupRecoveryFailureMode mode)
     {
-
         InstallationResetMaintenanceLockAccessor accessor = new();
 
         DelegateStartupRecovery recovery = new((held, cancellationToken) =>
         {
-
             Assert.Same(held, accessor.BorrowHeldLock(_tempDir).Value);
 
             return mode switch
@@ -978,7 +964,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 _ => Task.FromCanceled<Result<InstallationResetStartupRecoveryState>>(
                     new CancellationToken(canceled: true)),
             };
-
         });
 
         GrimoireDatabaseHostedService service = new(
@@ -1007,13 +992,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.False(readiness.IsReady);
 
         Assert.NotNull(readiness.Failure);
-
     }
 
     [Fact]
     public async Task StartAsync_detaches_and_disposes_the_host_lock_when_bootstrap_fails()
     {
-
         InstallationResetMaintenanceLockAccessor accessor = new();
 
         GrimoireDatabaseHostedService service = new(
@@ -1042,13 +1025,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.False(readiness.IsReady);
 
         Assert.IsType<MissingMasterApiKeyException>(readiness.Failure);
-
     }
 
     [Fact]
     public async Task StartAsync_runs_shipping_mutations_after_locked_admission_under_the_attached_lock()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "post-topology-root");
 
         InstallationResetMaintenanceLockAccessor accessor = new();
@@ -1057,7 +1038,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         DelegateStartupRecovery recovery = new((held, _) =>
         {
-
             Assert.Same(held, accessor.BorrowHeldLock(guardedRoot).Value);
 
             Assert.False(Directory.Exists(guardedRoot));
@@ -1069,7 +1049,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                     ActiveReset: null,
                     ExpectedInstallationId: null,
                     IsLegacyV1: false)));
-
         });
 
         HostLockSerilogFileSink sink = new(
@@ -1077,6 +1056,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             Path.Combine(guardedRoot, "logs"),
             retainedFileCountLimit: 3,
             enabled: false);
+
+        bool startupActionInvoked = false;
+
+        bool startupLeaseDisposed = false;
 
         GrimoireDatabaseHostedService service = new(
             _scopeFactory,
@@ -1088,7 +1071,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             sink,
             masterKeyBootstrap: cancellationToken =>
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 Assert.True(recoveryCompleted);
@@ -1097,34 +1079,24 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
                 Assert.False(Directory.Exists(guardedRoot));
 
-                return Task.FromException<string?>(
+                return Task.FromException<MasterApiKeyBootstrapResult?>(
                     new IOException("Injected post-topology bootstrap failure."));
-
-            });
-
-        bool startupActionInvoked = false;
-
-        bool startupLeaseDisposed = false;
-
-        service.ConfigurePostTopologyStartupAction(() =>
-        {
-
-            Assert.True(recoveryCompleted);
-
-            Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
-
-            startupActionInvoked = true;
-
-            return new DelegateDisposable(() =>
+            },
+            postTopologyStartupAction: new DelegatePostTopologyStartupAction(() =>
             {
+                Assert.True(recoveryCompleted);
 
                 Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
 
-                startupLeaseDisposed = true;
+                startupActionInvoked = true;
 
-            });
+                return new DelegateDisposable(() =>
+                {
+                    Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
 
-        });
+                    startupLeaseDisposed = true;
+                });
+            }));
 
         IOException error = await Assert.ThrowsAsync<IOException>(() =>
             service.StartAsync(CancellationToken.None));
@@ -1144,13 +1116,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         Assert.Throws<InvalidOperationException>(() =>
             sink.Activate(reacquired, guardedRoot));
-
     }
 
     [Fact]
     public async Task StartAsync_cleans_a_terminal_blocker_suffix_and_retains_the_client_mutex_through_startup()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "client-coordinated-root");
 
         StaticClientResetEvidenceProbe reset = new(active: null);
@@ -1192,7 +1162,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             sink,
             masterKeyBootstrap: async _ =>
             {
-
                 Assert.Null((await blocker.InspectAsync()).Value);
 
                 ArcanumClientMutationLockAcquisitionResult competing =
@@ -1203,7 +1172,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                     competing.Disposition);
 
                 throw new IOException("Injected coordinated startup failure.");
-
             },
             startupCoordination: coordination);
 
@@ -1214,13 +1182,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         using ArcanumClientMutationLock released = Assert.IsType<ArcanumClientMutationLock>(
             ArcanumClientMutationLock.AcquireDetailed(guardedRoot).Lock);
-
     }
 
     [Fact]
     public async Task Post_restore_activation_revalidates_a_replaced_root_before_shipping_mutation()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "post-restore-replaced-root");
 
         string target = Path.Combine(_tempDir, "post-restore-symlink-target");
@@ -1254,27 +1220,21 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             sink,
             masterKeyBootstrap: _ =>
             {
-
                 masterBootstrapCalls++;
 
-                return Task.FromResult<string?>(null);
+                return Task.FromResult<MasterApiKeyBootstrapResult?>(null);
+            },
+            postTopologyStartupAction: new DelegatePostTopologyStartupAction(() =>
+            {
+                startupActionCalls++;
 
-            });
-
-        service.ConfigurePostTopologyStartupAction(() =>
-        {
-
-            startupActionCalls++;
-
-            return null;
-
-        });
+                return null;
+            }));
 
         Directory.CreateSymbolicLink(guardedRoot, target);
 
         try
         {
-
             System.Reflection.MethodInfo activation = Assert.IsAssignableFrom<System.Reflection.MethodInfo>(
                 typeof(GrimoireDatabaseHostedService).GetMethod(
                     "ActivatePostRestoreTopologyAsync",
@@ -1283,13 +1243,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
             Exception? error = await Record.ExceptionAsync(async () =>
             {
-
                 Task invocation = Assert.IsAssignableFrom<Task>(activation.Invoke(
                     service,
                     [held, CancellationToken.None]));
 
                 await invocation;
-
             });
 
             Assert.Empty(Directory.GetFileSystemEntries(target));
@@ -1299,30 +1257,23 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             Assert.Equal(0, startupActionCalls);
 
             Assert.Equal(0, masterBootstrapCalls);
-
         }
         finally
         {
-
             service.Dispose();
 
             accessor.DetachHostLock(held);
 
             if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(guardedRoot, out _))
             {
-
                 Directory.Delete(guardedRoot);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task No_hook_host_runs_the_configured_post_topology_action_before_root_creation()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "no-hook-post-topology-action");
 
         _secretStore.SetApiKey("test-api-key");
@@ -1341,20 +1292,17 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             new GrimoireDbPassphraseSource(),
             guardedRoot,
             accessor,
-            DelegateStartupRecovery.NoActiveReset());
+            DelegateStartupRecovery.NoActiveReset(),
+            postTopologyStartupAction: new DelegatePostTopologyStartupAction(() =>
+            {
+                startupActionCalls++;
 
-        service.ConfigurePostTopologyStartupAction(() =>
-        {
+                rootWasAbsent = !Directory.Exists(guardedRoot);
 
-            startupActionCalls++;
+                Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
 
-            rootWasAbsent = !Directory.Exists(guardedRoot);
-
-            Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
-
-            return new DelegateDisposable(() => startupLeaseDisposals++);
-
-        });
+                return new DelegateDisposable(() => startupLeaseDisposals++);
+            }));
 
         await service.StartAsync(CancellationToken.None);
 
@@ -1369,13 +1317,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         await service.StopAsync(CancellationToken.None);
 
         Assert.Equal(1, startupLeaseDisposals);
-
     }
 
     [Fact]
     public async Task No_hook_host_revalidates_root_after_restore_scope_converges_before_any_mutation()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "no-hook-post-restore-replaced-root");
 
         string target = Path.Combine(_tempDir, "no-hook-post-restore-target");
@@ -1398,20 +1344,16 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             new GrimoireDbPassphraseSource(),
             guardedRoot,
             accessor,
-            DelegateStartupRecovery.NoActiveReset());
+            DelegateStartupRecovery.NoActiveReset(),
+            postTopologyStartupAction: new DelegatePostTopologyStartupAction(() =>
+            {
+                startupActionCalls++;
 
-        service.ConfigurePostTopologyStartupAction(() =>
-        {
-
-            startupActionCalls++;
-
-            return null;
-
-        });
+                return null;
+            }));
 
         try
         {
-
             Exception? error = await Record.ExceptionAsync(() =>
                 service.StartAsync(CancellationToken.None));
 
@@ -1422,28 +1364,21 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             Assert.Equal(0, startupActionCalls);
 
             Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
-
         }
         finally
         {
-
             service.Dispose();
 
             if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(guardedRoot, out _))
             {
-
                 Directory.Delete(guardedRoot);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task StartAsync_rejected_recovery_invokes_no_configured_shipping_mutation()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "blocked-shipping-mutation");
 
         InstallationResetMaintenanceLockAccessor accessor = new();
@@ -1476,21 +1411,16 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             sink,
             masterKeyBootstrap: _ =>
             {
-
                 masterBootstrapCalls++;
 
-                return Task.FromResult<string?>(null);
+                return Task.FromResult<MasterApiKeyBootstrapResult?>(null);
+            },
+            postTopologyStartupAction: new DelegatePostTopologyStartupAction(() =>
+            {
+                startupActionCalls++;
 
-            });
-
-        service.ConfigurePostTopologyStartupAction(() =>
-        {
-
-            startupActionCalls++;
-
-            return null;
-
-        });
+                return null;
+            }));
 
         _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.StartAsync(CancellationToken.None));
@@ -1500,13 +1430,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.Equal(0, startupActionCalls);
 
         Assert.False(Directory.Exists(guardedRoot));
-
     }
 
     [Fact]
     public async Task StartAsync_publishes_a_new_master_key_for_one_post_start_consumption()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "generated-master-key");
 
         InstallationResetMaintenanceLockAccessor accessor = new();
@@ -1527,11 +1455,12 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             sink,
             masterKeyBootstrap: _ =>
             {
-
                 _secretStore.SetApiKey("generated-api-key");
 
-                return Task.FromResult<string?>("generated-api-key");
-
+                return Task.FromResult<MasterApiKeyBootstrapResult?>(
+                    new MasterApiKeyBootstrapResult(
+                        "generated-api-key",
+                        wasGenerated: true));
             });
 
         await service.StartAsync(CancellationToken.None);
@@ -1541,13 +1470,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.Null(service.TakeGeneratedMasterApiKey());
 
         await service.StopAsync(CancellationToken.None);
-
     }
 
     [Fact]
     public async Task StartAsync_attach_collision_disposes_only_the_new_lock_and_preserves_the_accessor_owner()
     {
-
         string incumbentRoot = Path.Combine(_tempDir, "incumbent");
 
         Directory.CreateDirectory(incumbentRoot);
@@ -1563,7 +1490,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         try
         {
-
             GrimoireDatabaseHostedService service = new(
                 _scopeFactory,
                 _secretStore,
@@ -1592,21 +1518,16 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 ArcanumMaintenanceLock.TryAcquire(incumbentRoot);
 
             Assert.Null(incumbentContender);
-
         }
         finally
         {
-
             accessor.DetachHostLock(incumbent);
-
         }
-
     }
 
     [Fact]
     public async Task A_second_StartAsync_refuses_without_overwriting_the_live_host_lock()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         InstallationResetMaintenanceLockAccessor accessor = new();
@@ -1633,9 +1554,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         using (IServiceScope scope = _scopeFactory.CreateScope())
         {
-
             Assert.True(scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
-
         }
 
         service.Dispose();
@@ -1646,13 +1565,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             ArcanumMaintenanceLock.TryAcquire(_tempDir);
 
         Assert.NotNull(reacquired);
-
     }
 
     [Fact]
     public async Task StopAsync_and_Dispose_detach_before_releasing_the_host_lock_idempotently()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         InstallationResetMaintenanceLockAccessor accessor = new();
@@ -1683,13 +1600,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             ArcanumMaintenanceLock.TryAcquire(_tempDir);
 
         Assert.NotNull(reacquired);
-
     }
 
     [Fact]
     public async Task StopAsync_checkpoints_once_and_never_after_another_owner_reacquires_the_lock()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         TrackingPassphraseSource passphraseSource = new();
@@ -1720,13 +1635,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         await service.StopAsync(CancellationToken.None);
 
         Assert.Equal(afterFirstStop, passphraseSource.ReadCount);
-
     }
 
     [Fact]
     public async Task StopAsync_after_failed_StartAsync_never_opens_an_existing_database_without_the_lock()
     {
-
         string failedDatabasePath = Path.Combine(
             _tempDir,
             Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile));
@@ -1755,13 +1668,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         await service.StopAsync(CancellationToken.None);
 
         Assert.Equal(afterFailedStart, passphraseSource.ReadCount);
-
     }
 
     [Fact]
     public async Task Dispose_waits_for_the_entire_post_topology_startup_critical_section()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "dispose-during-start");
 
         InstallationResetMaintenanceLockAccessor accessor = new();
@@ -1790,22 +1701,19 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             accessor,
             DelegateStartupRecovery.NoActiveReset(),
             sink,
-            masterKeyBootstrap: _ => Task.FromException<string?>(
-                new IOException("Injected master-key bootstrap failure.")));
+            masterKeyBootstrap: _ => Task.FromException<MasterApiKeyBootstrapResult?>(
+                new IOException("Injected master-key bootstrap failure.")),
+            postTopologyStartupAction: new DelegatePostTopologyStartupAction(() =>
+            {
+                actionEntered.Set();
 
-        service.ConfigurePostTopologyStartupAction(() =>
-        {
+                releaseAction.Wait();
 
-            actionEntered.Set();
-
-            releaseAction.Wait();
-
-            return new DelegateDisposable(() =>
-                startupLeaseDisposedUnderLock = accessor
-                    .BorrowHeldLock(guardedRoot)
-                    .IsSuccess);
-
-        });
+                return new DelegateDisposable(() =>
+                    startupLeaseDisposedUnderLock = accessor
+                        .BorrowHeldLock(guardedRoot)
+                        .IsSuccess);
+            }));
 
         Task start = Task.Run(() => service.StartAsync(CancellationToken.None));
 
@@ -1813,13 +1721,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         Task dispose = Task.Run(() =>
         {
-
             disposeAttempted.Set();
 
             service.Dispose();
 
             disposeReturned.Set();
-
         });
 
         Assert.True(disposeAttempted.Wait(TimeSpan.FromSeconds(10)));
@@ -1830,17 +1736,13 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         try
         {
-
             returnedBeforeStartupWasReleased = disposeReturned.Wait(TimeSpan.FromMilliseconds(250));
 
             lockStayedAttached = accessor.BorrowHeldLock(guardedRoot).IsSuccess;
-
         }
         finally
         {
-
             releaseAction.Set();
-
         }
 
         _ = await Assert.ThrowsAsync<IOException>(async () => await start);
@@ -1854,13 +1756,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(startupLeaseDisposedUnderLock);
 
         Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
-
     }
 
     [Fact]
     public async Task Dispose_waits_for_the_owned_shutdown_checkpoint_before_releasing_the_lock()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         TrackingPassphraseSource passphraseSource = new();
@@ -1889,13 +1789,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         Task dispose = Task.Run(() =>
         {
-
             disposeAttempted.Set();
 
             service.Dispose();
 
             disposeReturned.Set();
-
         });
 
         Assert.True(disposeAttempted.Wait(TimeSpan.FromSeconds(10)));
@@ -1906,17 +1804,13 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         try
         {
-
             returnedBeforeCheckpointWasReleased = disposeReturned.Wait(TimeSpan.FromMilliseconds(250));
 
             lockStayedAttached = accessor.BorrowHeldLock(_tempDir).IsSuccess;
-
         }
         finally
         {
-
             passphraseSource.ReleaseReads();
-
         }
 
         await stop;
@@ -1928,13 +1822,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(lockStayedAttached);
 
         Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
-
     }
 
     [Fact]
     public async Task StartAsync_authenticates_v2_and_closes_the_single_envelope_ahead_window_before_bootstrap()
     {
-
         string guardedRoot = Path.Combine(_tempDir, "one-ahead");
 
         Directory.CreateDirectory(guardedRoot);
@@ -1953,13 +1845,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                    ArcanumMaintenanceLock.TryAcquire(guardedRoot)))
         {
-
             first = Value(await store.BeginAsync(
                 held,
                 installationId,
                 prepared,
                 CancellationToken.None));
-
         }
 
         InstallationResetActiveEnvelopeV2 ahead = SealEnvelope(
@@ -1996,13 +1886,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.Equal(installationId, recovered.Publication.Envelope.InstallationId);
 
         Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
-
     }
 
     [Fact]
     public async Task StartAsync_allows_only_an_authenticated_prepared_global_or_all_host_handoff_without_proof()
     {
-
         InstallationResetActiveRecord global = CreateResetActiveRecord(
             InstallationResetScope.Global,
             InstallationResetPhase.Prepared,
@@ -2040,7 +1928,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         foreach ((string name, InstallationResetActiveRecord record, bool allowed) in cases)
         {
-
             string guardedRoot = Path.Combine(_tempDir, "v2-admission-" + name);
 
             Directory.CreateDirectory(guardedRoot);
@@ -2050,13 +1937,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                        ArcanumMaintenanceLock.TryAcquire(guardedRoot)))
             {
-
                 _ = Value(await store.BeginAsync(
                     held,
                     Guid.NewGuid(),
                     record,
                     CancellationToken.None));
-
             }
 
             GrimoireDatabaseHostedService service = CreateLockedRecoveryHost(
@@ -2069,28 +1954,21 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
             if (allowed)
             {
-
                 Assert.IsType<MissingMasterApiKeyException>(error);
-
             }
             else
             {
-
                 Assert.Contains(
                     "factory reset",
                     Assert.IsType<InvalidOperationException>(error).Message,
                     StringComparison.OrdinalIgnoreCase);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task StartAsync_publishes_the_exact_authenticated_recovery_identity_only_for_the_host_lifetime()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         ActiveInstallationReset active = CreateHostRecoveryActive(
@@ -2127,13 +2005,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         await service.StopAsync(CancellationToken.None);
 
         Assert.NotNull(admission.ActiveRecovery);
-
     }
 
     [Fact]
     public async Task Recovery_host_retains_the_exact_client_mutex_and_durable_blocker_until_shutdown()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         string guardedRoot = Path.Combine(_tempDir, "retained-recovery-client-lock");
@@ -2183,13 +2059,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             ArcanumClientMutationLock.AcquireDetailed(guardedRoot).Lock);
 
         Assert.NotNull((await blocker.InspectAsync()).Value);
-
     }
 
     [Fact]
     public async Task StartAsync_allows_eligible_v1_only_for_locked_migration_and_blocks_every_other_legacy_state()
     {
-
         InstallationResetActiveRecord global = CreateResetActiveRecord(
             InstallationResetScope.Global,
             InstallationResetPhase.Prepared,
@@ -2219,7 +2093,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         foreach ((string name, InstallationResetActiveRecord record, bool allowed) in cases)
         {
-
             string guardedRoot = Path.Combine(_tempDir, "v1-admission-" + name);
 
             Directory.CreateDirectory(guardedRoot);
@@ -2244,26 +2117,20 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
             if (allowed)
             {
-
                 Assert.IsType<MissingMasterApiKeyException>(error);
-
             }
             else
             {
-
                 Assert.Contains(
                     "factory reset",
                     Assert.IsType<InvalidOperationException>(error).Message,
                     StringComparison.OrdinalIgnoreCase);
-
             }
 
             Assert.Equal(before, await File.ReadAllBytesAsync(legacyWriter.ActivePath));
 
             AssertNoResetCredentials(guardedRoot);
-
         }
-
     }
 
     [Theory]
@@ -2272,7 +2139,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     public async Task StartAsync_completes_only_closed_or_key_only_suffixes_before_bootstrap(
         bool keyOnly)
     {
-
         string guardedRoot = Path.Combine(
             _tempDir,
             keyOnly ? "startup-key-only" : "startup-closed");
@@ -2281,7 +2147,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         if (keyOnly)
         {
-
             using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2292,11 +2157,9 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 held,
                 guardedRoot,
                 profile)).Dispose();
-
         }
         else
         {
-
             using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2324,7 +2187,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 held,
                 completed.OperationId,
                 CancellationToken.None)).IsFailure);
-
         }
 
         InstallationResetActiveStore store = new(guardedRoot, _credentialStore);
@@ -2340,7 +2202,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.Equal(
             InstallationResetActiveRecoveryOutcome.NoActiveRecord,
             Value(await store.InspectAsync(CancellationToken.None)).Outcome);
-
     }
 
     [Theory]
@@ -2349,7 +2210,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     public async Task StartAsync_compares_the_active_envelope_installation_uuid_before_readiness(
         bool escapeHatchOptIn)
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         IServiceScopeFactory setupScopes = CreateScopeFactory(_credentialStore);
@@ -2378,7 +2238,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                    ArcanumMaintenanceLock.TryAcquire(_tempDir)))
         {
-
             _ = Value(await store.BeginAsync(
                 held,
                 activeInstallationId,
@@ -2387,7 +2246,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                     InstallationResetPhase.Prepared,
                     InstallationResetDataHandoff.HostFactoryErasure),
                 CancellationToken.None));
-
         }
 
         IServiceScopeFactory hostScopes = CreateScopeFactory(
@@ -2449,13 +2307,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.False(hostToolsPolicy.HostProcessToolsPermitted);
 
         Assert.Null(admission.ActiveRecovery);
-
     }
 
     [Fact]
     public async Task StartAsync_hard_host_tools_block_before_identity_keeps_the_process_policy_unpublished()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         IServiceScopeFactory hostScopes = CreateScopeFactory(
@@ -2498,7 +2354,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.False(readiness.IsReady);
 
         Assert.IsType<GrimoireDatabaseUnavailableException>(readiness.Failure);
-
     }
 
     [Theory]
@@ -2509,7 +2364,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     public async Task Expected_installation_uuid_comparison_fails_closed_on_nonexact_authority_rows(
         ExpectedIdentityEvidence evidence)
     {
-
         Guid expected = Guid.Parse("91515151-5151-4151-8151-515151515151");
 
         await using SqliteConnection connection = new("Data Source=:memory:");
@@ -2518,17 +2372,14 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         await using (SqliteCommand create = connection.CreateCommand())
         {
-
             create.CommandText =
                 "CREATE TABLE covenant_authority_state (StateKey INTEGER, InstallationIdentity TEXT);";
 
             _ = await create.ExecuteNonQueryAsync();
-
         }
 
         if (evidence is not ExpectedIdentityEvidence.Missing)
         {
-
             await InsertAuthorityIdentityAsync(
                 connection,
                 stateKey: 1,
@@ -2539,17 +2390,14 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                         .ToString("D")
                         .ToUpperInvariant(),
                 });
-
         }
 
         if (evidence is ExpectedIdentityEvidence.Ambiguous)
         {
-
             await InsertAuthorityIdentityAsync(
                 connection,
                 stateKey: 2,
                 expected.ToString("D").ToUpperInvariant());
-
         }
 
         _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
@@ -2557,13 +2405,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 connection,
                 expected,
                 CancellationToken.None));
-
     }
 
     [Fact]
     public async Task Expected_installation_uuid_comparison_accepts_only_the_exact_canonical_row()
     {
-
         Guid expected = Guid.Parse("b1515151-5151-4151-8151-515151515151");
 
         await using SqliteConnection connection = new("Data Source=:memory:");
@@ -2572,12 +2418,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         await using (SqliteCommand create = connection.CreateCommand())
         {
-
             create.CommandText =
                 "CREATE TABLE covenant_authority_state (StateKey INTEGER, InstallationIdentity TEXT);";
 
             _ = await create.ExecuteNonQueryAsync();
-
         }
 
         await InsertAuthorityIdentityAsync(
@@ -2589,7 +2433,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             connection,
             expected,
             CancellationToken.None);
-
     }
 
     [Theory]
@@ -2601,7 +2444,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     public async Task StartAsync_allows_proof_free_prepared_host_handoff_to_reach_host_lock(
         InstallationResetScope scope)
     {
-
         using ArcanumMaintenanceLock? held =
             ArcanumMaintenanceLock.TryAcquire(_tempDir);
 
@@ -2629,13 +2471,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             StringComparison.OrdinalIgnoreCase);
 
         Assert.False(File.Exists(_dbPath));
-
     }
 
     [Fact]
     public async Task StartAsync_blocks_proof_complete_later_and_workspace_handoffs_under_host_lock()
     {
-
         ActiveInstallationReset recoverable =
             CreateHostRecoveryActive(InstallationResetScope.Global);
 
@@ -2666,7 +2506,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         foreach (ActiveInstallationReset active in blocked)
         {
-
             InstallationResetMaintenanceLockAccessor accessor = new();
 
             GrimoireDatabaseHostedService service = new(
@@ -2677,7 +2516,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 accessor,
                 new DelegateStartupRecovery((held, _) =>
                 {
-
                     Assert.Same(held, accessor.BorrowHeldLock(_tempDir).Value);
 
                     return Task.FromResult(
@@ -2686,7 +2524,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                                 active,
                                 ExpectedInstallationId: null,
                                 IsLegacyV1: false)));
-
                 }));
 
             InvalidOperationException error =
@@ -2709,11 +2546,9 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 ArcanumMaintenanceLock.TryAcquire(_tempDir);
 
             Assert.NotNull(reacquired);
-
         }
 
         Assert.False(File.Exists(_dbPath));
-
     }
 
     /// <summary>
@@ -2728,7 +2563,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_refuses_to_start_beside_a_restore_journal_it_cannot_authenticate()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         string live = Path.Combine(_tempDir, "live");
@@ -2761,7 +2595,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.False(File.Exists(Path.Combine(live, "grimoire.db")));
 
         Assert.False(IsReady());
-
     }
 
     /// <summary>
@@ -2770,7 +2603,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_still_resolves_an_interrupted_pre_covenant_restore()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         string live = Path.Combine(_tempDir, "live");
@@ -2813,13 +2645,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.False(Directory.Exists(stagingRoot));
 
         Assert.True(IsReady());
-
     }
 
     [Fact]
     public async Task EnsureInitializedAsync_keeps_an_absent_live_root_closed_when_legacy_restore_evidence_is_ambiguous()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         string live = Path.Combine(_tempDir, "absent-legacy-live");
@@ -2871,11 +2701,9 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 expectedInstallationId: null,
                 postRestoreTopology: _ =>
                 {
-
                     postTopologyCalls++;
 
-                    return Task.CompletedTask;
-
+                    return Task.FromResult<MasterApiKeyBootstrapResult?>(null);
                 },
                 CancellationToken.None));
 
@@ -2886,13 +2714,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(Directory.Exists(displacedRoot));
 
         Assert.False(IsReady());
-
     }
 
     [Fact]
     public async Task Lock_owning_bootstrap_publishes_the_adoption_boundary_immediately_before_readiness()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         using IServiceScope scope = _scopeFactory.CreateScope();
@@ -2918,7 +2744,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(readiness.IsReady);
 
         Assert.True(readiness.AdoptionRefusedAtMarkReady);
-
     }
 
     [Fact]
@@ -2995,7 +2820,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public async Task EnsureInitializedAsync_WithCovenantDisabled_PublishesAuthorityWithoutLatchingResidence()
     {
-
         _secretStore.SetApiKey("test-api-key");
 
         bool alreadyLatched = CovenantProcessResidence.HasOpened;
@@ -3021,9 +2845,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         if (!alreadyLatched)
         {
-
             Assert.False(CovenantProcessResidence.HasOpened);
-
         }
 
         // The control on the assertion above: "never derive anything" would satisfy it and would take
@@ -3038,7 +2860,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(lease.IsSuccess);
 
         await lease.Value.DisposeAsync();
-
     }
 
     /// <summary>
@@ -3053,7 +2874,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public void AddArcanumGrimoireForCli_ComposesTheAuthorityBoundaryTheResidenceTestMirrors()
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
@@ -3070,16 +2890,13 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         Assert.IsType<HostProcessToolsEnvironmentProbe>(
             provider.GetService<IHostProcessToolsEnvironmentProbe>());
-
     }
 
     private bool IsReady()
     {
-
         using IServiceScope scope = _scopeFactory.CreateScope();
 
         return scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>().IsReady;
-
     }
 
     /// <summary>
@@ -3093,7 +2910,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         IOsCredentialStore credentials,
         bool covenantEnabled)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<GrimoireDbReadiness>();
@@ -3127,7 +2943,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         return services
             .BuildServiceProvider()
             .GetRequiredService<IServiceScopeFactory>();
-
     }
 
     private static IServiceScopeFactory CreateScopeFactory(
@@ -3136,7 +2951,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         bool escapeHatchOptIn = false,
         HostProcessToolsMarkerReadStatus? markerReadStatusOverride = null)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<GrimoireDbReadiness>();
@@ -3150,7 +2964,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         if (includeHostProcessTools)
         {
-
             HostProcessToolsRuntimePolicy policy = new();
 
             services.AddSingleton(policy);
@@ -3171,13 +2984,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                         : RetroDownfall.Arcanum.Core.Configuration.ArcanumEdition.Local,
                     EscapeHatchOptIn = escapeHatchOptIn,
                 });
-
         }
 
         return services
             .BuildServiceProvider()
             .GetRequiredService<IServiceScopeFactory>();
-
     }
 
     private async Task InsertLaunchAsync(LongRunningOperation launch)
@@ -3244,7 +3055,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     [Fact]
     public void CheckpointOnShutdownAsync_initializes_the_native_runtime_before_it_opens_a_connection()
     {
-
         ProductionSource bootstrapper = ProductionSourceInventory.Sources().Single(
             static source => source.IsExactOwner(
                 "src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs"));
@@ -3274,7 +3084,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             "CheckpointOnShutdownAsync opens a SQLCipher connection on a path that never installs "
             + "the provider, so a host that shuts down without having opened the Grimoire fails with "
             + "a raw provider error instead of the typed one.");
-
     }
 
     private static ActiveInstallationReset CreateHostRecoveryActive(
@@ -3312,7 +3121,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         InstallationResetPhase phase,
         InstallationResetDataHandoff? handoff)
     {
-
         InstallationResetAcceptedBinding binding = new(
             "binding",
             ["/selected"],
@@ -3340,7 +3148,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             CredentialResults: [],
             LastErrorCode: null,
             DataHandoff: handoff);
-
     }
 
     private static InstallationResetActiveRecord WithOnlineCompletion(
@@ -3368,7 +3175,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         InstallationResetActivePayloadV3 payload,
         ulong revision)
     {
-
         BackupRestoreProfileNamespace profile = Value(
             BackupRestoreJournalAuthenticator.ResolveProfileNamespace(guardedRoot));
 
@@ -3383,12 +3189,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             revision,
             publication.EnvelopeDigest,
             payload));
-
     }
 
     private void AssertNoResetCredentials(string guardedRoot)
     {
-
         BackupRestoreProfileNamespace profile = Value(
             BackupRestoreJournalAuthenticator.ResolveProfileNamespace(guardedRoot));
 
@@ -3409,14 +3213,12 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 _credentialStore.TryGet(
                     ArcanumCredentialIdentity.Service,
                     account).Status));
-
     }
 
     private static async Task<Guid> ReadDatabaseInstallationIdAsync(
         string databasePath,
         string passphrase)
     {
-
         await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
         {
             DataSource = databasePath,
@@ -3433,7 +3235,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         string value = Assert.IsType<string>(await command.ExecuteScalarAsync());
 
         return Guid.ParseExact(value, "D");
-
     }
 
     private static async Task InsertAuthorityIdentityAsync(
@@ -3441,7 +3242,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         long stateKey,
         string identity)
     {
-
         await using SqliteCommand insert = connection.CreateCommand();
 
         insert.CommandText =
@@ -3452,22 +3252,18 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         _ = insert.Parameters.AddWithValue("$identity", identity);
 
         _ = await insert.ExecuteNonQueryAsync();
-
     }
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, result.Error.Message);
 
         return result.Value;
-
     }
 
     private sealed class ActiveResetProbe(
         ActiveInstallationReset active) : IInstallationStartupProbe
     {
-
         public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<ActiveInstallationReset?>.Success(
@@ -3475,34 +3271,27 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public Result<bool> IsFreshInstallation() =>
             Result<bool>.Success(false);
-
     }
 
     private sealed class StaticClientResetEvidenceProbe(
         ActiveInstallationReset? active) : IClientMutationResetEvidenceProbe
     {
-
         public Task<Result<ActiveInstallationReset?>> InspectAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(
                 Result<ActiveInstallationReset?>.Success(active));
-
         }
-
     }
 
     private sealed class StaticClientRestoreEvidenceProbe(bool active) :
         IClientMutationRestoreEvidenceProbe
     {
-
         public Task<Result<ActiveReplacementRestore?>> InspectAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(
@@ -3510,9 +3299,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                     active
                         ? new ActiveReplacementRestore(Guid.NewGuid())
                         : null));
-
         }
-
     }
 
     private sealed class DelegateStartupRecovery(
@@ -3522,7 +3309,6 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             Task<Result<InstallationResetStartupRecoveryState>>> recover)
         : IInstallationResetStartupRecovery
     {
-
         public static DelegateStartupRecovery NoActiveReset() =>
             new(static (_, _) =>
                 Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
@@ -3535,21 +3321,23 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default) =>
             recover(heldInstallationLock, cancellationToken);
-
     }
 
     private sealed class DelegateDisposable(Action dispose) : IDisposable
     {
-
         public void Dispose() => dispose();
+    }
 
+    private sealed class DelegatePostTopologyStartupAction(
+        Func<IDisposable?> activate) : IGrimoirePostTopologyStartupAction
+    {
+        public IDisposable? Activate() => activate();
     }
 
     private sealed class DisposeCallbackScopeFactory(
         IServiceScopeFactory inner,
         Action afterFirstDispose) : IServiceScopeFactory
     {
-
         private int _callbackAvailable = 1;
 
         public IServiceScope CreateScope() =>
@@ -3557,75 +3345,55 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 inner.CreateScope(),
                 () =>
                 {
-
                     if (Interlocked.Exchange(ref _callbackAvailable, 0) == 1)
                     {
-
                         afterFirstDispose();
-
                     }
-
                 });
-
     }
 
     private sealed class DisposeCallbackScope(
         IServiceScope inner,
         Action afterDispose) : IServiceScope, IAsyncDisposable
     {
-
         private int _disposed;
 
         public IServiceProvider ServiceProvider => inner.ServiceProvider;
 
         public void Dispose()
         {
-
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
             {
-
                 return;
-
             }
 
             inner.Dispose();
 
             afterDispose();
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
             {
-
                 return;
-
             }
 
             if (inner is IAsyncDisposable asyncDisposable)
             {
-
                 await asyncDisposable.DisposeAsync().ConfigureAwait(false);
-
             }
             else
             {
-
                 inner.Dispose();
-
             }
 
             afterDispose();
-
         }
-
     }
 
     private sealed class TrackingPassphraseSource : IGrimoireDbPassphraseSource
     {
-
         private readonly ManualResetEventSlim _readEntered = new();
 
         private readonly ManualResetEventSlim _releaseReads = new(initialState: true);
@@ -3640,10 +3408,8 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public string Passphrase
         {
-
             get
             {
-
                 _ = Interlocked.Increment(ref _readCount);
 
                 _readEntered.Set();
@@ -3653,47 +3419,37 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 return _passphrase
                     ?? throw new InvalidOperationException(
                         "Grimoire database passphrase has not been initialized.");
-
             }
-
         }
 
         public void SetPassphrase(string passphrase)
         {
-
             ArgumentException.ThrowIfNullOrEmpty(passphrase);
 
             _passphrase = passphrase;
-
         }
 
         public void BlockReads()
         {
-
             _readEntered.Reset();
 
             _releaseReads.Reset();
-
         }
 
         public void ReleaseReads() => _releaseReads.Set();
-
     }
 
     public enum StartupRecoveryFailureMode : byte
     {
-
         ReturnedFailure = 1,
 
         ThrownFailure = 2,
 
         Cancellation = 3,
-
     }
 
     public enum ExpectedIdentityEvidence : byte
     {
-
         Missing = 1,
 
         Malformed = 2,
@@ -3701,12 +3457,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Ambiguous = 3,
 
         Mismatch = 4,
-
     }
 
     public enum LockedStartupTopology : byte
     {
-
         DirectRootSymlink = 1,
 
         AncestorSymlink = 2,
@@ -3714,35 +3468,25 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         NonDirectoryAncestor = 3,
 
         InaccessibleAncestor = 4,
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             if (Directory.Exists(_tempDir))
             {
-
                 Directory.Delete(_tempDir, recursive: true);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup.
-
         }
-
     }
 
     private sealed class GrimoireDbReadiness(CovenantOperationGate gate) : IGrimoireDbReadiness
     {
-
         public bool IsReady { get; private set; }
 
         public Exception? Failure { get; private set; }
@@ -3753,30 +3497,22 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public void MarkReady()
         {
-
             if (ProbeAdoptionAtMarkReady)
             {
-
                 try
                 {
-
                     gate.AdoptDurableRecoveryOwner(
                         CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
                         scope: null,
                         cleanupOnlyHistoricalCampaign: false);
-
                 }
                 catch (InvalidOperationException)
                 {
-
                     AdoptionRefusedAtMarkReady = true;
-
                 }
-
             }
 
             IsReady = true;
-
         }
 
         public Task WaitUntilReadyAsync(CancellationToken cancellationToken = default) =>
@@ -3784,21 +3520,21 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public void MarkFailed(Exception exception)
         {
-
             Failure = exception;
-
         }
-
     }
 
     private sealed class TestSecretStore : ISecretStore
     {
-
         public string? ApiKey { get; private set; }
 
         public string? DedicatedSecret { get; private set; }
 
         private SecretStoreReadResult? _grimoireReadResult;
+
+        private int _apiKeyReadCount;
+
+        public int ApiKeyReadCount => Volatile.Read(ref _apiKeyReadCount);
 
         public void SetApiKey(string apiKey) => ApiKey = apiKey;
 
@@ -3807,18 +3543,28 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         public void SetGrimoireReadResult(SecretStoreReadResult result) =>
             _grimoireReadResult = result;
 
-        public Task<string?> GetApiKeyAsync() => Task.FromResult(ApiKey);
+        public Task<string?> GetApiKeyAsync()
+        {
+            Interlocked.Increment(ref _apiKeyReadCount);
 
-        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
-            Task.FromResult(ApiKey is null ? SecretStoreReadResult.Missing() : SecretStoreReadResult.Ok(ApiKey));
+            return Task.FromResult(ApiKey);
+        }
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync()
+        {
+            Interlocked.Increment(ref _apiKeyReadCount);
+
+            return Task.FromResult(
+                ApiKey is null
+                    ? SecretStoreReadResult.Missing()
+                    : SecretStoreReadResult.Ok(ApiKey));
+        }
 
         public Task SaveApiKeyAsync(string apiKey)
         {
-
             ApiKey = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult(DedicatedSecret);
@@ -3832,13 +3578,9 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
-
             DedicatedSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
-
     }
-
 }

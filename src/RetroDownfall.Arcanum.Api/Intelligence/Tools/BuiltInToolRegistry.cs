@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
@@ -16,7 +17,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 /// </summary>
 public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
 {
-
     private readonly IHttpClientFactory _httpClientFactory;
 
     private readonly IOptionsSnapshot<ArcanumSettings> _settings;
@@ -226,7 +226,8 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
                     new EnvironmentOnlyWebResearchApiKeyResolver(settings)),
                 new LocalHttpWebProvider(
                     httpClientFactory,
-                    new WebPageContentExtractor()),
+                    new WebPageContentExtractor(),
+                    new SystemDnsResolver()),
             ]);
 
     private sealed class EnvironmentOnlyWebResearchApiKeyResolver(
@@ -249,5 +250,4 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
             return ValueTask.FromResult(apiKey);
         }
     }
-
 }

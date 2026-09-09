@@ -5,11 +5,9 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class GrimoireConnectionAdmissionGateTests
 {
-
     [Fact]
     public async Task Recording_observer_snapshots_remain_stable_during_later_admission()
     {
-
         RecordingGrimoireWorkAdmissionGate observer = new(CreateGate());
 
         Assert.True(observer.TryAcquireWorkLease(GrimoireWorkKind.WorkspaceIndexing, out IGrimoireWorkLease? first));
@@ -31,25 +29,21 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         Assert.Equal([GrimoireWorkKind.WorkspaceIndexing, GrimoireWorkKind.SagaExtraction], observer.RequestedWorkKinds);
 
         Assert.Equal(2, observer.InnerWorkLeases.Count);
-
     }
 
     [Fact]
     public async Task Recording_observer_counts_every_concurrent_work_and_effect_attempt()
     {
-
         RecordingGrimoireWorkAdmissionGate observer = new(CreateGate());
 
         TaskCompletionSource start = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         Task[] workers = Enumerable.Range(0, 8).Select(async _ =>
         {
-
             await start.Task;
 
             for (int attempt = 0; attempt < 256; attempt++)
             {
-
                 Assert.True(observer.TryAcquireWorkLease(GrimoireWorkKind.WorkspaceIndexing, out IGrimoireWorkLease? work));
 
                 await using IGrimoireWorkLease lease = work!;
@@ -57,9 +51,7 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
                 Assert.True(lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effect));
 
                 await using IGrimoireExternalEffectGroup group = effect!;
-
             }
-
         }).ToArray();
 
         start.SetResult();
@@ -71,7 +63,5 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         Assert.Equal(2_048, observer.InnerWorkLeases.Count);
 
         Assert.Equal(2_048, observer.EffectGroupAttempts);
-
     }
-
 }

@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// </remarks>
 public sealed class InternalsVisibleToInventoryTests
 {
-
     [Theory]
 
     [InlineData(
@@ -38,7 +37,6 @@ public sealed class InternalsVisibleToInventoryTests
         string relativeProjectPath,
         string expected)
     {
-
         string projectPath = Path.GetFullPath(
             Path.Combine(FindRepositoryRoot(), relativeProjectPath.Replace('/', Path.DirectorySeparatorChar)));
 
@@ -50,30 +48,8 @@ public sealed class InternalsVisibleToInventoryTests
             .Order(StringComparer.Ordinal);
 
         Assert.Equal(expected, string.Join(",", granted));
-
     }
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

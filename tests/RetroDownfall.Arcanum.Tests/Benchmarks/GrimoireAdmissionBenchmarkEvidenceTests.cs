@@ -12,18 +12,15 @@ namespace RetroDownfall.Arcanum.Tests.Benchmarks;
 
 public sealed class GrimoireAdmissionBenchmarkEvidenceTests
 {
-
     [Fact]
     public void Exact_clean_ancestor_bound_evidence_accepts_epoch_added_only_at_candidate()
     {
-
         AdmissionBenchmarkEvidenceValidation validation = AdmissionBenchmarkEvidence.Validate(
             AdmissionBenchmarkManifest.CreateDefault(),
             Bundle(),
             baseIsAncestor: true);
 
         Assert.True(validation.Valid, string.Join(global::System.Environment.NewLine, validation.Errors));
-
     }
 
     [Theory]
@@ -56,7 +53,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
     [InlineData("null-input-map")]
     public void Identity_or_execution_drift_is_invalid_evidence(string breakName)
     {
-
         AdmissionBenchmarkEvidenceBundle evidence = Mutate(Bundle(), breakName);
 
         AdmissionBenchmarkEvidenceValidation validation = AdmissionBenchmarkEvidence.Validate(
@@ -76,13 +72,11 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
         };
 
         Assert.Contains(validation.Errors, error => error.StartsWith(expectedErrorPrefix, StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Truncated_bundle_json_is_refused()
     {
-
         string json = JsonSerializer.Serialize(
             Bundle(),
             EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle);
@@ -91,7 +85,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
             () => AdmissionBenchmarkEvidence.ParseBundle(
                 json[..^5],
                 EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle));
-
     }
 
     [Theory]
@@ -106,7 +99,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
     [InlineData("materializedTerminalCallbackDelta")]
     public void Missing_required_cell_metric_is_refused_during_json_parsing(string propertyName)
     {
-
         JsonObject root = JsonNode.Parse(JsonSerializer.Serialize(
             Bundle(),
             EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle))!.AsObject();
@@ -119,7 +111,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
             () => AdmissionBenchmarkEvidence.ParseBundle(
                 root.ToJsonString(),
                 EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle));
-
     }
 
     [Theory]
@@ -132,7 +123,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
     [InlineData("reopenSucceeded")]
     public void Missing_required_final_state_metric_is_refused_during_json_parsing(string propertyName)
     {
-
         JsonObject root = JsonNode.Parse(JsonSerializer.Serialize(
             Bundle(),
             EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle))!.AsObject();
@@ -145,7 +135,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
             () => AdmissionBenchmarkEvidence.ParseBundle(
                 root.ToJsonString(),
                 EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle));
-
     }
 
     [Theory]
@@ -156,7 +145,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
     [InlineData("drainSucceeded")]
     public void Missing_required_historical_churn_metric_is_refused_during_json_parsing(string propertyName)
     {
-
         JsonObject root = JsonNode.Parse(JsonSerializer.Serialize(
             Bundle(),
             EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle))!.AsObject();
@@ -169,17 +157,14 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
             () => AdmissionBenchmarkEvidence.ParseBundle(
                 root.ToJsonString(),
                 EvidenceTestJsonContext.Default.AdmissionBenchmarkEvidenceBundle));
-
     }
 
     private static AdmissionBenchmarkEvidenceBundle Bundle()
     {
-
         AdmissionBenchmarkPair[] pairs = new AdmissionBenchmarkPair[6];
 
         for (int index = 0; index < pairs.Length; index++)
         {
-
             string first = index % 2 == 0 ? "B" : "C";
 
             string second = index % 2 == 0 ? "C" : "B";
@@ -190,11 +175,9 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
                 second,
                 Run("B", index, first == "B" ? 0 : 1),
                 Run("C", index, first == "C" ? 0 : 1));
-
         }
 
         return new("session", pairs);
-
     }
 
     private static AdmissionBenchmarkRevisionRun Run(
@@ -239,7 +222,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
 
     private static AdmissionBenchmarkInputIdentity Inputs(string role)
     {
-
         AdmissionBenchmarkManifest manifest = AdmissionBenchmarkManifest.CreateDefault();
 
         const string gate = "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionGate.cs";
@@ -254,14 +236,11 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
             .Select<string, AdmissionBenchmarkDigestEntry>(
                 line =>
                 {
-
                     string path = line.Split('\t')[1];
 
                     if (path == epoch)
                     {
-
                         return new(path, role == "C" ? new string('c', 64) : string.Empty, role == "C");
-
                     }
 
                     return new(
@@ -270,7 +249,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
                             ? role == "B" ? new string('a', 64) : new string('b', 64)
                             : new string('d', 64),
                         true);
-
                 })
             .ToArray();
 
@@ -287,12 +265,10 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
             same,
             same,
             inputs);
-
     }
 
     private static AdmissionBenchmarkCellResult[] Cells()
     {
-
         AdmissionBenchmarkProfile profile = AdmissionBenchmarkManifest.CreateDefault().Profiles[0];
 
         return AdmissionBenchmarkOperations.All.SelectMany(
@@ -303,7 +279,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
                 Cell(operation, "eight", 8, profile),
                 Cell(operation, "logical", 8, profile),
             }).ToArray();
-
     }
 
     private static AdmissionBenchmarkCellResult Cell(
@@ -337,7 +312,6 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
         AdmissionBenchmarkEvidenceBundle evidence,
         string breakName)
     {
-
         AdmissionBenchmarkPair first = evidence.Pairs[0];
 
         AdmissionBenchmarkRevisionRun candidate = first.Candidate;
@@ -378,32 +352,10 @@ public sealed class GrimoireAdmissionBenchmarkEvidenceTests
         pairs[0] = first with { Candidate = candidate };
 
         return evidence with { Pairs = pairs };
-
     }
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }
 
 [JsonSourceGenerationOptions(

@@ -20,16 +20,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBreachRepository
 {
-
     public Task RecordAsync(SanctumBreachRecord breach, int maxBreachCount, CancellationToken ct = default)
     {
-
         int clampedMax = ArcanumSettingClamps.SanctumMaxBreachCount(maxBreachCount);
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 // Transaction and command are created fresh on every invocation of this delegate:
                 // if SqliteBusyRetry retries after a SQLITE_BUSY failure, the prior transaction has
                 // already been rolled back/disposed by the `await using` blocks below, so the retry
@@ -58,7 +55,7 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
 
                 AddParameter(cmd, "@campaignId", normalizedCampaignId);
 
-                AddParameter(cmd, "@occurredAt", breach.OccurredAt.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@occurredAt", UtcInstantText.Format(breach.OccurredAt));
 
                 AddParameter(cmd, "@toolName", breach.ToolName);
 
@@ -87,7 +84,6 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
 
                 if (count > clampedMax)
                 {
-
                     cmd.CommandText =
                         """
                         DELETE FROM "SanctumBreaches"
@@ -107,7 +103,6 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
                     AddParameter(cmd, "@overflow", count - clampedMax);
 
                     _ = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -115,10 +110,8 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
                 ArcanumMetrics.SanctumBreachesTotal.Add(
                     1,
                     new KeyValuePair<string, object?>("breach_type", breach.BreachType));
-
             },
             ct);
-
     }
 
     public async Task<IReadOnlyList<SanctumBreachRecord>> QueryAsync(
@@ -128,11 +121,9 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
         string? toolName = null,
         CancellationToken ct = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(ct).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -148,20 +139,16 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
 
                 if (before is not null)
                 {
-
                     sql.Append(" AND \"OccurredAt\" < @before");
 
-                    AddParameter(cmd, "@before", before.Value.ToString("o", CultureInfo.InvariantCulture));
-
+                    AddParameter(cmd, "@before", UtcInstantText.Format(before.Value));
                 }
 
                 if (!string.IsNullOrWhiteSpace(toolName))
                 {
-
                     sql.Append(" AND \"ToolName\" = @toolName");
 
                     AddParameter(cmd, "@toolName", toolName);
-
                 }
 
                 sql.Append(" ORDER BY \"OccurredAt\" DESC LIMIT @limit");
@@ -176,25 +163,19 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
 
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
-
                     results.Add(ReadBreach(reader));
-
                 }
 
                 return (IReadOnlyList<SanctumBreachRecord>)results;
-
             },
             ct).ConfigureAwait(false);
-
     }
 
     public async Task<int> GetCountAsync(string campaignId, CancellationToken ct = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(ct).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -211,26 +192,20 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
                 object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
 
                 return Convert.ToInt32(result, CultureInfo.InvariantCulture);
-
             },
             ct).ConfigureAwait(false);
-
     }
 
     public async Task<int> DeleteOldestAsync(string campaignId, int count, CancellationToken ct = default)
     {
-
         if (count <= 0)
         {
-
             return 0;
-
         }
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(ct).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -252,15 +227,12 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
                 AddParameter(cmd, "@count", count);
 
                 return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
             },
             ct).ConfigureAwait(false);
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
@@ -269,7 +241,6 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
         }
 
         return connection;
-
     }
 
     /// <summary>
@@ -284,7 +255,6 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -292,41 +262,35 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static object SerializeDetails(SanctumBreachDetails? details)
     {
-
         if (details is null)
         {
             return DBNull.Value;
         }
 
         return JsonSerializer.Serialize(details, ArcanumCoreJsonContext.Default.SanctumBreachDetails);
-
     }
 
     private static SanctumBreachDetails? DeserializeDetails(object detailsJson)
     {
-
         if (detailsJson is not string json || string.IsNullOrWhiteSpace(json))
         {
             return null;
         }
 
         return JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.SanctumBreachDetails);
-
     }
 
     private static SanctumBreachRecord ReadBreach(DbDataReader reader)
     {
-
         string id = reader.GetString(0);
 
         string campaignId = reader.GetString(1);
 
-        DateTimeOffset occurredAt = DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture);
+        DateTimeOffset occurredAt = UtcInstantText.Parse(reader.GetString(2));
 
         string toolName = reader.GetString(3);
 
@@ -344,7 +308,5 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
             breachType,
             description,
             DeserializeDetails(detailsJson));
-
     }
-
 }

@@ -28,13 +28,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantCurationKernel
 {
-
     public async ValueTask<Result<CovenantCurationReceipt>> ApplyAsync(
         CovenantCurationCommit commit,
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(commit);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -46,16 +44,12 @@ internal sealed class CovenantCurationKernel
 
         if (replayed.IsFailure)
         {
-
             return replayed.Error;
-
         }
 
         if (replayed.Value is { } committed)
         {
-
             return committed;
-
         }
 
         Result<CanonicalGeneration> generation = await ReadGenerationAsync(transaction, cancellationToken)
@@ -63,27 +57,21 @@ internal sealed class CovenantCurationKernel
 
         if (generation.IsFailure)
         {
-
             return generation.Error;
-
         }
 
         if (generation.Value.DatasetGeneration != commit.DatasetGeneration)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed before this curation change could commit.");
-
         }
 
         if (generation.Value.KeyReclamationEpoch != commit.ExpectedKeyReclamationEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant key-reclamation epoch changed before this curation change could commit.");
-
         }
 
         // The subject binds the key's own epoch, and it is read here rather than trusted from the
@@ -97,11 +85,9 @@ internal sealed class CovenantCurationKernel
 
         if (keyEpoch != intent.Subject.KeyEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "This Covenant key was reclaimed before the curation change could commit.");
-
         }
 
         HeadRow? head = await ReadHeadAsync(transaction, intent.Subject, cancellationToken).ConfigureAwait(false);
@@ -110,11 +96,9 @@ internal sealed class CovenantCurationKernel
 
         if (currentRevision != intent.ExpectedRevision)
         {
-
             return new Error(
                 ErrorCodes.Covenant.RevisionConflict,
                 "This Covenant curation subject changed before the requested change could commit.");
-
         }
 
         CovenantCurationState current = head is null
@@ -128,7 +112,6 @@ internal sealed class CovenantCurationKernel
         // history is a record of changes and nothing changed.
         if (projected.IsPinned == current.IsPinned && projected.IsMasked == current.IsMasked)
         {
-
             await InsertReceiptAsync(
                     transaction,
                     commit,
@@ -150,7 +133,6 @@ internal sealed class CovenantCurationKernel
                 intent.Authorization.FinalMutationDigest,
                 intent.Authorization.ResponseReceiptDigest,
                 Replayed: false);
-
         }
 
         Guid versionId = Guid.CreateVersion7();
@@ -184,7 +166,6 @@ internal sealed class CovenantCurationKernel
             intent.Authorization.FinalMutationDigest,
             intent.Authorization.ResponseReceiptDigest,
             Replayed: false);
-
     }
 
     private static async ValueTask<Result<CovenantCurationReceipt?>> TryReplayAsync(
@@ -192,7 +173,6 @@ internal sealed class CovenantCurationKernel
         CovenantCurationIntent intent,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -230,9 +210,7 @@ internal sealed class CovenantCurationKernel
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<CovenantCurationReceipt?>.Success(null);
-
         }
 
         CovenantDigest storedRequest = new((byte[])reader.GetValue(0));
@@ -242,11 +220,9 @@ internal sealed class CovenantCurationKernel
         // something the stored receipt does not answer.
         if (storedRequest != intent.Authorization.RequestIdempotencyDigest)
         {
-
             return new Error(
                 "Security.IdempotencyConflict",
                 "This Covenant curation ID was already used with different client input.");
-
         }
 
         return Result<CovenantCurationReceipt?>.Success(
@@ -265,14 +241,12 @@ internal sealed class CovenantCurationKernel
                 new CovenantDigest((byte[])reader.GetValue(1)),
                 new CovenantDigest((byte[])reader.GetValue(2)),
                 Replayed: true));
-
     }
 
     private static async ValueTask<Result<CanonicalGeneration>> ReadGenerationAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText =
@@ -283,16 +257,13 @@ internal sealed class CovenantCurationKernel
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "Covenant canonical state is not present on this installation.");
-
         }
 
         return Result<CanonicalGeneration>.Success(
             new CanonicalGeneration(new Guid((byte[])reader.GetValue(0)), reader.GetInt64(1)));
-
     }
 
     private static async ValueTask<long> ReadKeyEpochAsync(
@@ -300,7 +271,6 @@ internal sealed class CovenantCurationKernel
         string normalizedKey,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText =
@@ -311,7 +281,6 @@ internal sealed class CovenantCurationKernel
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async ValueTask<HeadRow?> ReadHeadAsync(
@@ -319,7 +288,6 @@ internal sealed class CovenantCurationKernel
         CovenantCurationSubject subject,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -340,7 +308,6 @@ internal sealed class CovenantCurationKernel
                 reader.GetInt32(2) == 1,
                 reader.GetInt32(3) == 1)
             : null;
-
     }
 
     private static async ValueTask InsertVersionAsync(
@@ -351,7 +318,6 @@ internal sealed class CovenantCurationKernel
         Guid? predecessorVersionId,
         CancellationToken cancellationToken)
     {
-
         CovenantCurationIntent intent = commit.Intent;
 
         await using SqliteCommand command = transaction.CreateCommand();
@@ -393,7 +359,6 @@ internal sealed class CovenantCurationKernel
         Bind(command, "$created", Iso(commit.CommittedAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask UpsertHeadAsync(
@@ -405,7 +370,6 @@ internal sealed class CovenantCurationKernel
         bool headExists,
         CancellationToken cancellationToken)
     {
-
         CovenantCurationIntent intent = commit.Intent;
 
         await using SqliteCommand command = transaction.CreateCommand();
@@ -445,7 +409,6 @@ internal sealed class CovenantCurationKernel
         Bind(command, "$updated", Iso(commit.CommittedAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask InsertReceiptAsync(
@@ -456,7 +419,6 @@ internal sealed class CovenantCurationKernel
         long? resultingRevision,
         CancellationToken cancellationToken)
     {
-
         CovenantCurationIntent intent = commit.Intent;
 
         await using SqliteCommand command = transaction.CreateCommand();
@@ -500,12 +462,10 @@ internal sealed class CovenantCurationKernel
         Bind(command, "$committed", Iso(commit.CommittedAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static void BindSubject(SqliteCommand command, CovenantCurationSubject subject)
     {
-
         Bind(
             command,
             "$campaign",
@@ -516,17 +476,15 @@ internal sealed class CovenantCurationKernel
         Bind(command, "$lane", (int)subject.Lane);
 
         Bind(command, "$epoch", subject.KeyEpoch);
-
     }
 
     private static void Bind(SqliteCommand command, string name, object value) =>
         _ = command.Parameters.AddWithValue(name, value);
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private readonly record struct CanonicalGeneration(Guid DatasetGeneration, long KeyReclamationEpoch);
 
     private sealed record HeadRow(Guid VersionId, long Revision, bool IsPinned, bool IsMasked);
-
 }
