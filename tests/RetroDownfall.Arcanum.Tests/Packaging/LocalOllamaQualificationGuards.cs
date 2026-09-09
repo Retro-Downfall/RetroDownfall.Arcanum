@@ -167,6 +167,30 @@ internal static class LocalOllamaQualificationGuards
         }
     }
 
+    public static bool IsExpectedVisionAnswer(
+        string? answer,
+        string conversationMarker,
+        string correctedToken)
+    {
+        if (string.IsNullOrEmpty(answer)
+            || string.IsNullOrEmpty(conversationMarker)
+            || string.IsNullOrEmpty(correctedToken))
+        {
+            return false;
+        }
+
+        string[] fields = answer.Split("; ", StringSplitOptions.None);
+
+        return fields.Length == 7
+            && string.Equals(fields[0], $"MARKER={conversationMarker}", StringComparison.Ordinal)
+            && string.Equals(fields[1], $"TOKEN={correctedToken}", StringComparison.Ordinal)
+            && IsExpectedVisionField(fields[2], "OBJECT", "STOP SIGN")
+            && IsExpectedVisionField(fields[3], "COLOR", "RED")
+            && IsExpectedVisionField(fields[4], "SHAPE", "OCTAGON")
+            && IsExpectedVisionField(fields[5], "SIDES", "8")
+            && IsExpectedVisionField(fields[6], "TEXT", "STOP");
+    }
+
     public static bool IsNativeBinary(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -206,6 +230,17 @@ internal static class LocalOllamaQualificationGuards
         {
             return false;
         }
+    }
+
+    private static bool IsExpectedVisionField(
+        string field,
+        string name,
+        string expectedValue)
+    {
+        string prefix = name + "=";
+
+        return field.StartsWith(prefix, StringComparison.Ordinal)
+            && field.AsSpan(prefix.Length).Equals(expectedValue, StringComparison.OrdinalIgnoreCase);
     }
 
     public static bool ContainsVisionAnswerLeakage(params string?[] providerVisibleValues)

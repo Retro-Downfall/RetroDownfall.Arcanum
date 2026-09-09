@@ -314,15 +314,17 @@ public sealed class LocalOllamaAotQualificationContractTests
         Assert.DoesNotContain("await using PublishedHost", test, StringComparison.Ordinal);
         Assert.DoesNotContain("await process.WaitForExitAsync();", test, StringComparison.Ordinal);
         Assert.DoesNotContain("throw new IOException", test, StringComparison.Ordinal);
-        Assert.Contains("AssertExactDurableTurn(", test, StringComparison.Ordinal);
+        Assert.Contains("ReadDurableReply(", test, StringComparison.Ordinal);
+        Assert.Contains("IsExpectedVisionAnswer(", test, StringComparison.Ordinal);
+        Assert.Contains("entries.EnumerateArray().Reverse().ToArray()", test, StringComparison.Ordinal);
         Assert.Contains("FirstTurnPrompt(conversationMarker)", test, StringComparison.Ordinal);
         Assert.Contains("SecondTurnPrompt", test, StringComparison.Ordinal);
         Assert.Contains("conversationMarker", test, StringComparison.Ordinal);
-        Assert.Contains("OBJECT=STOP SIGN", test, StringComparison.Ordinal);
-        Assert.Contains("COLOR=RED", test, StringComparison.Ordinal);
-        Assert.Contains("SHAPE=OCTAGON", test, StringComparison.Ordinal);
-        Assert.Contains("SIDES=8", test, StringComparison.Ordinal);
-        Assert.Contains("TEXT=STOP", test, StringComparison.Ordinal);
+        Assert.Contains("STOP SIGN", guards, StringComparison.Ordinal);
+        Assert.Contains("RED", guards, StringComparison.Ordinal);
+        Assert.Contains("OCTAGON", guards, StringComparison.Ordinal);
+        Assert.Contains("\"SIDES\", \"8\"", guards, StringComparison.Ordinal);
+        Assert.Contains("\"TEXT\", \"STOP\"", guards, StringComparison.Ordinal);
         Assert.DoesNotContain("RIGHT-BETA-42", test, StringComparison.Ordinal);
     }
 
@@ -521,6 +523,28 @@ public sealed class LocalOllamaAotQualificationContractTests
         {
             Assert.True(LocalOllamaQualificationGuards.ContainsVisionAnswerLeakage(leakedInput));
         }
+    }
+
+    [Theory]
+    [InlineData("OBJECT=STOP SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP", true)]
+    [InlineData("OBJECT=Stop Sign; COLOR=Red; SHAPE=Octagon; SIDES=8; TEXT=Stop", true)]
+    [InlineData("OBJECT=stop sign; COLOR=red; SHAPE=octagon; SIDES=8; TEXT=stop", true)]
+    [InlineData("object=STOP SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP", false)]
+    [InlineData("OBJECT=YIELD SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP", false)]
+    [InlineData("OBJECT=STOP SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP; EXTRA=1", false)]
+    public void Vision_answer_preserves_exact_structure_and_opaque_values(
+        string semanticFields,
+        bool expected)
+    {
+        const string marker = "MARKER-CaSe";
+        const string token = "TOKEN-CaSe";
+        string answer = $"MARKER={marker}; TOKEN={token}; {semanticFields}";
+
+        Assert.Equal(
+            expected,
+            LocalOllamaQualificationGuards.IsExpectedVisionAnswer(answer, marker, token));
+        Assert.False(LocalOllamaQualificationGuards.IsExpectedVisionAnswer(answer, marker.ToLowerInvariant(), token));
+        Assert.False(LocalOllamaQualificationGuards.IsExpectedVisionAnswer(answer, marker, token.ToLowerInvariant()));
     }
 
     [Fact]

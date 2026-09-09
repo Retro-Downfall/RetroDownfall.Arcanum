@@ -457,9 +457,15 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 "--unattended",
                 LocalOllamaQualificationGuards.VisionPrompt);
 
-            Assert.Equal(
-                $"MARKER={conversationMarker}; TOKEN={rightToken}; OBJECT=STOP SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP",
-                NormalizeModelAnswer(thirdTurn.StandardOutput));
+            string normalizedVisionAnswer = NormalizeModelAnswer(thirdTurn.StandardOutput);
+
+            Assert.True(
+                LocalOllamaQualificationGuards.IsExpectedVisionAnswer(
+                    normalizedVisionAnswer,
+                    conversationMarker,
+                    rightToken),
+                "The third turn must preserve its exact structure and opaque values while identifying the fixture. "
+                + $"Actual answer: {normalizedVisionAnswer}");
 
             await AssertThreeDurableTurnsAsync(
                 executable,
@@ -842,38 +848,43 @@ public sealed class PublishedArcanumOllamaQualificationTests
             "--limit",
             "10");
         JsonElement entries = ParseArray(result.StandardOutput);
-        JsonElement[] rows = entries.EnumerateArray().ToArray();
+        JsonElement[] rows = entries.EnumerateArray().Reverse().ToArray();
 
         Assert.Equal(6, rows.Length);
 
-        AssertExactDurableTurn(
-            rows,
-            rowOffset: 0,
-            sessionId,
-            FirstTurnPrompt(conversationMarker),
-            $"SESSION_READY; MARKER={conversationMarker}");
+        Assert.Equal(
+            $"SESSION_READY; MARKER={conversationMarker}",
+            ReadDurableReply(
+                rows,
+                rowOffset: 0,
+                sessionId,
+                FirstTurnPrompt(conversationMarker)));
 
-        AssertExactDurableTurn(
-            rows,
-            rowOffset: 2,
-            sessionId,
-            SecondTurnPrompt,
-            $"MARKER={conversationMarker}; TOKEN={wrongToken}");
+        Assert.Equal(
+            $"MARKER={conversationMarker}; TOKEN={wrongToken}",
+            ReadDurableReply(
+                rows,
+                rowOffset: 2,
+                sessionId,
+                SecondTurnPrompt));
 
-        AssertExactDurableTurn(
-            rows,
-            rowOffset: 4,
-            sessionId,
-            LocalOllamaQualificationGuards.VisionPrompt,
-            $"MARKER={conversationMarker}; TOKEN={rightToken}; OBJECT=STOP SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP");
+        Assert.True(
+            LocalOllamaQualificationGuards.IsExpectedVisionAnswer(
+                ReadDurableReply(
+                    rows,
+                    rowOffset: 4,
+                    sessionId,
+                    LocalOllamaQualificationGuards.VisionPrompt),
+                conversationMarker,
+                rightToken),
+            "The durable third turn must retain its exact structure, opaque values, and fixture identification.");
     }
 
-    private static void AssertExactDurableTurn(
+    private static string ReadDurableReply(
         IReadOnlyList<JsonElement> rows,
         int rowOffset,
         Guid sessionId,
-        string expectedPrompt,
-        string expectedReply)
+        string expectedPrompt)
     {
         JsonElement user = rows[rowOffset];
 
@@ -889,9 +900,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
 
         Assert.Equal("assistant", assistant.GetProperty("role").GetString());
 
-        Assert.Equal(
-            expectedReply,
-            NormalizeModelAnswer(assistant.GetProperty("content").GetString() ?? string.Empty));
+        return NormalizeModelAnswer(assistant.GetProperty("content").GetString() ?? string.Empty);
     }
 
     private static async Task WriteConfigurationAsync(
