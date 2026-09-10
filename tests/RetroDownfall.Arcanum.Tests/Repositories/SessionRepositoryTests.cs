@@ -714,6 +714,66 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task AddEntryAsync_preserves_a_title_changed_after_its_session_read()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
+
+        Session session = await repository.CreateAsync(
+            campaignId: null,
+            title: null,
+            CancellationToken.None);
+
+        await using (DbCommand createTrigger = _db!.Database.GetDbConnection().CreateCommand())
+        {
+            createTrigger.CommandText =
+                """
+                CREATE TEMP TRIGGER rename_session_after_entry_insert
+                AFTER INSERT ON "Entries"
+                BEGIN
+                    UPDATE "Sessions"
+                    SET "Title" = 'Concurrent title'
+                    WHERE "Id" = NEW."SessionId";
+                END;
+                """;
+
+            _ = await createTrigger.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            Result<Entry> appended = await repository.AddEntryAsync(
+                session.Id,
+                new Entry
+                {
+                    Id = Guid.NewGuid(),
+                    Role = MessageRole.User,
+                    Content = "Automatic title candidate",
+                    ModelUsed = "test-model",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                },
+                CancellationToken.None);
+
+            Assert.True(appended.IsSuccess, appended.Error.Code);
+        }
+        finally
+        {
+            await using DbCommand dropTrigger = _db.Database.GetDbConnection().CreateCommand();
+
+            dropTrigger.CommandText = "DROP TRIGGER IF EXISTS rename_session_after_entry_insert;";
+
+            _ = await dropTrigger.ExecuteNonQueryAsync();
+        }
+
+        Session? reloaded = await repository.GetByIdAsync(session.Id, CancellationToken.None);
+
+        Assert.NotNull(reloaded);
+
+        Assert.Equal("Concurrent title", reloaded!.Title);
+    }
+
+    [SkippableFact]
     public async Task UpdateSessionAsync_does_not_clobber_unsummarized_entry_count()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);

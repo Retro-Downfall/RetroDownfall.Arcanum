@@ -459,11 +459,13 @@ internal sealed class SessionRepository(
 
         session.UpdatedAt = now;
 
+        string? automaticTitle = null;
+
         if (string.IsNullOrWhiteSpace(session.Title)
             && entry.Role == MessageRole.User
             && !string.IsNullOrWhiteSpace(entry.Content))
         {
-            session.Title = TruncateTitle(entry.Content);
+            automaticTitle = TruncateTitle(entry.Content);
         }
 
         await using IDbContextTransaction tx =
@@ -474,7 +476,7 @@ internal sealed class SessionRepository(
             await _entryPersistence.InsertEntryAsync(entry, ct).ConfigureAwait(false);
 
             await SqliteBusyRetry.ExecuteAsync(
-                () => UpdateSessionAfterEntryAsync(session, ct),
+                () => UpdateSessionAfterEntryAsync(session, automaticTitle, ct),
                 ct).ConfigureAwait(false);
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
@@ -1154,11 +1156,18 @@ internal sealed class SessionRepository(
 
     private Task UpdateSessionAfterEntryAsync(
         Session session,
+        string? automaticTitle,
         CancellationToken cancellationToken) =>
         ExecuteNonQueryAsync(
             """
             UPDATE "Sessions"
-            SET "Title" = $title,
+            SET "Title" =
+                    CASE
+                        WHEN $automaticTitle IS NOT NULL
+                             AND "Title" IS $observedTitle
+                            THEN $automaticTitle
+                        ELSE "Title"
+                    END,
                 "UpdatedAt" = $updatedAt,
                 "UnsummarizedEntryCount" =
                     CASE
@@ -1169,7 +1178,8 @@ internal sealed class SessionRepository(
             """,
             command =>
             {
-                GrimoireEntitySql.AddParameter(command, "$title", session.Title);
+                GrimoireEntitySql.AddParameter(command, "$automaticTitle", automaticTitle);
+                GrimoireEntitySql.AddParameter(command, "$observedTitle", session.Title);
                 GrimoireEntitySql.AddParameter(
                     command,
                     "$updatedAt",
