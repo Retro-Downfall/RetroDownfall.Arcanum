@@ -225,6 +225,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     private const uint FileReadAttributes = 0x00000080;
 
+    // FILE_RENAME_INFO requires traverse access when this retained handle is its RootDirectory.
+    private const uint FileTraverse = 0x00000020;
+
     private const uint FileListDirectory = 0x00000001;
 
     private const uint FileShareRead = 0x00000001;
@@ -234,7 +237,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     private const uint FileShareDelete = 0x00000004;
 
     internal const uint WindowsParentDesiredAccess =
-        FileListDirectory | FileReadAttributes | SynchronizeAccess | ReadControlAccess;
+        FileListDirectory
+        | FileTraverse
+        | FileReadAttributes
+        | SynchronizeAccess
+        | ReadControlAccess;
 
     internal const uint WindowsParentShareMode = FileShareRead | FileShareWrite;
 

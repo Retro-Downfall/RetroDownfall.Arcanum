@@ -2000,13 +2000,15 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         const uint fileShareDelete = 0x00000004;
 
+        const uint fileTraverse = 0x00000020;
+
         const uint readControl = 0x00020000;
 
         const uint writeDac = 0x00040000;
 
         const uint writeOwner = 0x00080000;
 
-        Assert.Equal(0x00120081U,
+        Assert.Equal(0x001200A1U,
             GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentDesiredAccess);
 
         Assert.Equal(0x00000003U,
@@ -2016,6 +2018,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             0U,
             GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentDesiredAccess
                 & readControl);
+
+        Assert.NotEqual(
+            0U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentDesiredAccess
+                & fileTraverse);
 
         Assert.Equal(
             0U,

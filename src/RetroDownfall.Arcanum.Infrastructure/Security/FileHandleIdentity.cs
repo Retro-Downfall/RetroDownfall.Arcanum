@@ -997,6 +997,13 @@ internal static partial class FileHandleIdentityInterop
                     new SafeFileHandle(opened, ownsHandle: true).Dispose();
                 }
 
+                // The DOS conversion collapses this into access denied, losing the distinction the
+                // caller needs to reopen the same retained entry as a directory.
+                if (status == StatusFileIsADirectory)
+                {
+                    return SecureFileOpenStatus.Rejected;
+                }
+
                 uint error = RtlNtStatusToDosError(status);
 
                 return error switch
@@ -1329,6 +1336,8 @@ internal static partial class FileHandleIdentityInterop
     private const int ErrorPathNotFound = 3;
 
     private const int ErrorAccessDenied = 5;
+
+    private const int StatusFileIsADirectory = unchecked((int)0xC00000BA);
 
     private const uint ErrorDirectory = 267;
 
