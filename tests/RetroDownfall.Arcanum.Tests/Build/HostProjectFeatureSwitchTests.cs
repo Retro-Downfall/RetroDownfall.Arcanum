@@ -276,9 +276,17 @@ public sealed class HostProjectFeatureSwitchTests
                     "Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64",
                     StringComparison.Ordinal));
 
-        XElement portablePath = Assert.Single(
-            buildTargets.Descendants(),
-            static element => element.Name.LocalName == "_ArcanumPortableNativeAotPath");
+        XElement[] portablePaths = buildTargets
+            .Descendants()
+            .Where(static element => element.Name.LocalName == "_ArcanumPortableNativeAotPath")
+            .ToArray();
+        XElement officialPortablePath = Assert.Single(
+            portablePaths,
+            static element => element.Value.Trim() == "$(IlcFrameworkNativePath)");
+        XElement verifiedPortablePath = Assert.Single(
+            portablePaths,
+            static element => element.Value.Trim()
+                == "$(_ArcanumVerifiedPortableNativeAotContents)runtimes/osx-arm64/native/");
         XElement packageRoot = Assert.Single(
             buildTargets.Descendants(),
             static element =>
@@ -288,14 +296,19 @@ public sealed class HostProjectFeatureSwitchTests
             "$(NuGetPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64/$(ArcanumPortableMacOsNativeAotPackageVersion)",
             packageRoot.Value,
             StringComparison.Ordinal);
-        Assert.Equal(
-            "$(_ArcanumVerifiedPortableNativeAotContents)runtimes/osx-arm64/native/",
-            portablePath.Value.Trim());
         Assert.DoesNotContain(
             "$(_ArcanumPortableMacOsNativeAotPackageRoot)",
-            portablePath.Value,
+            verifiedPortablePath.Value,
             StringComparison.Ordinal);
-        Assert.True(IsMacOsNativeAotGated(portablePath));
+        Assert.Contains(
+            "$(_ArcanumRequiresPortableMacOsNativeAotBridge)' != 'true'",
+            (string?)officialPortablePath.Attribute("Condition"),
+            StringComparison.Ordinal);
+        Assert.Equal(
+            "PrepareArcanumMacOsCryptoArchive",
+            (string?)officialPortablePath.Parent?.Parent?.Attribute("Name"));
+        Assert.True(IsMacOsNativeAotGated(officialPortablePath));
+        Assert.True(IsMacOsNativeAotGated(verifiedPortablePath));
         Assert.True(IsMacOsNativeAotGated(packageRoot));
 
         string[] linkerArguments = buildProperties
@@ -467,14 +480,15 @@ public sealed class HostProjectFeatureSwitchTests
                 "PrepareArcanumMacOsCryptoArchive",
                 StringComparison.Ordinal));
 
-        Assert.Contains(
-            "$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'",
+        Assert.DoesNotContain(
+            "$(_ArcanumRequiresPortableMacOsNativeAotBridge)",
             (string?)prepareCryptoArchive.Attribute("Condition"),
             StringComparison.Ordinal);
 
+        Assert.True(IsMacOsNativeAotGated(prepareCryptoArchive));
         Assert.Equal("SetupOSSpecificProps", (string?)prepareCryptoArchive.Attribute("BeforeTargets"));
         Assert.Equal(
-            "RequireArcanumPortableMacOsNativeAotPack",
+            "SetupProperties;RequireArcanumPortableMacOsNativeAotPack",
             (string?)prepareCryptoArchive.Attribute("DependsOnTargets"));
         Assert.Null(prepareCryptoArchive.Attribute("AfterTargets"));
         XElement cryptoArchiveSource = Assert.Single(

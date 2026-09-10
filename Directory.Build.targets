@@ -197,18 +197,20 @@
   </Target>
 
   <!-- Microsoft's serviced Apple crypto archive contains compiler-module debug references to the
-       build farm's transient clang cache. lld reports those missing files even though Arcanum does
-       not ship native debug symbols. Stage the complete pack before the SDK constructs its ordered
-       native-library arguments, then strip only debug metadata from the staged crypto archive.
-       Never mutate NuGet's signed cache entry, and keep every code/global symbol in the archive. -->
+       build farm's transient clang cache. The linker reports those missing files even though
+       Arcanum does not ship native debug symbols. Stage the complete pack before the SDK constructs
+       its ordered native-library arguments, then strip only debug metadata from the staged crypto
+       archive. Never mutate NuGet's signed cache entry, and keep every code/global symbol. -->
 
   <Target
     Name="PrepareArcanumMacOsCryptoArchive"
     BeforeTargets="SetupOSSpecificProps"
-    DependsOnTargets="RequireArcanumPortableMacOsNativeAotPack"
-    Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true' and '$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'">
+    DependsOnTargets="SetupProperties;RequireArcanumPortableMacOsNativeAotPack"
+    Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true'">
 
     <PropertyGroup>
+
+      <_ArcanumPortableNativeAotPath Condition="'$(_ArcanumRequiresPortableMacOsNativeAotBridge)' != 'true'">$(IlcFrameworkNativePath)</_ArcanumPortableNativeAotPath>
 
       <_ArcanumCryptoArchiveSource>$(_ArcanumPortableNativeAotPath)libSystem.Security.Cryptography.Native.Apple.a</_ArcanumCryptoArchiveSource>
 
