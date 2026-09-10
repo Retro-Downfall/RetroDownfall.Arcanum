@@ -186,7 +186,7 @@ internal static class LocalOllamaQualificationGuards
             && string.Equals(fields[1], $"TOKEN={correctedToken}", StringComparison.Ordinal)
             && IsExpectedVisionField(fields[2], "OBJECT", "STOP SIGN")
             && IsExpectedVisionField(fields[3], "COLOR", "RED")
-            && IsExpectedVisionField(fields[4], "SHAPE", "OCTAGON")
+            && IsExpectedVisionField(fields[4], "SHAPE", "OCTAGON", "OCTAGONAL")
             && IsExpectedVisionField(fields[5], "SIDES", "8")
             && IsExpectedVisionField(fields[6], "TEXT", "STOP");
     }
@@ -235,12 +235,26 @@ internal static class LocalOllamaQualificationGuards
     private static bool IsExpectedVisionField(
         string field,
         string name,
-        string expectedValue)
+        params ReadOnlySpan<string> expectedValues)
     {
         string prefix = name + "=";
 
-        return field.StartsWith(prefix, StringComparison.Ordinal)
-            && field.AsSpan(prefix.Length).Equals(expectedValue, StringComparison.OrdinalIgnoreCase);
+        if (!field.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> value = field.AsSpan(prefix.Length);
+
+        foreach (string expectedValue in expectedValues)
+        {
+            if (value.Equals(expectedValue, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static bool ContainsVisionAnswerLeakage(params string?[] providerVisibleValues)

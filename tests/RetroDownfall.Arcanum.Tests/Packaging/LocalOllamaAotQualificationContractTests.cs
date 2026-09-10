@@ -543,6 +543,7 @@ public sealed class LocalOllamaAotQualificationContractTests
     [Theory]
     [InlineData("OBJECT=STOP SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP", true)]
     [InlineData("OBJECT=Stop Sign; COLOR=Red; SHAPE=Octagon; SIDES=8; TEXT=Stop", true)]
+    [InlineData("OBJECT=STOP sign; COLOR=Red; SHAPE=Octagonal; SIDES=8; TEXT=STOP", true)]
     [InlineData("OBJECT=stop sign; COLOR=red; SHAPE=octagon; SIDES=8; TEXT=stop", true)]
     [InlineData("object=STOP SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP", false)]
     [InlineData("OBJECT=YIELD SIGN; COLOR=RED; SHAPE=OCTAGON; SIDES=8; TEXT=STOP", false)]
