@@ -16,6 +16,7 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
+[Collection("ChildProcess")]
 public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 {
     private static readonly string[] ExactSharedSources =
