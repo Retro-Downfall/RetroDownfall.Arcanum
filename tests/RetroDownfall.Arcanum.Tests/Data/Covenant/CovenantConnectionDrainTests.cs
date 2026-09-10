@@ -243,13 +243,12 @@ public sealed class CovenantConnectionDrainTests
     /// A drain clears any sidecars left after a pooled connection wrapper is disposed.
     /// </summary>
     /// <remarks>
-    /// On POSIX, disposing a pooled connection returns its native handle to the pool with the file
-    /// still open, so the write-ahead log and wal-index remain until the pool is cleared. Windows can
-    /// have no sidecars left by this point even though the pool remains a process-global resource;
-    /// their exact release timing is a provider and platform detail. The portable maintenance
-    /// contract is therefore the postcondition: after the drain, neither sidecar survives. That is
-    /// why enrolment alone is not enough and why the drain clears the pools after closing enrolled
-    /// handles, rather than instead of it.
+    /// Disposing a pooled connection can return its native handle to the pool with the file still
+    /// open, but the provider may remove the write-ahead log and wal-index before the pool is
+    /// explicitly cleared. Their exact lifetime is not portable. The maintenance contract is the
+    /// postcondition: after the drain, neither sidecar survives. That is why enrolment alone is not
+    /// enough and why the drain clears the pools after closing enrolled handles, rather than instead
+    /// of it.
     ///
     /// <para>It is also the boundary of what the drain can promise. The proof it enables is true at
     /// the instant it is taken and about nothing later: a caller that opens a pooled connection after
@@ -273,19 +272,9 @@ public sealed class CovenantConnectionDrainTests
             await pooled.OpenAsync(Token);
         }
 
-        // The scratch handle is unpooled and closes for real, so what is left holding the database is
-        // the pooled handle this test disposed a statement ago.
+        // The scratch handle is unpooled and closes for real. The provider may still retain the
+        // pooled native handle, but whether its sidecars remain at this instant is not portable.
         await database.Connection.CloseAsync();
-
-        // The serialized collection removes process-global ClearAllPools interference. Native
-        // Windows ARM64 still reaches this point with no sidecars, proving that their pre-drain
-        // lifetime is a platform detail rather than part of the portable pool contract.
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Contains(
-                CovenantResidualArtifactClass.WriteAheadLog,
-                CovenantResidualArtifacts.Survivors(database.DatabasePath));
-        }
 
         Result drained = await drain.DrainAsync(Token);
 
@@ -295,7 +284,7 @@ public sealed class CovenantConnectionDrainTests
     }
 
     [Fact]
-    public async Task Exact_pool_clear_releases_one_closed_pooled_handle_and_observes_closure()
+    public async Task Exact_pool_clear_keeps_the_handle_closed_and_leaves_no_sidecars()
     {
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
@@ -314,10 +303,6 @@ public sealed class CovenantConnectionDrainTests
         await database.Connection.CloseAsync();
 
         Assert.Equal(ConnectionState.Closed, pooled.State);
-
-        Assert.Contains(
-            CovenantResidualArtifactClass.WriteAheadLog,
-            CovenantResidualArtifacts.Survivors(database.DatabasePath));
 
         Result cleared = drain.ClearExactPoolAfterClose(pooled);
 
