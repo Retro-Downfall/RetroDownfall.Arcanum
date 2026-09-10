@@ -240,22 +240,23 @@ public sealed class CovenantConnectionDrainTests
     }
 
     /// <summary>
-    /// A pooled handle survives its own disposal, and only the pool clear releases the sidecars.
+    /// A drain clears any sidecars left after a pooled connection wrapper is disposed.
     /// </summary>
     /// <remarks>
-    /// The fact the whole ordering here rests on, written down because it is invisible at every call
-    /// site: disposing a pooled connection does not close the database. Its native handle goes back
-    /// into the pool with the file still open, so the write-ahead log and the wal-index stay on disk
-    /// after the caller believes it has let go — and every proof of absence a Covenant erasure makes
-    /// is a statement about exactly those two files. That is why enrolment alone would not be enough
-    /// and why the drain clears the pools after it, rather than instead of it.
+    /// On POSIX, disposing a pooled connection returns its native handle to the pool with the file
+    /// still open, so the write-ahead log and wal-index remain until the pool is cleared. Windows can
+    /// have no sidecars left by this point even though the pool remains a process-global resource;
+    /// their exact release timing is a provider and platform detail. The portable maintenance
+    /// contract is therefore the postcondition: after the drain, neither sidecar survives. That is
+    /// why enrolment alone is not enough and why the drain clears the pools after closing enrolled
+    /// handles, rather than instead of it.
     ///
     /// <para>It is also the boundary of what the drain can promise. The proof it enables is true at
     /// the instant it is taken and about nothing later: a caller that opens a pooled connection after
     /// this returns puts both files straight back.</para>
     /// </remarks>
     [Fact]
-    public async Task A_disposed_pooled_handle_keeps_the_sidecars_until_the_drain_clears_the_pools()
+    public async Task A_drain_clears_sidecars_after_a_pooled_connection_wrapper_is_disposed()
     {
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
@@ -276,16 +277,15 @@ public sealed class CovenantConnectionDrainTests
         // the pooled handle this test disposed a statement ago.
         await database.Connection.CloseAsync();
 
-        // Asserted on every platform again. This was briefly guarded to POSIX after it redded on
-        // Windows, on the reading that the pool behaves differently there -- but the class is also
-        // order-dependent, and the same assertion fails on macOS under a wide filter and passes when
-        // the class runs alone, because ClearAllPools() is process-global and another test's drain
-        // empties the pool this one is measuring. The class is serialized now, which removes that
-        // interference. If Windows still reds here, the platform difference is real and this guard
-        // earns its place; guarding first would have hidden the race behind a plausible story.
-        Assert.Contains(
-            CovenantResidualArtifactClass.WriteAheadLog,
-            CovenantResidualArtifacts.Survivors(database.DatabasePath));
+        // The serialized collection removes process-global ClearAllPools interference. Native
+        // Windows ARM64 still reaches this point with no sidecars, proving that their pre-drain
+        // lifetime is a platform detail rather than part of the portable pool contract.
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Contains(
+                CovenantResidualArtifactClass.WriteAheadLog,
+                CovenantResidualArtifacts.Survivors(database.DatabasePath));
+        }
 
         Result drained = await drain.DrainAsync(Token);
 
