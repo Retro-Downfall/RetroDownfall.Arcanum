@@ -14,8 +14,8 @@
 #     contains folder arcanum-osx-arm64/ with arcanum (signed Mach-O) and README.md
 #
 # The zip is submitted to notarytool. The zip is NOT stapled (Apple staples
-# .app/.dmg/.pkg, not arbitrary zip containers). After notarization, the
-# signed binary is extracted and validated with codesign/spctl.
+# .app/.dmg/.pkg, not arbitrary zip containers). After notarization, the signed binary is
+# extracted, validated with strict codesign integrity and notarization-ticket checks, and launched.
 
 set -euo pipefail
 
@@ -223,7 +223,7 @@ if [[ "$LOCAL_SIGN" -eq 1 ]]; then
   # No notarization: Apple notarizes Developer ID submissions only, and a development certificate
   # is rejected outright. The launch smoke below is the part that actually matters locally — it is
   # the only check that catches a hardened-runtime binary which aborts before Main because the JIT
-  # entitlements are wrong, and codesign --verify and spctl both pass on exactly that binary.
+  # entitlements are wrong, while static codesign verification still passes on that binary.
   echo "==> Verifying the locally signed binary"
   codesign --verify --strict --verbose=4 "$STAGE_DIR/arcanum"
 
@@ -241,12 +241,10 @@ elif [[ "$SKIP_SIGN" -eq 0 ]]; then
   mkdir -p "$VALIDATE_DIR"
   ditto -x -k "$ZIP_PATH" "$VALIDATE_DIR"
   BINARY="$VALIDATE_DIR/arcanum-osx-arm64/arcanum"
-  codesign --verify --strict --verbose=4 "$BINARY"
-  # Gatekeeper assessment for a Developer ID signed executable.
-  spctl --assess --type execute --verbose=4 "$BINARY"
+  verify_notarized_cli "$BINARY"
 
-  # Both checks above pass on a hardened-runtime binary that cannot start at all (a missing
-  # JIT entitlement aborts CoreCLR before Main), so actually launch the signed artifact.
+  # Signature integrity and notarization-ticket checks do not prove that a hardened-runtime binary
+  # can reach Main, so actually launch the signed artifact.
   echo "==> Launching signed binary (--version) as a release smoke"
   "$BINARY" --version
 fi

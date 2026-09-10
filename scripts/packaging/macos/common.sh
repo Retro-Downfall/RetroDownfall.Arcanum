@@ -519,6 +519,17 @@ notarize_submit() {
     --wait
 }
 
+# A CLI archive contains a standalone Mach-O, not an app bundle. `spctl --type execute` assesses
+# app bundles and rejects this valid artifact shape as "not an app" even after Apple accepts the
+# notarization submission. Verify both code-signature integrity and the notarization ticket with
+# codesign's designated requirement for non-app code instead.
+verify_notarized_cli() {
+  local binary="$1"
+  require_cmd codesign
+  codesign --verify --strict --verbose=4 "$binary"
+  codesign -vvvv -R="notarized" --check-notarization "$binary"
+}
+
 staple_item() {
   local target="$1"
   xcrun stapler staple "$target"

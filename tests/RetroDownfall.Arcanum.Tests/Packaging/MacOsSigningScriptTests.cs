@@ -162,6 +162,114 @@ public sealed class MacOsSigningScriptTests
     }
 
     /// <summary>
+    /// A notarized CLI zip contains a standalone Mach-O rather than an app bundle. Apple's
+    /// standalone-code validation uses a notarization requirement through <c>codesign</c>;
+    /// <c>spctl --type execute</c> assesses apps and rejects this valid artifact shape as
+    /// "not an app." Keep the signature and notarization-ticket checks strict without routing the
+    /// binary through the app-bundle assessment path.
+    /// </summary>
+    [SkippableFact]
+    public void Verify_notarized_cli_requires_Apple_ticket_without_app_bundle_assessment()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "verify_notarized_cli is a macOS packaging primitive.");
+
+        string root = Directory.CreateTempSubdirectory("arcanum-verify-notarized-cli-").FullName;
+
+        try
+        {
+            string binary = Path.Combine(root, "arcanum");
+
+            File.Copy("/bin/echo", binary);
+
+            string binDirectory = Path.Combine(root, "bin");
+
+            _ = Directory.CreateDirectory(binDirectory);
+
+            string codesignLog = Path.Combine(root, "codesign.log");
+
+            string spctlLog = Path.Combine(root, "spctl.log");
+
+            WriteExecutable(
+                Path.Combine(binDirectory, "codesign"),
+                """
+                #!/bin/bash
+                printf '%s\n' "$*" >> "$CODESIGN_LOG"
+                """);
+
+            WriteExecutable(
+                Path.Combine(binDirectory, "spctl"),
+                """
+                #!/bin/bash
+                printf '%s\n' "$*" >> "$SPCTL_LOG"
+                exit 73
+                """);
+
+            string harness = Path.Combine(root, "harness.sh");
+
+            WriteExecutable(
+                harness,
+                """
+                #!/bin/bash
+                set -euo pipefail
+                export PATH="$2:$PATH"
+                # shellcheck source=/dev/null
+                source "$3"
+                verify_notarized_cli "$1"
+                """);
+
+            ProcessStartInfo startInfo = new("/bin/bash")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+
+            startInfo.ArgumentList.Add(harness);
+
+            startInfo.ArgumentList.Add(binary);
+
+            startInfo.ArgumentList.Add(binDirectory);
+
+            startInfo.ArgumentList.Add(CommonScript());
+
+            startInfo.Environment["CODESIGN_LOG"] = codesignLog;
+
+            startInfo.Environment["SPCTL_LOG"] = spctlLog;
+
+            using System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo)!;
+
+            string standardOutput = process.StandardOutput.ReadToEnd();
+
+            string standardError = process.StandardError.ReadToEnd();
+
+            process.WaitForExit();
+
+            Assert.True(
+                process.ExitCode == 0,
+                $"verify_notarized_cli exited {process.ExitCode}."
+                + global::System.Environment.NewLine
+                + standardOutput
+                + standardError);
+
+            Assert.Equal(
+                [
+                    $"--verify --strict --verbose=4 {binary}",
+
+                    $"-vvvv -R=notarized --check-notarization {binary}",
+                ],
+                File.ReadAllLines(codesignLog));
+
+            Assert.False(
+                File.Exists(spctlLog),
+                "A standalone CLI reached spctl's app-bundle assessment path.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// Runs the harness and returns the paths handed to <c>codesign</c> for signing, in order.
     /// </summary>
     private static IReadOnlyList<string> RunSignPublishDir(string root, string stage) =>

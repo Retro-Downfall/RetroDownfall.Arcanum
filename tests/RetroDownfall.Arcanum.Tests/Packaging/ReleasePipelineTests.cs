@@ -153,7 +153,16 @@ public sealed class ReleasePipelineTests
     [Fact]
     public void MacOs_local_signing_never_reaches_notarization()
     {
-        string[] notarizationCalls = ["notarize_submit", "staple_item", "spctl --assess"];
+        string[] notarizationCalls =
+        [
+            "notarize_submit",
+
+            "staple_item",
+
+            "spctl --assess",
+
+            "verify_notarized_cli",
+        ];
 
         foreach (string script in MacOsPackagingBuildScripts())
         {
@@ -437,24 +446,26 @@ public sealed class ReleasePipelineTests
     }
 
     [Fact]
-    public void Release_packagers_fail_when_gatekeeper_rejects_the_notarized_artifact()
+    public void MacOs_packagers_apply_artifact_appropriate_post_notarization_validation()
     {
         string root = RepositoryRoot();
 
         string cli = File.ReadAllText(
             Path.Combine(root, "scripts", "packaging", "macos", "build-arcanum.sh"));
 
+        Assert.Contains("notarize_submit \"$ZIP_PATH\"", cli, StringComparison.Ordinal);
+
         Assert.Contains(
-            "spctl --assess --type execute --verbose=4 \"$BINARY\"",
+            "verify_notarized_cli \"$BINARY\"",
             cli,
             StringComparison.Ordinal);
 
         Assert.DoesNotContain(
-            "spctl --assess --type execute --verbose=4 \"$BINARY\" ||",
+            "spctl --assess --type execute",
             cli,
             StringComparison.Ordinal);
 
-        Assert.DoesNotContain("warning: spctl", cli, StringComparison.Ordinal);
+        Assert.Contains("\"$BINARY\" --version", cli, StringComparison.Ordinal);
 
         string gui = File.ReadAllText(
             Path.Combine(root, "scripts", "packaging", "macos", "build-app-dmg.sh"));
