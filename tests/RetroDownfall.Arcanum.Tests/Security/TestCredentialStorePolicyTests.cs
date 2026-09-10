@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Secrets.Security;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
@@ -17,6 +18,35 @@ public sealed class TestCredentialStorePolicyTests
     private const string DotnetEnvironmentVariable = "DOTNET_ENVIRONMENT";
 
     private const string AspNetCoreEnvironmentVariable = "ASPNETCORE_ENVIRONMENT";
+
+    [Fact]
+    public async Task Api_test_factory_restores_the_in_memory_credential_opt_in()
+    {
+        string? originalOptIn =
+            global::System.Environment.GetEnvironmentVariable(OptInVariable);
+
+        try
+        {
+            global::System.Environment.SetEnvironmentVariable(
+                OptInVariable,
+                "pre-existing-test-value");
+
+            await using (ArcanumWebApplicationFactory factory = new())
+            {
+                Assert.Equal(
+                    "1",
+                    global::System.Environment.GetEnvironmentVariable(OptInVariable));
+            }
+
+            Assert.Equal(
+                "pre-existing-test-value",
+                global::System.Environment.GetEnvironmentVariable(OptInVariable));
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable(OptInVariable, originalOptIn);
+        }
+    }
 
     [Theory]
     [InlineData(false, false, false)]

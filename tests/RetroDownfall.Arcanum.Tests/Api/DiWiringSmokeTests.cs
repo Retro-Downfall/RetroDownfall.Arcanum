@@ -30,6 +30,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
+using RetroDownfall.Arcanum.Secrets.Security;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -44,6 +46,15 @@ public sealed class DiWiringSmokeTests
     public DiWiringSmokeTests(ArcanumWebApplicationFactory factory)
     {
         _factory = factory;
+    }
+
+    [SkippableFact]
+    public void Test_host_uses_the_explicit_in_memory_credential_boundary()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.IsType<InMemoryOsCredentialStore>(
+            _factory.Services.GetRequiredService<IOsCredentialStore>());
     }
 
     [SkippableFact]
