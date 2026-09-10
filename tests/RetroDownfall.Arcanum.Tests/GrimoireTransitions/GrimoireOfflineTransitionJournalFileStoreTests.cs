@@ -548,14 +548,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 File.WriteAllBytes(location.JournalPath, substituteBytes);
 
-                if (!OperatingSystem.IsWindows())
-                {
-
-                    File.SetUnixFileMode(
-                        location.JournalPath,
-                        UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
-                }
+                Assert.True(SecureFilePermissions.TryApplyOwnerOnlyFileStrict(
+                    location.JournalPath,
+                    logFailure: false));
 
             });
 
