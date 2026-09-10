@@ -143,30 +143,74 @@ public sealed class HostProjectFeatureSwitchTests
         XElement bundledPackPath = Assert.Single(
             buildTargets.Descendants(),
             static element => element.Name.LocalName == "_ArcanumBundledMacOsNativeAotPath");
+        XElement[] bridgeAssignments = buildTargets
+            .Descendants()
+            .Where(static element => element.Name.LocalName == "_ArcanumRequiresPortableMacOsNativeAotBridge")
+            .ToArray();
+        XElement[] legacyLldAssignments = buildTargets
+            .Descendants()
+            .Where(static element => element.Name.LocalName == "_ArcanumRequiresLegacyMacOsLld")
+            .ToArray();
         XElement bridgeRequired = Assert.Single(
-            buildTargets.Descendants(),
-            static element => element.Name.LocalName == "_ArcanumRequiresPortableMacOsNativeAotBridge");
+            bridgeAssignments,
+            static element => element.Value.Trim() == "true");
+        XElement legacyLldRequired = Assert.Single(
+            legacyLldAssignments,
+            static element => element.Value.Trim() == "true");
 
         Assert.Contains("$(NetCoreRoot)packs/", bundledPackPath.Value, StringComparison.Ordinal);
         Assert.Contains("$(BundledNETCoreAppPackageVersion)", bundledPackPath.Value, StringComparison.Ordinal);
+        Assert.Contains(
+            bridgeAssignments,
+            static element => element.Value.Trim() == "false" && element.Attribute("Condition") is null);
         Assert.Equal("true", bridgeRequired.Value.Trim());
         Assert.Contains("nonportable.txt", (string?)bridgeRequired.Attribute("Condition"), StringComparison.Ordinal);
+        Assert.Contains(
+            legacyLldAssignments,
+            static element => element.Value.Trim() == "false" && element.Attribute("Condition") is null);
+        Assert.Equal("true", legacyLldRequired.Value.Trim());
+        Assert.Contains(
+            "VersionLessThan('$(BundledNETCoreAppPackageVersion)', '10.0.12')",
+            (string?)legacyLldRequired.Attribute("Condition"),
+            StringComparison.Ordinal);
 
         XElement auditedPackageVersion = Assert.Single(
             buildTargets.Descendants(),
             static element =>
                 element.Name.LocalName == "ArcanumPortableMacOsNativeAotPackageVersion");
-        XElement auditedPackageHash = Assert.Single(
-            buildTargets.Descendants(),
-            static element =>
-                element.Name.LocalName == "ArcanumPortableMacOsNativeAotPackageSha512");
+        XElement[] auditedPackageHashes = buildTargets
+            .Descendants()
+            .Where(static element =>
+                element.Name.LocalName == "ArcanumPortableMacOsNativeAotPackageSha512")
+            .ToArray();
 
-        Assert.Equal("10.0.11", auditedPackageVersion.Value.Trim());
-        Assert.Equal(
-            "NIe+WI0m5L4HrZ9b+wOhCUkrT3WZyIC8MQuHGzkvJyfUyR8ImMXYJIu3TiJsdLHUkgkqPK92AGQt7CQIc6vydQ==",
-            auditedPackageHash.Value.Trim());
+        Assert.Equal("$(BundledNETCoreAppPackageVersion)", auditedPackageVersion.Value.Trim());
+        Assert.Equal(3, auditedPackageHashes.Length);
+        Assert.Contains(
+            auditedPackageHashes,
+            static element => string.IsNullOrEmpty(element.Value) && element.Attribute("Condition") is null);
+        Assert.Contains(
+            auditedPackageHashes,
+            static element =>
+                ((string?)element.Attribute("Condition") ?? string.Empty).Contains(
+                    "10.0.11",
+                    StringComparison.Ordinal)
+                && element.Value.Trim()
+                    == "NIe+WI0m5L4HrZ9b+wOhCUkrT3WZyIC8MQuHGzkvJyfUyR8ImMXYJIu3TiJsdLHUkgkqPK92AGQt7CQIc6vydQ==");
+        Assert.Contains(
+            auditedPackageHashes,
+            static element =>
+                ((string?)element.Attribute("Condition") ?? string.Empty).Contains(
+                    "10.0.12",
+                    StringComparison.Ordinal)
+                && element.Value.Trim()
+                    == "Qt7NCMotrQFrpukryPBpKeF/AawvptJv+v+c0Q3L29Y/ptFO8nFor+g8xKasWq4XNLL/hT/x+QBC7gacjeiIUQ==");
         Assert.True(IsMacOsNativeAotGated(auditedPackageVersion));
-        Assert.True(IsMacOsNativeAotGated(auditedPackageHash));
+
+        foreach (XElement auditedPackageHash in auditedPackageHashes)
+        {
+            Assert.True(IsMacOsNativeAotGated(auditedPackageHash));
+        }
 
         string[] localProperties = ((string?)buildTargets.Root?.Attribute("TreatAsLocalProperty") ?? string.Empty)
             .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -185,6 +229,7 @@ public sealed class HostProjectFeatureSwitchTests
             "_ArcanumPortableMacOsNativeAotPackageSha512Path",
             "_ArcanumPortableNativeAotPath",
             "_ArcanumPreparedNativeAotPath",
+            "_ArcanumRequiresLegacyMacOsLld",
             "_ArcanumRequiresPortableMacOsNativeAotBridge",
             "_ArcanumVerifiedPortableNativeAotContents",
             "_ArcanumVerifiedPortableNativeAotPackage",
@@ -205,6 +250,21 @@ public sealed class HostProjectFeatureSwitchTests
             "$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'",
             (string?)collectPortablePack.Attribute("Condition"),
             StringComparison.Ordinal);
+
+        XElement rejectUnauditedPackage = Assert.Single(
+            collectPortablePack.Elements(),
+            static element => string.Equals(
+                (string?)element.Attribute("Code"),
+                "ARCAOT005",
+                StringComparison.Ordinal));
+        XElement collectPackageDownload = Assert.Single(
+            collectPortablePack.Elements(),
+            static element => element.Descendants().Any(
+                descendant => descendant.Name.LocalName == "PackageDownload"));
+
+        Assert.True(
+            Array.IndexOf(collectPortablePack.Elements().ToArray(), rejectUnauditedPackage)
+                < Array.IndexOf(collectPortablePack.Elements().ToArray(), collectPackageDownload));
         Assert.DoesNotContain(
             buildProperties
                 .Descendants()
@@ -257,6 +317,33 @@ public sealed class HostProjectFeatureSwitchTests
                 "$(_ArcanumMacOsSdkPath)/System/Library/Frameworks",
                 StringComparison.Ordinal));
         Assert.DoesNotContain(
+            buildProperties.Descendants(),
+            static element =>
+                element.Name.LocalName == "LinkerArg"
+                && ((string?)element.Attribute("Include") ?? string.Empty).Contains(
+                    "ld64.lld",
+                    StringComparison.Ordinal));
+
+        XElement[] legacyLinkerArguments = buildTargets
+            .Descendants()
+            .Where(static element =>
+                element.Name.LocalName == "LinkerArg"
+                && ((string?)element.Attribute("Include") ?? string.Empty).Contains(
+                    "ld64.lld",
+                    StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Equal(2, legacyLinkerArguments.Length);
+
+        foreach (XElement legacyLinkerArgument in legacyLinkerArguments)
+        {
+            Assert.Contains(
+                "$(_ArcanumRequiresLegacyMacOsLld)' == 'true'",
+                (string?)legacyLinkerArgument.Attribute("Condition"),
+                StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain(
             linkerArguments,
             static argument =>
                 argument.Contains("openssl", StringComparison.OrdinalIgnoreCase)
@@ -270,12 +357,13 @@ public sealed class HostProjectFeatureSwitchTests
         Assert.Contains("ARCAOT005", targetsText, StringComparison.Ordinal);
         Assert.Contains("ARCAOT006", targetsText, StringComparison.Ordinal);
         Assert.Contains("ARCAOT007", targetsText, StringComparison.Ordinal);
+        Assert.Contains("ARCAOT008", targetsText, StringComparison.Ordinal);
         Assert.Contains("ReadLinesFromFile", targetsText, StringComparison.Ordinal);
         Assert.Contains("VerifyFileHash", targetsText, StringComparison.Ordinal);
         Assert.Contains("HashEncoding=\"base64\"", targetsText, StringComparison.Ordinal);
         Assert.Contains(".nupkg.sha512", targetsText, StringComparison.Ordinal);
         Assert.Contains(
-            "$(BundledNETCoreAppPackageVersion)' != '$(ArcanumPortableMacOsNativeAotPackageVersion)",
+            "$(ArcanumPortableMacOsNativeAotPackageSha512)' == ''",
             targetsText,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -418,6 +506,121 @@ public sealed class HostProjectFeatureSwitchTests
             "<IlcSdkPath>$(_ArcanumPreparedNativeAotPath)</IlcSdkPath>",
             targetsText,
             StringComparison.Ordinal);
+
+        XDocument cliProject = XDocument.Load(Path.Combine(
+            repositoryRoot,
+            "src",
+            "RetroDownfall.Arcanum.Cli",
+            "RetroDownfall.Arcanum.Cli.csproj"));
+
+        Assert.DoesNotContain(
+            cliProject.Descendants(),
+            static element =>
+                element.Name.LocalName == "_AppleLldPath"
+                || string.Equals((string?)element.Attribute("Code"), "ARC0002", StringComparison.Ordinal));
+
+        XElement stripSymbols = Assert.Single(
+            cliProject.Descendants(),
+            static element => element.Name.LocalName == "StripSymbols");
+        string stripCondition = (string?)stripSymbols.Parent?.Attribute("Condition") ?? string.Empty;
+
+        Assert.Contains("$(RuntimeIdentifier)", stripCondition, StringComparison.Ordinal);
+        Assert.Contains("StartsWith('osx')", stripCondition, StringComparison.Ordinal);
+        Assert.Contains("$(PublishAot)", stripCondition, StringComparison.Ordinal);
+        Assert.DoesNotContain("$(_TargetsApple)", stripCondition, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MacOS_native_aot_linker_and_pack_selection_ignore_caller_global_overrides()
+    {
+        string temporaryRoot = Directory
+            .CreateTempSubdirectory("arcanum-nativeaot-selection-")
+            .FullName;
+
+        try
+        {
+            string projectPath = Path.Combine(temporaryRoot, "Selection.proj");
+            XDocument project = new(
+                new XElement(
+                    "Project",
+                    new XElement(
+                        "PropertyGroup",
+                        new XElement("RuntimeIdentifier", "osx-arm64"),
+                        new XElement("PublishAot", "true"),
+                        new XElement("BundledNETCoreAppPackageVersion", "10.0.99"),
+                        new XElement("NetCoreRoot", temporaryRoot + Path.DirectorySeparatorChar),
+                        new XElement("NuGetPackageRoot", temporaryRoot + Path.DirectorySeparatorChar),
+                        new XElement("NativeIntermediateOutputPath", temporaryRoot + Path.DirectorySeparatorChar)),
+                    new XElement(
+                        "Import",
+                        new XAttribute("Project", Path.Combine(FindRepositoryRoot(), "Directory.Build.targets"))),
+                    new XElement(
+                        "Target",
+                        new XAttribute("Name", "AssertSelection"),
+                        new XElement(
+                            "Error",
+                            new XAttribute(
+                                "Condition",
+                                "'$(_ArcanumRequiresPortableMacOsNativeAotBridge)' != 'false'"),
+                            new XAttribute("Text", "The bridge decision remained caller-controlled.")),
+                        new XElement(
+                            "Error",
+                            new XAttribute(
+                                "Condition",
+                                "'$(_ArcanumRequiresLegacyMacOsLld)' != 'false'"),
+                            new XAttribute("Text", "The linker decision remained caller-controlled.")),
+                        new XElement(
+                            "Error",
+                            new XAttribute(
+                                "Condition",
+                                "'$(ArcanumPortableMacOsNativeAotPackageVersion)' != '10.0.99'"),
+                            new XAttribute("Text", "The package version remained caller-controlled.")),
+                        new XElement(
+                            "Error",
+                            new XAttribute(
+                                "Condition",
+                                "'$(ArcanumPortableMacOsNativeAotPackageSha512)' != ''"),
+                            new XAttribute("Text", "The package hash remained caller-controlled.")))));
+
+            project.Save(projectPath);
+
+            global::System.Diagnostics.ProcessStartInfo start = new("dotnet")
+            {
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+
+            start.ArgumentList.Add("msbuild");
+            start.ArgumentList.Add(projectPath);
+            start.ArgumentList.Add("-t:AssertSelection");
+            start.ArgumentList.Add("-p:_ArcanumRequiresPortableMacOsNativeAotBridge=true");
+            start.ArgumentList.Add("-p:_ArcanumRequiresLegacyMacOsLld=true");
+            start.ArgumentList.Add("-p:ArcanumPortableMacOsNativeAotPackageVersion=CALLER");
+            start.ArgumentList.Add("-p:ArcanumPortableMacOsNativeAotPackageSha512=CALLER");
+            start.ArgumentList.Add("-nodeReuse:false");
+            start.ArgumentList.Add("-v:minimal");
+            start.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1";
+
+            using global::System.Diagnostics.Process process = new() { StartInfo = start };
+
+            Assert.True(process.Start());
+
+            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
+            Task<string> standardError = process.StandardError.ReadToEndAsync();
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+
+            await process.WaitForExitAsync(timeout.Token);
+
+            string output = await standardOutput + await standardError;
+
+            Assert.True(process.ExitCode == 0, output);
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
     }
 
     [Fact]

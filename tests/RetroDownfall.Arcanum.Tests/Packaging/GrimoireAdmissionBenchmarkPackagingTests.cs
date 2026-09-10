@@ -4,6 +4,8 @@ using System.Diagnostics;
 
 using System.Runtime.InteropServices;
 
+using System.Text.Json;
+
 using System.Text.RegularExpressions;
 
 using Microsoft.CodeAnalysis.CSharp;
@@ -24,6 +26,42 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         "AdmissionBenchmarkManifest.cs",
         "PersistentWorkerHarness.cs",
     ];
+
+    [Fact]
+    public void Locked_toolchain_matches_the_serviced_macos_native_aot_sdk()
+    {
+        string lockPath = Path.Combine(
+            FindRepositoryRoot(),
+            "tests",
+            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
+            "packages.lock.json");
+
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(lockPath));
+
+        JsonElement dependencies = document.RootElement
+            .GetProperty("dependencies")
+            .GetProperty("net10.0");
+        (string Name, string Hash)[] expected =
+        [
+            (
+                "Microsoft.DotNet.ILCompiler",
+                "qeOTK9DRbWx4/eebXG1v50ykEEmD9Uvp8J1iCFqnz30Wg8s8vfPd2tPpqae0wMnSYmdvKCmTCEg6/ZazSsulYg=="),
+            (
+                "Microsoft.NET.ILLink.Tasks",
+                "opT5P1p+CG70xGaveTgq3Q5OZKd7MZ0Rs10x4Tewl6bcPbu4SLo4F0n6RBCInvBKxoR10T11+X0M9dgjKEfucw=="),
+        ];
+
+        foreach ((string name, string hash) in expected)
+        {
+            JsonElement package = dependencies.GetProperty(name);
+
+            Assert.Equal("[10.0.12, )", package.GetProperty("requested").GetString());
+
+            Assert.Equal("10.0.12", package.GetProperty("resolved").GetString());
+
+            Assert.Equal(hash, package.GetProperty("contentHash").GetString());
+        }
+    }
 
     [Fact]
     public void Script_namespaces_every_function_owned_variable_for_posix_sh()

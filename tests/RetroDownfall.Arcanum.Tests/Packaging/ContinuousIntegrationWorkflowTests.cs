@@ -30,7 +30,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         const string project = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/"
             + "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj";
 
-        int lld = lane.Body.IndexOf("ld64.lld", StringComparison.Ordinal);
+        int sdk = lane.Body.IndexOf("dotnet-version: \"10.0.401\"", StringComparison.Ordinal);
 
         int build = lane.Body.IndexOf("dotnet build " + project, StringComparison.Ordinal);
 
@@ -38,9 +38,9 @@ public sealed class ContinuousIntegrationWorkflowTests
             "./scripts/benchmark-grimoire-admission.sh --smoke",
             StringComparison.Ordinal);
 
-        Assert.True(lld >= 0, "The benchmark lane must install the Native AOT linker.");
+        Assert.True(sdk >= 0, "The benchmark lane must pin the serviced Native AOT SDK.");
 
-        Assert.True(build > lld, "The dedicated host must be built after linker setup.");
+        Assert.True(build > sdk, "The dedicated host must be built after SDK setup.");
 
         Assert.True(smoke > build, "The published Native AOT smoke must run after the clean host build.");
 
@@ -218,18 +218,12 @@ public sealed class ContinuousIntegrationWorkflowTests
     }
 
     /// <summary>
-    /// Both tools the Native AOT gates depend on are required explicitly. Without ripgrep the
-    /// warning scan fails closed; without <c>ld64.lld</c>, neither the shipping CLI nor the
-    /// dedicated regex smoke can provide real compile/run evidence on macOS.
+    /// Ripgrep is required explicitly because the Native AOT warning scan fails closed without it.
     /// </summary>
-    [Theory]
-
-    [InlineData("brew install ripgrep")]
-
-    [InlineData("ld64.lld")]
-
-    public void Every_macos_lane_running_the_aot_il_gate_installs_what_the_gate_needs(string requirement)
+    [Fact]
+    public void Every_macos_lane_running_the_aot_il_gate_installs_ripgrep()
     {
+        const string requirement = "brew install ripgrep";
         List<string> offenders = [];
 
         foreach (WorkflowJob job in ContinuousIntegrationJobs(FindRepositoryRoot()))
@@ -253,8 +247,51 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.True(
             offenders.Count == 0,
             $"A CI job runs the AOT compatibility gate without '{requirement}'. Without ripgrep "
-            + "the warning scan cannot run; without ld64.lld the dedicated NativeAOT regex smoke "
-            + "cannot supply real compile/run evidence:"
+            + "the warning scan cannot run:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// .NET 10.0.12 emits relocation anchors that fix Apple's large-object linker assertion. LLVM
+    /// lld rejects those anchors, so every macOS AOT lane must use the serviced SDK's Apple linker
+    /// path instead of silently floating to another SDK or forcing the legacy bridge.
+    /// </summary>
+    [Fact]
+    public void Macos_native_aot_lanes_pin_the_serviced_sdk_and_use_its_apple_linker()
+    {
+        List<string> offenders = [];
+        List<string> matching = [];
+
+        foreach (string workflow in WorkflowFiles(FindRepositoryRoot()))
+        {
+            foreach (WorkflowJob job in JobsIn(workflow))
+            {
+                if (!job.RunsOn.StartsWith("macos", StringComparison.Ordinal)
+                    || (!job.Body.Contains("verify-aot-il-warnings.sh", StringComparison.Ordinal)
+                        && !job.Body.Contains("build-arcanum.sh", StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                string identity = $"{Path.GetFileName(workflow)}: {job.Id}";
+
+                matching.Add(identity);
+
+                if (!job.Body.Contains("dotnet-version: \"10.0.401\"", StringComparison.Ordinal)
+                    || job.Body.Contains("ld64.lld", StringComparison.Ordinal)
+                    || job.Body.Contains("brew install lld", StringComparison.Ordinal))
+                {
+                    offenders.Add(identity);
+                }
+            }
+        }
+
+        Assert.Contains("release-macos-arm64.yml: release-macos-arm64", matching);
+        Assert.True(
+            offenders.Count == 0,
+            "A macOS Native AOT lane does not pin .NET SDK 10.0.401 with its compatible Apple "
+            + "linker, or still forces LLVM lld:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
     }

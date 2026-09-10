@@ -59,24 +59,18 @@
 
   </ItemGroup>
 
-  <!-- Every Native AOT link in this repository, not only the shipping CLI's. Apple's ld-prime
-       asserts on a large Native AOT object file (dotnet/runtime#119380), which is why the link is
-       pointed at LLVM's lld when it is installed. Apple Clang also injects /usr/local/lib even when
-       that directory does not exist; -Z removes its standard search list while the Native AOT
-       targets continue to pass every required SDK, Swift, and framework path explicitly.
+  <!-- Every Native AOT link in this repository, not only the shipping CLI's. .NET 10.0.12 fixed
+       Apple's large-object ld-prime assertion (dotnet/runtime#119380) by emitting relocation-anchor
+       symbols that LLVM lld cannot consume. Current SDKs therefore use Apple's linker. The isolated
+       compatibility target in Directory.Build.targets selects lld only for an older runtime pack.
+       Apple Clang also injects /usr/local/lib even when that directory does not exist; -Z removes
+       its standard search list while the Native AOT targets continue to pass every required SDK,
+       Swift, and framework path explicitly.
 
        Directory.Build.targets requests Microsoft's portable Native AOT runtime pack as an exact,
        SHA-512-pinned build-time download, then validates and stages it. PackageDownload does not
        participate in packages.lock.json. Do not add Homebrew OpenSSL or Brotli search paths here:
        doing so silently makes the shipped executable depend on versions installed on the build
        machine. -->
-
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/lld/bin/ld64.lld')" Include="--ld-path=/opt/homebrew/opt/lld/bin/ld64.lld" />
-
-    <LinkerArg Condition="!Exists('/opt/homebrew/opt/lld/bin/ld64.lld') and Exists('/usr/local/opt/lld/bin/ld64.lld')" Include="--ld-path=/usr/local/opt/lld/bin/ld64.lld" />
-
-  </ItemGroup>
 
 </Project>

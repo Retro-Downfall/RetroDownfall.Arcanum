@@ -10,15 +10,15 @@
       },
       "Microsoft.DotNet.ILCompiler": {
         "type": "Direct",
-        "requested": "[10.0.11, )",
-        "resolved": "10.0.11",
-        "contentHash": "CuGhHe6NH5vPTfa3+mWpbpqqAqYrto8ntgqzEBEWAKZ1n15VQvc8YdMRROTHdIiuCEpcRTaJVWbVJjg33Tyuaw=="
+        "requested": "[10.0.12, )",
+        "resolved": "10.0.12",
+        "contentHash": "qeOTK9DRbWx4/eebXG1v50ykEEmD9Uvp8J1iCFqnz30Wg8s8vfPd2tPpqae0wMnSYmdvKCmTCEg6/ZazSsulYg=="
       },
       "Microsoft.NET.ILLink.Tasks": {
         "type": "Direct",
-        "requested": "[10.0.11, )",
-        "resolved": "10.0.11",
-        "contentHash": "B7ClIZRv1IyPQV3XQO8UbGg9iGm1hggC/WR7kXV8dRu3KAfphANlMoYqZRciLiDpPmwUZac7orR9EKOMvVCYgg=="
+        "requested": "[10.0.12, )",
+        "resolved": "10.0.12",
+        "contentHash": "opT5P1p+CG70xGaveTgq3Q5OZKd7MZ0Rs10x4Tewl6bcPbu4SLo4F0n6RBCInvBKxoR10T11+X0M9dgjKEfucw=="
       },
       "A2A": {
         "type": "Transitive",

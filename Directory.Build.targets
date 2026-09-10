@@ -1,4 +1,4 @@
-<Project TreatAsLocalProperty="ArcanumPortableMacOsNativeAotPackageSha512;ArcanumPortableMacOsNativeAotPackageVersion;IlcFrameworkNativePath;IlcSdkPath;_ArcanumBundledMacOsNativeAotPath;_ArcanumCryptoArchivePrepared;_ArcanumCryptoArchiveSource;_ArcanumMacOsSdkPath;_ArcanumPortableMacOsNativeAotPackagePath;_ArcanumPortableMacOsNativeAotPackageRoot;_ArcanumPortableMacOsNativeAotPackageSha512Path;_ArcanumPortableNativeAotPath;_ArcanumPreparedNativeAotPath;_ArcanumRequiresPortableMacOsNativeAotBridge;_ArcanumVerifiedPortableNativeAotContents;_ArcanumVerifiedPortableNativeAotPackage;_ArcanumVerifiedPortableNativeAotRoot">
+<Project TreatAsLocalProperty="ArcanumPortableMacOsNativeAotPackageSha512;ArcanumPortableMacOsNativeAotPackageVersion;IlcFrameworkNativePath;IlcSdkPath;_ArcanumBundledMacOsNativeAotPath;_ArcanumCryptoArchivePrepared;_ArcanumCryptoArchiveSource;_ArcanumMacOsSdkPath;_ArcanumPortableMacOsNativeAotPackagePath;_ArcanumPortableMacOsNativeAotPackageRoot;_ArcanumPortableMacOsNativeAotPackageSha512Path;_ArcanumPortableNativeAotPath;_ArcanumPreparedNativeAotPath;_ArcanumRequiresLegacyMacOsLld;_ArcanumRequiresPortableMacOsNativeAotBridge;_ArcanumVerifiedPortableNativeAotContents;_ArcanumVerifiedPortableNativeAotPackage;_ArcanumVerifiedPortableNativeAotRoot">
 
   <!-- Homebrew source-builds .NET without the portable Brotli and zlib archives and marks its
        Native AOT runtime pack nonportable. That makes ILC resolve OpenSSL and Brotli from the build
@@ -14,11 +14,24 @@
 
     <_ArcanumBundledMacOsNativeAotPath>$(NetCoreRoot)packs/Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64/$(BundledNETCoreAppPackageVersion)/runtimes/osx-arm64/native/</_ArcanumBundledMacOsNativeAotPath>
 
+    <_ArcanumRequiresPortableMacOsNativeAotBridge>false</_ArcanumRequiresPortableMacOsNativeAotBridge>
+
     <_ArcanumRequiresPortableMacOsNativeAotBridge Condition="Exists('$(_ArcanumBundledMacOsNativeAotPath)nonportable.txt')">true</_ArcanumRequiresPortableMacOsNativeAotBridge>
 
-    <ArcanumPortableMacOsNativeAotPackageVersion>10.0.11</ArcanumPortableMacOsNativeAotPackageVersion>
+    <!-- Runtime packs before 10.0.12 need lld to avoid Apple's large-addend assertion. Starting
+         with 10.0.12, .NET emits relocation anchors for ld-prime; lld rejects those anchors inside
+         __eh_frame, so selecting the linker by pack version is required in both directions. -->
+    <_ArcanumRequiresLegacyMacOsLld>false</_ArcanumRequiresLegacyMacOsLld>
 
-    <ArcanumPortableMacOsNativeAotPackageSha512>NIe+WI0m5L4HrZ9b+wOhCUkrT3WZyIC8MQuHGzkvJyfUyR8ImMXYJIu3TiJsdLHUkgkqPK92AGQt7CQIc6vydQ==</ArcanumPortableMacOsNativeAotPackageSha512>
+    <_ArcanumRequiresLegacyMacOsLld Condition="'$(BundledNETCoreAppPackageVersion)' != '' and $([MSBuild]::VersionLessThan('$(BundledNETCoreAppPackageVersion)', '10.0.12'))">true</_ArcanumRequiresLegacyMacOsLld>
+
+    <ArcanumPortableMacOsNativeAotPackageVersion>$(BundledNETCoreAppPackageVersion)</ArcanumPortableMacOsNativeAotPackageVersion>
+
+    <ArcanumPortableMacOsNativeAotPackageSha512></ArcanumPortableMacOsNativeAotPackageSha512>
+
+    <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '10.0.11'">NIe+WI0m5L4HrZ9b+wOhCUkrT3WZyIC8MQuHGzkvJyfUyR8ImMXYJIu3TiJsdLHUkgkqPK92AGQt7CQIc6vydQ==</ArcanumPortableMacOsNativeAotPackageSha512>
+
+    <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '10.0.12'">Qt7NCMotrQFrpukryPBpKeF/AawvptJv+v+c0Q3L29Y/ptFO8nFor+g8xKasWq4XNLL/hT/x+QBC7gacjeiIUQ==</ArcanumPortableMacOsNativeAotPackageSha512>
 
     <_ArcanumPortableMacOsNativeAotPackageRoot>$(NuGetPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64/$(ArcanumPortableMacOsNativeAotPackageVersion)/</_ArcanumPortableMacOsNativeAotPackageRoot>
 
@@ -32,6 +45,11 @@
     Name="CollectArcanumPortableMacOsNativeAotPack"
     BeforeTargets="CollectPackageDownloads"
     Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true' and '$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'">
+
+    <Error
+      Code="ARCAOT005"
+      Condition="'$(ArcanumPortableMacOsNativeAotPackageSha512)' == ''"
+      Text="The .NET SDK requires Native AOT runtime pack $(BundledNETCoreAppPackageVersion), but Arcanum has not audited that official portable package. Audit and pin its SHA-512 before publishing." />
 
     <ItemGroup>
 
@@ -50,8 +68,8 @@
 
     <Error
       Code="ARCAOT005"
-      Condition="'$(BundledNETCoreAppPackageVersion)' != '$(ArcanumPortableMacOsNativeAotPackageVersion)'"
-      Text="The .NET SDK requires Native AOT runtime pack $(BundledNETCoreAppPackageVersion), but Arcanum has audited $(ArcanumPortableMacOsNativeAotPackageVersion). Audit and pin the matching official package before publishing." />
+      Condition="'$(ArcanumPortableMacOsNativeAotPackageSha512)' == ''"
+      Text="The .NET SDK requires Native AOT runtime pack $(BundledNETCoreAppPackageVersion), but Arcanum has not audited that official portable package. Audit and pin its SHA-512 before publishing." />
 
     <Error
       Code="ARCAOT006"
@@ -153,7 +171,20 @@
       Condition="'$(_ArcanumMacOsSdkPath)' == '' or !Exists('$(_ArcanumMacOsSdkPath)/usr/lib') or !Exists('$(_ArcanumMacOsSdkPath)/System/Library/Frameworks')"
       Text="The active macOS SDK could not be resolved for the portable Native AOT link." />
 
+    <Error
+      Code="ARCAOT008"
+      Condition="'$(_ArcanumRequiresLegacyMacOsLld)' == 'true' and !Exists('/opt/homebrew/opt/lld/bin/ld64.lld') and !Exists('/usr/local/opt/lld/bin/ld64.lld')"
+      Text="This pre-10.0.12 macOS Native AOT SDK requires LLVM ld64.lld. Install lld or update to the current .NET 10 SDK; Arcanum has no managed fallback." />
+
     <ItemGroup>
+
+      <LinkerArg
+        Condition="'$(_ArcanumRequiresLegacyMacOsLld)' == 'true' and Exists('/opt/homebrew/opt/lld/bin/ld64.lld')"
+        Include="--ld-path=/opt/homebrew/opt/lld/bin/ld64.lld" />
+
+      <LinkerArg
+        Condition="'$(_ArcanumRequiresLegacyMacOsLld)' == 'true' and !Exists('/opt/homebrew/opt/lld/bin/ld64.lld') and Exists('/usr/local/opt/lld/bin/ld64.lld')"
+        Include="--ld-path=/usr/local/opt/lld/bin/ld64.lld" />
 
       <LinkerArg Include="-Wl,-Z" />
 

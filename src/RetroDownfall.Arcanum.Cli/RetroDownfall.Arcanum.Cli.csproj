@@ -16,16 +16,6 @@
 
   </PropertyGroup>
 
-  <PropertyGroup>
-
-    <_AppleLldPath Condition="Exists('/opt/homebrew/opt/lld/bin/ld64.lld')">/opt/homebrew/opt/lld/bin/ld64.lld</_AppleLldPath>
-
-    <_AppleLldPath Condition="'$(_AppleLldPath)' == '' and Exists('/usr/local/opt/lld/bin/ld64.lld')">/usr/local/opt/lld/bin/ld64.lld</_AppleLldPath>
-
-    <_TargetsApple Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx'))">true</_TargetsApple>
-
-  </PropertyGroup>
-
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
 
     <!-- Every RID-qualified Arcanum publish is the shipping product and therefore Native AOT.
@@ -72,7 +62,7 @@
 
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(_TargetsApple)' == 'true' and '$(PublishAot)' == 'true'">
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx')) and '$(PublishAot)' == 'true'">
 
     <StripSymbols>true</StripSymbols>
 
@@ -136,15 +126,6 @@
     <Error
       Code="ARC0001"
       Text="Every RID-qualified Arcanum publish must use Native AOT. PublishAot cannot be disabled for a shipping build." />
-  </Target>
-
-  <Target
-    Name="RequireAppleLldForArcanumShippingPublish"
-    BeforeTargets="PrepareForPublish"
-    Condition="'$(_TargetsApple)' == 'true' and '$(_AppleLldPath)' == ''">
-    <Error
-      Code="ARC0002"
-      Text="The macOS Native AOT link requires LLVM ld64.lld. Install it with 'brew install lld'; Arcanum has no managed fallback." />
   </Target>
 
 </Project>
