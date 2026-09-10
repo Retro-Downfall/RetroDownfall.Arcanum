@@ -407,15 +407,26 @@ public sealed class ContinuousIntegrationWorkflowTests
             int audit = lane.Body.IndexOf(
                 $"./scripts/verify-aot-il-warnings.sh {rid}",
                 StringComparison.Ordinal);
+            int ripgrepInstall = lane.Body.IndexOf(
+                "choco install ripgrep --version=15.2.0",
+                StringComparison.Ordinal);
             int publish = lane.Body.IndexOf(
                 $"./scripts/verify-shipping-publish.sh --rid {rid}",
                 StringComparison.Ordinal);
 
             Assert.True(
+                ripgrepInstall >= 0,
+                $"The native {rid} CI lane runs the fail-closed AOT diagnostic profile without "
+                + "installing its ripgrep prerequisite.");
+            Assert.True(
                 audit >= 0,
                 $"The native {rid} CI lane never runs the AOT diagnostic profile, so a first-party "
                 + "warning unique to that Windows architecture is hidden by the ordinary shipping "
                 + "publish's dependency-warning suppression.");
+            Assert.True(
+                ripgrepInstall < audit,
+                $"The native {rid} CI lane installs ripgrep only after the diagnostic profile "
+                + "already needed it.");
             Assert.True(
                 audit < publish,
                 $"The native {rid} CI lane audits AOT diagnostics only after its shipping publish. "
@@ -444,12 +455,19 @@ public sealed class ContinuousIntegrationWorkflowTests
         int audit = package.Body.IndexOf(
             "./scripts/verify-aot-il-warnings.sh \"$RID\"",
             StringComparison.Ordinal);
+        int ripgrepInstall = package.Body.IndexOf(
+            "choco install ripgrep --version=15.2.0",
+            StringComparison.Ordinal);
         int packaging = package.Body.IndexOf("package-windows.ps1", StringComparison.Ordinal);
 
         Assert.True(nativeSdk >= 0, "The Windows release must validate its SDK architecture.");
         Assert.True(
-            audit > nativeSdk,
-            "The Windows release must run its AOT diagnostic profile after validating the native SDK.");
+            ripgrepInstall > nativeSdk,
+            "The Windows release must install ripgrep after validating its native SDK and before "
+            + "running the fail-closed AOT diagnostic profile.");
+        Assert.True(
+            audit > ripgrepInstall,
+            "The Windows release must run its AOT diagnostic profile only after installing ripgrep.");
         Assert.True(
             audit < packaging,
             "The Windows release must clear its AOT diagnostic profile before creating archives.");

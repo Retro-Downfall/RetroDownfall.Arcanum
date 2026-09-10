@@ -148,6 +148,21 @@ jobs:
               throw "$($env:RID) needs an SDK whose host RID is $($env:RID); this runner's is $($match.Groups['rid'].Value), so the publish would cross-compile."
           }
 
+      # The AOT diagnostic gate fails closed when ripgrep is absent. Runner images do not promise
+      # it, so install the pinned fallback before publishing a release artifact.
+      - name: Install ripgrep
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Get-Command rg -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --version=15.2.0 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          rg --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # Package creation performs a fresh Native AOT publish under the normal warning-free profile.
       # Audit detailed diagnostics on the same validated native SDK first; a prior CI run may belong
       # to another commit and cannot prove this release input.

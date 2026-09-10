@@ -321,6 +321,21 @@ jobs:
             -c Release --no-build --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # The AOT diagnostic gate fails closed when ripgrep is absent. Windows runner images do not
+      # promise it, so install the pinned fallback before asking the gate to classify diagnostics.
+      - name: Install ripgrep
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Get-Command rg -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --version=15.2.0 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          rg --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # The shipping publish below is warning-free because it suppresses dependency summary
       # diagnostics after this gate has classified the detailed warnings. Run the diagnostic profile
       # on this native architecture first, or a win-x64-only first-party warning is invisible.
@@ -457,6 +472,21 @@ jobs:
           $ErrorActionPreference = 'Stop'
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj `
             -c Release --no-build --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The AOT diagnostic gate fails closed when ripgrep is absent. The arm64 runner can execute
+      # the pinned fallback under emulation; product tests and publication remain native arm64.
+      - name: Install ripgrep
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Get-Command rg -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --version=15.2.0 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          rg --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # This must execute on the arm64 SDK asserted above. The shipping publish deliberately uses
