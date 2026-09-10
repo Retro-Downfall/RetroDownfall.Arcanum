@@ -135,8 +135,22 @@ public sealed class HostProjectFeatureSwitchTests
                     "Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64",
                     StringComparison.Ordinal));
 
-        Assert.Equal("[10.0.11]", (string?)portablePack.Attribute("Version"));
+        Assert.Equal(
+            "[$(ArcanumPortableMacOsNativeAotPackageVersion)]",
+            (string?)portablePack.Attribute("Version"));
         Assert.True(IsMacOsNativeAotGated(portablePack));
+
+        XElement bundledPackPath = Assert.Single(
+            buildTargets.Descendants(),
+            static element => element.Name.LocalName == "_ArcanumBundledMacOsNativeAotPath");
+        XElement bridgeRequired = Assert.Single(
+            buildTargets.Descendants(),
+            static element => element.Name.LocalName == "_ArcanumRequiresPortableMacOsNativeAotBridge");
+
+        Assert.Contains("$(NetCoreRoot)packs/", bundledPackPath.Value, StringComparison.Ordinal);
+        Assert.Contains("$(BundledNETCoreAppPackageVersion)", bundledPackPath.Value, StringComparison.Ordinal);
+        Assert.Equal("true", bridgeRequired.Value.Trim());
+        Assert.Contains("nonportable.txt", (string?)bridgeRequired.Attribute("Condition"), StringComparison.Ordinal);
 
         XElement auditedPackageVersion = Assert.Single(
             buildTargets.Descendants(),
@@ -162,6 +176,7 @@ public sealed class HostProjectFeatureSwitchTests
             "ArcanumPortableMacOsNativeAotPackageVersion",
             "IlcFrameworkNativePath",
             "IlcSdkPath",
+            "_ArcanumBundledMacOsNativeAotPath",
             "_ArcanumCryptoArchivePrepared",
             "_ArcanumCryptoArchiveSource",
             "_ArcanumMacOsSdkPath",
@@ -170,6 +185,7 @@ public sealed class HostProjectFeatureSwitchTests
             "_ArcanumPortableMacOsNativeAotPackageSha512Path",
             "_ArcanumPortableNativeAotPath",
             "_ArcanumPreparedNativeAotPath",
+            "_ArcanumRequiresPortableMacOsNativeAotBridge",
             "_ArcanumVerifiedPortableNativeAotContents",
             "_ArcanumVerifiedPortableNativeAotPackage",
             "_ArcanumVerifiedPortableNativeAotRoot",
@@ -185,6 +201,10 @@ public sealed class HostProjectFeatureSwitchTests
                 "CollectArcanumPortableMacOsNativeAotPack",
                 StringComparison.Ordinal));
         Assert.Equal("CollectPackageDownloads", (string?)collectPortablePack.Attribute("BeforeTargets"));
+        Assert.Contains(
+            "$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'",
+            (string?)collectPortablePack.Attribute("Condition"),
+            StringComparison.Ordinal);
         Assert.DoesNotContain(
             buildProperties
                 .Descendants()
@@ -272,6 +292,10 @@ public sealed class HostProjectFeatureSwitchTests
                 (string?)element.Attribute("Name"),
                 "RequireArcanumPortableMacOsNativeAotPack",
                 StringComparison.Ordinal));
+        Assert.Contains(
+            "$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'",
+            (string?)requirePortablePack.Attribute("Condition"),
+            StringComparison.Ordinal);
         XElement verifiedRoot = Assert.Single(
             requirePortablePack.Descendants(),
             static element => element.Name.LocalName == "_ArcanumVerifiedPortableNativeAotRoot");
@@ -355,6 +379,11 @@ public sealed class HostProjectFeatureSwitchTests
                 "PrepareArcanumMacOsCryptoArchive",
                 StringComparison.Ordinal));
 
+        Assert.Contains(
+            "$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'",
+            (string?)prepareCryptoArchive.Attribute("Condition"),
+            StringComparison.Ordinal);
+
         Assert.Equal("SetupOSSpecificProps", (string?)prepareCryptoArchive.Attribute("BeforeTargets"));
         Assert.Equal(
             "RequireArcanumPortableMacOsNativeAotPack",
@@ -421,6 +450,15 @@ public sealed class HostProjectFeatureSwitchTests
         try
         {
             string packageContentRoot = Path.Combine(temporaryRoot, "package-content");
+            string netCoreRoot = Path.Combine(temporaryRoot, "dotnet");
+            string bundledNativeRoot = Path.Combine(
+                netCoreRoot,
+                "packs",
+                "Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64",
+                version,
+                "runtimes",
+                "osx-arm64",
+                "native");
             string packageContentNativeRoot = Path.Combine(
                 packageContentRoot,
                 "runtimes",
@@ -436,6 +474,8 @@ public sealed class HostProjectFeatureSwitchTests
                 packageRoot,
                 $"microsoft.netcore.app.runtime.nativeaot.osx-arm64.{version}.nupkg");
 
+            Directory.CreateDirectory(bundledNativeRoot);
+            File.WriteAllText(Path.Combine(bundledNativeRoot, "nonportable.txt"), string.Empty);
             Directory.CreateDirectory(packageContentNativeRoot);
             Directory.CreateDirectory(globalCacheNativeRoot);
             File.WriteAllBytes(
@@ -465,6 +505,7 @@ public sealed class HostProjectFeatureSwitchTests
                         "PropertyGroup",
                         new XElement("RuntimeIdentifier", "osx-arm64"),
                         new XElement("PublishAot", "true"),
+                        new XElement("NetCoreRoot", netCoreRoot + Path.DirectorySeparatorChar),
                         new XElement("NuGetPackageRoot", Path.Combine(temporaryRoot, "packages") + Path.DirectorySeparatorChar),
                         new XElement("NativeIntermediateOutputPath", intermediateRoot + Path.DirectorySeparatorChar),
                         new XElement("BundledNETCoreAppPackageVersion", version)),
