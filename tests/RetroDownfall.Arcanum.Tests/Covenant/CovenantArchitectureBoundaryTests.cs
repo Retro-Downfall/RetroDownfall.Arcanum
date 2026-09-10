@@ -257,16 +257,21 @@ public sealed class CovenantArchitectureBoundaryTests
             .OrderBy(static candidate => MetadataName(candidate.Symbol), StringComparer.Ordinal)
             .ToArray();
 
-        NonHostedProducerChainEntry[] roots = handlers
-            .Select(RecoveryHandlerRoot)
+        string[] handlerNames = handlers
+            .Select(static handler => MetadataName(handler.Symbol))
+            .Order(StringComparer.Ordinal)
             .ToArray();
 
+        string[] recoveryRootNames = HostedGrimoireProducerInventory.AdditionalProductionRoots
+            .Where(static root => root.Member == "RecoverAsync")
+            .Select(static root => root.EnclosingType)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(handlerNames, recoveryRootNames);
+
         HostedProducerDiscovery<HostedProducerSite> discovery =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                compilations,
-                new HostedProducerDiscovery<string>([], []),
-                [],
-                roots);
+            HostedGrimoireProducerInventory.AdditionalProductionSiteDiscovery;
 
         string[] expectedEffectfulHandlers = contracts
             .Select(static contract => contract.HandlerType)
@@ -276,6 +281,7 @@ public sealed class CovenantArchitectureBoundaryTests
         string[] discoveredEffectfulHandlers = discovery.Items
             .Where(static site => site.Kind is HostedProducerSiteKind.ProviderCall
                 or HostedProducerSiteKind.FileSystemEffect)
+            .Where(site => handlerNames.Contains(site.RootType, StringComparer.Ordinal))
             .Select(static site => site.RootType)
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
@@ -1342,25 +1348,6 @@ public sealed class CovenantArchitectureBoundaryTests
         }
 
         return false;
-    }
-
-    private static NonHostedProducerChainEntry RecoveryHandlerRoot(SourceType handler)
-    {
-        IMethodSymbol recovery = Assert.Single(
-            handler.Symbol.GetMembers("RecoverAsync").OfType<IMethodSymbol>());
-
-        SyntaxReference declaration = Assert.Single(recovery.DeclaringSyntaxReferences);
-
-        string typeName = MetadataName(handler.Symbol);
-
-        return new NonHostedProducerChainEntry(
-            typeName + ".RecoverAsync",
-            declaration.SyntaxTree.FilePath,
-            typeName,
-            "RecoverAsync",
-            HostedProducerAuthorityKind.FiniteRequest,
-            typeName + ".RecoverAsync: recovery effect classification root",
-            []);
     }
 
     private static string ConstantStringProperty(

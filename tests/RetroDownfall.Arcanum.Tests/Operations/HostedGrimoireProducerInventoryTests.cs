@@ -3910,6 +3910,44 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void ProductionWholeGraphDiscoveryIsOwnedOnlyByMemoizedSupportFactories()
+    {
+        string testRoot = Path.Combine(
+            TestRepositoryPaths.RepositoryRoot(),
+            "tests",
+            "RetroDownfall.Arcanum.Tests");
+
+        string[] offenders = Directory
+            .EnumerateFiles(testRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(static path => !path.Contains(
+                $"{Path.DirectorySeparatorChar}Support{Path.DirectorySeparatorChar}",
+                StringComparison.Ordinal))
+            .SelectMany(path => CSharpSyntaxTree
+                .ParseText(File.ReadAllText(path), path: path)
+                .GetRoot()
+                .DescendantNodes()
+                .OfType<MethodDeclarationSyntax>()
+                .Where(static method => method.DescendantNodes()
+                    .OfType<MemberAccessExpressionSyntax>()
+                    .Any(static access => access.Name.Identifier.ValueText
+                        == "ProductionCompilations"))
+                .Where(static method => method.DescendantNodes()
+                    .OfType<InvocationExpressionSyntax>()
+                    .Any(static invocation => invocation.Expression
+                        is MemberAccessExpressionSyntax access
+                        && access.Name.Identifier.ValueText
+                            == "DiscoverProducerSites"))
+                .Select(method =>
+                    $"{Path.GetRelativePath(testRoot, path)}:"
+                    + $"{method.GetLocation().GetLineSpan().StartLinePosition.Line + 1}:"
+                    + method.Identifier.ValueText))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
     public void EveryApplicationHostedServiceHasExactlyOneEntry()
     {
         System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -3933,15 +3971,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Fact]
     public void ProductionBatchCarrierHasOneExceptionSafePublicationLifetime()
     {
-        HostedProducerServiceEntry batch = HostedGrimoireProducerInventory.Catalog.Single(
+        _ = HostedGrimoireProducerInventory.Catalog.Single(
             static service => service.ServiceType == "BatchProcessingService");
 
         HostedProducerDiscovery<HostedProducerSite> discovery =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                HostedGrimoireProducerInventory.ProductionCompilations,
-                new(["BatchProcessingService"], []),
-                [batch],
-                []);
+            HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
         Assert.DoesNotContain(
             discovery.Diagnostics,
@@ -3952,17 +3986,13 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Fact]
     public void ProductionDataRetentionSweepGraphRetainsItsExactWorkLease()
     {
-        HostedProducerServiceEntry retention =
+        _ =
             HostedGrimoireProducerInventory.Catalog.Single(
                 static service => service.ServiceType
                     == "DataRetentionSweepHostedService");
 
         HostedProducerDiscovery<HostedProducerSite> discovery =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                HostedGrimoireProducerInventory.ProductionCompilations,
-                new(["DataRetentionSweepHostedService"], []),
-                [retention],
-                []);
+            HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
         Assert.DoesNotContain(
             discovery.Diagnostics,
@@ -3974,17 +4004,13 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Fact]
     public void ProductionDataRetentionSweepGraphRetainsItsCandidateEffectFrontier()
     {
-        HostedProducerServiceEntry retention =
+        _ =
             HostedGrimoireProducerInventory.Catalog.Single(
                 static service => service.ServiceType
                     == "DataRetentionSweepHostedService");
 
         HostedProducerDiscovery<HostedProducerSite> discovery =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                HostedGrimoireProducerInventory.ProductionCompilations,
-                new(["DataRetentionSweepHostedService"], []),
-                [retention],
-                []);
+            HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
         Assert.DoesNotContain(
             discovery.Diagnostics,
@@ -4005,16 +4031,12 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     public void ProductionOrdinaryHostedGraphsRetainTheirExactLifetimes(
         string serviceType)
     {
-        HostedProducerServiceEntry service =
+        _ =
             HostedGrimoireProducerInventory.Catalog.Single(
                 candidate => candidate.ServiceType == serviceType);
 
         HostedProducerDiscovery<HostedProducerSite> discovery =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                HostedGrimoireProducerInventory.ProductionCompilations,
-                new([serviceType], []),
-                [service],
-                []);
+            HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
         HostedProducerInventoryDiagnostic[] failures = discovery.Diagnostics
             .Where(static diagnostic => diagnostic.Code is
@@ -4042,7 +4064,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         string enclosingType,
         string member)
     {
-        NonHostedProducerChainEntry chain =
+        _ =
             HostedGrimoireProducerInventory.NonHostedCatalog.Single(
                 candidate => candidate.EnclosingType.EndsWith(
                         "." + enclosingType,
@@ -4050,11 +4072,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     && candidate.Member == member);
 
         HostedProducerDiscovery<HostedProducerSite> discovery =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                HostedGrimoireProducerInventory.ProductionCompilations,
-                new([], []),
-                [],
-                [chain]);
+            HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
         HostedProducerInventoryDiagnostic[] failures = discovery.Diagnostics
             .Where(static diagnostic => diagnostic.Code is
@@ -4424,7 +4442,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal(HostedProducerAuthorityKind.OwnerBoundMaintenance, chain.Authority);
 
-        HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.DiscoverProducerSites(HostedGrimoireProducerInventory.ProductionCompilations, new([], []), [], [chain]);
+        HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
         HostedProducerSite[] cliSites = discovery.Items.Where(site => site.RootType == chain.EnclosingType && site.OperationId.StartsWith(chain.ChainId, StringComparison.Ordinal)).ToArray();
 
@@ -5298,49 +5316,34 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         const string catalogType =
             "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog";
 
-        const string catalogPath =
-            "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaCatalog.cs";
-
         const string manifestsType =
             "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaManifests";
 
-        const string manifestsPath =
-            "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaTierOwnershipRegistry.cs";
+        string[] members = HostedGrimoireProducerInventory.AdditionalProductionRoots
+            .Where(chain => chain.EnclosingType is catalogType or manifestsType)
+            .Select(static chain => chain.Member)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
 
-        NonHostedProducerChainEntry Chain(
-            string type,
-            string path,
-            string member) => new(
-                type + "." + member,
-                path,
-                type,
-                member,
-                HostedProducerAuthorityKind.FiniteRequest,
-                "focused bounded schema data proof",
-                []);
-
-        NonHostedProducerChainEntry[] chains =
-        [
-            Chain(catalogType, catalogPath, "get_AllObjects"),
-            Chain(catalogType, catalogPath, "get_CoreObjects"),
-            Chain(catalogType, catalogPath, "get_CovenantCanonicalObjects"),
-            Chain(catalogType, catalogPath, "get_CovenantAcceleratorObjects"),
-            Chain(catalogType, catalogPath, "get_TransitionStatements"),
-            Chain(catalogType, catalogPath, "get_CanonicalSchemaFingerprint"),
-            Chain(catalogType, catalogPath, "get_CoreSchemaFingerprint"),
-            Chain(catalogType, catalogPath, "get_CovenantCanonicalSchemaFingerprint"),
-            Chain(catalogType, catalogPath, "get_CovenantAcceleratorSchemaFingerprint"),
-            Chain(manifestsType, manifestsPath, "get_Core"),
-            Chain(manifestsType, manifestsPath, "get_CovenantCanonical"),
-            Chain(manifestsType, manifestsPath, "get_CovenantAccelerator"),
-        ];
+        Assert.Equal(
+            [
+                "get_AllObjects",
+                "get_CanonicalSchemaFingerprint",
+                "get_Core",
+                "get_CoreObjects",
+                "get_CoreSchemaFingerprint",
+                "get_CovenantAccelerator",
+                "get_CovenantAcceleratorObjects",
+                "get_CovenantAcceleratorSchemaFingerprint",
+                "get_CovenantCanonical",
+                "get_CovenantCanonicalObjects",
+                "get_CovenantCanonicalSchemaFingerprint",
+                "get_TransitionStatements",
+            ],
+            members);
 
         HostedProducerDiscovery<HostedProducerSite> result =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                HostedGrimoireProducerInventory.ProductionCompilations,
-                new([], []),
-                [],
-                chains);
+            HostedGrimoireProducerInventory.AdditionalProductionSiteDiscovery;
 
         Assert.DoesNotContain(
             result.Diagnostics,
@@ -5484,21 +5487,14 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Fact]
     public void ProductionSequenceOperationUsesTheSameReviewedComparerProof()
     {
-        NonHostedProducerChainEntry chain = new(
-            "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex.Add",
-            "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreStagingIndex.cs",
-            "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex",
-            "Add",
-            HostedProducerAuthorityKind.FiniteRequest,
-            "focused production-shape classification",
-            []);
+        _ = Assert.Single(
+            HostedGrimoireProducerInventory.AdditionalProductionRoots,
+            static chain => chain.EnclosingType
+                    == "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex"
+                && chain.Member == "Add");
 
         HostedProducerDiscovery<HostedProducerSite> result =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                HostedGrimoireProducerInventory.ProductionCompilations,
-                new([], []),
-                [],
-                [chain]);
+            HostedGrimoireProducerInventory.AdditionalProductionSiteDiscovery;
 
         Assert.DoesNotContain(
             result.Diagnostics,
@@ -5522,32 +5518,16 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         const string type =
             "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetActiveStore";
 
-        NonHostedProducerChainEntry[] chains =
-        [
-            new(
-                type + ".SameBinding",
-                "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetActiveStore.cs",
-                type,
-                "SameBinding",
-                HostedProducerAuthorityKind.FiniteRequest,
-                "focused value-equality classification",
-                []),
-            new(
-                type + ".SamePayload",
-                "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetActiveStore.cs",
-                type,
-                "SamePayload",
-                HostedProducerAuthorityKind.FiniteRequest,
-                "focused value-equality classification",
-                []),
-        ];
+        string[] members = HostedGrimoireProducerInventory.AdditionalProductionRoots
+            .Where(chain => chain.EnclosingType == type)
+            .Select(static chain => chain.Member)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(["SameBinding", "SamePayload"], members);
 
         HostedProducerDiscovery<HostedProducerSite> result =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                HostedGrimoireProducerInventory.ProductionCompilations,
-                new([], []),
-                [],
-                chains);
+            HostedGrimoireProducerInventory.AdditionalProductionSiteDiscovery;
 
         Assert.DoesNotContain(
             result.Diagnostics,

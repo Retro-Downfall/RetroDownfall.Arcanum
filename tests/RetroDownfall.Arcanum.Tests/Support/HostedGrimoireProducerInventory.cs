@@ -108,6 +108,14 @@ internal static class HostedGrimoireProducerInventory
 
     internal static HostedProducerDiscovery<HostedProducerSite> ProductionSiteDiscovery => ProductionSites.Value;
 
+    private static readonly Lazy<IReadOnlyList<NonHostedProducerChainEntry>> AdditionalProductionRootEntries = new(BuildAdditionalProductionRoots);
+
+    internal static IReadOnlyList<NonHostedProducerChainEntry> AdditionalProductionRoots => AdditionalProductionRootEntries.Value;
+
+    private static readonly Lazy<HostedProducerDiscovery<HostedProducerSite>> AdditionalProductionSites = new(DiscoverAdditionalProductionSites);
+
+    internal static HostedProducerDiscovery<HostedProducerSite> AdditionalProductionSiteDiscovery => AdditionalProductionSites.Value;
+
     private static readonly Lazy<HostedProducerInventoryValidation> ProductionValidation = new(ValidateProductionSources);
 
     private static readonly Lazy<HostedProducerCapsuleManifest> ReviewedCapsules = new(LoadReviewedCapsules);
@@ -275,6 +283,151 @@ internal static class HostedGrimoireProducerInventory
         HostedProducerDiscovery<string> registrations = DiscoverApplicationHostedServices(ProductionCompilations);
 
         return DiscoverProducerSites(ProductionCompilations, registrations);
+    }
+
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverAdditionalProductionSites()
+    {
+        // Keep parallel test classes from holding two whole-program Roslyn graphs at once.
+        _ = ProductionSiteDiscovery;
+
+        return DiscoverProducerSites(
+            ProductionCompilations,
+            new([], []),
+            [],
+            AdditionalProductionRoots);
+    }
+
+    private static IReadOnlyList<NonHostedProducerChainEntry> BuildAdditionalProductionRoots()
+    {
+        const string schemaCatalog =
+            "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog";
+
+        const string schemaCatalogPath =
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaCatalog.cs";
+
+        const string schemaManifests =
+            "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaManifests";
+
+        const string schemaManifestsPath =
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaTierOwnershipRegistry.cs";
+
+        const string activeStore =
+            "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetActiveStore";
+
+        const string activeStorePath =
+            "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetActiveStore.cs";
+
+        List<NonHostedProducerChainEntry> roots =
+        [
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_AllObjects", "focused bounded schema data proof"),
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_CoreObjects", "focused bounded schema data proof"),
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_CovenantCanonicalObjects", "focused bounded schema data proof"),
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_CovenantAcceleratorObjects", "focused bounded schema data proof"),
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_TransitionStatements", "focused bounded schema data proof"),
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_CanonicalSchemaFingerprint", "focused bounded schema data proof"),
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_CoreSchemaFingerprint", "focused bounded schema data proof"),
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_CovenantCanonicalSchemaFingerprint", "focused bounded schema data proof"),
+            AdditionalRoot(schemaCatalog, schemaCatalogPath, "get_CovenantAcceleratorSchemaFingerprint", "focused bounded schema data proof"),
+            AdditionalRoot(schemaManifests, schemaManifestsPath, "get_Core", "focused bounded schema data proof"),
+            AdditionalRoot(schemaManifests, schemaManifestsPath, "get_CovenantCanonical", "focused bounded schema data proof"),
+            AdditionalRoot(schemaManifests, schemaManifestsPath, "get_CovenantAccelerator", "focused bounded schema data proof"),
+            AdditionalRoot(
+                "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex",
+                "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreStagingIndex.cs",
+                "Add",
+                "focused production-shape classification"),
+            AdditionalRoot(activeStore, activeStorePath, "SameBinding", "focused value-equality classification"),
+            AdditionalRoot(activeStore, activeStorePath, "SamePayload", "focused value-equality classification"),
+        ];
+
+        foreach (INamedTypeSymbol handler in ProductionCompilations
+            .SelectMany(static compilation => SourceTypes(compilation.Assembly.GlobalNamespace))
+            .Where(static candidate => candidate is { TypeKind: TypeKind.Class, IsAbstract: false })
+            .Where(static candidate => candidate.AllInterfaces.Any(static contract =>
+                SourceTypeName(contract)
+                    == "RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler"))
+            .OrderBy(static candidate => SourceTypeName(candidate), StringComparer.Ordinal))
+        {
+            IMethodSymbol recovery = handler.GetMembers("RecoverAsync")
+                .OfType<IMethodSymbol>()
+                .Single();
+
+            SyntaxReference declaration = recovery.DeclaringSyntaxReferences.Single();
+
+            string typeName = SourceTypeName(handler);
+
+            roots.Add(new(
+                typeName + ".RecoverAsync",
+                declaration.SyntaxTree.FilePath,
+                typeName,
+                "RecoverAsync",
+                HostedProducerAuthorityKind.FiniteRequest,
+                typeName + ".RecoverAsync: recovery effect classification root",
+                []));
+        }
+
+        return roots;
+    }
+
+    private static NonHostedProducerChainEntry AdditionalRoot(
+        string type,
+        string path,
+        string member,
+        string proof) => new(
+            type + "." + member,
+            path,
+            type,
+            member,
+            HostedProducerAuthorityKind.FiniteRequest,
+            type + "." + member + ": " + proof,
+            []);
+
+    private static IEnumerable<INamedTypeSymbol> SourceTypes(INamespaceSymbol @namespace)
+    {
+        foreach (INamedTypeSymbol type in @namespace.GetTypeMembers())
+        {
+            yield return type;
+
+            foreach (INamedTypeSymbol nested in SourceTypes(type))
+            {
+                yield return nested;
+            }
+        }
+
+        foreach (INamespaceSymbol child in @namespace.GetNamespaceMembers())
+        {
+            foreach (INamedTypeSymbol type in SourceTypes(child))
+            {
+                yield return type;
+            }
+        }
+    }
+
+    private static IEnumerable<INamedTypeSymbol> SourceTypes(INamedTypeSymbol type)
+    {
+        foreach (INamedTypeSymbol nested in type.GetTypeMembers())
+        {
+            yield return nested;
+
+            foreach (INamedTypeSymbol descendant in SourceTypes(nested))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private static string SourceTypeName(INamedTypeSymbol type)
+    {
+        if (type.ContainingType is { } containingType)
+        {
+            return SourceTypeName(containingType) + "+" + type.MetadataName;
+        }
+
+        string containingNamespace = type.ContainingNamespace.ToDisplayString();
+
+        return string.IsNullOrEmpty(containingNamespace)
+            ? type.MetadataName
+            : containingNamespace + "." + type.MetadataName;
     }
 
     private static readonly IReadOnlyDictionary<string, HostedProducerSiteKind> Vocabulary = new Dictionary<string, HostedProducerSiteKind>(StringComparer.Ordinal)

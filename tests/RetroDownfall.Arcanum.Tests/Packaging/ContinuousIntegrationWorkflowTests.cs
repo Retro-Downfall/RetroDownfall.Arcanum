@@ -47,6 +47,39 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.Contains("-c Debug", lane.Body, StringComparison.Ordinal);
 
         Assert.Contains("--no-incremental", lane.Body, StringComparison.Ordinal);
+
+        string benchmarkBuild = lane.Body[build..smoke];
+
+        Assert.Contains(
+            "-p:RestoreLockedMode=true",
+            benchmarkBuild,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Macos_full_suite_checks_out_the_history_its_regression_tests_use()
+    {
+        WorkflowJob lane = Assert.Single(
+            ContinuousIntegrationJobs(FindRepositoryRoot()),
+            static job =>
+                job.RunsOn.StartsWith("macos", StringComparison.Ordinal)
+                && job.Body.Contains("./scripts/coverage.sh --threshold", StringComparison.Ordinal));
+
+        int checkout = lane.Body.IndexOf("uses: actions/checkout@", StringComparison.Ordinal);
+
+        int fullHistory = lane.Body.IndexOf("fetch-depth: 0", StringComparison.Ordinal);
+
+        int suite = lane.Body.IndexOf("./scripts/coverage.sh --threshold", StringComparison.Ordinal);
+
+        Assert.True(checkout >= 0, "The macOS full-suite lane must check the repository out.");
+
+        Assert.True(
+            fullHistory > checkout,
+            "The macOS full-suite lane must fetch the historical benchmark fixtures used by its tests.");
+
+        Assert.True(
+            suite > fullHistory,
+            "The full repository history must be available before the macOS suite starts.");
     }
 
     /// <summary>

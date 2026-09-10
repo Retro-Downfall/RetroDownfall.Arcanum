@@ -45,10 +45,10 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         [
             (
                 "Microsoft.DotNet.ILCompiler",
-                "qeOTK9DRbWx4/eebXG1v50ykEEmD9Uvp8J1iCFqnz30Wg8s8vfPd2tPpqae0wMnSYmdvKCmTCEg6/ZazSsulYg=="),
+                "AawF393Q+VkdrnrnI1gu612zh5iqpa1AGSvnKCQ3IkMgSKJXIQbO1sXYRgEzOU4f0cPZ6MaCCF29xZSGWlmbuQ=="),
             (
                 "Microsoft.NET.ILLink.Tasks",
-                "opT5P1p+CG70xGaveTgq3Q5OZKd7MZ0Rs10x4Tewl6bcPbu4SLo4F0n6RBCInvBKxoR10T11+X0M9dgjKEfucw=="),
+                "xi+BDjFpW+Sb+MHFHaH6Y/gV9I8BluFwRXc1QyCdoZbIK26eNiBeFuMTe/FMwc33G1wdHCyDg7CVTmb8OdQrMQ=="),
         ];
 
         foreach ((string name, string hash) in expected)
@@ -60,6 +60,144 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             Assert.Equal("10.0.12", package.GetProperty("resolved").GetString());
 
             Assert.Equal(hash, package.GetProperty("contentHash").GetString());
+        }
+
+        JsonElement runtimeDependencies = document.RootElement
+            .GetProperty("dependencies")
+            .GetProperty("net10.0/osx-arm64");
+
+        JsonElement compiler = runtimeDependencies.GetProperty("Microsoft.DotNet.ILCompiler");
+
+        Assert.Equal(
+            "10.0.12",
+            compiler
+                .GetProperty("dependencies")
+                .GetProperty("runtime.osx-arm64.Microsoft.DotNet.ILCompiler")
+                .GetString());
+
+        JsonElement runtimeCompiler = runtimeDependencies
+            .GetProperty("runtime.osx-arm64.Microsoft.DotNet.ILCompiler");
+
+        Assert.Equal("10.0.12", runtimeCompiler.GetProperty("resolved").GetString());
+
+        Assert.Equal(
+            "WwM79vRmPYfsV7wVjFVYaZWc853weM+HpY917SbWI52go/PU+A2L24fMaGkYB3bunhjiLb/SMNlNT0fuyjbQqA==",
+            runtimeCompiler.GetProperty("contentHash").GetString());
+    }
+
+    [Fact]
+    public async Task Locked_restore_excludes_sdk_library_packs_even_when_the_caller_enables_them()
+    {
+        string root = FindRepositoryRoot();
+
+        string project = Path.Combine(
+            root,
+            "tests",
+            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
+            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj");
+
+        string fixture = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-admission-library-packs-" + Guid.NewGuid().ToString("N"));
+
+        string libraryPacks = Path.Combine(fixture, "same-version different-content");
+
+        Directory.CreateDirectory(libraryPacks);
+
+        try
+        {
+            ProcessResult result = await RunProcessAsync(
+                "dotnet",
+                [
+                    "msbuild",
+                    project,
+                    "-nologo",
+                    "-p:_WorkloadLibraryPacksFolder=" + libraryPacks,
+                    "-p:DisableImplicitLibraryPacksFolder=false",
+                    "-getProperty:DisableImplicitLibraryPacksFolder",
+                    "-getProperty:RestoreAdditionalProjectSources",
+                ],
+                root);
+
+            Assert.True(
+                result.ExitCode == 0,
+                $"MSBuild exited {result.ExitCode}. stdout: {result.StandardOutput} stderr: {result.StandardError}");
+
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+
+            JsonElement properties = document.RootElement.GetProperty("Properties");
+
+            Assert.Equal(
+                "true",
+                properties.GetProperty("DisableImplicitLibraryPacksFolder").GetString());
+
+            Assert.DoesNotContain(
+                libraryPacks,
+                properties.GetProperty("RestoreAdditionalProjectSources").GetString(),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(fixture, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Locked_restore_uses_a_project_owned_package_cache_by_default()
+    {
+        string root = FindRepositoryRoot();
+
+        string projectDirectory = Path.Combine(
+            root,
+            "tests",
+            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks");
+
+        string project = Path.Combine(
+            projectDirectory,
+            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj");
+
+        string fixture = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-admission-global-packages-" + Guid.NewGuid().ToString("N"));
+
+        string globalPackages = Path.Combine(fixture, "polluted-global-cache");
+
+        Directory.CreateDirectory(globalPackages);
+
+        try
+        {
+            ProcessResult result = await RunProcessAsync(
+                "dotnet",
+                [
+                    "msbuild",
+                    project,
+                    "-nologo",
+                    "-getProperty:RestorePackagesPath",
+                    "-getProperty:MSBuildProjectDirectory",
+                ],
+                root,
+                new Dictionary<string, string?> { ["NUGET_PACKAGES"] = globalPackages });
+
+            Assert.True(
+                result.ExitCode == 0,
+                $"MSBuild exited {result.ExitCode}. stdout: {result.StandardOutput} stderr: {result.StandardError}");
+
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+
+            string actual = document.RootElement
+                .GetProperty("Properties")
+                .GetProperty("RestorePackagesPath")
+                .GetString()!;
+
+            string expected = Path.GetFullPath(Path.Combine(projectDirectory, "obj", "nuget-packages"));
+
+            Assert.False(string.IsNullOrWhiteSpace(actual));
+
+            Assert.Equal(expected, Path.GetFullPath(actual));
+        }
+        finally
+        {
+            Directory.Delete(fixture, recursive: true);
         }
     }
 

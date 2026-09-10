@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="DisableImplicitLibraryPacksFolder">
 
   <!-- Deliberately outside RetroDownfall.Arcanum.slnx. The operator script publishes and runs it. -->
   <PropertyGroup>
@@ -24,6 +24,12 @@
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
 
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+
+    <!-- SDK library packs can reuse an official version with repackaged bytes. This benchmark's
+         cross-machine lock file must resolve only the repository-declared NuGet sources. -->
+    <DisableImplicitLibraryPacksFolder>true</DisableImplicitLibraryPacksFolder>
+
+    <RestorePackagesPath>$(MSBuildProjectDirectory)/obj/nuget-packages</RestorePackagesPath>
 
   </PropertyGroup>
 

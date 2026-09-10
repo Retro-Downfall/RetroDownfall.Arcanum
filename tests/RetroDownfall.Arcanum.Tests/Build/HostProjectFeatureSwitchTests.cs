@@ -791,12 +791,23 @@ public sealed class HostProjectFeatureSwitchTests
 
         try
         {
+            string netCoreRoot = Path.Combine(temporaryRoot, "dotnet");
+            string bundledNativeRoot = Path.Combine(
+                netCoreRoot,
+                "packs",
+                "Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64",
+                version,
+                "runtimes",
+                "osx-arm64",
+                "native");
             string packageRoot = Path.Combine(
                 temporaryRoot,
                 "microsoft.netcore.app.runtime.nativeaot.osx-arm64",
                 version);
             string nativeRoot = Path.Combine(packageRoot, "runtimes", "osx-arm64", "native");
 
+            Directory.CreateDirectory(bundledNativeRoot);
+            File.WriteAllText(Path.Combine(bundledNativeRoot, "nonportable.txt"), string.Empty);
             Directory.CreateDirectory(nativeRoot);
             File.WriteAllBytes(Path.Combine(nativeRoot, "libRuntime.WorkstationGC.a"), []);
             File.WriteAllBytes(Path.Combine(nativeRoot, "libbrotlicommon.a"), []);
@@ -830,6 +841,9 @@ public sealed class HostProjectFeatureSwitchTests
             start.ArgumentList.Add("-p:Configuration=Release");
             start.ArgumentList.Add("-p:RuntimeIdentifier=osx-arm64");
             start.ArgumentList.Add("-p:PublishAot=true");
+            start.ArgumentList.Add(
+                $"-p:NetCoreRoot={netCoreRoot}{Path.DirectorySeparatorChar}");
+            start.ArgumentList.Add($"-p:BundledNETCoreAppPackageVersion={version}");
             start.ArgumentList.Add(
                 $"-p:NuGetPackageRoot={temporaryRoot}{Path.DirectorySeparatorChar}");
 

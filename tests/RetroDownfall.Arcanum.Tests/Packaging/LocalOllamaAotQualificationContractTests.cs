@@ -23,6 +23,11 @@ public sealed class LocalOllamaAotQualificationContractTests
         "FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaQualificationTests."
         + "Published_native_aot_preserves_corrected_file_context_and_runs_vision_across_restart";
 
+    private static void RequirePosixScriptFixture() =>
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "The Bash behavior fixture requires native POSIX process and filesystem semantics.");
+
     [Fact]
     public void Wrapper_requires_existing_inputs_and_never_builds_the_shipping_product()
     {
@@ -93,9 +98,11 @@ public sealed class LocalOllamaAotQualificationContractTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Wrapper_fails_closed_when_the_exact_test_reports_success_without_a_receipt()
     {
+        RequirePosixScriptFixture();
+
         using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new();
 
         PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
@@ -112,9 +119,11 @@ public sealed class LocalOllamaAotQualificationContractTests
             StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Wrapper_runs_only_the_exact_qualification_and_accepts_its_receipt()
     {
+        RequirePosixScriptFixture();
+
         using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(
             receiptKind: "ollama");
 
@@ -142,9 +151,11 @@ public sealed class LocalOllamaAotQualificationContractTests
         Assert.Equal(Path.GetFileName(fixture.Image), Path.GetFileName(image));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Wrapper_fails_when_its_private_temporary_directory_cannot_be_removed()
     {
+        RequirePosixScriptFixture();
+
         using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(
             receiptKind: "ollama");
         fixture.FailRecursiveRemovalFor("arcanum-local-ollama-aot.");
@@ -166,9 +177,11 @@ public sealed class LocalOllamaAotQualificationContractTests
         Assert.Equal(["0.1", "0.2"], fixture.ReadBackoffDelays());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Wrapper_fails_when_its_warning_scan_cannot_run()
     {
+        RequirePosixScriptFixture();
+
         using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(
             receiptKind: "ollama");
         fixture.FailSearches();
@@ -184,9 +197,11 @@ public sealed class LocalOllamaAotQualificationContractTests
         Assert.Contains("local qualification warning scan failed", result.StandardError, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Wrapper_rejects_receipt_bytes_after_the_required_line()
     {
+        RequirePosixScriptFixture();
+
         using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(
             receiptKind: "ollama");
         fixture.AppendReceiptBytesWithoutANewline();

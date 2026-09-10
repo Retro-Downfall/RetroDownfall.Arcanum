@@ -1715,47 +1715,63 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                         .IsSuccess);
             }));
 
-        Task start = Task.Run(() => service.StartAsync(CancellationToken.None));
+        Task start = RunLongRunningAsync(() => service.StartAsync(CancellationToken.None));
 
-        Assert.True(actionEntered.Wait(TimeSpan.FromSeconds(10)));
-
-        Task dispose = Task.Run(() =>
-        {
-            disposeAttempted.Set();
-
-            service.Dispose();
-
-            disposeReturned.Set();
-        });
-
-        Assert.True(disposeAttempted.Wait(TimeSpan.FromSeconds(10)));
-
-        bool returnedBeforeStartupWasReleased;
-
-        bool lockStayedAttached;
+        Task? dispose = null;
 
         try
         {
-            returnedBeforeStartupWasReleased = disposeReturned.Wait(TimeSpan.FromMilliseconds(250));
+            Assert.True(actionEntered.Wait(TimeSpan.FromSeconds(10)));
 
-            lockStayedAttached = accessor.BorrowHeldLock(guardedRoot).IsSuccess;
+            dispose = RunLongRunning(() =>
+            {
+                disposeAttempted.Set();
+
+                service.Dispose();
+
+                disposeReturned.Set();
+            });
+
+            Assert.True(disposeAttempted.Wait(TimeSpan.FromSeconds(10)));
+
+            bool returnedBeforeStartupWasReleased = disposeReturned.Wait(TimeSpan.FromMilliseconds(250));
+
+            bool lockStayedAttached = accessor.BorrowHeldLock(guardedRoot).IsSuccess;
+
+            releaseAction.Set();
+
+            _ = await Assert.ThrowsAsync<IOException>(async () => await start);
+
+            await dispose;
+
+            Assert.False(returnedBeforeStartupWasReleased);
+
+            Assert.True(lockStayedAttached);
+
+            Assert.True(startupLeaseDisposedUnderLock);
+
+            Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
         }
         finally
         {
             releaseAction.Set();
+
+            try
+            {
+                _ = await Record.ExceptionAsync(() => start);
+            }
+            finally
+            {
+                if (dispose is null)
+                {
+                    _ = Record.Exception(service.Dispose);
+                }
+                else
+                {
+                    _ = await Record.ExceptionAsync(() => dispose);
+                }
+            }
         }
-
-        _ = await Assert.ThrowsAsync<IOException>(async () => await start);
-
-        await dispose;
-
-        Assert.False(returnedBeforeStartupWasReleased);
-
-        Assert.True(lockStayedAttached);
-
-        Assert.True(startupLeaseDisposedUnderLock);
-
-        Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
     }
 
     [Fact]
@@ -1779,49 +1795,65 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         passphraseSource.BlockReads();
 
-        Task stop = Task.Run(() => service.StopAsync(CancellationToken.None));
-
-        Assert.True(passphraseSource.ReadEntered.Wait(TimeSpan.FromSeconds(10)));
+        Task stop = RunLongRunningAsync(() => service.StopAsync(CancellationToken.None));
 
         using ManualResetEventSlim disposeAttempted = new();
 
         using ManualResetEventSlim disposeReturned = new();
 
-        Task dispose = Task.Run(() =>
-        {
-            disposeAttempted.Set();
-
-            service.Dispose();
-
-            disposeReturned.Set();
-        });
-
-        Assert.True(disposeAttempted.Wait(TimeSpan.FromSeconds(10)));
-
-        bool returnedBeforeCheckpointWasReleased;
-
-        bool lockStayedAttached;
+        Task? dispose = null;
 
         try
         {
-            returnedBeforeCheckpointWasReleased = disposeReturned.Wait(TimeSpan.FromMilliseconds(250));
+            Assert.True(passphraseSource.ReadEntered.Wait(TimeSpan.FromSeconds(10)));
 
-            lockStayedAttached = accessor.BorrowHeldLock(_tempDir).IsSuccess;
+            dispose = RunLongRunning(() =>
+            {
+                disposeAttempted.Set();
+
+                service.Dispose();
+
+                disposeReturned.Set();
+            });
+
+            Assert.True(disposeAttempted.Wait(TimeSpan.FromSeconds(10)));
+
+            bool returnedBeforeCheckpointWasReleased = disposeReturned.Wait(TimeSpan.FromMilliseconds(250));
+
+            bool lockStayedAttached = accessor.BorrowHeldLock(_tempDir).IsSuccess;
+
+            passphraseSource.ReleaseReads();
+
+            await stop;
+
+            await dispose;
+
+            Assert.False(returnedBeforeCheckpointWasReleased);
+
+            Assert.True(lockStayedAttached);
+
+            Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
         }
         finally
         {
             passphraseSource.ReleaseReads();
+
+            try
+            {
+                _ = await Record.ExceptionAsync(() => stop);
+            }
+            finally
+            {
+                if (dispose is null)
+                {
+                    _ = Record.Exception(service.Dispose);
+                }
+                else
+                {
+                    _ = await Record.ExceptionAsync(() => dispose);
+                }
+            }
         }
-
-        await stop;
-
-        await dispose;
-
-        Assert.False(returnedBeforeCheckpointWasReleased);
-
-        Assert.True(lockStayedAttached);
-
-        Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
     }
 
     [Fact]
@@ -3469,6 +3501,19 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         InaccessibleAncestor = 4,
     }
+
+    private static Task RunLongRunning(Action action) => Task.Factory.StartNew(
+        action,
+        CancellationToken.None,
+        TaskCreationOptions.LongRunning,
+        TaskScheduler.Default);
+
+    private static Task RunLongRunningAsync(Func<Task> action) => Task.Factory.StartNew(
+            action,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default)
+        .Unwrap();
 
     public void Dispose()
     {

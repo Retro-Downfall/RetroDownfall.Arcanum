@@ -28,7 +28,6 @@ internal enum GrimoireOfflineTransitionPreviousRetention : byte
     Previous,
 
 }
-
 internal readonly record struct GrimoireOfflineTransitionExchangeResult(
     GrimoireOfflineTransitionPreviousRetention Retention);
 
@@ -284,6 +283,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     private const int FileIdBothDirectoryInformation = 37;
 
     private const int StatusNoMoreFiles = unchecked((int)0x80000006);
+
+    private const int StatusNoSuchFile = unchecked((int)0xC000000F);
 
     private const uint OwnerSecurityInformation = 0x00000001;
 
@@ -1457,6 +1458,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             while (true)
             {
 
+                bool initialQuery = restart;
+
                 int status = NtQueryDirectoryFile(
                     ParentHandle.DangerousGetHandle(),
                     IntPtr.Zero,
@@ -1472,7 +1475,10 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
                 restart = false;
 
-                if (status == StatusNoMoreFiles)
+                if (IsWindowsDirectoryEnumerationComplete(
+                        status,
+                        initialQuery,
+                        names.Count))
                 {
 
                     return names;
@@ -1539,6 +1545,15 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         }
 
     }
+
+    internal static bool IsWindowsDirectoryEnumerationComplete(
+        int status,
+        bool initialQuery,
+        int observedNameCount) =>
+        status == StatusNoMoreFiles
+        || status == StatusNoSuchFile
+            && initialQuery
+            && observedNameCount == 0;
 
     private unsafe bool RenameWindowsHandle(string sourceLeaf, string destinationLeaf)
     {

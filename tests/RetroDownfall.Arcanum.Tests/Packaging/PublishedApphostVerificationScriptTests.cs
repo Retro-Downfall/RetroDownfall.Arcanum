@@ -10,9 +10,16 @@ public sealed class PublishedApphostVerificationScriptTests
         "FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests."
         + "Published_executable_creates_initial_session_and_completes_provider_contract_exchange";
 
-    [Fact]
+    private static void RequirePosixScriptFixture() =>
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "The Bash behavior fixture requires native POSIX process and filesystem semantics.");
+
+    [SkippableFact]
     public async Task Gate_fails_closed_when_the_test_runner_reports_success_without_a_receipt()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new();
 
         ScriptResult result = await fixture.RunAsync(
@@ -27,9 +34,11 @@ public sealed class PublishedApphostVerificationScriptTests
             StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Gate_runs_only_the_exact_published_smoke_and_accepts_its_receipt()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new(receiptKind: "published");
 
         ScriptResult result = await fixture.RunAsync(
@@ -47,9 +56,11 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Equal(Path.GetFileName(fixture.Executable), Path.GetFileName(publishedExecutable));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Gate_fails_when_its_private_temporary_directory_cannot_be_removed()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new(receiptKind: "published");
         fixture.FailRecursiveRemovalFor("arcanum-apphost-verify.");
         fixture.CaptureBackoffDelays();
@@ -68,9 +79,11 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Equal(["0.1", "0.2"], fixture.ReadBackoffDelays());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Gate_fails_when_its_warning_scan_cannot_run()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new(receiptKind: "published");
         fixture.FailSearches();
 
@@ -83,9 +96,11 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Contains("published-apphost warning scan failed", result.StandardError, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Gate_rejects_receipt_bytes_after_the_required_line()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new(receiptKind: "published");
         fixture.AppendReceiptBytesWithoutANewline();
 
@@ -98,9 +113,11 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Contains("invalid success receipt", result.StandardError, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Shipping_gate_fails_when_its_private_temporary_directory_cannot_be_removed()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new(receiptKind: "published");
         fixture.FailRecursiveRemovalFor("arcanum-shipping-verify.");
         fixture.CaptureBackoffDelays();
@@ -119,9 +136,11 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Equal(["0.1", "0.2"], fixture.ReadBackoffDelays());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Shipping_gate_fails_when_its_warning_scan_cannot_run()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new(receiptKind: "published");
         fixture.FailSearches();
 
@@ -134,9 +153,11 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Contains("shipping warning scan failed", result.StandardError, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Shipping_gate_fails_when_its_forbidden_runtime_scan_cannot_run()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new(receiptKind: "published");
         fixture.FailFileSearches();
 
@@ -149,9 +170,11 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Contains("could not inspect the Native AOT publish shape", result.StandardError, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Shipping_gate_fails_when_its_macho_file_inventory_cannot_run()
     {
+        RequirePosixScriptFixture();
+
         using ScriptFixture fixture = new(receiptKind: "published");
         fixture.FailRegularFileSearches();
 

@@ -13,6 +13,7 @@ internal static partial class SecureDirectoryNameEnumerator
 {
     private const int FileIdBothDirectoryInformation = 37;
     private const int StatusNoMoreFiles = unchecked((int)0x80000006);
+    private const int StatusNoSuchFile = unchecked((int)0xC000000F);
     private const int WindowsBufferBytes = 64 * 1024;
 
     private static readonly UTF8Encoding StrictUtf8 =
@@ -165,6 +166,7 @@ internal static partial class SecureDirectoryNameEnumerator
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                bool initialQuery = restart;
                 int status = NtQueryDirectoryFile(
                     directory.DangerousGetHandle(),
                     IntPtr.Zero,
@@ -179,7 +181,10 @@ internal static partial class SecureDirectoryNameEnumerator
                     restart);
                 restart = false;
 
-                if (status == StatusNoMoreFiles)
+                if (IsWindowsDirectoryEnumerationComplete(
+                        status,
+                        initialQuery,
+                        names.Count))
                 {
                     return names;
                 }
@@ -225,6 +230,15 @@ internal static partial class SecureDirectoryNameEnumerator
             }
         }
     }
+
+    internal static bool IsWindowsDirectoryEnumerationComplete(
+        int status,
+        bool initialQuery,
+        int observedNameCount) =>
+        status == StatusNoMoreFiles
+        || status == StatusNoSuchFile
+            && initialQuery
+            && observedNameCount == 0;
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly struct IoStatusBlock

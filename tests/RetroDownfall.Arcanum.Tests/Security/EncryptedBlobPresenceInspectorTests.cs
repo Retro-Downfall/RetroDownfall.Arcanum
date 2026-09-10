@@ -221,6 +221,27 @@ public sealed class EncryptedBlobPresenceInspectorTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(unchecked((int)0xC000000F), true, 0, true)]
+    [InlineData(unchecked((int)0xC000000F), false, 0, false)]
+    [InlineData(unchecked((int)0xC000000F), true, 1, false)]
+    [InlineData(unchecked((int)0x80000006), false, 1, true)]
+    [InlineData(unchecked((int)0xC0000022), true, 0, false)]
+    [InlineData(0, true, 0, false)]
+    public void Windows_directory_enumeration_accepts_no_such_file_only_for_an_empty_initial_query(
+        int status,
+        bool initialQuery,
+        int observedNameCount,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            SecureDirectoryNameEnumerator.IsWindowsDirectoryEnumerationComplete(
+                status,
+                initialQuery,
+                observedNameCount));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

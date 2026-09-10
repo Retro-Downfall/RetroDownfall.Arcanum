@@ -2045,6 +2045,37 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     }
 
+    [Theory]
+
+    [InlineData(unchecked((int)0xC000000F), true, 0, true)]
+
+    [InlineData(unchecked((int)0xC000000F), false, 0, false)]
+
+    [InlineData(unchecked((int)0xC000000F), true, 1, false)]
+
+    [InlineData(unchecked((int)0x80000006), false, 1, true)]
+
+    [InlineData(unchecked((int)0xC0000022), true, 0, false)]
+
+    [InlineData(0, true, 0, false)]
+
+    public void Windows_directory_enumeration_accepts_no_such_file_only_for_an_empty_initial_scan(
+        int status,
+        bool initialQuery,
+        int observedNameCount,
+        bool expected)
+    {
+
+        Assert.Equal(
+            expected,
+            GrimoireOfflineTransitionJournalFilePrimitives
+                .IsWindowsDirectoryEnumerationComplete(
+                    status,
+                    initialQuery,
+                    observedNameCount));
+
+    }
+
     /// <summary>
     /// Runs a real second publication end to end on an actual Windows host: no double stands in for
     /// <c>ExchangeRetainingPrevious</c>, so this is the Windows exchange mechanism itself, not a
