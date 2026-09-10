@@ -1994,6 +1994,83 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     }
 
+    /// <summary>
+    /// POSIX deletion removes the directory link while already-open handles retain access to the
+    /// file object. The retained evidence handle must therefore witness both the zero link count and
+    /// the original bytes after the exact journal name has disappeared.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: exercises POSIX unlink through a separately retained evidence handle.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest);
+
+        Assert.True(
+            opened.IsSuccess,
+            opened.IsFailure ? "open: " + opened.Error.Code : "open: success");
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
+
+        byte[] expectedBytes = Bytes("windows-retained-unlink-witness").ToArray();
+
+        using GrimoireOfflineTransitionJournalOpenedFile retained = Value(
+            primitives.CreateWorkingExclusive(location.WorkingLeaf));
+
+        FileStream retainedStream = retained.GetStream(FileAccess.ReadWrite);
+
+        retainedStream.Write(expectedBytes);
+
+        Assert.True(primitives.FlushWorking(retained).IsSuccess);
+
+        Assert.True(
+            primitives.PublishFirstNoReplace(
+                location.JournalLeaf,
+                location.WorkingLeaf).IsSuccess);
+
+        Result unlinked = primitives.CompareUnlink(retained, location.JournalLeaf);
+
+        Assert.True(unlinked.IsSuccess, unlinked.IsFailure ? unlinked.Error.Code : "success");
+
+        using GrimoireOfflineTransitionJournalChildEnumeration after = Value(
+            primitives.EnumerateExactChildren([location.JournalLeaf]));
+
+        Assert.DoesNotContain(location.JournalLeaf, after.Names);
+
+        Assert.False(after.ExactChildren.ContainsKey(location.JournalLeaf));
+
+        Assert.True(
+            FileHandleIdentityInterop.TryGetHandleMetadata(
+                retained.Handle,
+                out FileHandleMetadata retainedMetadata));
+
+        Assert.Equal(0U, retainedMetadata.HardLinkCount);
+
+        retainedStream.Position = 0;
+
+        byte[] actualBytes = new byte[expectedBytes.Length];
+
+        retainedStream.ReadExactly(actualBytes);
+
+        Assert.Equal(expectedBytes, actualBytes);
+
+    }
+
     [Fact]
     public void Windows_desired_access_and_share_mode_constants_are_exact()
     {
