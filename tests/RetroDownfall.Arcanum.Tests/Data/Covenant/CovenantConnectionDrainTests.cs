@@ -172,6 +172,8 @@ public sealed class CovenantConnectionDrainTests
         await using CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
+        List<string> events = [];
+
         await using SqliteConnection pooled = new(
             new SqliteConnectionStringBuilder(database.Connection.ConnectionString)
             {
@@ -192,11 +194,13 @@ public sealed class CovenantConnectionDrainTests
 
         await database.Connection.CloseAsync();
 
-        CovenantConnectionDrain drain = new();
+        CovenantConnectionDrain drain = new(() => events.Add("pools"));
 
-        using IDisposable firstEnrolment = drain.Register(first);
+        RecordingPhysicalCloseObserver observer = new(events);
 
-        using IDisposable secondEnrolment = drain.Register(second);
+        using IDisposable firstEnrolment = drain.Register(first, observer);
+
+        using IDisposable secondEnrolment = drain.Register(second, observer);
 
         Task<Result> draining = Task.Run(() => drain.DrainAsync(Token), Token);
 
@@ -214,10 +218,6 @@ public sealed class CovenantConnectionDrainTests
 
         await firstClosing.PhysicallyClosed;
 
-        Assert.Contains(
-            CovenantResidualArtifactClass.WriteAheadLog,
-            CovenantResidualArtifacts.Survivors(database.DatabasePath));
-
         firstClosing.AllowCloseReturn();
 
         await secondClosing.Entered.WaitAsync(TimeSpan.FromSeconds(30));
@@ -226,15 +226,13 @@ public sealed class CovenantConnectionDrainTests
 
         await secondClosing.PhysicallyClosed;
 
-        Assert.Contains(
-            CovenantResidualArtifactClass.WriteAheadLog,
-            CovenantResidualArtifacts.Survivors(database.DatabasePath));
-
         secondClosing.AllowCloseReturn();
 
         Result drained = await draining;
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Equal(["close", "close", "pools"], events);
 
         Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
     }
@@ -681,6 +679,13 @@ public sealed class CovenantConnectionDrainTests
 
             await _allowCloseReturn.Task.WaitAsync(TimeSpan.FromSeconds(30));
         }
+    }
+
+    private sealed class RecordingPhysicalCloseObserver(List<string> events)
+        : ICovenantPhysicalCloseObserver
+    {
+        public void OnPhysicalClose(SqliteConnection connection) =>
+            events.Add("close");
     }
 
     private sealed class DrainProbeDbContext(DbContextOptions<DrainProbeDbContext> options)

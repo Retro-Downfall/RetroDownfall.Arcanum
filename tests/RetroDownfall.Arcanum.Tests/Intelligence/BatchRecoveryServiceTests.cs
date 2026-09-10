@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -20,6 +23,8 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
     private readonly GrimoireFixture _fixture;
 
     private readonly List<string> _createdFilePaths = [];
+
+    private readonly List<ServiceProvider> _serviceProviders = [];
 
     private string _dbPath = string.Empty;
 
@@ -83,6 +88,11 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        foreach (ServiceProvider provider in _serviceProviders)
+        {
+            await provider.DisposeAsync();
+        }
+
         if (_db is not null)
         {
             await _db.DisposeAsync();
@@ -292,9 +302,12 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
                 null),
             CancellationToken.None);
 
-        BlockingBatchAccountingRecoveryStore accountingRecovery = new(
-            new BatchAccountingRecoveryStore(_db!, TimeProvider.System));
-        BatchRecoveryService recovery = CreateRecoveryService(accountingRecovery);
+        BlockingBatchAccountingRecovery accountingRecovery = new();
+        ConcurrentBag<ScopedDatabaseIdentity> databases = [];
+        BatchRecoveryService recovery = CreateRecoveryService(
+            context => accountingRecovery.Wrap(
+                new BatchAccountingRecoveryStore(context, TimeProvider.System)),
+            databases);
 
         Task<BatchRecoveryResult> first = recovery.ResetStuckBatchAsync(
             batchId,
@@ -316,6 +329,18 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         Assert.Equal(BatchRecoveryStatus.Succeeded, completed.Status);
         Assert.Equal(BatchStatuses.Validating, completed.Record!.Status);
         Assert.Equal(1, accountingRecovery.ClaimCalls);
+
+        Assert.Equal(2, databases.Count);
+        Assert.Equal(
+            databases.Count,
+            databases.Select(database => database.Context)
+                .Distinct(ReferenceEqualityComparer.Instance)
+                .Count());
+        Assert.Equal(
+            databases.Count,
+            databases.Select(database => database.Connection)
+                .Distinct(ReferenceEqualityComparer.Instance)
+                .Count());
     }
 
     [SkippableFact]
@@ -367,7 +392,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             CancellationToken.None));
 
         BatchRecoveryService recovery = CreateRecoveryService(
-            new RejectingBatchAccountingRecoveryStore());
+            _ => new RejectingBatchAccountingRecoveryStore());
 
         BatchRecoveryResult result = await recovery.ResetStuckBatchAsync(
             batchId,
@@ -431,11 +456,21 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
     }
 
     private BatchRecoveryService CreateRecoveryService(
-        IBatchAccountingRecoveryStore? accountingRecovery = null)
+        Func<ArcanumDbContext, IBatchAccountingRecoveryStore>? accountingRecoveryFactory = null,
+        ConcurrentBag<ScopedDatabaseIdentity>? scopedDatabases = null)
     {
         ServiceCollection services = new();
 
-        services.AddSingleton(_db!);
+        services.AddScoped(_ =>
+        {
+            ArcanumDbContext context = _fixture.CreateContext(_dbPath);
+
+            scopedDatabases?.Add(new ScopedDatabaseIdentity(
+                context,
+                context.Database.GetDbConnection()));
+
+            return context;
+        });
 
         services.AddScoped<IBatchRepository, BatchRepository>();
 
@@ -443,10 +478,17 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
         services.AddSingleton(_blobStore);
 
-        services.AddScoped<IBatchAccountingRecoveryStore>(_ =>
-            accountingRecovery ?? new BatchAccountingRecoveryStore(_db!, TimeProvider.System));
+        services.AddScoped<IBatchAccountingRecoveryStore>(sp =>
+        {
+            ArcanumDbContext context = sp.GetRequiredService<ArcanumDbContext>();
+
+            return accountingRecoveryFactory?.Invoke(context)
+                ?? new BatchAccountingRecoveryStore(context, TimeProvider.System);
+        });
 
         ServiceProvider root = services.BuildServiceProvider();
+
+        _serviceProviders.Add(root);
 
         BatchProcessingService processing = new(
             root.GetRequiredService<IServiceScopeFactory>(),
@@ -476,8 +518,11 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             Task.FromResult(false);
     }
 
-    private sealed class BlockingBatchAccountingRecoveryStore(
-        IBatchAccountingRecoveryStore inner) : IBatchAccountingRecoveryStore
+    private sealed record ScopedDatabaseIdentity(
+        ArcanumDbContext Context,
+        System.Data.Common.DbConnection Connection);
+
+    private sealed class BlockingBatchAccountingRecovery
     {
         private readonly TaskCompletionSource _claimEntered = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -491,7 +536,13 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
         public int ClaimCalls => Volatile.Read(ref _claimCalls);
 
-        public async Task<BatchAccountingRecoveryClaimStatus> ClaimRecoveryAsync(
+        public IBatchAccountingRecoveryStore Wrap(IBatchAccountingRecoveryStore inner) =>
+            new ScopedStore(this, inner);
+
+        public void ReleaseClaim() => _releaseClaim.TrySetResult();
+
+        private async Task<BatchAccountingRecoveryClaimStatus> ClaimRecoveryAsync(
+            IBatchAccountingRecoveryStore inner,
             Guid batchId,
             CancellationToken cancellationToken = default)
         {
@@ -502,13 +553,21 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             return await inner.ClaimRecoveryAsync(batchId, cancellationToken);
         }
 
-        public Task<bool> TryCompleteRecoveryAsync(
-            Guid batchId,
-            BatchAccountingRecoveryTarget target,
-            CancellationToken cancellationToken = default) =>
-            inner.TryCompleteRecoveryAsync(batchId, target, cancellationToken);
+        private sealed class ScopedStore(
+            BlockingBatchAccountingRecovery owner,
+            IBatchAccountingRecoveryStore inner) : IBatchAccountingRecoveryStore
+        {
+            public Task<BatchAccountingRecoveryClaimStatus> ClaimRecoveryAsync(
+                Guid batchId,
+                CancellationToken cancellationToken = default) =>
+                owner.ClaimRecoveryAsync(inner, batchId, cancellationToken);
 
-        public void ReleaseClaim() => _releaseClaim.TrySetResult();
+            public Task<bool> TryCompleteRecoveryAsync(
+                Guid batchId,
+                BatchAccountingRecoveryTarget target,
+                CancellationToken cancellationToken = default) =>
+                inner.TryCompleteRecoveryAsync(batchId, target, cancellationToken);
+        }
     }
 
     private async Task<Guid> SeedInputFileAsync(string jsonlContent)

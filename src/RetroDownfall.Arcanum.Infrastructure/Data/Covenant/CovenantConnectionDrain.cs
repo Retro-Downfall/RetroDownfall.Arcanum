@@ -96,12 +96,24 @@ internal interface ICovenantPhysicalCloseObserver
 /// </remarks>
 internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 {
+    private readonly Action? _beforeClearAllPools;
+
     private readonly Lock _gate = new();
 
     private readonly Dictionary<SqliteConnection, int> _handles = [];
 
     private readonly Dictionary<SqliteConnection, List<ICovenantPhysicalCloseObserver>>
         _physicalCloseObservers = [];
+
+    public CovenantConnectionDrain()
+        : this(null)
+    {
+    }
+
+    internal CovenantConnectionDrain(Action? beforeClearAllPools)
+    {
+        _beforeClearAllPools = beforeClearAllPools;
+    }
 
     public IDisposable Register(SqliteConnection connection)
     {
@@ -200,6 +212,8 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         }
 
         // After the direct handles, never before: see the type remarks.
+        _beforeClearAllPools?.Invoke();
+
         SqliteConnection.ClearAllPools();
 
         foreach (SqliteConnection handle in enrolled)

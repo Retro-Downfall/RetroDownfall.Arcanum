@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,6 +30,8 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     private readonly GrimoireFixture _fixture;
 
     private readonly List<string> _createdFilePaths = [];
+
+    private readonly List<ServiceProvider> _serviceProviders = [];
 
     private string _dbPath = string.Empty;
 
@@ -91,6 +95,11 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        foreach (ServiceProvider provider in _serviceProviders)
+        {
+            await provider.DisposeAsync();
+        }
+
         if (_db is not null)
         {
             await _db.DisposeAsync();
@@ -1327,13 +1336,17 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     /// BUSY/LOCKED; it does not serialize. Each unit of concurrent work must own its scope.
     /// </summary>
     [SkippableFact]
-    public async Task ProcessBatchAsync_gives_the_watcher_and_every_request_line_its_own_scope()
+    public async Task ProcessBatchAsync_gives_each_private_scope_its_own_database_context_and_connection()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeIntelligenceProvider intelligence = new() { NextText = "ok", NextFinishReason = "stop" };
 
-        ServiceProvider root = BuildServiceProvider(intelligence);
+        ConcurrentBag<ScopedDatabaseIdentity> databases = [];
+
+        ServiceProvider root = BuildServiceProvider(
+            intelligence,
+            scopedDatabases: databases);
 
         CountingScopeFactory scopes = new(root.GetRequiredService<IServiceScopeFactory>());
 
@@ -1395,6 +1408,22 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
         Assert.True(
             scopes.Created - scopesBefore >= lineCount + 2,
             $"expected at least {lineCount + 2} scopes, saw {scopes.Created - scopesBefore}");
+
+        Assert.True(
+            databases.Count >= lineCount + 2,
+            $"expected at least {lineCount + 2} database contexts, saw {databases.Count}");
+
+        Assert.Equal(
+            databases.Count,
+            databases.Select(database => database.Context)
+                .Distinct(ReferenceEqualityComparer.Instance)
+                .Count());
+
+        Assert.Equal(
+            databases.Count,
+            databases.Select(database => database.Connection)
+                .Distinct(ReferenceEqualityComparer.Instance)
+                .Count());
     }
 
     [Fact]
@@ -1536,11 +1565,21 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
         IArcanumIntelligenceProvider intelligence,
         ITurnRunWriter? turnRunWriter = null,
         IBudgetReservationService? budgetReservations = null,
-        IBatchAccountingRecoveryStore? accountingRecoveryStore = null)
+        IBatchAccountingRecoveryStore? accountingRecoveryStore = null,
+        ConcurrentBag<ScopedDatabaseIdentity>? scopedDatabases = null)
     {
         ServiceCollection services = new();
 
-        services.AddScoped(_ => _fixture.CreateContext(_dbPath));
+        services.AddScoped(_ =>
+        {
+            ArcanumDbContext context = _fixture.CreateContext(_dbPath);
+
+            scopedDatabases?.Add(new ScopedDatabaseIdentity(
+                context,
+                context.Database.GetDbConnection()));
+
+            return context;
+        });
 
         services.AddScoped<IBatchRepository, BatchRepository>();
 
@@ -1567,11 +1606,19 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
             services.AddSingleton(budgetReservations);
         }
 
-        return services.BuildServiceProvider();
+        ServiceProvider root = services.BuildServiceProvider();
+
+        _serviceProviders.Add(root);
+
+        return root;
     }
 
     private IServiceScopeFactory BuildScopeFactory(IArcanumIntelligenceProvider intelligence) =>
         BuildServiceProvider(intelligence).GetRequiredService<IServiceScopeFactory>();
+
+    private sealed record ScopedDatabaseIdentity(
+        ArcanumDbContext Context,
+        System.Data.Common.DbConnection Connection);
 
     private sealed class RecordingTurnRunWriter : ITurnRunWriter
     {

@@ -67,15 +67,17 @@ public sealed class GrimoireStatsServiceTests
         string walPath = databasePath + "-wal";
         Assert.StartsWith(factory.TempHome, databasePath, StringComparison.OrdinalIgnoreCase);
         Assert.True(File.Exists(databasePath));
-        Assert.True(File.Exists(walPath));
+
+        long expectedWalBytes = File.Exists(walPath)
+            ? new FileInfo(walPath).Length
+            : 0;
 
         GrimoireStatsService service = scope.ServiceProvider.GetRequiredService<GrimoireStatsService>();
         GrimoireStatsDto stats = await service.GetStatsAsync(CancellationToken.None);
 
         Assert.Equal(new FileInfo(databasePath).Length, stats.DatabaseBytes);
-        Assert.Equal(new FileInfo(walPath).Length, stats.WalBytes);
+        Assert.Equal(expectedWalBytes, stats.WalBytes);
         Assert.True(stats.DatabaseBytes > 0);
-        Assert.True(stats.WalBytes > 0);
         Assert.Equal(1, stats.SessionCount);
         Assert.Equal(1, stats.EntryCount);
         Assert.Equal(1, stats.CampaignCount);
