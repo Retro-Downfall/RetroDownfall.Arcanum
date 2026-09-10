@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -78,7 +79,7 @@ public sealed class CliApplicationFactoryTests
 
         CliTestResult result = await CliTestHarness.RunAsync(services, []);
 
-            Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, result.ExitCode);
         Assert.Equal(0, host.RunCount);
         Assert.Contains("Command Center", result.Output, StringComparison.OrdinalIgnoreCase);
     }
@@ -636,6 +637,23 @@ public sealed class CliApplicationFactoryTests
         Assert.NotNull(webResearchCredentials);
         AskCommand askCommand = provider.GetRequiredService<AskCommand>();
         Assert.NotNull(askCommand);
+    }
+
+    [Fact]
+    public async Task Cli_test_harness_replaces_the_production_os_credential_store()
+    {
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, ["--help"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.IsType<InMemoryOsCredentialStore>(
+            provider.GetRequiredService<IOsCredentialStore>());
     }
 
     [Fact]

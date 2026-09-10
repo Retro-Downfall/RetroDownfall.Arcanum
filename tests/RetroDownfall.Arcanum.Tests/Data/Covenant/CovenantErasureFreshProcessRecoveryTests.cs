@@ -19,6 +19,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -31,6 +32,9 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantErasureFreshProcessRecoveryTests
 {
+    private const string InMemoryCredentialOptInVariable =
+        "ARCANUM_TEST_IN_MEMORY_CREDENTIALS";
+
     private const string OriginalOwner = "task-9-original-process";
 
     private const string RecoveryOwner = "task-9-recovery-process";
@@ -51,6 +55,9 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
         string? originalAspNet = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 
+        string? originalInMemoryCredentialOptIn = global::System.Environment.GetEnvironmentVariable(
+            InMemoryCredentialOptInVariable);
+
         using GrimoireFixture fixture = new();
 
         try
@@ -60,6 +67,8 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
             global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
 
             global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+            global::System.Environment.SetEnvironmentVariable(InMemoryCredentialOptInVariable, "1");
 
             Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
@@ -235,6 +244,10 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", originalAspNet);
 
+            global::System.Environment.SetEnvironmentVariable(
+                InMemoryCredentialOptInVariable,
+                originalInMemoryCredentialOptIn);
+
             if (Directory.Exists(testHome))
             {
                 Directory.Delete(testHome, recursive: true);
@@ -272,6 +285,9 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
                 ValidateScopes = true,
             });
+
+        Assert.IsType<InMemoryOsCredentialStore>(
+            provider.GetRequiredService<IOsCredentialStore>());
 
         Assert.IsType<GrimoireDbPassphraseSource>(
             provider.GetRequiredService<IGrimoireDbPassphraseSource>())

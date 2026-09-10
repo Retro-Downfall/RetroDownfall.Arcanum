@@ -38,6 +38,8 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Secrets.Security;
+
 using RetroDownfall.Arcanum.Tests.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Data;
@@ -108,6 +110,17 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         }
 
+    }
+
+    [Fact]
+    public void Provider_uses_explicit_in_memory_credentials()
+    {
+        Directory.CreateDirectory(_testHome);
+
+        using ServiceProvider provider = CreateProvider();
+
+        Assert.IsType<InMemoryOsCredentialStore>(
+            provider.GetRequiredService<IOsCredentialStore>());
     }
 
     [Fact]
@@ -756,6 +769,8 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         ServiceCollection services = new();
 
         services.AddLogging();
+
+        services.AddSingleton<IOsCredentialStore, InMemoryOsCredentialStore>();
 
         services.AddArcanumCliClientStack();
 

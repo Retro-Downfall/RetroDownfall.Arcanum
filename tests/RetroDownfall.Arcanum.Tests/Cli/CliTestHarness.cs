@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 using Spectre.Console;
 
@@ -56,6 +57,8 @@ internal static class CliTestHarness
         string? input = null)
     {
         ApplyInstalledStartupProbe(services);
+
+        ApplyInMemoryCredentialStore(services);
 
         ServiceProvider provider = services.BuildServiceProvider();
 
@@ -141,6 +144,31 @@ internal static class CliTestHarness
         services.RemoveAll<IInstallationStartupProbe>();
 
         services.AddSingleton<IInstallationStartupProbe>(new InstalledStartupProbe());
+    }
+
+    /// <summary>
+    /// Keeps CLI command tests out of the operator's login Keychain or Credential Manager.
+    /// </summary>
+    /// <remarks>
+    /// The CLI uses a bare <see cref="ServiceCollection"/>, so it has no
+    /// <c>IHostEnvironment</c> for the executable-test credential policy to authenticate. The
+    /// production registration is therefore deliberately replaced at this test boundary. A caller
+    /// that registered a concrete credential-store double keeps ownership of that dependency.
+    /// </remarks>
+    private static void ApplyInMemoryCredentialStore(IServiceCollection services)
+    {
+        ServiceDescriptor? selected = services.LastOrDefault(static descriptor =>
+            descriptor.ServiceType == typeof(IOsCredentialStore));
+
+        if (selected?.ImplementationInstance is IOsCredentialStore
+            || selected?.ImplementationType is not null)
+        {
+            return;
+        }
+
+        services.RemoveAll<IOsCredentialStore>();
+
+        services.AddSingleton<IOsCredentialStore, InMemoryOsCredentialStore>();
     }
 }
 
