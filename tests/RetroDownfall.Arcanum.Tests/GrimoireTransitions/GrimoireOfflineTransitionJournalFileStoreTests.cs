@@ -2084,6 +2084,118 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     /// <summary>
+    /// Splits the first-publication Windows path at its two native boundaries. The production store
+    /// enumerates an empty directory, creates and flushes the working file, re-enumerates through the
+    /// same retained parent capability, and only then renames it. A single end-to-end failure cannot
+    /// say which boundary failed, while this test identifies the failing operation in its assertion.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_real_primitives_reinspect_then_publish_a_new_working_file()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: exercises repeated NT directory queries and handle-relative rename.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest);
+
+        Assert.True(
+            opened.IsSuccess,
+            opened.IsFailure ? "open: " + opened.Error.Code : "open: success");
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
+
+        string[] leaves =
+        [
+            location.JournalLeaf,
+            location.WorkingLeaf,
+            location.PreviousLeaf,
+            location.RetiringLeaf,
+        ];
+
+        Result<GrimoireOfflineTransitionJournalChildEnumeration> initialResult =
+            primitives.EnumerateExactChildren(leaves);
+
+        Assert.True(
+            initialResult.IsSuccess,
+            initialResult.IsFailure
+                ? "initial enumeration: " + initialResult.Error.Code
+                : "initial enumeration: success");
+
+        using (GrimoireOfflineTransitionJournalChildEnumeration initial = initialResult.Value)
+        {
+
+            Assert.Empty(initial.ExactChildren);
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalOpenedFile> createdResult =
+            primitives.CreateWorkingExclusive(location.WorkingLeaf);
+
+        Assert.True(
+            createdResult.IsSuccess,
+            createdResult.IsFailure ? "create: " + createdResult.Error.Code : "create: success");
+
+        using GrimoireOfflineTransitionJournalOpenedFile created = createdResult.Value;
+
+        created.GetStream(FileAccess.ReadWrite).Write(Bytes("windows-primitive-publication").Span);
+
+        Result flushed = primitives.FlushWorking(created);
+
+        Assert.True(flushed.IsSuccess, flushed.IsFailure ? "flush: " + flushed.Error.Code : "flush: success");
+
+        Result<GrimoireOfflineTransitionJournalChildEnumeration> postCreateResult =
+            primitives.EnumerateExactChildren(leaves);
+
+        Assert.True(
+            postCreateResult.IsSuccess,
+            postCreateResult.IsFailure
+                ? "post-create enumeration: " + postCreateResult.Error.Code
+                : "post-create enumeration: success");
+
+        using (GrimoireOfflineTransitionJournalChildEnumeration postCreate = postCreateResult.Value)
+        {
+
+            Assert.Contains(location.WorkingLeaf, postCreate.Names);
+
+            Assert.True(
+                postCreate.ExactChildren.TryGetValue(
+                    location.WorkingLeaf,
+                    out GrimoireOfflineTransitionJournalOpenedFile? reopened),
+                "post-create enumeration missed the working leaf; observed: "
+                    + string.Join(",", postCreate.Names));
+
+            Assert.True(
+                FileHandleIdentity.IdentitiesMatch(
+                    created.Metadata.Identity,
+                    reopened.Metadata.Identity),
+                "post-create enumeration reopened a different working-file identity");
+
+        }
+
+        Result published = primitives.PublishFirstNoReplace(
+            location.JournalLeaf,
+            location.WorkingLeaf);
+
+        Assert.True(
+            published.IsSuccess,
+            published.IsFailure ? "publish: " + published.Error.Code : "publish: success");
+
+    }
+
+    /// <summary>
     /// Runs a real second publication end to end on an actual Windows host: no double stands in for
     /// <c>ExchangeRetainingPrevious</c>, so this is the Windows exchange mechanism itself, not a
     /// retention-shape recording of whatever the current host implements. The recording decorator
